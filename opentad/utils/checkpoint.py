@@ -16,7 +16,7 @@ def save_checkpoint(model, model_ema, optimizer, scheduler, epoch, work_dir=None
         save_states.update({"state_dict_ema": model_ema.module.state_dict()})
 
     if not os.path.exists(save_dir):
-        os.mkdir(save_dir)
+        os.makedirs(save_dir, exist_ok=True)
 
     checkpoint_path = os.path.join(save_dir, f"epoch_{epoch}.pth")
     torch.save(save_states, checkpoint_path)
@@ -31,7 +31,7 @@ def save_best_checkpoint(model, model_ema, epoch, work_dir=None):
         save_states.update({"state_dict_ema": model_ema.module.state_dict()})
 
     if not os.path.exists(save_dir):
-        os.mkdir(save_dir)
+        os.makedirs(save_dir, exist_ok=True)
 
     checkpoint_path = os.path.join(save_dir, f"best.pth")
     torch.save(save_states, checkpoint_path)

@@ -4,6 +4,61 @@ import tqdm
 from opentad.utils.misc import AverageMeter, reduce_loss
 
 
+def _find_first_nonfinite_grad(model):
+    for name, param in model.named_parameters():
+        if param.grad is not None and not torch.isfinite(param.grad).all():
+            return name
+    return None
+
+
+def _summarize_grad_health(model, topk=8):
+    nonfinite = []
+    large_finite = []
+    for name, param in model.named_parameters():
+        if param.grad is None:
+            continue
+        grad = param.grad.detach()
+        finite = torch.isfinite(grad)
+        if not finite.all():
+            nonfinite.append(
+                dict(
+                    name=name,
+                    shape=tuple(grad.shape),
+                    finite_count=int(finite.sum().item()),
+                    nonfinite_count=int(grad.numel() - finite.sum().item()),
+                )
+            )
+            continue
+        absmax = float(grad.abs().max().item()) if grad.numel() > 0 else 0.0
+        large_finite.append((absmax, name, tuple(grad.shape)))
+
+    large_finite.sort(reverse=True, key=lambda item: item[0])
+    return {
+        "grad_nonfinite_param_count": len(nonfinite),
+        "grad_nonfinite_params": nonfinite[:topk],
+        "grad_top_absmax_params": [
+            dict(name=name, absmax=absmax, shape=shape) for absmax, name, shape in large_finite[:topk]
+        ],
+    }
+
+
+def _format_debug_report(report):
+    ordered_items = []
+    for key in sorted(report.keys()):
+        ordered_items.append(f"{key}={report[key]}")
+    return " | ".join(ordered_items)
+
+
+def _collect_runtime_debug(model, data_dict, bad_param_name):
+    target = model.module if hasattr(model, "module") else model
+    if hasattr(target, "collect_runtime_debug"):
+        try:
+            return target.collect_runtime_debug(data_dict, bad_param_name)
+        except Exception as exc:
+            return {"debug_collection_error": repr(exc), "bad_param_name": bad_param_name}
+    return None
+
+
 def train_one_epoch(
     train_loader,
     model,
@@ -14,6 +69,7 @@ def train_one_epoch(
     model_ema=None,
     clip_grad_l2norm=-1,
     logging_interval=200,
+    runtime_debug_interval=-1,
     scaler=None,
 ):
     """Training the model for one epoch"""
@@ -22,6 +78,10 @@ def train_one_epoch(
     losses_tracker = {}
     num_iters = len(train_loader)
     use_amp = False if scaler is None else True
+
+    target = model.module if hasattr(model, "module") else model
+    if hasattr(target, "set_train_epoch"):
+        target.set_train_epoch(curr_epoch)
 
     model.train()
     for iter_idx, data_dict in enumerate(train_loader):
@@ -38,6 +98,15 @@ def train_one_epoch(
         with torch.cuda.amp.autocast(dtype=torch.float16, enabled=use_amp):
             losses = model(**data_dict, return_loss=True)
 
+        if not torch.isfinite(losses["cost"]):
+            logger.error(
+                "[Train]: non-finite cost detected at epoch=%d iter=%d, skip optimizer step",
+                curr_epoch,
+                iter_idx,
+            )
+            optimizer.zero_grad(set_to_none=True)
+            continue
+
         # compute the gradients
         if use_amp:
             scaler.scale(losses["cost"]).backward()
@@ -45,16 +114,59 @@ def train_one_epoch(
             losses["cost"].backward()
 
         # gradient clipping (to stabilize training if necessary)
+        grads_unscaled = False
         if clip_grad_l2norm > 0.0:
             if use_amp:
                 scaler.unscale_(optimizer)
+                grads_unscaled = True
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_l2norm)
 
         # update parameters
         if use_amp:
+            if not grads_unscaled:
+                scaler.unscale_(optimizer)
+            bad_param_name = _find_first_nonfinite_grad(model)
+            if bad_param_name is not None:
+                logger.error(
+                    "[Train]: non-finite gradients detected at epoch=%d iter=%d, param=%s, skip optimizer step",
+                    curr_epoch,
+                    iter_idx,
+                    bad_param_name,
+                )
+                debug_report = _collect_runtime_debug(model, data_dict, bad_param_name)
+                if debug_report is not None:
+                    debug_report.update(_summarize_grad_health(model))
+                    logger.error(
+                        "[Train][Diag]: epoch=%d iter=%d %s",
+                        curr_epoch,
+                        iter_idx,
+                        _format_debug_report(debug_report),
+                    )
+                optimizer.zero_grad(set_to_none=True)
+                scaler.update()
+                continue
             scaler.step(optimizer)
             scaler.update()
         else:
+            bad_param_name = _find_first_nonfinite_grad(model)
+            if bad_param_name is not None:
+                logger.error(
+                    "[Train]: non-finite gradients detected at epoch=%d iter=%d, param=%s, skip optimizer step",
+                    curr_epoch,
+                    iter_idx,
+                    bad_param_name,
+                )
+                debug_report = _collect_runtime_debug(model, data_dict, bad_param_name)
+                if debug_report is not None:
+                    debug_report.update(_summarize_grad_health(model))
+                    logger.error(
+                        "[Train][Diag]: epoch=%d iter=%d %s",
+                        curr_epoch,
+                        iter_idx,
+                        _format_debug_report(debug_report),
+                    )
+                optimizer.zero_grad(set_to_none=True)
+                continue
             optimizer.step()
 
         # update scheduler
@@ -82,6 +194,25 @@ def train_one_epoch(
                 block4 = "lr_backbone={:.1e}".format(curr_backbone_lr) + "  " + block4
             block5 = "mem={:.0f}MB".format(torch.cuda.max_memory_allocated() / 1024.0 / 1024.0)
             logger.info("  ".join([block1, block2, "  ".join(block3), block4, block5]))
+
+        should_log_runtime_debug = (
+            runtime_debug_interval > 0
+            and ((iter_idx + 1) == num_iters)
+            and (((curr_epoch + 1) % runtime_debug_interval) == 0)
+        )
+        if should_log_runtime_debug:
+            is_rank0 = True
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                is_rank0 = torch.distributed.get_rank() == 0
+            if is_rank0:
+                debug_report = _collect_runtime_debug(model, data_dict, "periodic")
+                if debug_report is not None:
+                    logger.info(
+                        "[Train][RuntimeDebug]: epoch=%d iter=%d %s",
+                        curr_epoch,
+                        iter_idx,
+                        _format_debug_report(debug_report),
+                    )
 
 
 def val_one_epoch(

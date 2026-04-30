@@ -51,7 +51,7 @@ def build_optimizer(cfg, model, logger):
     elif optimizer_type == "SGD":
         optimizer = torch.optim.SGD(optim_groups, **cfg)
     else:
-        raise f"Optimizer {optimizer_type} is not supported so far."
+        raise ValueError(f"Optimizer {optimizer_type} is not supported so far.")
 
     return optimizer
 
