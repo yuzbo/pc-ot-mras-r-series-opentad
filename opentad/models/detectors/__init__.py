@@ -15,6 +15,9 @@ from .tadtr import TadTR
 from .vsgn import VSGN
 from .mamba import VideoMambaSuite
 from .dyfadet import DyFADet
+from .irregular_actionformer import IrregularActionFormer
+from .sparse_completion_actionformer import SparseCompletionActionFormer
+from .query_sparse_detector import QuerySparseDetector
 
 __all__ = [
     "BaseDetector",
@@ -27,10 +30,13 @@ __all__ = [
     "ETAD",
     "VSGN",
     "ActionFormer",
+    "IrregularActionFormer",
+    "QuerySparseDetector",
     "TriDet",
     "TemporalMaxer",
     "VideoMambaSuite",
     "DyFADet",
+    "SparseCompletionActionFormer",
     "DETR",
     "DeformableDETR",
     "TadTR",
