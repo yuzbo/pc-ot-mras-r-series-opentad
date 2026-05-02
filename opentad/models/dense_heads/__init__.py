@@ -14,6 +14,7 @@ from .irregular_actionformer_bridge_head import IrregularActionFormerBridgeHead
 from .irregular_actionformer_head_v2 import IrregularActionFormerHeadV2
 from .irregular_actionformer_head_v3 import IrregularActionFormerHeadV3
 from .irregular_actionformer_head_v3_oabs import IrregularActionFormerHeadV3OABS
+from .geometry_residual import GeometryResidualCalibrator
 from .native_physical_point_head import NativePhysicalPointHead
 from .native_physical_multiscale_head import NativePhysicalMultiScaleHead
 from .query_decoder_head import QueryDecoderHead
@@ -34,6 +35,7 @@ __all__ = [
     "IrregularActionFormerHeadV2",
     "IrregularActionFormerHeadV3",
     "IrregularActionFormerHeadV3OABS",
+    "GeometryResidualCalibrator",
     "NativePhysicalPointHead",
     "NativePhysicalMultiScaleHead",
     "QueryDecoderHead",
