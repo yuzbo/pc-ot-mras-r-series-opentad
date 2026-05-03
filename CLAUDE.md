@@ -138,10 +138,10 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 ### Remote Server
 
-**Server 1**: `ssh -p 24013 root@connect.cqa1.seetacloud.com` (RTX 4080 SUPER 32GB)
-**Server 2**: `ssh -p 25876 root@connect.cqa1.seetacloud.com` (RTX 4080 SUPER 32GB)
+**Server**: `ssh -p 35407 root@connect.cqa1.seetacloud.com` (RTX 4080 SUPER 32GB)
 
-**共同配置**:
+**配置**:
+- 工作目录: `/root/autodl-tmp/OpenTAD_Back_check`
 - Screen: `screen -dmS <name> bash -c '...'`
 - Torchrun: `/root/miniconda3/bin/torchrun --nproc_per_node=1`
 - 训练数据: `/root/autodl-tmp/train/`, 测试数据: `/root/autodl-tmp/test/`
@@ -150,9 +150,9 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 ### 快速查看实验状态
 ```bash
-ssh -p <port> root@connect.cqa1.seetacloud.com "screen -ls"
-ssh -p <port> root@connect.cqa1.seetacloud.com "tail -100 /root/autodl-tmp/OpenTAD/logs/<exp>.log | grep -i loss"
-ssh -p <port> root@connect.cqa1.seetacloud.com "grep 'mAP' /root/autodl-tmp/OpenTAD/logs/<exp>.log | tail -10"
+ssh -p 35407 root@connect.cqa1.seetacloud.com "screen -ls"
+ssh -p 35407 root@connect.cqa1.seetacloud.com "tail -100 /root/autodl-tmp/OpenTAD_Back_check/logs/<exp>.log | grep -i loss"
+ssh -p 35407 root@connect.cqa1.seetacloud.com "grep 'mAP' /root/autodl-tmp/OpenTAD_Back_check/logs/<exp>.log | tail -10"
 ```
 
 ## Mandatory: Use RTK for All Bash Commands
