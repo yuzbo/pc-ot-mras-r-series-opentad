@@ -25,6 +25,8 @@ class AnchorFreeHead(nn.Module):
         cls_prior_prob=0.01,
         loss_weight=1.0,
         filter_similar_gt=True,
+        use_regress_range=True,
+        assigner=None,
     ):
         super(AnchorFreeHead, self).__init__()
 
@@ -35,6 +37,7 @@ class AnchorFreeHead(nn.Module):
         self.cls_prior_prob = cls_prior_prob
         self.label_smoothing = label_smoothing
         self.filter_similar_gt = filter_similar_gt
+        self.use_regress_range = use_regress_range
 
         self.loss_weight = loss_weight
         self.center_sample = center_sample
@@ -49,6 +52,7 @@ class AnchorFreeHead(nn.Module):
 
         self.cls_loss = build_loss(loss.cls_loss)
         self.reg_loss = build_loss(loss.reg_loss)
+        self.assigner = build_loss(assigner) if assigner is not None else None
 
     def _init_layers(self):
         """Initialize layers of the head."""
@@ -165,12 +169,20 @@ class AnchorFreeHead(nn.Module):
         return new_proposals, new_scores
 
     def losses(self, cls_pred, reg_pred, mask_list, points, gt_segments, gt_labels):
-        gt_cls, gt_reg = self.prepare_targets(points, gt_segments, gt_labels)
+        if self.assigner is None:
+            gt_cls, gt_reg = self.prepare_targets(points, gt_segments, gt_labels)
+            target_weights = None
+        else:
+            gt_cls, gt_reg, target_weights = self.prepare_targets_with_assigner(
+                points, mask_list, cls_pred, reg_pred, gt_segments, gt_labels
+            )
 
         # positive mask
         gt_cls = torch.stack(gt_cls)
         valid_mask = torch.cat(mask_list, dim=1)
         pos_mask = torch.logical_and((gt_cls.sum(-1) > 0), valid_mask)
+        if target_weights is not None:
+            target_weights = torch.stack(target_weights)
         num_pos = pos_mask.sum().item()
 
         # maintain an EMA of foreground to stabilize the loss normalizer
@@ -192,7 +204,14 @@ class AnchorFreeHead(nn.Module):
         gt_target *= 1 - self.label_smoothing
         gt_target += self.label_smoothing / (self.num_classes + 1)
 
-        cls_loss = self.cls_loss(cls_pred, gt_target, reduction="sum")
+        if target_weights is None:
+            cls_loss = self.cls_loss(cls_pred, gt_target, reduction="sum")
+        else:
+            valid_cls_weights = torch.ones(gt_cls.shape[:-1], dtype=torch.float32).to(gt_cls.device)
+            valid_cls_weights[pos_mask] = target_weights[pos_mask]
+            valid_cls_weights = valid_cls_weights[valid_mask]
+            cls_loss = self.cls_loss(cls_pred, gt_target, reduction="none")
+            cls_loss = (cls_loss * valid_cls_weights[:, None]).sum()
         cls_loss /= loss_normalizer
 
         # 2. regression using IoU/GIoU/DIOU loss (defined on positive samples)
@@ -204,7 +223,12 @@ class AnchorFreeHead(nn.Module):
             reg_loss = pred_segments.sum() * 0
         else:
             # giou loss defined on positive samples
-            reg_loss = self.reg_loss(pred_segments, gt_segments, reduction="sum")
+            if target_weights is None:
+                reg_loss = self.reg_loss(pred_segments, gt_segments, reduction="sum")
+            else:
+                pos_weights = target_weights[pos_mask]
+                reg_loss = self.reg_loss(pred_segments, gt_segments, reduction="none")
+                reg_loss = (reg_loss * pos_weights).sum()
             reg_loss /= loss_normalizer
 
         if self.loss_weight > 0:
@@ -213,6 +237,54 @@ class AnchorFreeHead(nn.Module):
             loss_weight = cls_loss.detach() / max(reg_loss.item(), 0.01)
 
         return {"cls_loss": cls_loss, "reg_loss": reg_loss * loss_weight}
+
+    @torch.no_grad()
+    def prepare_targets_with_assigner(self, points, mask_list, cls_preds, reg_preds, gt_segments, gt_labels):
+        cls_preds = torch.cat([x.permute(0, 2, 1) for x in cls_preds], dim=1)
+        reg_preds = torch.cat([x.permute(0, 2, 1) for x in reg_preds], dim=1)
+        masks = torch.cat(mask_list, dim=1)
+        concat_points = torch.cat(points, dim=0)
+        assign_points = concat_points
+        if not self.use_regress_range:
+            assign_points = concat_points.clone()
+            assign_points[:, 1] = 0.0
+            assign_points[:, 2] = float("inf")
+        num_pts = concat_points.shape[0]
+        point_inds = torch.arange(num_pts, device=concat_points.device)
+        gt_cls, gt_reg, weights = [], [], []
+
+        for mask, cls_pred, reg_pred, gt_segment, gt_label in zip(
+            masks, cls_preds, reg_preds, gt_segments, gt_labels
+        ):
+            num_gts = gt_segment.shape[0]
+
+            if num_gts == 0:
+                gt_cls.append(gt_segment.new_full((num_pts, self.num_classes), 0))
+                gt_reg.append(gt_segment.new_zeros((num_pts, 2)))
+                weights.append(concat_points.new_zeros((num_pts,), dtype=torch.float32))
+                continue
+
+            assign_matrix, min_inds, weight = self.assigner.assign(
+                cls_pred, assign_points, reg_pred, gt_segment, gt_label, mask
+            )
+
+            gt_segs = gt_segment[None].expand(num_pts, num_gts, 2)
+            left = concat_points[:, 0, None] - gt_segs[:, :, 0]
+            right = gt_segs[:, :, 1] - concat_points[:, 0, None]
+            reg_targets = torch.stack((left, right), dim=-1)
+
+            gt_label_one_hot = F.one_hot(gt_label.long(), self.num_classes).to(reg_targets.dtype)
+            cls_targets = assign_matrix.to(reg_targets.dtype) @ gt_label_one_hot
+            cls_targets.clamp_(min=0.0, max=1.0)
+
+            reg_targets = reg_targets[point_inds, min_inds]
+            reg_targets /= concat_points[:, 3, None]
+
+            gt_cls.append(cls_targets)
+            gt_reg.append(reg_targets)
+            weights.append(weight)
+
+        return gt_cls, gt_reg, weights
 
     @torch.no_grad()
     def prepare_targets(self, points, gt_segments, gt_labels):
@@ -265,9 +337,13 @@ class AnchorFreeHead(nn.Module):
             # limit the regression range for each location
             max_regress_distance = reg_targets.max(-1)[0]
             # F T x N
-            inside_regress_range = torch.logical_and(
-                (max_regress_distance >= concat_points[:, 1, None]), (max_regress_distance <= concat_points[:, 2, None])
-            )
+            if self.use_regress_range:
+                inside_regress_range = torch.logical_and(
+                    (max_regress_distance >= concat_points[:, 1, None]),
+                    (max_regress_distance <= concat_points[:, 2, None]),
+                )
+            else:
+                inside_regress_range = torch.ones_like(inside_gt_seg_mask)
 
             # if there are still more than one actions for one moment
             # pick the one with the shortest duration (easiest to regress)

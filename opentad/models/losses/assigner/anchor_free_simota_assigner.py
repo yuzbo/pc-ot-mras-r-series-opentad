@@ -21,12 +21,27 @@ class AnchorFreeSimOTAAssigner(object):
             cost. Default 1.0.
     """
 
-    def __init__(self, center_radius=2.5, iou_weight=3.0, cls_weight=1.0, keep_percent=0.65, confuse_weight=0.1):
+    def __init__(
+        self,
+        center_radius=2.5,
+        iou_weight=3.0,
+        cls_weight=1.0,
+        keep_percent=0.65,
+        confuse_weight=0.1,
+        topk=None,
+        dynamic_k=None,
+    ):
+        if dynamic_k is not None:
+            dynamic_k = dict(dynamic_k)
+            dynamic_k.pop("type", None)
+            keep_percent = dynamic_k.pop("keep_percent", keep_percent)
+
         self.center_radius = center_radius
         self.iou_weight = iou_weight
         self.cls_weight = cls_weight
         self.keep_percent = keep_percent
         self.confuse_weight = confuse_weight
+        self.topk = topk
 
     def assign(
         self,
@@ -110,24 +125,33 @@ class AnchorFreeSimOTAAssigner(object):
         return original_matrix, original_min_inds, original_weight
 
     def dynamic_k_matching(self, cost, num_gt, valid_mask, valid_cost_matrix_inds, pairwise_ious):
-        positive_pos = cost < INF
-        matching_matrix = (cost < INF).float()
+        positive_pos = valid_cost_matrix_inds
+        matching_matrix = positive_pos.float()
         pre_assign_weight = cost.new_ones((len(cost),))
 
         pre_assign_weight[positive_pos.sum(1) > 0] = self.confuse_weight
 
-        dynamic_ks = positive_pos.sum(0)
+        candidate_counts = positive_pos.sum(0)
+        dynamic_ks = candidate_counts
+        if self.topk is not None:
+            dynamic_ks = dynamic_ks.clamp(max=int(self.topk))
 
-        dynamic_ks = (dynamic_ks * self.keep_percent).to(dynamic_ks)
+        dynamic_ks = (dynamic_ks.float() * self.keep_percent).long()
+        dynamic_ks = torch.where(candidate_counts > 0, dynamic_ks.clamp(min=1), dynamic_ks)
+        dynamic_ks = torch.minimum(dynamic_ks, candidate_counts)
 
         for gt_idx in range(num_gt):
-            _, pos_idx = torch.topk(cost[:, gt_idx], k=dynamic_ks[gt_idx], largest=False)
+            k = int(dynamic_ks[gt_idx].item())
+            if k <= 0:
+                continue
+            masked_cost = cost[:, gt_idx].masked_fill(~positive_pos[:, gt_idx], INF)
+            _, pos_idx = torch.topk(masked_cost, k=k, largest=False)
             pre_assign_weight[pos_idx] = 1.0
 
-        del dynamic_ks, pos_idx
         matching_matrix[~valid_cost_matrix_inds] = 0
 
-        _, min_inds = cost.min(1)
+        masked_cost = cost.masked_fill(~valid_cost_matrix_inds, INF)
+        _, min_inds = masked_cost.min(1)
 
         return matching_matrix, min_inds, pre_assign_weight
 
