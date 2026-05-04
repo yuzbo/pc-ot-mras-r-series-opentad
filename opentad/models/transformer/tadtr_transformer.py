@@ -77,7 +77,7 @@ class TadTRTransformer(DeformableDETRTransformer):
         if isinstance(masks, (list, tuple)):
             masks = masks[0]
 
-        masks = masks.bool()
+        masks = masks.bool()  # True=padding (already converted by DeformableDETR)
 
         feat = x.permute(0, 2, 1)  # [bs, c, t] -> [bs, t, c]
         pos_embed = self.position_embedding(masks) + self.level_embeds[0].view(1, 1, -1)  # [bs, t, c]
