@@ -70,11 +70,14 @@ class TadTRTransformer(DeformableDETRTransformer):
         return rois_abs.view((B * N, 3)).detach()
 
     def forward_train(self, x, masks, gt_segments=None, gt_labels=None, is_training=True, **kwargs):
-        # The input of TadTR's transformer is single scale feature
-        # x: [bs, c, t], masks: [bs, t], padding is 1.
+        # TadTR expects single-scale features.
+        # If FPN output is multi-level, take the highest-resolution level.
+        if isinstance(x, (list, tuple)):
+            x = x[0]
+        if isinstance(masks, (list, tuple)):
+            masks = masks[0]
 
-        # Here we set masks to be all False
-        masks = torch.zeros_like(masks, dtype=torch.bool)
+        masks = masks.bool()
 
         feat = x.permute(0, 2, 1)  # [bs, c, t] -> [bs, t, c]
         pos_embed = self.position_embedding(masks) + self.level_embeds[0].view(1, 1, -1)  # [bs, t, c]
@@ -158,6 +161,8 @@ class TadTRTransformer(DeformableDETRTransformer):
 
     @torch.no_grad()
     def prepare_targets(self, masks, gt_segments, gt_labels):
-        gt_segments = [proposal_se_to_cw(bboxes / masks.shape[-1]) for bboxes in gt_segments]  # normalize gt_segments
+        gt_segments = [
+            proposal_se_to_cw(bboxes / (~mask).float().sum()) for bboxes, mask in zip(gt_segments, masks)
+        ]  # normalize gt_segments by valid length
         gt_labels = [labels.long() for labels in gt_labels]
         return gt_segments, gt_labels
