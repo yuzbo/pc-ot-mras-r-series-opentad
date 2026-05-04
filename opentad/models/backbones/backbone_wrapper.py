@@ -8,6 +8,8 @@ from mmengine.dataset import Compose
 from mmengine.registry import MODELS as MM_BACKBONES
 from mmengine.runner import load_checkpoint
 
+from ..utils import build_temporal_grid
+
 BACKBONES = MM_BACKBONES
 
 
@@ -48,8 +50,17 @@ class BackboneWrapper(nn.Module):
 
         # 5. freeze_backbone: whether to freeze the backbone, default is False
         self.freeze_backbone = getattr(custom_cfg, "freeze_backbone", False)
+        self.trainable_backbone_keywords = list(getattr(custom_cfg, "trainable_backbone_keywords", []))
 
-        print("freeze_backbone: {}, norm_eval: {}".format(self.freeze_backbone, self.norm_eval))
+        self._configure_backbone_trainability()
+
+        print(
+            "freeze_backbone: {}, norm_eval: {}, trainable_backbone_keywords: {}".format(
+                self.freeze_backbone,
+                self.norm_eval,
+                self.trainable_backbone_keywords,
+            )
+        )
 
         # 6. whether to use temporal activation checkpointing
         self.use_temporal_checkpointing = getattr(custom_cfg, "temporal_checkpointing", False)
@@ -63,7 +74,108 @@ class BackboneWrapper(nn.Module):
             self.temporal_checkpointing_chunk_num = custom_cfg.temporal_checkpointing_chunk_num
             self.temporal_checkpointing_chunk_dim = custom_cfg.temporal_checkpointing_chunk_dim
 
-    def forward(self, frames, masks=None):
+    def _configure_backbone_trainability(self):
+        if not self.freeze_backbone:
+            return
+
+        keywords = tuple(self.trainable_backbone_keywords)
+        for name, param in self.model.backbone.named_parameters():
+            allow_grad = len(keywords) > 0 and any(keyword in name for keyword in keywords)
+            param.requires_grad = allow_grad
+
+    def _has_trainable_backbone_params(self):
+        return any(param.requires_grad for param in self.model.backbone.parameters())
+
+    def _forward_backbone(self, frames, time_embed=None):
+        if time_embed is None:
+            return self.model.backbone(frames)
+        return self.model.backbone(frames, time_embed=time_embed)
+
+    def _build_irregular_time_features(self, frames, metas):
+        if not getattr(self.model.backbone, "use_irregular_time_embed", False):
+            return None
+        if metas is None or len(metas) == 0:
+            return None
+        if not all(("irregular_selected_positions" in meta and "irregular_selected_valid_len" in meta) for meta in metas):
+            return None
+
+        processed_batches, num_segs = frames.shape[:2]
+        base_batches = len(metas)
+        if processed_batches % base_batches != 0:
+            return None
+
+        chunk_factor = processed_batches // base_batches
+        clip_len = int(frames.shape[3])
+        tubelet_size = int(getattr(self.model.backbone, "tubelet_size", 1))
+        tubelet_size = max(tubelet_size, 1)
+        # Match Conv3d patch embedding semantics: incomplete tail frames do not form a tubelet.
+        tubelet_tokens = clip_len // tubelet_size
+        if tubelet_tokens <= 0:
+            return None
+        effective_clip_len = tubelet_tokens * tubelet_size
+
+        per_sample_features = []
+        feat_dtype = torch.float32
+        for meta in metas:
+            positions = torch.as_tensor(meta.get("irregular_selected_positions", []), device=frames.device, dtype=feat_dtype).flatten()
+            true_valid_len = int(positions.numel())
+            dense_valid_len = int(round(float(meta.get("irregular_selected_valid_len", max(true_valid_len, 1)))))
+            dense_valid_len = max(dense_valid_len, 1)
+            total_frame_len = chunk_factor * clip_len
+
+            if true_valid_len == 0:
+                positions = torch.zeros(1, device=frames.device, dtype=feat_dtype)
+                true_valid_len = 1
+
+            if true_valid_len < total_frame_len:
+                positions = torch.cat([positions, positions[-1:].repeat(total_frame_len - true_valid_len)], dim=0)
+            else:
+                positions = positions[:total_frame_len]
+
+            frame_valid = torch.zeros(total_frame_len, device=frames.device, dtype=torch.bool)
+            frame_valid[: min(true_valid_len, total_frame_len)] = True
+
+            positions = positions.view(chunk_factor, clip_len)
+            frame_valid = frame_valid.view(chunk_factor, clip_len)
+
+            if effective_clip_len < clip_len:
+                positions = positions[:, :effective_clip_len]
+                frame_valid = frame_valid[:, :effective_clip_len]
+
+            positions = positions.view(chunk_factor, tubelet_tokens, tubelet_size)
+            frame_valid = frame_valid.view(chunk_factor, tubelet_tokens, tubelet_size)
+
+            tube_valid = frame_valid.any(dim=-1)
+            tube_fresh = frame_valid.all(dim=-1)
+            tube_weight = frame_valid.to(feat_dtype)
+            tube_center = (positions * tube_weight).sum(dim=-1) / tube_weight.sum(dim=-1).clamp_min(1.0)
+
+            # Keep invalid tail tubelets numerically stable by copying the last valid center.
+            for idx in range(1, tube_center.shape[1]):
+                tube_center[:, idx] = torch.where(tube_valid[:, idx], tube_center[:, idx], tube_center[:, idx - 1])
+
+            grid = build_temporal_grid(tube_center, valid_mask=tube_valid, fresh_mask=tube_fresh)
+            point_scale = (grid["cell_left"] + grid["cell_right"]).clamp_min(1e-4)
+            level_scale = grid["level_scale"].clamp_min(1e-4)[:, None]
+            norm_center = tube_center / float(dense_valid_len)
+            time_feat = torch.stack(
+                [
+                    norm_center,
+                    grid["fresh_mask"].to(feat_dtype),
+                    torch.log(point_scale),
+                    torch.log((point_scale / level_scale).clamp_min(1e-6)),
+                    torch.log((grid["cell_right"] / grid["cell_left"]).clamp_min(1e-6)),
+                ],
+                dim=-1,
+            )
+            time_feat = time_feat * grid["valid_mask"].unsqueeze(-1).to(feat_dtype)
+            per_sample_features.append(time_feat[:, None].expand(chunk_factor, num_segs, tubelet_tokens, time_feat.shape[-1]))
+
+        if len(per_sample_features) == 0:
+            return None
+        return torch.cat(per_sample_features, dim=0).contiguous()
+
+    def forward(self, frames, masks=None, metas=None):
         # two types: snippet or frame
 
         # snippet: 3D backbone, [bs, T, 3, clip_len, H, W]
@@ -83,21 +195,26 @@ class BackboneWrapper(nn.Module):
         if self.pre_processing_pipeline is not None:
             frames = self.pre_processing_pipeline(dict(frames=frames))["frames"]
 
+        time_embed = self._build_irregular_time_features(frames, metas)
+
         # flatten the batch dimension and num_segs dimension
         batches, num_segs = frames.shape[0:2]
         frames = frames.flatten(0, 1).contiguous()  # [bs*num_seg, ...]
+        if time_embed is not None:
+            time_embed = time_embed.flatten(0, 1).contiguous()
 
         # go through the video backbone
-        if self.freeze_backbone:  # freeze everything even in training
+        if self.freeze_backbone and not self._has_trainable_backbone_params():  # freeze everything even in training
             with torch.no_grad():
                 if self.use_temporal_checkpointing:
                     features = self.temporal_checkpointing(
                         frames,
                         self.temporal_checkpointing_chunk_num,
                         self.temporal_checkpointing_chunk_dim,
+                        time_embed=time_embed,
                     )
                 else:
-                    features = self.model.backbone(frames)
+                    features = self._forward_backbone(frames, time_embed=time_embed)
 
         else:  # let the model.train() or model.eval() decide whether to freeze
             if self.use_temporal_checkpointing:
@@ -105,9 +222,10 @@ class BackboneWrapper(nn.Module):
                     frames,
                     self.temporal_checkpointing_chunk_num,
                     self.temporal_checkpointing_chunk_dim,
+                    time_embed=time_embed,
                 )
             else:
-                features = self.model.backbone(frames)
+                features = self._forward_backbone(frames, time_embed=time_embed)
 
         # unflatten and pool the features
         if isinstance(features, (tuple, list)):
@@ -144,7 +262,7 @@ class BackboneWrapper(nn.Module):
                     for param in m.parameters():
                         param.requires_grad = False
 
-    def temporal_checkpointing(self, frames, chunk_num, chunk_dim):
+    def temporal_checkpointing(self, frames, chunk_num, chunk_dim, time_embed=None):
         """Temporal Checkpointing for Video Backbone.
 
         Temporal checkpointing will 1) split the video frames along the temporal dimension and sequentially forward each chunk with
@@ -157,17 +275,28 @@ class BackboneWrapper(nn.Module):
             chunk_dim (int): input shape is [B*N,3,T,H,W], so either dim=0 or 2 is fine
         """
 
+        if time_embed is not None and chunk_dim != 0:
+            raise NotImplementedError("Backbone time embedding only supports temporal_checkpointing with chunk_dim=0.")
+
         def _inner_forward(frames):
             return self.model.backbone(frames)
 
+        def _inner_forward_with_time(frames, chunk_time_embed):
+            return self.model.backbone(frames, time_embed=chunk_time_embed)
+
         video_feat = []
-        for mini_frames in torch.chunk(frames, chunk_num, dim=chunk_dim):  # B*N is chunked
+        frame_chunks = torch.chunk(frames, chunk_num, dim=chunk_dim)
+        if time_embed is not None:
+            time_chunks = torch.chunk(time_embed, chunk_num, dim=0)
+        else:
+            time_chunks = [None] * len(frame_chunks)
+
+        for mini_frames, mini_time_embed in zip(frame_chunks, time_chunks):  # B*N is chunked
             # we can use torch.cp.checkpoint to implement an efficient temporal checkpointing mechanism
-            mini_feat = cp.checkpoint(
-                _inner_forward,
-                mini_frames,
-                use_reentrant=False,
-            )
+            if mini_time_embed is None:
+                mini_feat = cp.checkpoint(_inner_forward, mini_frames, use_reentrant=False)
+            else:
+                mini_feat = cp.checkpoint(_inner_forward_with_time, mini_frames, mini_time_embed, use_reentrant=False)
             video_feat.append(mini_feat)
 
         if isinstance(video_feat[0], (tuple, list)):

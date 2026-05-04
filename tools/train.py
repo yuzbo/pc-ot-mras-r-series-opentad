@@ -180,11 +180,13 @@ def main():
             model_ema=model_ema,
             clip_grad_l2norm=cfg.solver.clip_grad_norm,
             logging_interval=cfg.workflow.logging_interval,
+            runtime_debug_interval=cfg.workflow.get("runtime_debug_interval", -1),
             scaler=scaler,
         )
 
         # save checkpoint
-        if (epoch == max_epoch - 1) or ((epoch + 1) % cfg.workflow.checkpoint_interval == 0):
+        save_checkpoint_enabled = not cfg.workflow.get("disable_checkpoint", False)
+        if save_checkpoint_enabled and ((epoch == max_epoch - 1) or ((epoch + 1) % cfg.workflow.checkpoint_interval == 0)):
             if args.rank == 0:
                 save_checkpoint(model, model_ema, optimizer, scheduler, epoch, work_dir=cfg.work_dir)
 

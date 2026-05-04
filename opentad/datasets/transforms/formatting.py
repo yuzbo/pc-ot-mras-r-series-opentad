@@ -1,3 +1,4 @@
+import copy
 import torch
 import torch.nn.functional as F
 import torchvision
@@ -43,6 +44,9 @@ class Collect:
             "resize_length",
             "window_size",
             "offset_frames",
+            "irregular_selected_positions",
+            "irregular_selected_valid_len",
+            "irregular_native_axis",
         ],
     ):
         self.inputs = inputs
@@ -293,4 +297,128 @@ class ChannelReduction:
 
         # select the features
         results["feats"] = results["feats"][:, self.index[0] : self.index[1]]
+        return results
+
+
+@PIPELINES.register_module()
+class RenameResultKey:
+    def __init__(self, src, dst, pop=True):
+        self.src = src
+        self.dst = dst
+        self.pop = pop
+
+    def __call__(self, results):
+        if self.src not in results:
+            return results
+        if self.pop:
+            results[self.dst] = results.pop(self.src)
+        else:
+            results[self.dst] = results[self.src]
+        return results
+
+
+@PIPELINES.register_module()
+class CopyResultKey:
+    def __init__(self, src, dst):
+        self.src = src
+        self.dst = dst
+
+    def __call__(self, results):
+        if self.src in results:
+            results[self.dst] = copy.deepcopy(results[self.src])
+        return results
+
+
+@PIPELINES.register_module()
+class KeepSingleGT:
+    """Keep exactly one GT instance for targeted overfit diagnostics."""
+
+    def __init__(self, index=0):
+        self.index = int(index)
+
+    def __call__(self, results):
+        if "gt_segments" not in results or "gt_labels" not in results:
+            return results
+
+        gt_segments = results["gt_segments"]
+        gt_labels = results["gt_labels"]
+        if len(gt_segments) == 0:
+            return results
+
+        keep_idx = min(max(self.index, 0), len(gt_segments) - 1)
+        results["gt_segments"] = gt_segments[keep_idx : keep_idx + 1]
+        results["gt_labels"] = gt_labels[keep_idx : keep_idx + 1]
+        return results
+
+
+@PIPELINES.register_module()
+class KeepGTSubset:
+    """Keep a configurable subset of GT instances for targeted diagnostics."""
+
+    def __init__(self, indices=None, count=None):
+        if indices is None and count is None:
+            raise ValueError("KeepGTSubset requires either indices or count.")
+        self.indices = None if indices is None else [int(idx) for idx in indices]
+        self.count = None if count is None else int(count)
+        if self.count is not None and self.count <= 0:
+            raise ValueError(f"KeepGTSubset count must be positive, got {self.count}")
+
+    def __call__(self, results):
+        if "gt_segments" not in results or "gt_labels" not in results:
+            return results
+
+        gt_segments = results["gt_segments"]
+        gt_labels = results["gt_labels"]
+        if len(gt_segments) == 0:
+            return results
+
+        if self.indices is not None:
+            keep_indices = [idx for idx in self.indices if 0 <= idx < len(gt_segments)]
+            if len(keep_indices) == 0:
+                keep_indices = [0]
+        else:
+            keep_count = min(self.count, len(gt_segments))
+            keep_indices = list(range(keep_count))
+
+        results["gt_segments"] = gt_segments[keep_indices]
+        results["gt_labels"] = gt_labels[keep_indices]
+        return results
+
+
+@PIPELINES.register_module()
+class FormatShapeByKey:
+    """Minimal FormatShape clone for additional image tensors."""
+
+    def __init__(self, key, input_format="NCTHW", num_clips_key="num_clips"):
+        self.key = key
+        self.input_format = input_format
+        self.num_clips_key = num_clips_key
+
+    def __call__(self, results):
+        if self.key not in results:
+            return results
+        if self.input_format != "NCTHW":
+            raise NotImplementedError(f"FormatShapeByKey only supports NCTHW, got {self.input_format}")
+
+        imgs = results[self.key]
+        if isinstance(imgs, list):
+            imgs = np.stack(imgs, axis=0)
+        elif torch.is_tensor(imgs):
+            imgs = imgs.cpu().numpy()
+        else:
+            imgs = np.asarray(imgs)
+
+        if imgs.ndim != 4:
+            raise ValueError(f"{self.key} should have shape [T,H,W,C], got {imgs.shape}")
+
+        num_clips = int(results.get(self.num_clips_key, 1))
+        if num_clips <= 0 or imgs.shape[0] % num_clips != 0:
+            raise ValueError(
+                f"{self.key} frame count {imgs.shape[0]} is incompatible with num_clips={num_clips}"
+            )
+
+        clip_len = imgs.shape[0] // num_clips
+        imgs = imgs.reshape((num_clips, clip_len) + imgs.shape[1:])
+        imgs = imgs.transpose(0, 4, 1, 2, 3)
+        results[self.key] = imgs
         return results

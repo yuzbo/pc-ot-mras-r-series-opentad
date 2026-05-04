@@ -183,7 +183,9 @@ class AnchorFreeHead(nn.Module):
         pos_mask = torch.logical_and((gt_cls.sum(-1) > 0), valid_mask)
         if target_weights is not None:
             target_weights = torch.stack(target_weights)
-        num_pos = pos_mask.sum().item()
+            num_pos = (pos_mask.float() * target_weights).sum().item()
+        else:
+            num_pos = pos_mask.sum().item()
 
         # maintain an EMA of foreground to stabilize the loss normalizer
         # useful for small mini-batch training

@@ -31,13 +31,29 @@ class DeformableDETR(DETR):
             x = inputs
 
         if self.with_projection:
-            x, masks = self.projection(x, masks)
+            projected = self.projection(x, masks)
+            if isinstance(projected, tuple) and len(projected) == 3:
+                x, masks, _ = projected
+            elif isinstance(projected, tuple) and len(projected) == 2:
+                x, masks = projected
+            else:
+                x = projected
+            if isinstance(masks, tuple):
+                masks = list(masks)
 
         if self.with_neck:
-            x, masks = self.neck(x, masks)
+            necked = self.neck(x, masks)
+            if isinstance(necked, tuple) and len(necked) == 3:
+                x, masks, _ = necked
+            elif isinstance(necked, tuple) and len(necked) == 2:
+                x, masks = necked
+            else:
+                x = necked
+            if isinstance(masks, tuple):
+                masks = list(masks)
 
         # padding masks is the opposite of valid masks
-        if isinstance(masks, list):
+        if isinstance(masks, (list, tuple)):
             padding_masks = [~mask for mask in masks]
         elif isinstance(masks, torch.Tensor):
             padding_masks = ~masks
@@ -65,13 +81,29 @@ class DeformableDETR(DETR):
             x = inputs
 
         if self.with_projection:
-            x, masks = self.projection(x, masks)
+            projected = self.projection(x, masks)
+            if isinstance(projected, tuple) and len(projected) == 3:
+                x, masks, _ = projected
+            elif isinstance(projected, tuple) and len(projected) == 2:
+                x, masks = projected
+            else:
+                x = projected
+            if isinstance(masks, tuple):
+                masks = list(masks)
 
         if self.with_neck:
-            x, masks = self.neck(x, masks)
+            necked = self.neck(x, masks)
+            if isinstance(necked, tuple) and len(necked) == 3:
+                x, masks, _ = necked
+            elif isinstance(necked, tuple) and len(necked) == 2:
+                x, masks = necked
+            else:
+                x = necked
+            if isinstance(masks, tuple):
+                masks = list(masks)
 
         # padding masks is the opposite of valid masks
-        if isinstance(masks, list):
+        if isinstance(masks, (list, tuple)):
             padding_masks = [~mask for mask in masks]
         elif isinstance(masks, torch.Tensor):
             padding_masks = ~masks

@@ -18,6 +18,7 @@ class SlidingWindowDataset:
         filter_gt=False,  # if True, filter out those gt has the scale smaller than 0.01
         class_agnostic=False,  # if True, the class index will be replaced by 0
         block_list=None,  # some videos might be missed in the features or videos, we need to block them
+        allow_list=None,  # optional allow-list for targeted diagnostics / overfit runs
         test_mode=False,  # if True, running on test mode with no annotation
         # for feature setting
         feature_stride=-1,  # the frames between two adjacent features, such as 4 frames
@@ -35,6 +36,7 @@ class SlidingWindowDataset:
         # basic settings
         self.data_path = data_path
         self.block_list = block_list
+        self.allow_list = allow_list
         self.ann_file = ann_file
         self.subset_name = subset_name
         self.logger = logger.info if logger != None else print
@@ -76,9 +78,20 @@ class SlidingWindowDataset:
         else:
             blocked_videos = []
 
+        if self.allow_list is not None:
+            if isinstance(self.allow_list, list):
+                allowed_videos = set(self.allow_list)
+            else:
+                with open(self.allow_list, "r") as f:
+                    allowed_videos = {line.rstrip("\n") for line in f}
+        else:
+            allowed_videos = None
+
         self.data_list = []
         for video_name, video_info in anno_database.items():
             if (video_name in blocked_videos) or (video_info["subset"] not in self.subset_name):
+                continue
+            if allowed_videos is not None and video_name not in allowed_videos:
                 continue
 
             # get the ground truth annotation

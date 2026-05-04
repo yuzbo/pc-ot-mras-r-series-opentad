@@ -255,6 +255,10 @@ class VisionTransformerCP(BaseModule):
         return_feat_map: bool = False,
         with_cp: bool = False,
         frozen_layers: int = -1,
+        use_irregular_time_embed: bool = False,
+        time_embed_dim: int = 5,
+        time_embed_hidden: int = 128,
+        time_embed_scale: float = 0.25,
         init_cfg: Optional[Union[Dict, List[Dict]]] = [
             dict(type="TruncNormal", layer="Linear", std=0.02, bias=0.0),
             dict(type="Constant", layer="LayerNorm", val=1.0, bias=0.0),
@@ -270,6 +274,9 @@ class VisionTransformerCP(BaseModule):
 
         self.embed_dims = embed_dims
         self.patch_size = patch_size
+        self.num_frames = num_frames
+        self.tubelet_size = tubelet_size
+        self.use_irregular_time_embed = use_irregular_time_embed
 
         self.patch_embed = PatchEmbed(
             in_channels=in_channels,
@@ -321,7 +328,34 @@ class VisionTransformerCP(BaseModule):
 
         self.return_feat_map = return_feat_map
 
-    def forward(self, x: Tensor) -> Tensor:
+        if self.use_irregular_time_embed:
+            self.time_embed_mlp = nn.Sequential(
+                nn.Linear(time_embed_dim, time_embed_hidden),
+                nn.GELU(),
+                nn.Linear(time_embed_hidden, embed_dims),
+            )
+            self.time_embed_scale = nn.Parameter(torch.tensor(float(time_embed_scale)))
+        else:
+            self.time_embed_mlp = None
+            self.time_embed_scale = None
+
+    def _build_irregular_time_embedding(self, time_embed: Optional[Tensor], token_count: int, spatial_size: int, dtype, device):
+        if (not self.use_irregular_time_embed) or time_embed is None:
+            return None
+
+        if time_embed.dim() != 3:
+            raise ValueError(f"time_embed must have shape [B, T_token, D], got {tuple(time_embed.shape)}")
+
+        if time_embed.shape[1] != token_count:
+            raise ValueError(
+                f"time_embed token count ({time_embed.shape[1]}) does not match backbone token count ({token_count})."
+            )
+
+        time_token_embed = self.time_embed_mlp(time_embed.to(device=device, dtype=dtype))
+        time_token_embed = time_token_embed.repeat_interleave(spatial_size, dim=1)
+        return self.time_embed_scale.to(dtype=dtype) * time_token_embed
+
+    def forward(self, x: Tensor, time_embed: Optional[Tensor] = None) -> Tensor:
         """Defines the computation performed at every call.
 
         Args:
@@ -336,6 +370,7 @@ class VisionTransformerCP(BaseModule):
         h //= self.patch_size
         w //= self.patch_size
         x = self.patch_embed(x)[0]
+        time_token_count = x.shape[1] // (h * w)
         if (h, w) != self.grid_size:
             pos_embed = self.pos_embed.reshape(-1, *self.grid_size, self.embed_dims)
             pos_embed = pos_embed.permute(0, 3, 1, 2)
@@ -345,7 +380,17 @@ class VisionTransformerCP(BaseModule):
         else:
             pos_embed = self.pos_embed
 
+        irregular_time_embed = self._build_irregular_time_embedding(
+            time_embed=time_embed,
+            token_count=time_token_count,
+            spatial_size=h * w,
+            dtype=x.dtype,
+            device=x.device,
+        )
+
         x = x + pos_embed
+        if irregular_time_embed is not None:
+            x = x + irregular_time_embed
         x = self.pos_drop(x)
 
         for blk in self.blocks:

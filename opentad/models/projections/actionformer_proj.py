@@ -5,6 +5,7 @@ import torch.nn.functional as F
 
 from ..bricks import ConvModule, TransformerBlock
 from ..builder import PROJECTIONS
+from ..utils import normalize_temporal_grid_input, downsample_temporal_grid
 
 
 @PROJECTIONS.register_module()
@@ -170,6 +171,74 @@ class Conv1DTransformerProj(nn.Module):
             out_masks += (mask,)
 
         return out_feats, out_masks
+
+
+@PROJECTIONS.register_module()
+class GridAwareConv1DTransformerProj(Conv1DTransformerProj):
+    def forward(self, x, mask, temporal_grid=None):
+        temporal_grid = normalize_temporal_grid_input(temporal_grid, mask)
+
+        if self.proj is not None:
+            x = torch.cat([proj(s, mask)[0] for proj, s in zip(self.proj, x.split(self.in_channels, dim=1))], dim=1)
+
+        if self.input_pdrop is not None:
+            x = self.input_pdrop(x)
+
+        for idx in range(len(self.embed)):
+            x, mask = self.embed[idx](x, mask)
+
+        if self.use_abs_pe and self.training:
+            assert x.shape[-1] <= self.max_seq_len, "Reached max length."
+            pe = self.pos_embed
+            x = x + pe[:, :, : x.shape[-1]] * mask.unsqueeze(1).to(x.dtype)
+
+        if self.use_abs_pe and (not self.training):
+            if x.shape[-1] >= self.max_seq_len:
+                pe = F.interpolate(self.pos_embed, x.shape[-1], mode="linear", align_corners=False)
+            else:
+                pe = self.pos_embed
+            x = x + pe[:, :, : x.shape[-1]] * mask.unsqueeze(1).to(x.dtype)
+
+        for idx in range(len(self.stem)):
+            x, mask = self.stem[idx](x, mask)
+
+        out_feats = (x,)
+        out_masks = (mask,)
+        out_grids = (temporal_grid,)
+
+        for idx in range(len(self.branch)):
+            temporal_grid = downsample_temporal_grid(temporal_grid)
+            x, mask = self.branch[idx](x, mask)
+            out_feats += (x,)
+            out_masks += (mask,)
+            out_grids += (temporal_grid,)
+
+        return out_feats, out_masks, out_grids
+
+
+@PROJECTIONS.register_module()
+class DensePassthroughConv1DTransformerProj(Conv1DTransformerProj):
+    """Dense Conv1DTransformerProj with temporal-grid passthrough.
+
+    This wrapper keeps the dense feature path identical to Conv1DTransformerProj
+    and only forwards/downsamples the temporal grid so an irregular-aware head
+    can still decode on the native timeline.
+    """
+
+    def forward(self, x, mask, temporal_grid=None):
+        temporal_grid = normalize_temporal_grid_input(temporal_grid, mask)
+        out_feats, out_masks = super().forward(x, mask)
+
+        if temporal_grid is None:
+            out_grids = tuple(None for _ in out_feats)
+        else:
+            out_grids = (temporal_grid,)
+            current_grid = temporal_grid
+            for _ in range(1, len(out_feats)):
+                current_grid = downsample_temporal_grid(current_grid)
+                out_grids += (current_grid,)
+
+        return out_feats, out_masks, out_grids
 
 
 def get_sinusoid_encoding(n_position, d_hid):

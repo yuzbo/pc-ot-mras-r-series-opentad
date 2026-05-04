@@ -48,11 +48,11 @@ def collate(batch):
     if not isinstance(batch, Sequence):
         raise TypeError(f"{batch.dtype} is not supported.")
 
-    gpu_stack_keys = ["inputs", "masks"]
+    gpu_stack_keys = {"inputs", "masks", "oracle_inputs", "oracle_masks"}
 
     collate_data = {}
     for key in batch[0]:
-        if key in gpu_stack_keys:
+        if key in gpu_stack_keys or key.endswith("_inputs") or key.endswith("_masks"):
             collate_data[key] = default_collate([sample[key] for sample in batch])
         else:
             collate_data[key] = [sample[key] for sample in batch]

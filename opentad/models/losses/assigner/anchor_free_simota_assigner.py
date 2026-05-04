@@ -126,7 +126,7 @@ class AnchorFreeSimOTAAssigner(object):
 
     def dynamic_k_matching(self, cost, num_gt, valid_mask, valid_cost_matrix_inds, pairwise_ious):
         positive_pos = valid_cost_matrix_inds
-        matching_matrix = positive_pos.float()
+        matching_matrix = cost.new_zeros(positive_pos.shape)
         pre_assign_weight = cost.new_ones((len(cost),))
 
         pre_assign_weight[positive_pos.sum(1) > 0] = self.confuse_weight
@@ -146,11 +146,19 @@ class AnchorFreeSimOTAAssigner(object):
                 continue
             masked_cost = cost[:, gt_idx].masked_fill(~positive_pos[:, gt_idx], INF)
             _, pos_idx = torch.topk(masked_cost, k=k, largest=False)
+            matching_matrix[pos_idx, gt_idx] = 1.0
             pre_assign_weight[pos_idx] = 1.0
 
-        matching_matrix[~valid_cost_matrix_inds] = 0
+        # Resolve multi-match: each point assigned to at most one GT
+        multi_match = matching_matrix.sum(1) > 1
+        if multi_match.any():
+            multi_rows = multi_match.nonzero(as_tuple=True)[0]
+            selected_cost = cost[multi_rows].masked_fill(matching_matrix[multi_rows] == 0, INF)
+            best_gt = selected_cost.argmin(dim=1)
+            matching_matrix[multi_rows] = 0
+            matching_matrix[multi_rows, best_gt] = 1.0
 
-        masked_cost = cost.masked_fill(~valid_cost_matrix_inds, INF)
+        masked_cost = cost.masked_fill(matching_matrix == 0, INF)
         _, min_inds = masked_cost.min(1)
 
         return matching_matrix, min_inds, pre_assign_weight

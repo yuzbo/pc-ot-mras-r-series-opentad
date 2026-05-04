@@ -125,3 +125,24 @@ class FPNIdentity(nn.Module):
             new_fpn_masks += (fpn_masks[i + self.start_level],)
 
         return fpn_feats, new_fpn_masks
+
+
+@NECKS.register_module()
+class GridAwareFPNIdentity(FPNIdentity):
+    def forward(self, inputs, fpn_masks, temporal_grids):
+        fpn_feats, new_fpn_masks = super().forward(inputs, fpn_masks)
+        new_temporal_grids = tuple(temporal_grids[i + self.start_level] for i in range(len(self.fpn_norms)))
+        return fpn_feats, new_fpn_masks, new_temporal_grids
+
+
+@NECKS.register_module()
+class DensePassthroughFPNIdentity(FPNIdentity):
+    """Dense FPNIdentity with temporal-grid passthrough for irregular heads."""
+
+    def forward(self, inputs, fpn_masks, temporal_grids=None):
+        fpn_feats, new_fpn_masks = super().forward(inputs, fpn_masks)
+        if temporal_grids is None:
+            new_temporal_grids = tuple(None for _ in range(len(self.fpn_norms)))
+        else:
+            new_temporal_grids = tuple(temporal_grids[i + self.start_level] for i in range(len(self.fpn_norms)))
+        return fpn_feats, new_fpn_masks, new_temporal_grids
