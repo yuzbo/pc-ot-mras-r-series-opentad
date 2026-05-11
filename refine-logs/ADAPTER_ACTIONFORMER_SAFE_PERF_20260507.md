@@ -673,3 +673,18 @@ Decision gates:
 |---|---|---|
 | `stride2_uniform_50pct_adapter` | Near or above baseline first gate: `>=62.0 Avg` and `@0.7` not clearly below `39.0`; strong signal if `>=64.5 Avg`. | Below `61.0 Avg` or `@0.7 < 37.0`; if it repeats prior stride-2 negative behavior, demote stride-2 to control only. |
 | `multiscale_safe` | At least preserves baseline first gate and trends toward `64+`; promising if it improves `@0.7` without lowering Avg. | More than `0.5 Avg` below baseline first gate; switch server to `input_random_fixed_50pct_adapter_head_regres_safe.py` only if the failure is not a startup/code issue. |
+
+First-eval results and stop actions:
+
+| Server | Config | Eval time | Avg-mAP | mAP@0.3 | mAP@0.4 | mAP@0.5 | mAP@0.6 | mAP@0.7 | Delta vs baseline first gate `61.95/39.03` | Action |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| `35407` | `input_stride2_uniform_50pct_adapter.py` | 2026-05-11 14:11:02 +08 | 41.09 | 62.91 | 53.99 | 43.33 | 29.87 | 15.36 | -20.86 Avg / -23.67 @0.7 | Stopped immediately; GPU released. |
+| `25876` | `input_random_fixed_50pct_adapter_multiscale_safe.py` | 2026-05-11 14:22:57 +08 | 38.19 | 61.20 | 51.53 | 39.14 | 26.46 | 12.62 | -23.76 Avg / -26.41 @0.7 | Stopped immediately; GPU released. |
+
+Interpretation:
+
+- `stride2_uniform_50pct_adapter` again falls in the negative stride-2/geometry-change band, not near the `65+` historical non-adapter behavior. It should remain a control only.
+- `multiscale_safe` was already known from an earlier full run to finish at `51.35/26.79`; the new first eval (`38.19/12.62`) matches that negative trajectory. Do not relaunch it or stack it.
+- The planned fallback `input_random_fixed_50pct_adapter_head_regres_safe.py` was also already completed earlier at `51.64/26.11`, so it should not be relaunched as a fallback.
+- The common pattern is now stronger: small Adapter body branches, head residual branches, simple regression loss reweighting, SimOTA, NMS-only tuning, train-only boundary weighting, stratification, stride-2, and pseudo-boundary input selection all fail to improve the robust random-fixed Adapter baseline.
+- Two GPT-5.5 xhigh read-only reviewers were dispatched after these stops to identify directions not yet falsified by the completed matrix.
