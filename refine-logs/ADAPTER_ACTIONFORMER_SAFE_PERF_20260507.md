@@ -843,3 +843,41 @@ Deployment gates:
 - If final score is below `63.0` or `mAP@0.7 < 42.0`, do not stack additional sampler/body changes on this branch.
 - If final score is `>=64.5` or `mAP@0.7 >=43.5`, run alpha sweep / variance check.
 - Treat `>=65.0 Avg` with non-worse `mAP@0.7` as a real go signal, then rerun for variance before any SOTA claim.
+
+## Supervision and Claude CLI Protocol Update, 2026-05-12 00:40 +08
+
+Repository protocol update:
+
+- Top-level commit `8cdd043` records the rule that Claude discussions/reviews must use `claude.cmd` CLI, not the `claude-review` MCP channel.
+- Rationale: `claude-review.review_start` previously crashed/aborted on this Windows setup and must not be mistaken for a completed Claude review.
+
+Supervision implementation updates:
+
+- `OpenTAD_Back` commit `3fe3921` improves `scripts/supervise_adapter_quality.sh` and `scripts/run_adapter_quality_rescore.sh`.
+- `OpenTAD_Back` commit `ad8ac8a` changes the driver supervisor source from the launch tee log to the real work-dir log: `exps/thumos/adatad/input_random_fixed_50pct_adapter_quality_rescore_detached/gpu1_id0/log.json`.
+- Supervisor now supports `PROCESS_PID` plus optional `PROCESS_PATTERN`, with pattern-only fallback documented as best effort.
+- Fatal stop signatures: traceback, `RuntimeError`, CUDA OOM, graph-change errors, and loss `nan/inf`.
+- `non-finite gradients detected ... skip optimizer step` is treated as `CONTINUE` plus anomaly reporting, because the train engine skips the bad step and current runs continued normally afterward.
+
+Review and verification:
+
+| Check | Result |
+|---|---|
+| Claude CLI monitor review | Completed via `claude.cmd`; found process-pattern false positives, pgrep/pipefail risk, missing caller/docs, stale launch-log monitoring, and hard-error priority. Accepted fixes were applied. |
+| Claude CLI final narrow retry | Failed with `API Error: 400 ... organization has been disabled`; not counted as a successful review. |
+| GPT-5.5 xhigh monitor review | Completed; flagged broad `PROCESS_PATTERN` false positives. Fixed by adding `PROCESS_PID`-first monitoring. |
+| `bash -n` on both scripts | Passed after fixes. |
+| Local supervisor smoke tests | Passed for live process `CONTINUE`, eval-ended `REVIEW_RESULT`, crash-after-eval `STOP_REVIEW`, `Loss=nan/inf` `STOP_REVIEW`, and `loss-info` non-match. |
+
+Remote supervision state:
+
+| Server | Train PID | Supervisor PID | Monitor source | Latest observed state |
+|---|---:|---:|---|---|
+| `35407` | `647893` | `732707` | work-dir `log.json` | epoch 11 started at `2026-05-12 00:33:52`, recent loss `0.7094`, no eval yet. |
+| `25876` | `44225` | `128581` | work-dir `log.json` | epoch 11 started at `2026-05-12 00:34:02`, recent loss `0.7089`, no eval yet. |
+
+Important correction:
+
+- The launch logs under `logs/input_random_fixed_50pct_adapter_quality_rescore_detached_20260511_234804.log` stopped after epoch 1, but training was not stuck.
+- The active training metrics are in work-dir `log.json`; supervisors were restarted with that source.
+- Both runs had one early skipped non-finite gradient around epoch 1 iter 18 on `rpn_head.reg_head.weight`, then continued with normal decreasing losses through epoch 11. Continue monitoring until the first eval gate.
