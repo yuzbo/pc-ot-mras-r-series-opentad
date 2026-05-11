@@ -26,6 +26,7 @@ def test_detached_quality_rescore_uses_detached_reg_features_and_all_valid_targe
     assert "quality_loss_weight" in source
     assert "quality_target = torch.zeros_like(valid_mask" in source
     assert "quality_target[pos_mask] = self._segment_iou_1d(" in source
+    assert "quality_pred = quality_pred.float()" in source
     assert "F.binary_cross_entropy_with_logits" in source
     assert "quality_logits = quality_pred[valid_mask]" in source
     assert "losses[\"quality_loss\"] = quality_loss * self.quality_loss_weight" in source

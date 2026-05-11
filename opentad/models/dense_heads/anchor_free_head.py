@@ -532,6 +532,7 @@ class AnchorFreeHead(nn.Module):
 
     def _quality_loss(self, quality_pred, valid_mask, pos_mask, pred_segments, target_segments):
         quality_pred = torch.cat(quality_pred, dim=-1).squeeze(1)
+        quality_pred = quality_pred.float()
         quality_logits = quality_pred[valid_mask]
         quality_target = torch.zeros_like(valid_mask, dtype=quality_pred.dtype)
         if pred_segments.numel() > 0:
