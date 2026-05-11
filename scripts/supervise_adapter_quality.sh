@@ -91,12 +91,13 @@ write_summary() {
       return
     fi
 
-    local recent_loss recent_epoch recent_map recent_map70 hard_errors running_screen running_process
+    local recent_loss recent_epoch recent_map recent_map70 hard_errors grad_warnings running_screen running_process
     recent_epoch="$(grep -E "\\[Train\\]: Epoch [0-9]+ started" "$TRAIN_LOG" | tail -1 || true)"
     recent_loss="$(grep -E "Loss=" "$TRAIN_LOG" | tail -1 || true)"
     recent_map="$(grep -E "Average-mAP:" "$TRAIN_LOG" | tail -1 || true)"
     recent_map70="$(grep -E "mAP at tIoU 0\\.70" "$TRAIN_LOG" | tail -1 || true)"
-    hard_errors="$(grep -Ei "Traceback|RuntimeError|marked ready|Your training graph has changed|CUDA out of memory|non[- ]finite|loss[=:_ -]*(nan|inf)([^[:alpha:]]|$)|(^|[^[:alnum:]_])(nan|inf)([^[:alnum:]_]|$)" "$TRAIN_LOG" | tail -8 || true)"
+    hard_errors="$(grep -Ei "Traceback|RuntimeError|marked ready|Your training graph has changed|CUDA out of memory|loss[=:_ -]*(nan|inf)([^[:alpha:]]|$)|(^|[^[:alnum:]_])(nan|inf)([^[:alnum:]_]|$)" "$TRAIN_LOG" | tail -8 || true)"
+    grad_warnings="$(grep -Ei "non[- ]finite gradients detected" "$TRAIN_LOG" | tail -8 || true)"
     if screen_running; then
       running_screen="yes"
     else
@@ -119,6 +120,11 @@ write_summary() {
       echo "$hard_errors" | sed 's/^/  /'
       echo "- Decision: STOP_REVIEW"
       echo "- Reason: hard failure signature found; inspect before continuing."
+    elif [[ -n "$grad_warnings" ]]; then
+      echo "- Anomalies:"
+      echo "$grad_warnings" | sed 's/^/  /'
+      echo "- Decision: CONTINUE"
+      echo "- Reason: optimizer skipped non-finite gradient step(s), but the run is still alive; continue watching loss/eval."
     elif [[ "${running_screen}" == "no" && "${running_process}" == "no" ]]; then
       echo "- Anomalies: no active training screen/process matched"
       if [[ -n "$recent_map" ]]; then
