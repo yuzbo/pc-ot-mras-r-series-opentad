@@ -47,6 +47,8 @@ For data or sampling changes, verify shapes, masks, and GT remapping on a small 
 ## Claude Discussion & Review Protocol
 Use Claude CLI as a recurring external reviewer for this research track. Before committing to a new model direction, launching long GPU runs, or changing the main Adapter + ActionFormer route, run a read-only Claude discussion about the current evidence, failure modes, candidate solutions, expected metric impact, and stop/continue gates. Repeat this discussion after major experiment results, especially when a run underperforms the random-fixed Adapter baseline or when the next route would consume a full GPU training cycle.
 
+Use the `claude.cmd` CLI path for Claude discussions and reviews. Do not use the `claude-review` MCP tools as the review channel for this repository, because MCP failures or crashes must not be mistaken for completed Claude review.
+
 After every implementation is landed locally, request a Claude CLI code review before deployment or long training. The review must be read-only and should check implementation correctness, train/val/test contract alignment, GT leakage risk, tensor shape and mask handling, config consistency, and experiment validity. Apply accepted review fixes, rerun the relevant verification, and then create a git commit for the reviewed implementation before syncing or launching remote experiments. Do not include large artifacts, datasets, checkpoints, or unrelated dirty-worktree changes in that commit. Record the Claude discussion/review summary, reviewer concerns, accepted fixes, verification command output, and resulting commit hash in `research-wiki/experiments/` or the active top-level report.
 
 Suggested commands:
