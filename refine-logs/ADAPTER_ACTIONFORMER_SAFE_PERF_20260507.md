@@ -797,7 +797,7 @@ Recommended MCP fix before relying on `claude-review` again:
 
 Implementation status:
 
-- Code commit: `e4dee3a` in `OpenTAD_Back` (`add detached quality rescore adapter run`).
+- Code commits: `e4dee3a` in `OpenTAD_Back` (`add detached quality rescore adapter run`), followed by `5c9dcf9` (`fix quality rescore amp target dtype`).
 - Added an optional class-agnostic quality head to `AnchorFreeHead`.
 - The quality head is enabled only through `quality_head_cfg`; default behavior remains disabled.
 - The quality head consumes `reg_feat.detach()`.
@@ -819,6 +819,12 @@ Verification:
 | `python -m py_compile` on changed Python/config files | Passed |
 | `C:\Program Files\Git\bin\bash.exe -n scripts/run_adapter_quality_rescore.sh` | Passed |
 | Local `Config.fromfile` dynamic check | Blocked locally because Windows Python lacks `mmengine`; must be done remotely via `CHECK_ONLY=1 scripts/run_adapter_quality_rescore.sh`. |
+
+Remote smoke fix:
+
+- Initial launch on both servers failed at epoch 0 before any optimizer step with `RuntimeError: expected scalar type Float but found Half`.
+- Root cause: AMP produced Half decoded IoU while `quality_target` was Float in `_quality_loss`.
+- Fixed in `5c9dcf9` by casting `quality_pred` to float32 before constructing quality logits/targets.
 
 External review:
 
