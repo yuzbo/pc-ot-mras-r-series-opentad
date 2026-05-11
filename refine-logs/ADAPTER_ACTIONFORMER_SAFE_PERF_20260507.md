@@ -688,3 +688,152 @@ Interpretation:
 - The planned fallback `input_random_fixed_50pct_adapter_head_regres_safe.py` was also already completed earlier at `51.64/26.11`, so it should not be relaunched as a fallback.
 - The common pattern is now stronger: small Adapter body branches, head residual branches, simple regression loss reweighting, SimOTA, NMS-only tuning, train-only boundary weighting, stratification, stride-2, and pseudo-boundary input selection all fail to improve the robust random-fixed Adapter baseline.
 - Two GPT-5.5 xhigh read-only reviewers were dispatched after these stops to identify directions not yet falsified by the completed matrix.
+
+## Checkpoint Audit and Current Route, 2026-05-11
+
+After the dense-contract relaunch failures, the next no-code audit checked whether the existing strong `input_random_fixed_50pct_adapter_virtual_baseline` checkpoint had a hidden raw/EMA or checkpoint-selection gain before spending another full training cycle.
+
+Remote audit setup:
+
+| Server | Audit | Config | Checkpoint | EMA setting | Status |
+|---|---|---|---|---|---|
+| `35407` | `audit_ema59` | `input_random_fixed_50pct_adapter_virtual_baseline.py` | `epoch_59.pth` | `solver.ema=True` | Completed; GPU released. |
+| `25876` | `audit_raw59` | `input_random_fixed_50pct_adapter_virtual_baseline.py` | `epoch_59.pth` | `solver.ema=False` | Completed; GPU released. |
+
+Audit result:
+
+| Checkpoint view | Avg-mAP | mAP@0.3 | mAP@0.4 | mAP@0.5 | mAP@0.6 | mAP@0.7 | Interpretation |
+|---|---:|---:|---:|---:|---:|---:|---|
+| EMA epoch 59 | 63.85 | 79.96 | 74.24 | 66.38 | 56.68 | 41.99 | Matches the known virtual baseline and remains the strongest stable non-oracle result. |
+| Raw epoch 59 | 62.48 | 78.51 | 72.77 | 64.65 | 55.21 | 41.25 | Worse than EMA; do not switch to raw weights. |
+
+Conclusion:
+
+- The checkpoint audit did not reveal a free `65+` result.
+- EMA is materially better than raw for this run and should remain enabled for future Adapter + ActionFormer experiments.
+- Schedule-only or raw/EMA checkpoint selection is not a convincing main route unless another epoch already shows `>=64.3 Avg` or `>=42.5@0.7`.
+- The current best real route remains the baseline-preserving family around `63.8 Avg`, not any sampler/body/head geometry change tested so far.
+
+Reviewer synthesis after the failures:
+
+| Reviewer | Status | Main conclusion |
+|---|---|---|
+| GPT-5.5 xhigh `Averroes` | Completed | The common failure is disturbance of the stable Adapter + ActionFormer temporal contract. Retire pdrop, late-linear, multiscale, head-regression, regloss, SimOTA, NMS-only, train-only GT weighting, stratified, pseudo-boundary, and stride-2 as main routes. Prefer dense-contract quality ranking or small training-recipe lifts. |
+| GPT-5.5 xhigh `Hilbert` | Completed | Before new training, run the raw/EMA checkpoint audit. Primary next experiment should be a detached class-agnostic localization-quality head that changes proposal ranking only, keeps random-fixed input intact, and requires `alpha=0` to be baseline-equivalent. |
+| Claude/Gemini MCP retry | Attempted | Jobs were interrupted/aborted during the session and did not produce a clean usable review artifact. Do not treat them as approval or rejection. |
+
+Recommended next implementation, pending user approval:
+
+| Item | Design |
+|---|---|
+| Name | Detached Quality Rescore |
+| Code surface | `opentad/models/dense_heads/anchor_free_head.py`, one new config, one launcher, focused contract tests. |
+| Input contract | Inherit `input_random_fixed_50pct_adapter.py`; keep train/val/test `random_fixed_subsample`; no GT, pseudo-boundary, weighted, or stride sampler in val/test. |
+| Quality target | Train-only GT-derived decoded-proposal IoU for positive points, detached from the regression target computation. |
+| Gradient isolation | Feed detached regression features to the quality head so the quality loss updates only quality-head parameters. |
+| Test-time fusion | `final_score = cls_score * quality_score ** alpha`; `alpha=0` must exactly reproduce baseline scores for the same checkpoint. |
+| First config | Conservative `quality_loss_weight` and `alpha=0.25`, with checkpoints every 10 epochs for post-hoc alpha sweeps. |
+
+Minimum verification before deployment:
+
+- Add tests that `alpha=0` is baseline-equivalent on proposals/scores.
+- Add tests that quality-loss gradients reach only quality-head parameters.
+- Add config/launcher tests proving `ActionFormer`, `VisionTransformerAdapter`, `ActionFormerHead`, train/val/test random-fixed alignment, `input_pdrop=0.0`, no pseudo/oracle/weighted sampler, and no SimOTA assigner.
+- Run `python -m pytest tests/test_adapter_safety_contracts.py -q`.
+- Run `python -m py_compile` on changed Python/config files and launcher syntax checks.
+- Run read-only Claude code review after implementation, apply accepted fixes, rerun verification, then commit before remote sync.
+
+Stop/continue gates:
+
+| Stage | Continue | Stop |
+|---|---|---|
+| First eval | At least near baseline first gate: `>=61.5 Avg` and `>=39.0@0.7`; strong if `>=63 Avg` and `>=41@0.7`. | `<61 Avg` or `<38@0.7`; hard stop if it enters the `50-52` final-failure trajectory. |
+| Final | Continue alpha sweep/rerun if `>=64.5 Avg` or `>=43.5@0.7`. Treat `>=65 Avg` with non-worse `@0.7` as a real go signal. | Stop if `<63 Avg` or `@0.7 <42.0`; do not stack additional branches on a negative run. |
+
+## Claude CLI Discussion and Review-Tool Status, 2026-05-11
+
+The user requested a Claude CLI method discussion for the current direction, route, and solution. The direct CLI call:
+
+```powershell
+claude.cmd -p --permission-mode plan --effort xhigh --output-format text "<Adapter + ActionFormer route discussion prompt>"
+```
+
+timed out after 360 seconds, but it wrote a plan file under `C:\Users\skywalker\.claude\plans\we-are-optimizing-adapter-nested-valley.md` and returned a usable summary before timeout.
+
+Claude CLI conclusions:
+
+| Topic | Claude CLI conclusion |
+|---|---|
+| Root cause | Failures are dominated by fragile per-level regression calibration and shifted positive/feature geometry. Geometry-changing routes collapse high-IoU ranking faster than low-IoU recall. |
+| Next route | `Detached Quality Rescore` is the best next route because it structurally isolates gradients and preserves an exact `alpha=0` baseline-equivalence contract. |
+| Head design | Use a class-agnostic `Conv1d(C -> 1, kernel=3)` quality head fed from `reg_feat.detach()`, not `cls_feat`. |
+| Target | Predict decoded proposal IoU to matched GT; Claude recommended including negatives as target 0 for a GFL/QFL-like all-valid-point BCE variant, rather than positive-only supervision. |
+| Fusion | `score = cls_score * sigmoid(quality_logit) ** alpha`; start with `alpha=0`, then sweep `{0.25, 0.5, 0.75, 1.0, 1.5, 2.0}` after checkpoints exist. |
+| Risks | Uniform quality collapse, target-gradient leakage, `loss_normalizer` contamination, alpha/NMS non-monotonicity, and EMA handling of new-head weights. |
+| Gates | Pre-train tests: alpha-0 equivalence and gradient isolation. Epoch-41 continue if `Avg >= 62.0` and `@0.7 >= 39.0`; hard stop if `Avg < 61.0` or `@0.7 < 37.0`. Final go signal: `>=65.0 Avg` with `@0.7 >=42.0`. |
+| Backup | If quality rescore is exhausted, consider Distribution Focal Loss on regression or a longer EMA-decay recipe. Do not stack sampler/body/head residual changes. |
+
+Implementation adjustment from Claude:
+
+- The earlier GPT-5.5 route described "positive points only" quality targets. Claude's stronger recommendation is safer for ranking: supervise all valid points, with positives using IoU target and negatives using target 0. This directly trains the quality head to suppress false high-classification background points at test time.
+- To avoid disturbing the baseline, keep quality loss on its own small weight and do not use its targets to alter assignment, classification loss, regression loss, sampling, or masks.
+
+`claude-review.review_start` MCP status:
+
+| Check | Evidence | Interpretation |
+|---|---|---|
+| Tool entry | `review_start` returned `jobId=1c93f44766004000802760a06cb0a2cb`, status `queued`. | MCP entrypoint and tool schema are present. |
+| Status polling | `review_status` returned `aborted`; job JSON stayed at `running` with no final result. | The async bridge is unreliable on this Windows setup. |
+| Root-cause inspection | `C:\Users\skywalker\.codex\mcp-servers\claude-review\server.py` uses `os.kill(pid, 0)` inside `is_pid_alive()`. | This is a POSIX liveness-check idiom but unsafe on Windows, where signal `0` maps to a control event rather than a pure no-op liveness probe. Polling can interrupt the background worker/Claude process and leave stale `running` jobs. |
+| Current protocol | Use direct `claude.cmd -p ...` for method discussion and code review until the MCP bridge is patched. | Do not treat MCP `aborted` as a model-level review result. |
+
+Recommended MCP fix before relying on `claude-review` again:
+
+- Replace `os.kill(pid, 0)` in `is_pid_alive()` with a Windows-safe liveness check, e.g. `psutil.pid_exists(pid)` plus status handling, or a native Windows process-open query.
+- Preserve stderr/stdout for background workers in per-job logs so Claude CLI parse failures, timeouts, and auth prompts are inspectable.
+- Retest with a minimal prompt before using it for code review.
+
+## Detached Quality Rescore Implementation, 2026-05-11 23:32 +08
+
+Implementation status:
+
+- Code commit: `e4dee3a` in `OpenTAD_Back` (`add detached quality rescore adapter run`).
+- Added an optional class-agnostic quality head to `AnchorFreeHead`.
+- The quality head is enabled only through `quality_head_cfg`; default behavior remains disabled.
+- The quality head consumes `reg_feat.detach()`.
+- Quality targets are train-GT derived decoded proposal IoU for positive points and `0` for valid negatives.
+- Quality loss is added as `quality_loss`, without changing assignment, classification targets, regression targets, or the foreground `loss_normalizer`.
+- Test-time fusion is `cls_score * sigmoid(quality_logit) ** alpha`; `alpha <= 0` skips fusion and preserves baseline scores.
+- Added `ActionFormer.grad_clip_parameters()` and made `train_engine` use it so global grad clipping excludes `rpn_head.quality_head.*`. This fixes the GPT-reviewed concern that quality-head gradients could otherwise rescale the base Adapter/ActionFormer gradients through global clipping.
+- Added `configs/adatad/thumos/input_random_fixed_50pct_adapter_quality_rescore_detached.py`.
+- Added `scripts/run_adapter_quality_rescore.sh` with config contract checks for Adapter + ActionFormer, random-fixed train/val/test alignment, `input_pdrop=0.0`, and checkpointing.
+- Added `tests/test_adapter_quality_rescore_contracts.py`.
+
+Verification:
+
+| Check | Result |
+|---|---|
+| `python -m pytest tests/test_adapter_quality_rescore_contracts.py -q` | `4 passed` |
+| `python -m pytest tests/test_adapter_safety_contracts.py -q` | `21 passed` |
+| Combined targeted pytest | `25 passed` |
+| `python -m py_compile` on changed Python/config files | Passed |
+| `C:\Program Files\Git\bin\bash.exe -n scripts/run_adapter_quality_rescore.sh` | Passed |
+| Local `Config.fromfile` dynamic check | Blocked locally because Windows Python lacks `mmengine`; must be done remotely via `CHECK_ONLY=1 scripts/run_adapter_quality_rescore.sh`. |
+
+External review:
+
+| Reviewer | Status | Finding / action |
+|---|---|---|
+| GPT-5.5 xhigh implementation review | Completed | Found high-risk global grad clipping confound; fixed by excluding quality-head parameters from clipping. |
+| GPT-5.5 xhigh model-logic review | Completed | No val/test GT leakage found; warned all-valid BCE can over-suppress recall and must be gated. |
+| GPT-5.5 xhigh follow-up review | Completed | No blocking findings after grad-clipping fix; proceed to Claude review/deployment. |
+| Claude CLI | Attempted twice after implementation | Both attempts returned Claude API `429` high-load rejection. Not counted as a successful Claude review. Retry later when service is available. |
+
+Deployment gates:
+
+- Remote preflight must run `CHECK_ONLY=1 scripts/run_adapter_quality_rescore.sh`.
+- First eval continue only if `Avg >= 61.5` and `mAP@0.7 >= 39.0`.
+- Stop immediately if `Avg < 61.0` or `mAP@0.7 < 37.0`.
+- If final score is below `63.0` or `mAP@0.7 < 42.0`, do not stack additional sampler/body changes on this branch.
+- If final score is `>=64.5` or `mAP@0.7 >=43.5`, run alpha sweep / variance check.
+- Treat `>=65.0 Avg` with non-worse `mAP@0.7` as a real go signal, then rerun for variance before any SOTA claim.
