@@ -15,6 +15,7 @@ CHECK_ONLY="${CHECK_ONLY:-0}"
 
 CONFIG="configs/adatad/thumos/input_random_fixed_50pct_adapter_quality_rescore_detached.py"
 NAME="input_random_fixed_50pct_adapter_quality_rescore_detached"
+WORK_LOG="$ROOT_DIR/exps/thumos/adatad/${NAME}/gpu1_id0/log.json"
 
 log_msg() {
   echo "$(date '+%F %T') $*" | tee -a "$QUEUE_LOG"
@@ -95,12 +96,13 @@ PY
 }
 
 run_exp() {
-  local timestamp log_file supervisor_log train_pid supervisor_pid status
+  local timestamp log_file supervisor_log monitor_log train_pid supervisor_pid status
   train_pid=""
   supervisor_pid=""
   timestamp="$(date '+%Y%m%d_%H%M%S')"
   log_file="$LOG_DIR/${NAME}_${timestamp}.log"
   supervisor_log="$LOG_DIR/${NAME}_supervisor_${timestamp}.md"
+  monitor_log="$log_file"
   log_msg "starting ${NAME}"
   cd "$ROOT_DIR"
 
@@ -120,10 +122,18 @@ run_exp() {
     tools/train.py "$CONFIG" --id 0 > >(tee "$log_file") 2>&1 &
   train_pid="$!"
 
+  for _ in {1..60}; do
+    if [[ -f "$WORK_LOG" ]]; then
+      monitor_log="$WORK_LOG"
+      break
+    fi
+    sleep 1
+  done
+
   PROCESS_PID="$train_pid" \
     PROCESS_PATTERN="tools/train.py.*${CONFIG}" \
     INTERVAL_SECONDS="${SUPERVISE_INTERVAL_SECONDS:-1800}" \
-    bash scripts/supervise_adapter_quality.sh "${NAME}_${GPU_ID}" "$log_file" "$supervisor_log" &
+    bash scripts/supervise_adapter_quality.sh "${NAME}_${GPU_ID}" "$monitor_log" "$supervisor_log" &
   supervisor_pid="$!"
 
   wait "$train_pid"
