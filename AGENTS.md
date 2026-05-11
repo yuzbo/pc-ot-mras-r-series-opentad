@@ -23,6 +23,17 @@ python figures/gen_fig_input_sampling_distributions_all.py --ann figures/cache/t
 powershell -ExecutionPolicy Bypass -File logs/monitor_current_servers_every2h.ps1
 ```
 
+## Remote Servers
+Use these SSH endpoints for the current THUMOS14 Adapter + ActionFormer experiments:
+```powershell
+ssh -p 35407 root@connect.cqa1.seetacloud.com
+ssh -p 25876 root@connect.cqa1.seetacloud.com
+```
+Remote working directory:
+```bash
+/root/autodl-tmp/OpenTAD_Back_check
+```
+
 ## Coding Style & Naming Conventions
 Use 4-space indentation and follow existing Python style in `opentad/`. Prefer descriptive snake_case for functions, variables, config names, and experiment files such as `input_oracle_boundary_dense_tubelet2_50pct.py`. Keep config inheritance shallow and explicit. Add short comments only where control flow or tensor semantics are non-obvious.
 
