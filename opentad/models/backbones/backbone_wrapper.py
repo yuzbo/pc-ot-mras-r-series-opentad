@@ -53,6 +53,7 @@ class BackboneWrapper(nn.Module):
         self.trainable_backbone_keywords = list(getattr(custom_cfg, "trainable_backbone_keywords", []))
 
         self._configure_backbone_trainability()
+        self._time_debug_printed = False
 
         print(
             "freeze_backbone: {}, norm_eval: {}, trainable_backbone_keywords: {}".format(
@@ -85,6 +86,10 @@ class BackboneWrapper(nn.Module):
 
     def _has_trainable_backbone_params(self):
         return any(param.requires_grad for param in self.model.backbone.parameters())
+
+    def set_train_epoch(self, curr_epoch):
+        if hasattr(self.model.backbone, "set_train_epoch"):
+            self.model.backbone.set_train_epoch(curr_epoch)
 
     def _forward_backbone(self, frames, time_embed=None):
         if time_embed is None:
@@ -173,7 +178,21 @@ class BackboneWrapper(nn.Module):
 
         if len(per_sample_features) == 0:
             return None
-        return torch.cat(per_sample_features, dim=0).contiguous()
+        time_features = torch.cat(per_sample_features, dim=0).contiguous()
+        if getattr(self.model.backbone, "debug_time_grid", False) and not self._time_debug_printed:
+            centers = time_features[..., 0]
+            fresh = time_features[..., 1] > 0.5 if time_features.shape[-1] > 1 else torch.ones_like(centers).bool()
+            valid_counts = fresh.flatten(1).sum(dim=1)
+            print(
+                "[BackboneWrapper][TimeGrid] "
+                f"shape={tuple(time_features.shape)} "
+                f"valid_min={int(valid_counts.min().item()) if valid_counts.numel() > 0 else 0} "
+                f"valid_max={int(valid_counts.max().item()) if valid_counts.numel() > 0 else 0} "
+                f"center_min={float(centers[fresh].min().item()) if fresh.any().item() else 0.0:.4f} "
+                f"center_max={float(centers[fresh].max().item()) if fresh.any().item() else 0.0:.4f}"
+            )
+            self._time_debug_printed = True
+        return time_features
 
     def forward(self, frames, masks=None, metas=None):
         # two types: snippet or frame

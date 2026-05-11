@@ -59,6 +59,13 @@ def _collect_runtime_debug(model, data_dict, bad_param_name):
     return None
 
 
+def _grad_clip_parameters(model):
+    target = model.module if hasattr(model, "module") else model
+    if hasattr(target, "grad_clip_parameters"):
+        return target.grad_clip_parameters()
+    return model.parameters()
+
+
 def train_one_epoch(
     train_loader,
     model,
@@ -119,7 +126,8 @@ def train_one_epoch(
             if use_amp:
                 scaler.unscale_(optimizer)
                 grads_unscaled = True
-            torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_l2norm)
+            grad_clip_parameters = _grad_clip_parameters(model)
+            torch.nn.utils.clip_grad_norm_(grad_clip_parameters, clip_grad_l2norm)
 
         # update parameters
         if use_amp:

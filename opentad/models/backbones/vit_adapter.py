@@ -15,6 +15,8 @@ from mmengine.model.weight_init import constant_init, trunc_normal_init
 from mmaction.utils import ConfigType, OptConfigType
 from mmaction.models.backbones.vit_mae import get_sinusoid_encoding
 
+from .time_aligned_rasterizer import TimeAlignedRasterizer
+
 
 class Adapter(BaseModule):
     def __init__(
@@ -24,10 +26,15 @@ class Adapter(BaseModule):
         kernel_size: int = 3,
         dilation: int = 1,
         temporal_size: int = 384,
+        tara_cfg: Optional[dict] = None,
+        multiscale_cfg: Optional[dict] = None,
     ) -> None:
         super().__init__()
 
         hidden_dims = int(embed_dims * mlp_ratio)
+        tara_cfg = {} if tara_cfg is None else dict(tara_cfg)
+        tara_mode = tara_cfg.pop("mode", "none")
+        multiscale_cfg = {} if multiscale_cfg is None else dict(multiscale_cfg)
 
         # temporal depth-wise convolution
         self.temporal_size = temporal_size
@@ -45,6 +52,39 @@ class Adapter(BaseModule):
         self.dwconv.bias.data.zero_()
         self.conv.weight.data.normal_(mean=0.0, std=math.sqrt(2.0 / hidden_dims))
         self.conv.bias.data.zero_()
+        self.multiscale_convs = None
+        self.multiscale_scale = None
+        self.multiscale_scale_max = None
+        multiscale_dilations = multiscale_cfg.pop("dilations", None)
+        if multiscale_dilations:
+            rng_state = torch.get_rng_state()
+            try:
+                self.multiscale_convs = nn.ModuleList()
+                self.multiscale_scale = nn.Parameter(torch.tensor(float(multiscale_cfg.pop("init_scale", 0.0))))
+                self.multiscale_scale_max = multiscale_cfg.pop("scale_max", None)
+                if self.multiscale_scale_max is not None:
+                    self.multiscale_scale_max = float(self.multiscale_scale_max)
+                for branch_dilation in multiscale_dilations:
+                    branch_dilation = int(branch_dilation)
+                    branch = nn.Sequential(
+                        nn.Conv1d(
+                            hidden_dims,
+                            hidden_dims,
+                            kernel_size=kernel_size,
+                            stride=1,
+                            padding=(kernel_size // 2) * branch_dilation,
+                            dilation=branch_dilation,
+                            groups=hidden_dims,
+                        ),
+                        nn.Conv1d(hidden_dims, hidden_dims, 1),
+                    )
+                    branch[0].weight.data.normal_(mean=0.0, std=math.sqrt(2.0 / kernel_size))
+                    branch[0].bias.data.zero_()
+                    branch[1].weight.data.normal_(mean=0.0, std=math.sqrt(2.0 / hidden_dims))
+                    branch[1].bias.data.zero_()
+                    self.multiscale_convs.append(branch)
+            finally:
+                torch.set_rng_state(rng_state)
 
         # adapter projection
         self.down_proj = nn.Linear(embed_dims, hidden_dims)
@@ -54,7 +94,57 @@ class Adapter(BaseModule):
         trunc_normal_init(self.down_proj, std=0.02, bias=0)
         constant_init(self.up_proj, 0)  # the last projection layer is initialized to 0
 
-    def forward(self, x: Tensor, h: int, w: int) -> Tensor:
+        if tara_mode in {"none", None}:
+            self.time_rasterizer = None
+        else:
+            self.time_rasterizer = TimeAlignedRasterizer(channels=hidden_dims, mode=tara_mode, **tara_cfg)
+
+    def _reshape_time_features(self, time_embed: Optional[Tensor], token_count: int, outer_batches: int, dtype, device):
+        if time_embed is None:
+            raise ValueError("TARA adapter requires time_embed, but got None.")
+        if time_embed.dim() != 3:
+            raise ValueError(f"time_embed must have shape [B, T_token, D], got {tuple(time_embed.shape)}")
+        if time_embed.shape[1] != token_count:
+            raise ValueError(
+                f"time_embed token count ({time_embed.shape[1]}) does not match adapter chunk token count ({token_count})."
+            )
+        if time_embed.shape[0] * token_count != outer_batches * self.temporal_size:
+            raise ValueError(
+                "time_embed cannot be regrouped to adapter temporal axis: "
+                f"time_embed={tuple(time_embed.shape)}, outer_batches={outer_batches}, temporal_size={self.temporal_size}."
+            )
+        return time_embed.to(device=device, dtype=dtype).reshape(outer_batches, self.temporal_size, -1)
+
+    def _temporal_conv(self, attn: Tensor, h: int, w: int) -> Tensor:
+        return self._temporal_conv_with(attn, h, w, self.dwconv, self.conv)
+
+    def _temporal_conv_with(self, attn: Tensor, h: int, w: int, dwconv: nn.Module, conv: nn.Module) -> Tensor:
+        group_count, _, _, _, channels = attn.shape
+        attn = attn.permute(0, 2, 3, 4, 1).flatten(0, 2)  # [b*h*w,c,t]
+        attn = dwconv(attn)
+        attn = conv(attn)
+        return attn.unflatten(0, (group_count, h, w)).permute(0, 4, 1, 2, 3)
+
+    def _multiscale_scale_value(self, dtype, device):
+        scale = self.multiscale_scale.to(device=device, dtype=dtype)
+        if self.multiscale_scale_max is not None:
+            scale = torch.tanh(scale) * self.multiscale_scale_max
+        return scale
+
+    def _apply_multiscale_temporal_conv(self, attn: Tensor, h: int, w: int) -> Tensor:
+        source_attn = self._temporal_conv(attn, h, w)
+        if self.multiscale_convs is None:
+            return source_attn
+
+        branch_sum = None
+        for branch in self.multiscale_convs:
+            branch_attn = self._temporal_conv_with(attn, h, w, branch[0], branch[1])
+            branch_sum = branch_attn if branch_sum is None else branch_sum + branch_attn
+        branch_attn = branch_sum / len(self.multiscale_convs)
+        scale = self._multiscale_scale_value(dtype=source_attn.dtype, device=source_attn.device)
+        return source_attn + scale * branch_attn
+
+    def forward(self, x: Tensor, h: int, w: int, time_embed: Optional[Tensor] = None) -> Tensor:
         inputs = x
 
         # down and up projection
@@ -63,11 +153,43 @@ class Adapter(BaseModule):
 
         # temporal depth-wise convolution
         B, N, C = x.shape  # 48, 8*10*10, 384
-        attn = x.reshape(-1, self.temporal_size, h, w, x.shape[-1])  # [b,t,h,w,c]  [1,384,10,10,384]
-        attn = attn.permute(0, 2, 3, 4, 1).flatten(0, 2)  # [b*h*w,c,t] [1*10*10,384,384]
-        attn = self.dwconv(attn)  # [b*h*w,c,t] [1*10*10,384,384]
-        attn = self.conv(attn)  # [b*h*w,c,t] [1*10*10,384,384]
-        attn = attn.unflatten(0, (-1, h, w)).permute(0, 4, 1, 2, 3)  # [b,t,h,w,c] [1,384,10,10,384]
+        token_count = N // (h * w)
+        attn = x.reshape(-1, self.temporal_size, h, w, C)  # [b,t,h,w,c]
+
+        if self.time_rasterizer is not None:
+            source_attn = None
+            if self.time_rasterizer.use_branch_residual:
+                source_attn = self._apply_multiscale_temporal_conv(attn, h, w)
+            time_features = self._reshape_time_features(
+                time_embed=time_embed,
+                token_count=token_count,
+                outer_batches=attn.shape[0],
+                dtype=x.dtype,
+                device=x.device,
+            )
+            grouped = attn.permute(0, 2, 3, 4, 1).reshape(attn.shape[0], h * w, C, self.temporal_size)
+            grouped, uniform_center, uniform_valid, source_center, source_valid = self.time_rasterizer.source_to_uniform(
+                grouped,
+                time_features,
+            )
+            attn = grouped.reshape(attn.shape[0], h, w, C, self.temporal_size).permute(0, 4, 1, 2, 3)
+            attn = self._apply_multiscale_temporal_conv(attn, h, w)
+            grouped = attn.permute(0, 2, 3, 4, 1).reshape(attn.shape[0], h * w, C, self.temporal_size)
+            grouped = self.time_rasterizer.uniform_to_source(
+                grouped,
+                uniform_center,
+                uniform_valid,
+                source_center,
+                source_valid,
+            )
+            tara_attn = grouped.reshape(attn.shape[0], h, w, C, self.temporal_size).permute(0, 4, 1, 2, 3)
+            if source_attn is not None:
+                attn = self.time_rasterizer.mix_with_source(source_attn, tara_attn)
+            else:
+                attn = tara_attn
+        else:
+            attn = self._apply_multiscale_temporal_conv(attn, h, w)
+
         attn = attn.reshape(B, N, C)
         x = x + attn
 
@@ -229,6 +351,8 @@ class Block(BaseModule):
         use_adapter: bool = False,
         adapter_mlp_ratio: float = 0.25,
         temporal_size: int = 384,
+        adapter_tara_cfg: Optional[dict] = None,
+        adapter_multiscale_cfg: Optional[dict] = None,
         **kwargs,
     ) -> None:
         super().__init__(init_cfg=init_cfg)
@@ -267,9 +391,11 @@ class Block(BaseModule):
                 dilation=1,
                 temporal_size=temporal_size,
                 mlp_ratio=adapter_mlp_ratio,
+                tara_cfg=adapter_tara_cfg,
+                multiscale_cfg=adapter_multiscale_cfg,
             )
 
-    def forward(self, x: Tensor, h, w) -> Tensor:
+    def forward(self, x: Tensor, h, w, time_embed: Optional[Tensor] = None) -> Tensor:
         """Defines the computation performed at every call.
 
         Args:
@@ -284,11 +410,11 @@ class Block(BaseModule):
             x = x + self.drop_path(self.mlp(self.norm2(x)))
 
             if self.use_adapter:
-                x = self.adapter(x, h, w)
+                x = self.adapter(x, h, w, time_embed=time_embed)
             return x
 
         if self.with_cp and x.requires_grad:
-            x = cp.checkpoint(_inner_forward, x)
+            x = cp.checkpoint(_inner_forward, x, use_reentrant=False)
         else:
             x = _inner_forward(x)
         return x
@@ -364,6 +490,16 @@ class VisionTransformerAdapter(BaseModule):
         adapter_mlp_ratio: float = 0.25,
         total_frames: int = 768,
         adapter_index: list = [3, 5, 7, 11],
+        use_irregular_time_embed: bool = False,
+        add_irregular_time_embed: bool = True,
+        time_embed_dim: int = 5,
+        time_embed_hidden: int = 128,
+        time_embed_scale: float = 0.25,
+        time_embed_scale_max: Optional[float] = None,
+        time_embed_warmup_epochs: int = 0,
+        adapter_tara_cfg: Optional[dict] = None,
+        adapter_multiscale_cfg: Optional[dict] = None,
+        debug_time_grid: bool = False,
         init_cfg: Optional[Union[Dict, List[Dict]]] = [
             dict(type="TruncNormal", layer="Linear", std=0.02, bias=0.0),
             dict(type="Constant", layer="LayerNorm", val=1.0, bias=0.0),
@@ -378,6 +514,14 @@ class VisionTransformerAdapter(BaseModule):
 
         self.embed_dims = embed_dims
         self.patch_size = patch_size
+        self.num_frames = num_frames
+        self.tubelet_size = tubelet_size
+        self.use_irregular_time_embed = use_irregular_time_embed
+        self.add_irregular_time_embed = add_irregular_time_embed
+        self.debug_time_grid = debug_time_grid
+        self.time_embed_scale_max = None if time_embed_scale_max is None else float(time_embed_scale_max)
+        self.time_embed_warmup_epochs = int(time_embed_warmup_epochs)
+        self.current_train_epoch = 0
 
         self.patch_embed = PatchEmbed(
             in_channels=in_channels,
@@ -419,6 +563,8 @@ class VisionTransformerAdapter(BaseModule):
                     use_adapter=i in adapter_index,
                     adapter_mlp_ratio=adapter_mlp_ratio,
                     temporal_size=total_frames // tubelet_size,
+                    adapter_tara_cfg=adapter_tara_cfg,
+                    adapter_multiscale_cfg=adapter_multiscale_cfg,
                 )
                 for i in range(depth)
             ]
@@ -433,13 +579,49 @@ class VisionTransformerAdapter(BaseModule):
 
         self.return_feat_map = return_feat_map
 
+        if self.use_irregular_time_embed and self.add_irregular_time_embed:
+            self.time_embed_mlp = nn.Sequential(
+                nn.Linear(time_embed_dim, time_embed_hidden),
+                nn.GELU(),
+                nn.Linear(time_embed_hidden, embed_dims),
+            )
+            self.time_embed_scale = nn.Parameter(torch.tensor(float(time_embed_scale)))
+        else:
+            self.time_embed_mlp = None
+            self.time_embed_scale = None
+
         # count the number of parameters in the backbone
         num_vit_param = sum(p.numel() for name, p in self.named_parameters() if "adapter" not in name)
         num_adapter_param = sum(p.numel() for name, p in self.named_parameters() if "adapter" in name)
         ratio = num_adapter_param / num_vit_param * 100
         print("ViT's param: {}, Adapter's params: {}, ratio: {:2.1f}%".format(num_vit_param, num_adapter_param, ratio))
 
-    def forward(self, x: Tensor) -> Tensor:
+    def set_train_epoch(self, curr_epoch):
+        self.current_train_epoch = int(curr_epoch)
+
+    def _time_embed_scale_value(self, dtype, device):
+        scale = self.time_embed_scale.to(device=device, dtype=dtype)
+        if self.time_embed_scale_max is not None:
+            scale = torch.tanh(scale) * self.time_embed_scale_max
+        if self.training and self.time_embed_warmup_epochs > 0 and self.current_train_epoch < self.time_embed_warmup_epochs:
+            scale = scale * 0.0
+        return scale
+
+    def _build_irregular_time_embedding(self, time_embed: Optional[Tensor], token_count: int, spatial_size: int, dtype, device):
+        if self.time_embed_mlp is None or time_embed is None:
+            return None
+        if time_embed.dim() != 3:
+            raise ValueError(f"time_embed must have shape [B, T_token, D], got {tuple(time_embed.shape)}")
+        if time_embed.shape[1] != token_count:
+            raise ValueError(
+                f"time_embed token count ({time_embed.shape[1]}) does not match backbone token count ({token_count})."
+            )
+
+        time_token_embed = self.time_embed_mlp(time_embed.to(device=device, dtype=dtype))
+        time_token_embed = time_token_embed.repeat_interleave(spatial_size, dim=1)
+        return self._time_embed_scale_value(dtype=dtype, device=device) * time_token_embed
+
+    def forward(self, x: Tensor, time_embed: Optional[Tensor] = None) -> Tensor:
         """Defines the computation performed at every call.
 
         Args:
@@ -454,6 +636,7 @@ class VisionTransformerAdapter(BaseModule):
         h //= self.patch_size
         w //= self.patch_size
         x = self.patch_embed(x)[0]
+        time_token_count = x.shape[1] // (h * w)
         if (h, w) != self.grid_size:
             pos_embed = self.pos_embed.reshape(-1, *self.grid_size, self.embed_dims)
             pos_embed = pos_embed.permute(0, 3, 1, 2)
@@ -463,11 +646,22 @@ class VisionTransformerAdapter(BaseModule):
         else:
             pos_embed = self.pos_embed
 
+        raw_time_embed = time_embed if self.use_irregular_time_embed else None
+        irregular_time_embed = self._build_irregular_time_embedding(
+            time_embed=raw_time_embed,
+            token_count=time_token_count,
+            spatial_size=h * w,
+            dtype=x.dtype,
+            device=x.device,
+        )
+
         x = x + pos_embed
+        if irregular_time_embed is not None:
+            x = x + irregular_time_embed
         x = self.pos_drop(x)
 
         for blk in self.blocks:
-            x = blk(x, h, w)
+            x = blk(x, h, w, time_embed=raw_time_embed)
 
         x = self.norm(x)
 

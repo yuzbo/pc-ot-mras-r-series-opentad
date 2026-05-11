@@ -27,6 +27,10 @@ class AnchorFreeHead(nn.Module):
         filter_similar_gt=True,
         use_regress_range=True,
         assigner=None,
+        assignment_debug=None,
+        cls_residual_cfg=None,
+        reg_residual_cfg=None,
+        quality_head_cfg=None,
     ):
         super(AnchorFreeHead, self).__init__()
 
@@ -38,6 +42,14 @@ class AnchorFreeHead(nn.Module):
         self.label_smoothing = label_smoothing
         self.filter_similar_gt = filter_similar_gt
         self.use_regress_range = use_regress_range
+        self.assignment_debug = assignment_debug or {}
+        self.assignment_debug_enabled = bool(self.assignment_debug.get("enabled", False))
+        self.cls_residual_cfg = None if cls_residual_cfg is None else dict(cls_residual_cfg)
+        self.reg_residual_cfg = None if reg_residual_cfg is None else dict(reg_residual_cfg)
+        self.quality_head_cfg = {} if quality_head_cfg is None else dict(quality_head_cfg)
+        self.quality_head_enabled = bool(self.quality_head_cfg.get("enabled", False))
+        self.quality_loss_weight = float(self.quality_head_cfg.get("loss_weight", 0.0))
+        self.quality_score_alpha = float(self.quality_head_cfg.get("score_alpha", 0.0))
 
         self.loss_weight = loss_weight
         self.center_sample = center_sample
@@ -53,6 +65,259 @@ class AnchorFreeHead(nn.Module):
         self.cls_loss = build_loss(loss.cls_loss)
         self.reg_loss = build_loss(loss.reg_loss)
         self.assigner = build_loss(assigner) if assigner is not None else None
+        self._train_epoch = None
+        self._last_assigner_stats = []
+        self._reset_assignment_diag()
+
+    def set_train_epoch(self, curr_epoch):
+        self._train_epoch = int(curr_epoch)
+        self._reset_assignment_diag()
+
+    def _reset_assignment_diag(self):
+        num_levels = len(self.prior_generator.strides) if hasattr(self, "prior_generator") else 0
+        self._assignment_diag = {
+            "epoch": self._train_epoch,
+            "iters": 0,
+            "samples": 0,
+            "gt": 0,
+            "valid_points": 0,
+            "pos_points": 0,
+            "weighted_pos": 0.0,
+            "valid_weight_sum": 0.0,
+            "valid_weight_count": 0,
+            "valid_weight_lt1": 0,
+            "valid_weight_eq0": 0,
+            "pos_weight_sum": 0.0,
+            "pos_weight_count": 0,
+            "pos_weight_lt1": 0,
+            "per_level_valid": [0 for _ in range(num_levels)],
+            "per_level_pos": [0 for _ in range(num_levels)],
+            "per_level_pos_weight": [0.0 for _ in range(num_levels)],
+            "per_level_reg_loss_sum": [0.0 for _ in range(num_levels)],
+            "per_level_reg_iou_sum": [0.0 for _ in range(num_levels)],
+            "per_level_reg_target_len_sum": [0.0 for _ in range(num_levels)],
+            "per_level_reg_count": [0 for _ in range(num_levels)],
+            "reg_loss_sum": 0.0,
+            "reg_loss_count": 0,
+            "reg_iou_sum": 0.0,
+            "reg_iou_count": 0,
+            "reg_target_len_sum": 0.0,
+            "reg_target_len_count": 0,
+            "reg_target_len_min": None,
+            "reg_target_len_max": None,
+            "reg_pred_len_sum": 0.0,
+            "reg_pred_len_count": 0,
+            "reg_len_bin_edges": [16.0, 32.0, 64.0, 128.0, 256.0],
+            "reg_len_bin_count": [0 for _ in range(6)],
+            "reg_len_bin_loss_sum": [0.0 for _ in range(6)],
+            "reg_len_bin_iou_sum": [0.0 for _ in range(6)],
+            "candidate_count_sum": 0,
+            "candidate_count_count": 0,
+            "candidate_count_min": None,
+            "candidate_count_max": None,
+            "dynamic_k_sum": 0,
+            "dynamic_k_count": 0,
+            "dynamic_k_min": None,
+            "dynamic_k_max": None,
+            "matched_count_sum": 0,
+            "matched_count_count": 0,
+            "matched_count_min": None,
+            "matched_count_max": None,
+            "candidate_point_count": 0,
+            "confuse_point_count": 0,
+            "matched_point_count": 0,
+        }
+
+    def _update_minmax(self, min_key, max_key, value):
+        if self._assignment_diag[min_key] is None or value < self._assignment_diag[min_key]:
+            self._assignment_diag[min_key] = value
+        if self._assignment_diag[max_key] is None or value > self._assignment_diag[max_key]:
+            self._assignment_diag[max_key] = value
+
+    def _assignment_level_ids(self, points, device):
+        level_ids = []
+        for level, point in enumerate(points):
+            level_ids.append(torch.full((point.shape[0],), level, dtype=torch.long, device=device))
+        return torch.cat(level_ids, dim=0)
+
+    @torch.no_grad()
+    def _update_assignment_diag(self, points, valid_mask, gt_cls, pos_mask, target_weights, gt_segments):
+        if not self.assignment_debug_enabled:
+            return
+
+        diag = self._assignment_diag
+        diag["iters"] += 1
+        diag["samples"] += int(gt_cls.shape[0])
+        diag["gt"] += sum(int(segment.shape[0]) for segment in gt_segments)
+        diag["valid_points"] += int(valid_mask.sum().item())
+        diag["pos_points"] += int(pos_mask.sum().item())
+
+        if target_weights is None:
+            weights = torch.ones_like(valid_mask, dtype=torch.float32)
+        else:
+            weights = target_weights.to(dtype=torch.float32)
+
+        valid_weights = weights[valid_mask]
+        pos_weights = weights[pos_mask]
+        diag["valid_weight_sum"] += float(valid_weights.sum().item()) if valid_weights.numel() > 0 else 0.0
+        diag["valid_weight_count"] += int(valid_weights.numel())
+        diag["valid_weight_lt1"] += int((valid_weights < 0.999).sum().item()) if valid_weights.numel() > 0 else 0
+        diag["valid_weight_eq0"] += int((valid_weights <= 0.0).sum().item()) if valid_weights.numel() > 0 else 0
+        diag["pos_weight_sum"] += float(pos_weights.sum().item()) if pos_weights.numel() > 0 else 0.0
+        diag["pos_weight_count"] += int(pos_weights.numel())
+        diag["pos_weight_lt1"] += int((pos_weights < 0.999).sum().item()) if pos_weights.numel() > 0 else 0
+        diag["weighted_pos"] += float((pos_mask.float() * weights).sum().item())
+
+        level_ids = self._assignment_level_ids(points, valid_mask.device)
+        for level in range(len(diag["per_level_valid"])):
+            level_mask = level_ids == level
+            valid_level = valid_mask[:, level_mask]
+            pos_level = pos_mask[:, level_mask]
+            weight_level = weights[:, level_mask]
+            diag["per_level_valid"][level] += int(valid_level.sum().item())
+            diag["per_level_pos"][level] += int(pos_level.sum().item())
+            diag["per_level_pos_weight"][level] += float((pos_level.float() * weight_level).sum().item())
+
+        for stats in self._last_assigner_stats:
+            for key, sum_key, count_key, min_key, max_key in (
+                ("candidate_counts", "candidate_count_sum", "candidate_count_count", "candidate_count_min", "candidate_count_max"),
+                ("dynamic_ks", "dynamic_k_sum", "dynamic_k_count", "dynamic_k_min", "dynamic_k_max"),
+                ("matched_counts", "matched_count_sum", "matched_count_count", "matched_count_min", "matched_count_max"),
+            ):
+                for value in stats.get(key, []):
+                    diag[sum_key] += int(value)
+                    diag[count_key] += 1
+                    self._update_minmax(min_key, max_key, int(value))
+            diag["candidate_point_count"] += int(stats.get("candidate_point_count", 0))
+            diag["confuse_point_count"] += int(stats.get("confuse_point_count", 0))
+            diag["matched_point_count"] += int(stats.get("matched_point_count", 0))
+
+    @torch.no_grad()
+    def _update_regression_diag(self, points, pos_mask, pred_segments, target_segments, reg_loss_values):
+        if not self.assignment_debug_enabled or pred_segments.numel() == 0:
+            return
+
+        diag = self._assignment_diag
+        losses = reg_loss_values.detach().to(dtype=torch.float32)
+        preds = pred_segments.detach().to(dtype=torch.float32)
+        targets = target_segments.detach().to(dtype=torch.float32)
+
+        target_len = (targets[:, 1] - targets[:, 0]).clamp(min=0.0)
+        pred_len = (preds[:, 1] - preds[:, 0]).clamp(min=0.0)
+        inter = (torch.minimum(preds[:, 1], targets[:, 1]) - torch.maximum(preds[:, 0], targets[:, 0])).clamp(min=0.0)
+        union = (pred_len + target_len - inter).clamp(min=1e-6)
+        ious = inter / union
+
+        finite = torch.isfinite(losses) & torch.isfinite(ious) & torch.isfinite(target_len) & torch.isfinite(pred_len)
+        if not finite.any():
+            return
+
+        losses = losses[finite]
+        ious = ious[finite]
+        target_len = target_len[finite]
+        pred_len = pred_len[finite]
+
+        diag["reg_loss_sum"] += float(losses.sum().item())
+        diag["reg_loss_count"] += int(losses.numel())
+        diag["reg_iou_sum"] += float(ious.sum().item())
+        diag["reg_iou_count"] += int(ious.numel())
+        diag["reg_target_len_sum"] += float(target_len.sum().item())
+        diag["reg_target_len_count"] += int(target_len.numel())
+        diag["reg_pred_len_sum"] += float(pred_len.sum().item())
+        diag["reg_pred_len_count"] += int(pred_len.numel())
+        self._update_minmax("reg_target_len_min", "reg_target_len_max", float(target_len.min().item()))
+        self._update_minmax("reg_target_len_min", "reg_target_len_max", float(target_len.max().item()))
+
+        level_ids = self._assignment_level_ids(points, pos_mask.device)
+        pos_levels = level_ids[None, :].expand_as(pos_mask)[pos_mask][finite]
+        for level in range(len(diag["per_level_reg_count"])):
+            level_pos = pos_levels == level
+            if not level_pos.any():
+                continue
+            diag["per_level_reg_loss_sum"][level] += float(losses[level_pos].sum().item())
+            diag["per_level_reg_iou_sum"][level] += float(ious[level_pos].sum().item())
+            diag["per_level_reg_target_len_sum"][level] += float(target_len[level_pos].sum().item())
+            diag["per_level_reg_count"][level] += int(level_pos.sum().item())
+
+        edges = diag["reg_len_bin_edges"]
+        bin_ids = torch.bucketize(target_len, target_len.new_tensor(edges), right=False)
+        for bin_idx in range(len(diag["reg_len_bin_count"])):
+            bin_pos = bin_ids == bin_idx
+            if not bin_pos.any():
+                continue
+            diag["reg_len_bin_count"][bin_idx] += int(bin_pos.sum().item())
+            diag["reg_len_bin_loss_sum"][bin_idx] += float(losses[bin_pos].sum().item())
+            diag["reg_len_bin_iou_sum"][bin_idx] += float(ious[bin_pos].sum().item())
+
+    def collect_debug_state(self):
+        if not self.assignment_debug_enabled:
+            return {}
+
+        diag = self._assignment_diag
+
+        def safe_avg(sum_key, count_key):
+            count = diag[count_key]
+            return float(diag[sum_key] / count) if count else 0.0
+
+        def safe_list_avg(sum_key, count_key):
+            return [
+                round(float(total / count), 4) if count else 0.0
+                for total, count in zip(diag[sum_key], diag[count_key])
+            ]
+
+        def safe_bin_avg(sum_key):
+            return [
+                round(float(total / count), 4) if count else 0.0
+                for total, count in zip(diag[sum_key], diag["reg_len_bin_count"])
+            ]
+
+        pos_count = max(diag["pos_points"], 1)
+        valid_count = max(diag["valid_points"], 1)
+        return {
+            "assign_epoch": diag["epoch"],
+            "assign_iters": diag["iters"],
+            "assign_samples": diag["samples"],
+            "assign_gt": diag["gt"],
+            "assign_valid_points": diag["valid_points"],
+            "assign_pos_points": diag["pos_points"],
+            "assign_pos_per_sample": float(diag["pos_points"] / max(diag["samples"], 1)),
+            "assign_pos_per_gt": float(diag["pos_points"] / max(diag["gt"], 1)),
+            "assign_weighted_pos": round(diag["weighted_pos"], 4),
+            "assign_weighted_pos_per_gt": float(diag["weighted_pos"] / max(diag["gt"], 1)),
+            "assign_valid_weight_mean": safe_avg("valid_weight_sum", "valid_weight_count"),
+            "assign_valid_weight_lt1_frac": float(diag["valid_weight_lt1"] / valid_count),
+            "assign_valid_weight_eq0_frac": float(diag["valid_weight_eq0"] / valid_count),
+            "assign_pos_weight_mean": float(diag["pos_weight_sum"] / pos_count),
+            "assign_pos_weight_lt1_frac": float(diag["pos_weight_lt1"] / pos_count),
+            "assign_per_level_valid": diag["per_level_valid"],
+            "assign_per_level_pos": diag["per_level_pos"],
+            "assign_per_level_pos_weight": [round(value, 4) for value in diag["per_level_pos_weight"]],
+            "assign_dynamic_k_mean": safe_avg("dynamic_k_sum", "dynamic_k_count"),
+            "assign_dynamic_k_min": diag["dynamic_k_min"],
+            "assign_dynamic_k_max": diag["dynamic_k_max"],
+            "assign_candidate_count_mean": safe_avg("candidate_count_sum", "candidate_count_count"),
+            "assign_candidate_count_min": diag["candidate_count_min"],
+            "assign_candidate_count_max": diag["candidate_count_max"],
+            "assign_matched_count_mean": safe_avg("matched_count_sum", "matched_count_count"),
+            "assign_matched_count_min": diag["matched_count_min"],
+            "assign_matched_count_max": diag["matched_count_max"],
+            "assign_candidate_point_count": diag["candidate_point_count"],
+            "assign_confuse_point_count": diag["confuse_point_count"],
+            "assign_matched_point_count": diag["matched_point_count"],
+            "assign_reg_loss_mean": safe_avg("reg_loss_sum", "reg_loss_count"),
+            "assign_reg_iou_mean": safe_avg("reg_iou_sum", "reg_iou_count"),
+            "assign_reg_target_len_mean": safe_avg("reg_target_len_sum", "reg_target_len_count"),
+            "assign_reg_target_len_min": diag["reg_target_len_min"],
+            "assign_reg_target_len_max": diag["reg_target_len_max"],
+            "assign_reg_pred_len_mean": safe_avg("reg_pred_len_sum", "reg_pred_len_count"),
+            "assign_reg_per_level_loss": safe_list_avg("per_level_reg_loss_sum", "per_level_reg_count"),
+            "assign_reg_per_level_iou": safe_list_avg("per_level_reg_iou_sum", "per_level_reg_count"),
+            "assign_reg_per_level_target_len": safe_list_avg("per_level_reg_target_len_sum", "per_level_reg_count"),
+            "assign_reg_len_bin_edges": diag["reg_len_bin_edges"],
+            "assign_reg_len_bin_count": diag["reg_len_bin_count"],
+            "assign_reg_len_bin_loss": safe_bin_avg("reg_len_bin_loss_sum"),
+            "assign_reg_len_bin_iou": safe_bin_avg("reg_len_bin_iou_sum"),
+        }
 
     def _init_layers(self):
         """Initialize layers of the head."""
@@ -97,6 +362,63 @@ class AnchorFreeHead(nn.Module):
         self.cls_head = nn.Conv1d(self.feat_channels, self.num_classes, kernel_size=3, padding=1)
         self.reg_head = nn.Conv1d(self.feat_channels, 2, kernel_size=3, padding=1)
         self.scale = nn.ModuleList([Scale() for _ in range(len(self.prior_generator.strides))])
+        self.cls_residual = None
+        self.cls_residual_scale = None
+        self.reg_residual = None
+        self.reg_residual_scale = None
+        self.quality_head = None
+        cls_residual_cfg = self.cls_residual_cfg
+        if cls_residual_cfg is not None:
+            kernel_size = int(cls_residual_cfg.get("kernel_size", 3))
+            padding = kernel_size // 2
+            if bool(cls_residual_cfg.get("depthwise", True)):
+                self.cls_residual = nn.Sequential(
+                    nn.Conv1d(
+                        self.feat_channels,
+                        self.feat_channels,
+                        kernel_size=kernel_size,
+                        padding=padding,
+                        groups=self.feat_channels,
+                    ),
+                    nn.ReLU(inplace=True),
+                    nn.Conv1d(self.feat_channels, self.num_classes, kernel_size=1),
+                )
+            else:
+                hidden_channels = int(cls_residual_cfg.get("hidden_channels", self.feat_channels))
+                self.cls_residual = nn.Sequential(
+                    nn.Conv1d(self.feat_channels, hidden_channels, kernel_size=kernel_size, padding=padding),
+                    nn.ReLU(inplace=True),
+                    nn.Conv1d(hidden_channels, self.num_classes, kernel_size=1),
+                )
+            self.cls_residual_scale = nn.Parameter(torch.tensor(float(cls_residual_cfg.get("init_scale", 0.0))))
+        reg_residual_cfg = self.reg_residual_cfg
+        if reg_residual_cfg is not None:
+            kernel_size = int(reg_residual_cfg.get("kernel_size", 3))
+            padding = kernel_size // 2
+            if bool(reg_residual_cfg.get("depthwise", True)):
+                self.reg_residual = nn.Sequential(
+                    nn.Conv1d(
+                        self.feat_channels,
+                        self.feat_channels,
+                        kernel_size=kernel_size,
+                        padding=padding,
+                        groups=self.feat_channels,
+                    ),
+                    nn.ReLU(inplace=True),
+                    nn.Conv1d(self.feat_channels, 2, kernel_size=1),
+                )
+            else:
+                hidden_channels = int(reg_residual_cfg.get("hidden_channels", self.feat_channels))
+                self.reg_residual = nn.Sequential(
+                    nn.Conv1d(self.feat_channels, hidden_channels, kernel_size=kernel_size, padding=padding),
+                    nn.ReLU(inplace=True),
+                    nn.Conv1d(hidden_channels, 2, kernel_size=1),
+                )
+            self.reg_residual_scale = nn.Parameter(torch.tensor(float(reg_residual_cfg.get("init_scale", 0.0))))
+        if self.quality_head_enabled:
+            kernel_size = int(self.quality_head_cfg.get("kernel_size", 3))
+            self.quality_head = nn.Conv1d(self.feat_channels, 1, kernel_size=kernel_size, padding=kernel_size // 2)
+            nn.init.constant_(self.quality_head.bias, float(self.quality_head_cfg.get("bias_init", 0.0)))
 
         # use prior in model initialization to improve stability
         # this will overwrite other weight init
@@ -104,9 +426,22 @@ class AnchorFreeHead(nn.Module):
             bias_value = -(math.log((1 - self.cls_prior_prob) / self.cls_prior_prob))
             nn.init.constant_(self.cls_head.bias, bias_value)
 
+    def _apply_cls_residual(self, cls_feat, cls_logits):
+        if self.cls_residual is None:
+            return cls_logits
+        cls_logits = cls_logits + self.cls_residual_scale.to(dtype=cls_logits.dtype) * self.cls_residual(cls_feat)
+        return cls_logits
+
+    def _apply_reg_residual(self, reg_feat, reg_raw):
+        if self.reg_residual is None:
+            return reg_raw
+        reg_raw = reg_raw + self.reg_residual_scale.to(dtype=reg_raw.dtype) * self.reg_residual(reg_feat)
+        return reg_raw
+
     def forward_train(self, feat_list, mask_list, gt_segments, gt_labels, **kwargs):
         cls_pred = []
         reg_pred = []
+        quality_pred = []
 
         for l, (feat, mask) in enumerate(zip(feat_list, mask_list)):
             cls_feat = feat
@@ -116,17 +451,21 @@ class AnchorFreeHead(nn.Module):
                 cls_feat, mask = self.cls_convs[i](cls_feat, mask)
                 reg_feat, mask = self.reg_convs[i](reg_feat, mask)
 
-            cls_pred.append(self.cls_head(cls_feat))
-            reg_pred.append(F.relu(self.scale[l](self.reg_head(reg_feat))))
+            cls_pred.append(self._apply_cls_residual(cls_feat, self.cls_head(cls_feat)))
+            reg_pred.append(F.relu(self.scale[l](self._apply_reg_residual(reg_feat, self.reg_head(reg_feat)))))
+            if self.quality_head_enabled:
+                quality_pred.append(self.quality_head(reg_feat.detach()))
 
         points = self.prior_generator(feat_list)
 
-        losses = self.losses(cls_pred, reg_pred, mask_list, points, gt_segments, gt_labels)
+        quality_pred = quality_pred if self.quality_head_enabled else None
+        losses = self.losses(cls_pred, reg_pred, mask_list, points, gt_segments, gt_labels, quality_pred=quality_pred)
         return losses
 
     def forward_test(self, feat_list, mask_list, **kwargs):
         cls_pred = []
         reg_pred = []
+        quality_pred = []
 
         for l, (feat, mask) in enumerate(zip(feat_list, mask_list)):
             cls_feat = feat
@@ -136,13 +475,18 @@ class AnchorFreeHead(nn.Module):
                 cls_feat, mask = self.cls_convs[i](cls_feat, mask)
                 reg_feat, mask = self.reg_convs[i](reg_feat, mask)
 
-            cls_pred.append(self.cls_head(cls_feat))
-            reg_pred.append(F.relu(self.scale[l](self.reg_head(reg_feat))))
+            cls_pred.append(self._apply_cls_residual(cls_feat, self.cls_head(cls_feat)))
+            reg_pred.append(F.relu(self.scale[l](self._apply_reg_residual(reg_feat, self.reg_head(reg_feat)))))
+            if self.quality_head_enabled:
+                quality_pred.append(self.quality_head(reg_feat.detach()))
 
         points = self.prior_generator(feat_list)
 
         # get refined proposals and scores
-        proposals, scores = self.get_valid_proposals_scores(points, reg_pred, cls_pred, mask_list)  # list [T,2]
+        quality_pred = quality_pred if self.quality_head_enabled else None
+        proposals, scores = self.get_valid_proposals_scores(
+            points, reg_pred, cls_pred, mask_list, quality_pred=quality_pred
+        )  # list [T,2]
         return proposals, scores
 
     def get_refined_proposals(self, points, reg_pred):
@@ -154,24 +498,54 @@ class AnchorFreeHead(nn.Module):
         proposals = torch.stack((start, end), dim=-1)  # [B,T,2]
         return proposals
 
-    def get_valid_proposals_scores(self, points, reg_pred, cls_pred, mask_list):
+    def get_valid_proposals_scores(self, points, reg_pred, cls_pred, mask_list, quality_pred=None):
         # apply regression to get refined proposals
         proposals = self.get_refined_proposals(points, reg_pred)  # [B,T,2]
         # proposal scores
         scores = torch.cat(cls_pred, dim=-1).permute(0, 2, 1).sigmoid()  # [B,T,num_classes]
+        if quality_pred is None or self.quality_score_alpha <= 0:
+            quality_scores = [None] * scores.shape[0]
+        else:
+            quality_scores = torch.cat(quality_pred, dim=-1).permute(0, 2, 1).sigmoid()  # [B,T,1]
 
         # mask out invalid, and return a list with batch size
         masks = torch.cat(mask_list, dim=1)  # [B,T]
         new_proposals, new_scores = [], []
-        for proposal, score, mask in zip(proposals, scores, masks):
+        for proposal, score, mask, quality_score in zip(proposals, scores, masks, quality_scores):
+            if quality_score is not None:
+                quality_score = quality_score.clamp(min=1e-6, max=1.0)
+                score = score * quality_score.pow(self.quality_score_alpha)
             new_proposals.append(proposal[mask])  # [T,2]
             new_scores.append(score[mask])  # [T,num_classes]
         return new_proposals, new_scores
 
-    def losses(self, cls_pred, reg_pred, mask_list, points, gt_segments, gt_labels):
+    @staticmethod
+    def _segment_iou_1d(pred_segments, target_segments, eps=1e-6):
+        pred_len = (pred_segments[:, 1] - pred_segments[:, 0]).clamp(min=0.0)
+        target_len = (target_segments[:, 1] - target_segments[:, 0]).clamp(min=0.0)
+        inter = (
+            torch.minimum(pred_segments[:, 1], target_segments[:, 1])
+            - torch.maximum(pred_segments[:, 0], target_segments[:, 0])
+        ).clamp(min=0.0)
+        union = (pred_len + target_len - inter).clamp(min=eps)
+        return inter / union
+
+    def _quality_loss(self, quality_pred, valid_mask, pos_mask, pred_segments, target_segments):
+        quality_pred = torch.cat(quality_pred, dim=-1).squeeze(1)
+        quality_logits = quality_pred[valid_mask]
+        quality_target = torch.zeros_like(valid_mask, dtype=quality_pred.dtype)
+        if pred_segments.numel() > 0:
+            quality_target[pos_mask] = self._segment_iou_1d(pred_segments.detach(), target_segments.detach())
+        quality_target = quality_target[valid_mask]
+        quality_loss = F.binary_cross_entropy_with_logits(quality_logits, quality_target, reduction="sum")
+        quality_loss /= valid_mask.sum().clamp(min=1).to(dtype=quality_loss.dtype)
+        return quality_loss
+
+    def losses(self, cls_pred, reg_pred, mask_list, points, gt_segments, gt_labels, quality_pred=None):
         if self.assigner is None:
             gt_cls, gt_reg = self.prepare_targets(points, gt_segments, gt_labels)
             target_weights = None
+            self._last_assigner_stats = []
         else:
             gt_cls, gt_reg, target_weights = self.prepare_targets_with_assigner(
                 points, mask_list, cls_pred, reg_pred, gt_segments, gt_labels
@@ -186,6 +560,8 @@ class AnchorFreeHead(nn.Module):
             num_pos = (pos_mask.float() * target_weights).sum().item()
         else:
             num_pos = pos_mask.sum().item()
+
+        self._update_assignment_diag(points, valid_mask, gt_cls, pos_mask, target_weights, gt_segments)
 
         # maintain an EMA of foreground to stabilize the loss normalizer
         # useful for small mini-batch training
@@ -209,8 +585,7 @@ class AnchorFreeHead(nn.Module):
         if target_weights is None:
             cls_loss = self.cls_loss(cls_pred, gt_target, reduction="sum")
         else:
-            valid_cls_weights = torch.ones(gt_cls.shape[:-1], dtype=torch.float32).to(gt_cls.device)
-            valid_cls_weights[pos_mask] = target_weights[pos_mask]
+            valid_cls_weights = target_weights.to(dtype=torch.float32)
             valid_cls_weights = valid_cls_weights[valid_mask]
             cls_loss = self.cls_loss(cls_pred, gt_target, reduction="none")
             cls_loss = (cls_loss * valid_cls_weights[:, None]).sum()
@@ -219,18 +594,21 @@ class AnchorFreeHead(nn.Module):
         # 2. regression using IoU/GIoU/DIOU loss (defined on positive samples)
         split_size = [reg.shape[-1] for reg in reg_pred]
         gt_reg = torch.stack(gt_reg).permute(0, 2, 1).split(split_size, dim=-1)  # [B,2,T]
-        pred_segments = self.get_refined_proposals(points, reg_pred)[pos_mask]
-        gt_segments = self.get_refined_proposals(points, gt_reg)[pos_mask]
+        all_pred_segments = self.get_refined_proposals(points, reg_pred)
+        all_target_segments = self.get_refined_proposals(points, gt_reg)
+        pred_segments = all_pred_segments[pos_mask]
+        target_segments = all_target_segments[pos_mask]
         if num_pos == 0:
             reg_loss = pred_segments.sum() * 0
         else:
             # giou loss defined on positive samples
+            reg_loss_values = self.reg_loss(pred_segments, target_segments, reduction="none")
+            self._update_regression_diag(points, pos_mask, pred_segments, target_segments, reg_loss_values)
             if target_weights is None:
-                reg_loss = self.reg_loss(pred_segments, gt_segments, reduction="sum")
+                reg_loss = reg_loss_values.sum()
             else:
                 pos_weights = target_weights[pos_mask]
-                reg_loss = self.reg_loss(pred_segments, gt_segments, reduction="none")
-                reg_loss = (reg_loss * pos_weights).sum()
+                reg_loss = (reg_loss_values * pos_weights).sum()
             reg_loss /= loss_normalizer
 
         if self.loss_weight > 0:
@@ -238,7 +616,11 @@ class AnchorFreeHead(nn.Module):
         else:
             loss_weight = cls_loss.detach() / max(reg_loss.item(), 0.01)
 
-        return {"cls_loss": cls_loss, "reg_loss": reg_loss * loss_weight}
+        losses = {"cls_loss": cls_loss, "reg_loss": reg_loss * loss_weight}
+        if self.quality_head_enabled and quality_pred is not None and self.quality_loss_weight > 0:
+            quality_loss = self._quality_loss(quality_pred, valid_mask, pos_mask, pred_segments, target_segments)
+            losses["quality_loss"] = quality_loss * self.quality_loss_weight
+        return losses
 
     @torch.no_grad()
     def prepare_targets_with_assigner(self, points, mask_list, cls_preds, reg_preds, gt_segments, gt_labels):
@@ -254,6 +636,7 @@ class AnchorFreeHead(nn.Module):
         num_pts = concat_points.shape[0]
         point_inds = torch.arange(num_pts, device=concat_points.device)
         gt_cls, gt_reg, weights = [], [], []
+        batch_assigner_stats = []
 
         for mask, cls_pred, reg_pred, gt_segment, gt_label in zip(
             masks, cls_preds, reg_preds, gt_segments, gt_labels
@@ -263,12 +646,14 @@ class AnchorFreeHead(nn.Module):
             if num_gts == 0:
                 gt_cls.append(gt_segment.new_full((num_pts, self.num_classes), 0))
                 gt_reg.append(gt_segment.new_zeros((num_pts, 2)))
-                weights.append(concat_points.new_zeros((num_pts,), dtype=torch.float32))
+                weights.append(concat_points.new_ones((num_pts,), dtype=torch.float32))
                 continue
 
             assign_matrix, min_inds, weight = self.assigner.assign(
                 cls_pred, assign_points, reg_pred, gt_segment, gt_label, mask
             )
+            if hasattr(self.assigner, "get_last_stats"):
+                batch_assigner_stats.append(self.assigner.get_last_stats())
 
             gt_segs = gt_segment[None].expand(num_pts, num_gts, 2)
             left = concat_points[:, 0, None] - gt_segs[:, :, 0]
@@ -286,6 +671,7 @@ class AnchorFreeHead(nn.Module):
             gt_reg.append(reg_targets)
             weights.append(weight)
 
+        self._last_assigner_stats = batch_assigner_stats
         return gt_cls, gt_reg, weights
 
     @torch.no_grad()

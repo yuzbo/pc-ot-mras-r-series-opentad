@@ -10,6 +10,12 @@ import numpy as np
 
 from ..builder import PIPELINES
 from torch.nn import functional as F
+from .pseudo_boundary import (
+    load_boundary_scores,
+    select_pseudo_boundary_hybrid_positions,
+    select_pseudo_boundary_snap_positions,
+    slice_global_scores_for_window,
+)
 
 
 def _stable_string_seed(value):
@@ -209,12 +215,18 @@ class LoadFrames:
         sampling_background_weight=1.0,
         remap_gt_to_selected_axis=True,
         store_dense_window=False,
+        pseudo_boundary_cache_dir=None,
+        pseudo_boundary_quota=64,
+        pseudo_boundary_radius=1,
+        pseudo_boundary_snap_distance=2,
+        pseudo_boundary_min_score=0.0,
+        pseudo_boundary_fallback="random_fixed",
         fixed_trunc_start=None,
         fixed_trunc_gt_index=None,
     ):
         self.num_clips = num_clips
         self.scale_factor = scale_factor  # multiply by the frame number, if backbone has downsampling
-        self.method = method  # resize or padding or random_trunc or sliding_window or random_fixed_subsample
+        self.method = method  # resize/padding/random_trunc/sliding_window/*_subsample
         # random_trunc settings
         self.trunc_len = trunc_len
         self.trunc_thresh = trunc_thresh
@@ -232,6 +244,12 @@ class LoadFrames:
         self.sampling_background_weight = sampling_background_weight
         self.remap_gt_to_selected_axis = remap_gt_to_selected_axis
         self.store_dense_window = store_dense_window
+        self.pseudo_boundary_cache_dir = pseudo_boundary_cache_dir
+        self.pseudo_boundary_quota = pseudo_boundary_quota
+        self.pseudo_boundary_radius = pseudo_boundary_radius
+        self.pseudo_boundary_snap_distance = pseudo_boundary_snap_distance
+        self.pseudo_boundary_min_score = pseudo_boundary_min_score
+        self.pseudo_boundary_fallback = pseudo_boundary_fallback
         self.fixed_trunc_start = fixed_trunc_start
         self.fixed_trunc_gt_index = fixed_trunc_gt_index
 
@@ -517,6 +535,37 @@ class LoadFrames:
         selected = np.sort(rng.choice(total_units, size=int(target_count), replace=False))
         return self._expand_selected_units(selected.astype(np.int64), valid_len)
 
+    def _select_stratified_random_fixed_positions(self, valid_len, target_frame_num, sample_key):
+        if valid_len <= 0 or target_frame_num <= 0:
+            return np.zeros((0,), dtype=np.int64)
+
+        total_units = self._num_selection_units(valid_len)
+        target_count = self._selection_target_count(target_frame_num)
+        if target_count >= total_units:
+            return self._expand_selected_units(np.arange(total_units, dtype=np.int64), valid_len)
+
+        rng = np.random.RandomState(_stable_string_seed(sample_key))
+        bucket_edges = np.linspace(0, total_units, num=target_count + 1)
+        selected = []
+        for bucket_idx in range(target_count):
+            start = int(np.floor(bucket_edges[bucket_idx]))
+            end = int(np.floor(bucket_edges[bucket_idx + 1]))
+            end = max(end, start + 1)
+            end = min(end, total_units)
+            bucket_units = np.arange(start, end, dtype=np.int64)
+            if bucket_units.size == 0:
+                continue
+            selected.append(int(rng.choice(bucket_units)))
+
+        selected = np.asarray(selected, dtype=np.int64)
+        if selected.size < target_count:
+            remaining = np.setdiff1d(np.arange(total_units, dtype=np.int64), selected, assume_unique=False)
+            if remaining.size > 0:
+                fill = rng.choice(remaining, size=min(target_count - selected.size, remaining.size), replace=False)
+                selected = np.concatenate([selected, fill.astype(np.int64)])
+
+        return self._expand_selected_units(np.sort(np.unique(selected.astype(np.int64))), valid_len)
+
     def _map_coord_to_selected_axis(self, coord, kept_positions, valid_len):
         if kept_positions.size == 0:
             return 0.0
@@ -714,7 +763,12 @@ class LoadFrames:
             else:
                 masks = torch.ones(window_size).bool()
 
-        elif self.method == "random_fixed_subsample":
+        elif self.method in (
+            "random_fixed_subsample",
+            "stratified_random_fixed_subsample",
+            "pseudo_boundary_hybrid_subsample",
+            "pseudo_boundary_snap_subsample",
+        ):
             assert results["snippet_stride"] >= self.scale_factor, "snippet_stride should be larger than scale_factor"
             assert (
                 results["snippet_stride"] % self.scale_factor == 0
@@ -773,13 +827,67 @@ class LoadFrames:
                     oracle_frame_inds = oracle_frame_inds[:dense_frame_num]
                 results["oracle_dense_frame_inds"] = oracle_frame_inds.astype(int)
 
+            sample_profile = "random_fixed"
+            if self.method == "stratified_random_fixed_subsample":
+                sample_profile = f"{self.method}|{self.selection_unit}|{self._selection_group_size()}"
+            elif self.method == "pseudo_boundary_hybrid_subsample":
+                sample_profile = (
+                    f"{self.method}|{self.selection_unit}|{self._selection_group_size()}|"
+                    f"q{int(self.pseudo_boundary_quota)}|r{int(self.pseudo_boundary_radius)}|"
+                    f"{self.pseudo_boundary_fallback}"
+                )
+            elif self.method == "pseudo_boundary_snap_subsample":
+                sample_profile = (
+                    f"{self.method}|{self.selection_unit}|{self._selection_group_size()}|"
+                    f"q{int(self.pseudo_boundary_quota)}|d{int(self.pseudo_boundary_snap_distance)}|"
+                    f"{self.pseudo_boundary_fallback}"
+                )
             sample_key = (
-                f"{results.get('video_name', 'unknown')}|random_fixed|"
+                f"{results.get('video_name', 'unknown')}|{sample_profile}|"
                 f"{int(dense_window[0]) if valid_len > 0 else -1}|"
                 f"{int(dense_window[-1]) if valid_len > 0 else -1}|"
                 f"{valid_len}|{frame_num}"
             )
-            keep_positions = self._select_random_fixed_positions(valid_len, frame_num, sample_key)
+            if self.method == "stratified_random_fixed_subsample":
+                keep_positions = self._select_stratified_random_fixed_positions(valid_len, frame_num, sample_key)
+            elif self.method == "pseudo_boundary_hybrid_subsample":
+                boundary_scores = load_boundary_scores(
+                    self.pseudo_boundary_cache_dir,
+                    results.get("video_name", "unknown"),
+                )
+                global_indices = np.rint(dense_window / max(frame_stride, 1)).astype(np.int64)
+                window_scores = slice_global_scores_for_window(boundary_scores, global_indices)
+                keep_positions = select_pseudo_boundary_hybrid_positions(
+                    valid_len=valid_len,
+                    target_frame_num=frame_num,
+                    sample_key=sample_key,
+                    boundary_scores=window_scores,
+                    pseudo_quota=self.pseudo_boundary_quota,
+                    pseudo_radius=self.pseudo_boundary_radius,
+                    pseudo_min_score=self.pseudo_boundary_min_score,
+                    fallback=self.pseudo_boundary_fallback,
+                    group_size=self._selection_group_size(),
+                )
+            elif self.method == "pseudo_boundary_snap_subsample":
+                boundary_scores = load_boundary_scores(
+                    self.pseudo_boundary_cache_dir,
+                    results.get("video_name", "unknown"),
+                )
+                global_indices = np.rint(dense_window / max(frame_stride, 1)).astype(np.int64)
+                window_scores = slice_global_scores_for_window(boundary_scores, global_indices)
+                keep_positions = select_pseudo_boundary_snap_positions(
+                    valid_len=valid_len,
+                    target_frame_num=frame_num,
+                    sample_key=sample_key,
+                    boundary_scores=window_scores,
+                    pseudo_quota=self.pseudo_boundary_quota,
+                    pseudo_snap_distance=self.pseudo_boundary_snap_distance,
+                    pseudo_min_score=self.pseudo_boundary_min_score,
+                    fallback=self.pseudo_boundary_fallback,
+                    group_size=self._selection_group_size(),
+                )
+            else:
+                keep_positions = self._select_random_fixed_positions(valid_len, frame_num, sample_key)
             if keep_positions.size == 0:
                 keep_positions = np.array([0], dtype=np.int64)
 

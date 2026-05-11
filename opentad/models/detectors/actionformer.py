@@ -40,6 +40,18 @@ class ActionFormer(SingleStageDetector):
                 max_div_factor = stride
         self.max_div_factor = max_div_factor
 
+    def set_train_epoch(self, curr_epoch):
+        if hasattr(self, "rpn_head") and hasattr(self.rpn_head, "set_train_epoch"):
+            self.rpn_head.set_train_epoch(curr_epoch)
+        if hasattr(self, "backbone") and hasattr(self.backbone, "set_train_epoch"):
+            self.backbone.set_train_epoch(curr_epoch)
+
+    def _forward_backbone(self, inputs, metas=None):
+        backbone_model = getattr(getattr(self.backbone, "model", None), "backbone", None)
+        if getattr(backbone_model, "use_irregular_time_embed", False):
+            return self.backbone(inputs, metas=metas)
+        return self.backbone(inputs)
+
     def pad_data(self, inputs, masks):
         feat_len = inputs.shape[-1]
         if feat_len == self.max_seq_len:
@@ -61,7 +73,7 @@ class ActionFormer(SingleStageDetector):
     def forward_train(self, inputs, masks, metas, gt_segments, gt_labels, **kwargs):
         losses = dict()
         if self.with_backbone:
-            x = self.backbone(inputs)
+            x = self._forward_backbone(inputs, metas=metas)
         else:
             x = inputs
 
@@ -89,7 +101,7 @@ class ActionFormer(SingleStageDetector):
 
     def forward_test(self, inputs, masks, metas=None, infer_cfg=None, **kwargs):
         if self.with_backbone:
-            x = self.backbone(inputs)
+            x = self._forward_backbone(inputs, metas=metas)
         else:
             x = inputs
 
@@ -104,6 +116,13 @@ class ActionFormer(SingleStageDetector):
         rpn_proposals, rpn_scores = self.rpn_head.forward_test(x, masks, **kwargs)
         predictions = rpn_proposals, rpn_scores
         return predictions
+
+    def grad_clip_parameters(self):
+        exclude_quality_head = bool(getattr(self.rpn_head, "quality_head_enabled", False))
+        for name, param in self.named_parameters():
+            if exclude_quality_head and name.startswith("rpn_head.quality_head."):
+                continue
+            yield param
 
     def get_optim_groups(self, cfg):
         # separate out all parameters that with / without weight decay
@@ -133,6 +152,8 @@ class ActionFormer(SingleStageDetector):
                     no_decay.add(fpn)
                 elif pn.endswith("scale") and isinstance(m, (Scale, AffineDropPath)):
                     # corner case of our scale layer
+                    no_decay.add(fpn)
+                elif pn in {"cls_residual_scale", "reg_residual_scale"}:
                     no_decay.add(fpn)
                 elif pn.endswith("rel_pe"):
                     # corner case for relative position encoding
