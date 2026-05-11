@@ -95,12 +95,45 @@ PY
 }
 
 run_exp() {
-  local log_file="$LOG_DIR/${NAME}_$(date '+%Y%m%d_%H%M%S').log"
+  local timestamp log_file supervisor_log train_pid supervisor_pid status
+  train_pid=""
+  supervisor_pid=""
+  timestamp="$(date '+%Y%m%d_%H%M%S')"
+  log_file="$LOG_DIR/${NAME}_${timestamp}.log"
+  supervisor_log="$LOG_DIR/${NAME}_supervisor_${timestamp}.md"
   log_msg "starting ${NAME}"
   cd "$ROOT_DIR"
+
+  cleanup() {
+    if [[ -n "${supervisor_pid}" ]]; then
+      kill "$supervisor_pid" 2>/dev/null || true
+    fi
+    if [[ -n "${train_pid}" ]]; then
+      kill "$train_pid" 2>/dev/null || true
+    fi
+  }
+
+  trap 'cleanup; exit 130' INT TERM
+
+  set +e
   CUDA_VISIBLE_DEVICES="$GPU_ID" "$TORCHRUN" --master_port="$BASE_PORT" --nproc_per_node=1 \
-    tools/train.py "$CONFIG" --id 0 2>&1 | tee "$log_file"
-  log_msg "finished ${NAME}"
+    tools/train.py "$CONFIG" --id 0 > >(tee "$log_file") 2>&1 &
+  train_pid="$!"
+
+  PROCESS_PID="$train_pid" \
+    PROCESS_PATTERN="tools/train.py.*${CONFIG}" \
+    INTERVAL_SECONDS="${SUPERVISE_INTERVAL_SECONDS:-1800}" \
+    bash scripts/supervise_adapter_quality.sh "${NAME}_${GPU_ID}" "$log_file" "$supervisor_log" &
+  supervisor_pid="$!"
+
+  wait "$train_pid"
+  status="$?"
+  sleep "${SUPERVISE_FINAL_FLUSH_SECONDS:-1}"
+  kill "$supervisor_pid" 2>/dev/null || true
+  trap - INT TERM
+  set -e
+  log_msg "finished ${NAME} status=${status} supervisor_log=${supervisor_log}"
+  return "$status"
 }
 
 log_msg "adapter quality rescore queue start"
