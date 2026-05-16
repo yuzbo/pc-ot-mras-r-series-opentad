@@ -16,6 +16,9 @@
 - Use Claude CLI for direction discussion and code review.
 - Do not use the `claude-review` MCP path unless the user explicitly changes this rule.
 - After code review and local fixes, run local checks before any deployment.
+- Before launching any innovative experiment, first complete a Claude CLI direction-and-implementation discussion and write the discussion record here.
+- The discussion must include the agent's own reasoning and reflection, not just Claude's recommendation. Claude's advice is an input to challenge and refine, not a command to follow blindly.
+- If Claude CLI returns a transient error such as API 429, do not treat the discussion as complete and do not launch the innovative experiment until a later successful discussion.
 
 ## Current Direction
 
@@ -27,3 +30,12 @@
 - Next candidate ablation prepared locally but not deployed:
   `configs/adatad/thumos/input_random_fixed_50pct_adapter_quality_positive_maxiou_posonly.py`.
   This uses `target_mode="positive_max_iou"`, `negative_weight=0.0`, and `loss_normalizer="positive"` to avoid dense negative BCE pressure on the quality head.
+
+## Pending Claude CLI Discussion
+
+- A formal Claude CLI discussion is required before launching `input_random_fixed_50pct_adapter_quality_positive_maxiou_posonly.py` or any other new innovative experiment.
+- 2026-05-16: three Claude CLI attempts were made for the positive-max-IoU direction discussion:
+  - full direction prompt: API 429 peak-load rejection.
+  - shortened direction prompt: API 429 peak-load rejection.
+  - minimal availability probe: socket connection closed unexpectedly.
+- Because no successful Claude CLI discussion completed, the next innovative experiment must remain pending. Continue supervising the already-running assigned-IoU quality experiments only.
