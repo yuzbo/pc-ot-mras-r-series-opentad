@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="${1:-/root/autodl-tmp/OpenTAD_Back_check}"
+ROOT_DIR="${ROOT_DIR:-${1:-/root/autodl-tmp/OpenTAD_Back_check}}"
 LOG_DIR="$ROOT_DIR/logs"
 mkdir -p "$LOG_DIR"
 
 QUEUE_LOG="$LOG_DIR/adapter_quality_rescore_driver.log"
 GPU_ID="${GPU_ID:-0}"
+RUN_ID="${RUN_ID:-0}"
 PYTHON_BIN="${PYTHON_BIN:-/root/miniconda3/bin/python}"
 TORCHRUN="${TORCHRUN:-/root/miniconda3/bin/torchrun}"
 BASE_PORT="${BASE_PORT:-30610}"
 GPU_FREE_MIB="${GPU_FREE_MIB:-900}"
 CHECK_ONLY="${CHECK_ONLY:-0}"
+STORAGE_CHECK_PATH="${STORAGE_CHECK_PATH:-$ROOT_DIR}"
+RESUME_CHECKPOINT="${RESUME_CHECKPOINT:-}"
+ALLOW_RESUME_CHECKPOINT="${ALLOW_RESUME_CHECKPOINT:-0}"
+SKIP_GPU_WAIT="${SKIP_GPU_WAIT:-0}"
+KEEP_CUDA_VISIBLE_DEVICES="${KEEP_CUDA_VISIBLE_DEVICES:-0}"
 
-CONFIG="configs/adatad/thumos/input_random_fixed_50pct_adapter_quality_rescore_detached.py"
-NAME="input_random_fixed_50pct_adapter_quality_rescore_detached"
-WORK_LOG="$ROOT_DIR/exps/thumos/adatad/${NAME}/gpu1_id0/log.json"
+CONFIG="${CONFIG:-configs/adatad/thumos/input_random_fixed_50pct_adapter_quality_rescore_detached.py}"
+NAME="${NAME:-input_random_fixed_50pct_adapter_quality_rescore_detached}"
+WORK_LOG="$ROOT_DIR/exps/thumos/adatad/${NAME}/gpu1_id${RUN_ID}/log.json"
 
 log_msg() {
   echo "$(date '+%F %T') $*" | tee -a "$QUEUE_LOG"
@@ -54,8 +60,16 @@ assert int(cfg.model.projection.max_seq_len) == 384, cfg.model.projection
 quality = cfg.model.rpn_head.quality_head_cfg
 assert cfg.model.rpn_head.quality_head_cfg.enabled, quality
 assert int(quality.kernel_size) == 3, quality
+assert abs(float(quality.get("bias_init", 0.0)) - 4.59511985013459) < 1e-9, quality
+assert abs(float(quality.get("weight_init", 1.0))) < 1e-12, quality
 assert abs(float(quality.loss_weight) - 0.10) < 1e-9, quality
 assert abs(float(quality.score_alpha) - 0.25) < 1e-9, quality
+
+from opentad.models.detectors.actionformer import ActionFormer
+import inspect
+grad_clip_source = inspect.getsource(ActionFormer.grad_clip_parameters)
+assert "exclude_quality_head" in grad_clip_source, grad_clip_source
+assert 'name.startswith("rpn_head.quality_head.")' in grad_clip_source, grad_clip_source
 
 train = cfg.dataset.train
 val = cfg.dataset.val
@@ -86,6 +100,8 @@ print("work_dir=", cfg.work_dir)
 print("model=", cfg.model.type)
 print("backbone=", cfg.model.backbone.backbone.type)
 print("input_pdrop=", cfg.model.projection.get("input_pdrop", 0.0))
+print("quality_bias_init=", quality.bias_init)
+print("quality_weight_init=", quality.weight_init)
 print("quality_loss_weight=", quality.loss_weight)
 print("quality_score_alpha=", quality.score_alpha)
 print("train_load=", train_load.method, train_load.method_base)
@@ -97,6 +113,7 @@ PY
 
 run_exp() {
   local timestamp log_file supervisor_log monitor_log train_pid supervisor_pid status
+  local -a train_args
   train_pid=""
   supervisor_pid=""
   timestamp="$(date '+%Y%m%d_%H%M%S')"
@@ -118,8 +135,18 @@ run_exp() {
   trap 'cleanup; exit 130' INT TERM
 
   set +e
-  CUDA_VISIBLE_DEVICES="$GPU_ID" "$TORCHRUN" --master_port="$BASE_PORT" --nproc_per_node=1 \
-    tools/train.py "$CONFIG" --id 0 > >(tee "$log_file") 2>&1 &
+  train_args=(tools/train.py "$CONFIG" --id "$RUN_ID")
+  if [[ -n "$RESUME_CHECKPOINT" ]]; then
+    train_args+=(--resume "$RESUME_CHECKPOINT")
+    log_msg "resuming ${NAME} from ${RESUME_CHECKPOINT}"
+  fi
+  if [[ "$KEEP_CUDA_VISIBLE_DEVICES" == "1" ]]; then
+    "$TORCHRUN" --master_port="$BASE_PORT" --nproc_per_node=1 \
+      "${train_args[@]}" > >(tee "$log_file") 2>&1 &
+  else
+    CUDA_VISIBLE_DEVICES="$GPU_ID" "$TORCHRUN" --master_port="$BASE_PORT" --nproc_per_node=1 \
+      "${train_args[@]}" > >(tee "$log_file") 2>&1 &
+  fi
   train_pid="$!"
 
   for _ in {1..60}; do
@@ -147,7 +174,13 @@ run_exp() {
 }
 
 log_msg "adapter quality rescore queue start"
-df -h /root/autodl-tmp | tee -a "$QUEUE_LOG"
+df -h "$STORAGE_CHECK_PATH" | tee -a "$QUEUE_LOG"
+
+if [[ -n "$RESUME_CHECKPOINT" && "$ALLOW_RESUME_CHECKPOINT" != "1" ]]; then
+  log_msg "refusing RESUME_CHECKPOINT without ALLOW_RESUME_CHECKPOINT=1: ${RESUME_CHECKPOINT}"
+  exit 2
+fi
+
 check_cfg
 
 if [[ "$CHECK_ONLY" == "1" ]]; then
@@ -155,6 +188,10 @@ if [[ "$CHECK_ONLY" == "1" ]]; then
   exit 0
 fi
 
-wait_for_gpu
+if [[ "$SKIP_GPU_WAIT" == "1" ]]; then
+  log_msg "skipping GPU wait because allocation is managed by the scheduler"
+else
+  wait_for_gpu
+fi
 run_exp
 log_msg "adapter quality rescore queue complete"

@@ -50,6 +50,18 @@ class AnchorFreeHead(nn.Module):
         self.quality_head_enabled = bool(self.quality_head_cfg.get("enabled", False))
         self.quality_loss_weight = float(self.quality_head_cfg.get("loss_weight", 0.0))
         self.quality_score_alpha = float(self.quality_head_cfg.get("score_alpha", 0.0))
+        self.quality_target_mode = self.quality_head_cfg.get("target_mode", "assigned_iou")
+        self.quality_positive_weight = float(self.quality_head_cfg.get("positive_weight", 1.0))
+        self.quality_negative_weight = float(self.quality_head_cfg.get("negative_weight", 1.0))
+        self.quality_loss_normalizer = self.quality_head_cfg.get("loss_normalizer", "valid")
+        valid_quality_target_modes = {"assigned_iou", "max_iou", "positive_max_iou"}
+        if self.quality_target_mode not in valid_quality_target_modes:
+            raise ValueError(f"Unsupported quality target mode: {self.quality_target_mode}")
+        valid_quality_normalizers = {"valid", "weighted", "positive"}
+        if self.quality_loss_normalizer not in valid_quality_normalizers:
+            raise ValueError(f"Unsupported quality loss normalizer: {self.quality_loss_normalizer}")
+        if self.quality_loss_normalizer == "positive" and self.quality_negative_weight > 0:
+            raise ValueError("quality loss_normalizer='positive' requires negative_weight=0.0")
 
         self.loss_weight = loss_weight
         self.center_sample = center_sample
@@ -418,6 +430,7 @@ class AnchorFreeHead(nn.Module):
         if self.quality_head_enabled:
             kernel_size = int(self.quality_head_cfg.get("kernel_size", 3))
             self.quality_head = nn.Conv1d(self.feat_channels, 1, kernel_size=kernel_size, padding=kernel_size // 2)
+            nn.init.constant_(self.quality_head.weight, float(self.quality_head_cfg.get("weight_init", 0.0)))
             nn.init.constant_(self.quality_head.bias, float(self.quality_head_cfg.get("bias_init", 0.0)))
 
         # use prior in model initialization to improve stability
@@ -530,16 +543,88 @@ class AnchorFreeHead(nn.Module):
         union = (pred_len + target_len - inter).clamp(min=eps)
         return inter / union
 
-    def _quality_loss(self, quality_pred, valid_mask, pos_mask, pred_segments, target_segments):
+    @staticmethod
+    def _pairwise_segment_iou_1d(pred_segments, target_segments, eps=1e-6):
+        pred_len = (pred_segments[:, 1] - pred_segments[:, 0]).clamp(min=0.0)
+        target_len = (target_segments[:, 1] - target_segments[:, 0]).clamp(min=0.0)
+        inter = (
+            torch.minimum(pred_segments[:, None, 1], target_segments[None, :, 1])
+            - torch.maximum(pred_segments[:, None, 0], target_segments[None, :, 0])
+        ).clamp(min=0.0)
+        union = (pred_len[:, None] + target_len[None, :] - inter).clamp(min=eps)
+        return inter / union
+
+    @torch.no_grad()
+    def _max_iou_quality_target(self, all_pred_segments, valid_mask, gt_segments, dtype=None):
+        target_dtype = all_pred_segments.dtype if dtype is None else dtype
+        quality_target = torch.zeros_like(valid_mask, dtype=target_dtype)
+        for batch_idx, gt_segment in enumerate(gt_segments):
+            valid = valid_mask[batch_idx]
+            if not valid.any() or gt_segment.numel() == 0:
+                continue
+            pred = all_pred_segments[batch_idx, valid].detach()
+            target = gt_segment.detach().to(device=pred.device, dtype=pred.dtype)
+            quality_target[batch_idx, valid] = self._pairwise_segment_iou_1d(pred, target).max(dim=1).values.to(
+                dtype=target_dtype
+            )
+        return quality_target
+
+    def _quality_loss(
+        self,
+        quality_pred,
+        valid_mask,
+        pos_mask,
+        pred_segments,
+        target_segments,
+        all_pred_segments=None,
+        gt_segments=None,
+    ):
         quality_pred = torch.cat(quality_pred, dim=-1).squeeze(1)
         quality_pred = quality_pred.float()
         quality_logits = quality_pred[valid_mask]
-        quality_target = torch.zeros_like(valid_mask, dtype=quality_pred.dtype)
-        if pred_segments.numel() > 0:
-            quality_target[pos_mask] = self._segment_iou_1d(pred_segments.detach(), target_segments.detach())
+        if quality_logits.numel() == 0:
+            return quality_pred.sum() * 0
+
+        if self.quality_target_mode == "assigned_iou":
+            quality_target = torch.zeros_like(valid_mask, dtype=quality_pred.dtype)
+            if pred_segments.numel() > 0:
+                quality_target[pos_mask] = self._segment_iou_1d(pred_segments.detach(), target_segments.detach())
+        elif self.quality_target_mode in ("max_iou", "positive_max_iou"):
+            if all_pred_segments is None or gt_segments is None:
+                raise ValueError("max_iou quality target requires all_pred_segments and gt_segments")
+            max_iou_target = self._max_iou_quality_target(
+                all_pred_segments.detach(),
+                valid_mask,
+                gt_segments,
+                dtype=quality_pred.dtype,
+            )
+            if self.quality_target_mode == "positive_max_iou":
+                quality_target = torch.zeros_like(valid_mask, dtype=quality_pred.dtype)
+                quality_target[pos_mask] = max_iou_target[pos_mask]
+            else:
+                quality_target = max_iou_target
+        else:
+            raise ValueError(f"Unsupported quality target mode: {self.quality_target_mode}")
+
+        quality_weight = torch.zeros_like(valid_mask, dtype=quality_pred.dtype)
+        quality_weight[valid_mask] = self.quality_negative_weight
+        if pos_mask.any():
+            quality_weight[pos_mask] = self.quality_positive_weight
+
         quality_target = quality_target[valid_mask]
-        quality_loss = F.binary_cross_entropy_with_logits(quality_logits, quality_target, reduction="sum")
-        quality_loss /= valid_mask.sum().clamp(min=1).to(dtype=quality_loss.dtype)
+        quality_weight = quality_weight[valid_mask]
+        quality_loss = F.binary_cross_entropy_with_logits(quality_logits, quality_target, reduction="none")
+        quality_loss = (quality_loss * quality_weight).sum()
+
+        if self.quality_loss_normalizer == "weighted":
+            denom = quality_weight.sum().clamp(min=1.0)
+        elif self.quality_loss_normalizer == "positive":
+            denom = (pos_mask.to(dtype=quality_pred.dtype) * self.quality_positive_weight).sum().clamp(min=1.0)
+        elif self.quality_loss_normalizer == "valid":
+            denom = valid_mask.sum().clamp(min=1).to(dtype=quality_loss.dtype)
+        else:
+            raise ValueError(f"Unsupported quality loss normalizer: {self.quality_loss_normalizer}")
+        quality_loss /= denom.to(dtype=quality_loss.dtype)
         return quality_loss
 
     def losses(self, cls_pred, reg_pred, mask_list, points, gt_segments, gt_labels, quality_pred=None):
@@ -619,7 +704,15 @@ class AnchorFreeHead(nn.Module):
 
         losses = {"cls_loss": cls_loss, "reg_loss": reg_loss * loss_weight}
         if self.quality_head_enabled and quality_pred is not None and self.quality_loss_weight > 0:
-            quality_loss = self._quality_loss(quality_pred, valid_mask, pos_mask, pred_segments, target_segments)
+            quality_loss = self._quality_loss(
+                quality_pred,
+                valid_mask,
+                pos_mask,
+                pred_segments,
+                target_segments,
+                all_pred_segments=all_pred_segments,
+                gt_segments=gt_segments,
+            )
             losses["quality_loss"] = quality_loss * self.quality_loss_weight
         return losses
 

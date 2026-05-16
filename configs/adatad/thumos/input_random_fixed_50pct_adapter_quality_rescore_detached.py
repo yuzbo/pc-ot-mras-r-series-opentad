@@ -8,6 +8,10 @@ model = dict(
         quality_head_cfg=dict(
             enabled=True,
             kernel_size=3,
+            # sigmoid(4.595) ~= 0.99, so early quality reranking is nearly
+            # neutral instead of multiplying all class scores by 0.5**alpha.
+            bias_init=4.59511985013459,
+            weight_init=0.0,
             loss_weight=0.10,
             score_alpha=0.25,
         ),
