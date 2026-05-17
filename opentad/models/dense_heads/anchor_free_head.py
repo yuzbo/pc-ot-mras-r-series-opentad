@@ -54,6 +54,9 @@ class AnchorFreeHead(nn.Module):
         self.quality_positive_weight = float(self.quality_head_cfg.get("positive_weight", 1.0))
         self.quality_negative_weight = float(self.quality_head_cfg.get("negative_weight", 1.0))
         self.quality_loss_normalizer = self.quality_head_cfg.get("loss_normalizer", "valid")
+        self.quality_keep_loss_graph_when_weight_zero = bool(
+            self.quality_head_cfg.get("keep_loss_graph_when_weight_zero", False)
+        )
         valid_quality_target_modes = {"assigned_iou", "max_iou", "positive_max_iou"}
         if self.quality_target_mode not in valid_quality_target_modes:
             raise ValueError(f"Unsupported quality target mode: {self.quality_target_mode}")
@@ -703,17 +706,21 @@ class AnchorFreeHead(nn.Module):
             loss_weight = cls_loss.detach() / max(reg_loss.item(), 0.01)
 
         losses = {"cls_loss": cls_loss, "reg_loss": reg_loss * loss_weight}
-        if self.quality_head_enabled and quality_pred is not None and self.quality_loss_weight > 0:
-            quality_loss = self._quality_loss(
-                quality_pred,
-                valid_mask,
-                pos_mask,
-                pred_segments,
-                target_segments,
-                all_pred_segments=all_pred_segments,
-                gt_segments=gt_segments,
-            )
-            losses["quality_loss"] = quality_loss * self.quality_loss_weight
+        if self.quality_head_enabled and quality_pred is not None:
+            if self.quality_loss_weight > 0:
+                quality_loss = self._quality_loss(
+                    quality_pred,
+                    valid_mask,
+                    pos_mask,
+                    pred_segments,
+                    target_segments,
+                    all_pred_segments=all_pred_segments,
+                    gt_segments=gt_segments,
+                )
+                losses["quality_loss"] = quality_loss * self.quality_loss_weight
+            elif self.quality_loss_weight <= 0 and self.quality_keep_loss_graph_when_weight_zero:
+                quality_zero_loss = sum(pred.float().sum() for pred in quality_pred) * 0
+                losses["quality_loss"] = quality_zero_loss
         return losses
 
     @torch.no_grad()

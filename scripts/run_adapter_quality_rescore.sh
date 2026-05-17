@@ -22,6 +22,13 @@ KEEP_CUDA_VISIBLE_DEVICES="${KEEP_CUDA_VISIBLE_DEVICES:-0}"
 CONFIG="${CONFIG:-configs/adatad/thumos/input_random_fixed_50pct_adapter_quality_rescore_detached.py}"
 NAME="${NAME:-input_random_fixed_50pct_adapter_quality_rescore_detached}"
 WORK_LOG="$ROOT_DIR/exps/thumos/adatad/${NAME}/gpu1_id${RUN_ID}/log.json"
+EXPECT_QUALITY_LOSS_WEIGHT="${EXPECT_QUALITY_LOSS_WEIGHT:-0.10}"
+EXPECT_QUALITY_SCORE_ALPHA="${EXPECT_QUALITY_SCORE_ALPHA:-0.25}"
+EXPECT_QUALITY_TARGET_MODE="${EXPECT_QUALITY_TARGET_MODE:-assigned_iou}"
+EXPECT_QUALITY_POSITIVE_WEIGHT="${EXPECT_QUALITY_POSITIVE_WEIGHT:-1.0}"
+EXPECT_QUALITY_NEGATIVE_WEIGHT="${EXPECT_QUALITY_NEGATIVE_WEIGHT:-1.0}"
+EXPECT_QUALITY_LOSS_NORMALIZER="${EXPECT_QUALITY_LOSS_NORMALIZER:-valid}"
+EXPECT_QUALITY_KEEP_ZERO_GRAPH="${EXPECT_QUALITY_KEEP_ZERO_GRAPH:-0}"
 
 log_msg() {
   echo "$(date '+%F %T') $*" | tee -a "$QUEUE_LOG"
@@ -62,8 +69,14 @@ assert cfg.model.rpn_head.quality_head_cfg.enabled, quality
 assert int(quality.kernel_size) == 3, quality
 assert abs(float(quality.get("bias_init", 0.0)) - 4.59511985013459) < 1e-9, quality
 assert abs(float(quality.get("weight_init", 1.0))) < 1e-12, quality
-assert abs(float(quality.loss_weight) - 0.10) < 1e-9, quality
-assert abs(float(quality.score_alpha) - 0.25) < 1e-9, quality
+assert abs(float(quality.loss_weight) - float("$EXPECT_QUALITY_LOSS_WEIGHT")) < 1e-9, quality
+assert abs(float(quality.score_alpha) - float("$EXPECT_QUALITY_SCORE_ALPHA")) < 1e-9, quality
+assert quality.get("target_mode", "assigned_iou") == "$EXPECT_QUALITY_TARGET_MODE", quality
+assert abs(float(quality.get("positive_weight", 1.0)) - float("$EXPECT_QUALITY_POSITIVE_WEIGHT")) < 1e-9, quality
+assert abs(float(quality.get("negative_weight", 1.0)) - float("$EXPECT_QUALITY_NEGATIVE_WEIGHT")) < 1e-9, quality
+assert quality.get("loss_normalizer", "valid") == "$EXPECT_QUALITY_LOSS_NORMALIZER", quality
+expected_keep_zero_graph = bool(int("$EXPECT_QUALITY_KEEP_ZERO_GRAPH"))
+assert bool(quality.get("keep_loss_graph_when_weight_zero", False)) == expected_keep_zero_graph, quality
 
 from opentad.models.detectors.actionformer import ActionFormer
 import inspect
@@ -104,6 +117,10 @@ print("quality_bias_init=", quality.bias_init)
 print("quality_weight_init=", quality.weight_init)
 print("quality_loss_weight=", quality.loss_weight)
 print("quality_score_alpha=", quality.score_alpha)
+print("quality_target_mode=", quality.get("target_mode", "assigned_iou"))
+print("quality_negative_weight=", quality.get("negative_weight", 1.0))
+print("quality_loss_normalizer=", quality.get("loss_normalizer", "valid"))
+print("quality_keep_zero_graph=", quality.get("keep_loss_graph_when_weight_zero", False))
 print("train_load=", train_load.method, train_load.method_base)
 print("val_load=", val_load.method, val_load.method_base)
 print("checkpoint_interval=", workflow.checkpoint_interval)

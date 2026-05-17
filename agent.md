@@ -6,10 +6,16 @@
   - `ssh -p 35407 root@connect.cqa1.seetacloud.com`
   - `ssh -p 25876 root@connect.cqa1.seetacloud.com`
 - Active remote project path: `/root/autodl-tmp/OpenTAD_Back_check`.
-- Active config on both servers:
+- Completed config on both servers:
   `configs/adatad/thumos/input_random_fixed_50pct_adapter_quality_rescore_detached.py`.
-- Do not stop or replace the active remote runs before the first eval unless the user explicitly authorizes it.
-- Small isolated `non-finite gradients` events are expected training noise for this run. Record them, but do not treat a single event as a blocker if loss continues normally.
+- 2026-05-17 process check: both servers are idle. There are no `screen`
+  sessions, no `tools/train.py` / `tools/test.py` / `torchrun` processes, and
+  both RTX 4080 SUPER GPUs report 0 MiB memory use and 0% utilization.
+- Do not launch the next long training run until the quality-failure discussion,
+  local checks, and read-only code review requirements are satisfied.
+- Small isolated `non-finite gradients` events were expected training noise for
+  this run. Record them, but do not treat a single event as a blocker if loss
+  continues normally.
 
 ## Review Policy
 
@@ -60,3 +66,79 @@
   - If it reaches ~63.85-65.20, run inference-only `score_alpha` sweeps before any new training.
   - If it exceeds ~65.20, lock the config and measure seed variance.
 - Current decision: do not deploy `positive_max_iou_posonly` yet. Continue the two active runs until first eval, then apply the gate above.
+
+### 2026-05-17 Gemini CLI Discussion After Failed Quality Run
+
+- The detached quality-rescore run completed far below baseline:
+  - Server 35407 final Average-mAP: 50.05.
+  - Server 25876 final Average-mAP: 49.87.
+- Re-evaluating the same final checkpoints with `score_alpha=0.0` did not
+  recover performance:
+  - Server 35407 alpha-zero Average-mAP: 49.65.
+  - Server 25876 alpha-zero Average-mAP: 49.79.
+- Therefore the failure is not primarily inference-time `quality^alpha` fusion;
+  the trained checkpoint itself is degraded.
+- Gemini CLI was run as requested by the user. Long prompts either drifted into
+  unrelated repository context or attempted unavailable tool calls, so the
+  successful discussion used a compact single-turn prompt with `gemini.cmd
+  --skip-trust -e none --output-format text -p "<prompt>"`.
+- Gemini's usable recommendations:
+  - Do not launch `positive_max_iou_posonly` next, because positive-only
+    supervision can leave background proposals high-quality and poorly
+    calibrated.
+  - Run a neutral branch diagnostic: quality head enabled, `loss_weight=0.0`,
+    `score_alpha=0.0`, from scratch.
+  - In parallel, run reduced-negative assigned-IoU with
+    `negative_weight=0.25` and `loss_normalizer="weighted"`; first evaluate with
+    `score_alpha=0.0`, then sweep alpha only if the checkpoint recovers the
+    baseline band.
+- Agent reflection:
+  - Gemini's "gradient leakage" warning is a check item, not established
+    evidence; the known code path uses `reg_feat.detach()`.
+  - The stronger current hypothesis is that the added quality branch perturbs
+    training through loss scale, optimizer/grad clipping, AMP/GradScaler, EMA,
+    DDP/static graph behavior, or dense negative quality BCE.
+  - The next two-server package should isolate branch integration effects and
+    reduced-negative quality supervision before any positive-only target.
+- Full record:
+  `../research-wiki/experiments/ADAPTER_QUALITY_FAILURE_GEMINI_DISCUSSION_20260517.md`.
+
+### 2026-05-18 Launch Review Update
+
+- Gemini CLI read-only launch review of the final neutral/reduced-negative
+  patch returned `LAUNCH_OK`.
+- Claude CLI review is still unavailable because the last attempt failed with
+  quota error `401 {"message":"额度不足"}`.
+- GPT-5-Pro is configured but expensive. Use it only for unresolved critical
+  blockers or one-shot comprehensive arbitration with complete context; do not
+  use repeated short probe calls for this track.
+- Current launch decision: proceed with the two-server package after remote
+  preflight and launcher self-checks:
+  - 35407: `input_random_fixed_50pct_adapter_quality_neutral_loss0_alpha0`
+  - 25876: `input_random_fixed_50pct_adapter_quality_assigned_neg025_weighted_alpha0`
+
+### 2026-05-18 Active Runs
+
+- 35407 launched in screen `adapter_quality_neutral`.
+  - Config:
+    `configs/adatad/thumos/input_random_fixed_50pct_adapter_quality_neutral_loss0_alpha0.py`
+  - Log:
+    `logs/input_random_fixed_50pct_adapter_quality_neutral_loss0_alpha0_20260518_011721.log`
+  - First epoch sanity:
+    `Loss=2.4231 cls_loss=1.3694 reg_loss=1.0537 quality_loss=0.0000`.
+- 25876 launched in screen `adapter_quality_neg025`.
+  - Config:
+    `configs/adatad/thumos/input_random_fixed_50pct_adapter_quality_assigned_neg025_weighted_alpha0.py`
+  - Log:
+    `logs/input_random_fixed_50pct_adapter_quality_assigned_neg025_weighted_alpha0_20260518_011722.log`
+  - First epoch sanity:
+    `Loss=2.8682 cls_loss=1.3693 reg_loss=1.0537 quality_loss=0.4451`.
+- Monitor gates:
+  - First validation starts at epoch 40 and then every 2 epochs.
+  - If either run falls below 30 Average-mAP at first validation, stop that run
+    and audit implementation/training loop.
+  - If neutral finishes below 60 Average-mAP, treat quality-branch integration
+    as unsafe and do not interpret quality-supervision ablations as modeling
+    evidence.
+  - If neutral recovers and neg025 reaches the random-fixed baseline band,
+    perform inference-only `score_alpha` sweep before any further training.

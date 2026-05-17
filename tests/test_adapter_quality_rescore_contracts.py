@@ -67,3 +67,52 @@ def test_adapter_quality_rescore_config_and_launcher_keep_random_fixed_contract(
     assert 'val_load.method == "random_fixed_subsample"' in launch_script
     assert 'test_load.method == "random_fixed_subsample"' in launch_script
     assert "input_pdrop" in launch_script
+
+
+def test_quality_loss_zero_can_keep_static_ddp_graph_when_requested():
+    source = read("opentad/models/dense_heads/anchor_free_head.py")
+
+    assert "quality_keep_loss_graph_when_weight_zero" in source
+    assert 'self.quality_head_cfg.get("keep_loss_graph_when_weight_zero", False)' in source
+    assert "quality_loss_weight <= 0" in source
+    assert "quality_zero_loss = sum(pred.float().sum() for pred in quality_pred) * 0" in source
+    assert 'losses["quality_loss"] = quality_zero_loss' in source
+
+
+def test_adapter_quality_next_diagnostic_configs_and_launcher_contracts():
+    neutral = read("configs/adatad/thumos/input_random_fixed_50pct_adapter_quality_neutral_loss0_alpha0.py")
+    neg025 = read(
+        "configs/adatad/thumos/input_random_fixed_50pct_adapter_quality_assigned_neg025_weighted_alpha0.py"
+    )
+    launch_script = read("scripts/run_adapter_quality_rescore.sh")
+
+    assert '_base_ = ["./input_random_fixed_50pct_adapter_quality_rescore_detached.py"]' in neutral
+    assert "keep_loss_graph_when_weight_zero=True" in neutral
+    assert "loss_weight=0.0" in neutral
+    assert "score_alpha=0.0" in neutral
+    assert "input_random_fixed_50pct_adapter_quality_neutral_loss0_alpha0" in neutral
+    assert "positive_max_iou" not in neutral
+    assert "weighted_random" not in neutral
+    assert "oracle" not in neutral
+
+    assert '_base_ = ["./input_random_fixed_50pct_adapter_quality_rescore_detached.py"]' in neg025
+    assert 'target_mode="assigned_iou"' in neg025
+    assert "positive_weight=1.0" in neg025
+    assert "negative_weight=0.25" in neg025
+    assert 'loss_normalizer="weighted"' in neg025
+    assert "loss_weight=0.10" in neg025
+    assert "score_alpha=0.0" in neg025
+    assert "input_random_fixed_50pct_adapter_quality_assigned_neg025_weighted_alpha0" in neg025
+    assert "positive_max_iou" not in neg025
+    assert "weighted_random" not in neg025
+    assert "oracle" not in neg025
+
+    assert "EXPECT_QUALITY_LOSS_WEIGHT" in launch_script
+    assert "EXPECT_QUALITY_SCORE_ALPHA" in launch_script
+    assert "EXPECT_QUALITY_TARGET_MODE" in launch_script
+    assert "EXPECT_QUALITY_NEGATIVE_WEIGHT" in launch_script
+    assert "EXPECT_QUALITY_LOSS_NORMALIZER" in launch_script
+    assert "EXPECT_QUALITY_KEEP_ZERO_GRAPH" in launch_script
+    assert 'quality.get("target_mode", "assigned_iou")' in launch_script
+    assert 'quality.get("loss_normalizer", "valid")' in launch_script
+    assert 'quality.get("keep_loss_graph_when_weight_zero", False)' in launch_script
