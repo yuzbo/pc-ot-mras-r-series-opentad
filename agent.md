@@ -144,6 +144,8 @@
     perform inference-only `score_alpha` sweep before any further training.
 - Consolidated route and gate document:
   `../research-wiki/experiments/ADAPTER_ACTIONFORMER_ROADMAP_20260518.md`.
+- Training-system audit:
+  `../research-wiki/experiments/ADAPTER_QUALITY_TRAINING_SYSTEM_AUDIT_20260518.md`.
 - 2026-05-18 latest monitor:
   - 35407 neutral reached epoch 4:
     `Loss=0.8304 cls_loss=0.4862 reg_loss=0.3442 quality_loss=0.0000`.
