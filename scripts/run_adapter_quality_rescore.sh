@@ -29,6 +29,7 @@ EXPECT_QUALITY_POSITIVE_WEIGHT="${EXPECT_QUALITY_POSITIVE_WEIGHT:-1.0}"
 EXPECT_QUALITY_NEGATIVE_WEIGHT="${EXPECT_QUALITY_NEGATIVE_WEIGHT:-1.0}"
 EXPECT_QUALITY_LOSS_NORMALIZER="${EXPECT_QUALITY_LOSS_NORMALIZER:-valid}"
 EXPECT_QUALITY_KEEP_ZERO_GRAPH="${EXPECT_QUALITY_KEEP_ZERO_GRAPH:-0}"
+EXPECT_BATCH_SIZE="${EXPECT_BATCH_SIZE:-2}"
 
 log_msg() {
   echo "$(date '+%F %T') $*" | tee -a "$QUEUE_LOG"
@@ -109,6 +110,12 @@ assert int(workflow.val_start_epoch) == 40, workflow
 assert int(workflow.val_eval_interval) == 2, workflow
 assert int(workflow.end_epoch) == 60, workflow
 
+solver = cfg.solver
+expected_batch_size = int("$EXPECT_BATCH_SIZE")
+assert int(solver.train.batch_size) == expected_batch_size, solver
+assert int(solver.val.batch_size) == expected_batch_size, solver
+assert int(solver.test.batch_size) == expected_batch_size, solver
+
 print("work_dir=", cfg.work_dir)
 print("model=", cfg.model.type)
 print("backbone=", cfg.model.backbone.backbone.type)
@@ -123,6 +130,7 @@ print("quality_loss_normalizer=", quality.get("loss_normalizer", "valid"))
 print("quality_keep_zero_graph=", quality.get("keep_loss_graph_when_weight_zero", False))
 print("train_load=", train_load.method, train_load.method_base)
 print("val_load=", val_load.method, val_load.method_base)
+print("batch_size=", solver.train.batch_size, solver.val.batch_size, solver.test.batch_size)
 print("checkpoint_interval=", workflow.checkpoint_interval)
 print("disable_checkpoint=", workflow.get("disable_checkpoint", False))
 PY

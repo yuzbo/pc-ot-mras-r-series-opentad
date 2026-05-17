@@ -43,8 +43,13 @@ def test_detached_quality_rescore_excludes_quality_head_from_main_grad_clipping(
 
 
 def test_adapter_quality_rescore_config_and_launcher_keep_random_fixed_contract():
+    adapter_base = read("configs/adatad/thumos/e2e_thumos_videomae_s_768x1_160_adapter.py")
     config = read("configs/adatad/thumos/input_random_fixed_50pct_adapter_quality_rescore_detached.py")
     launch_script = read("scripts/run_adapter_quality_rescore.sh")
+
+    assert "train=dict(batch_size=2, num_workers=2)" in adapter_base
+    assert "val=dict(batch_size=2, num_workers=2)" in adapter_base
+    assert "test=dict(batch_size=2, num_workers=2)" in adapter_base
 
     assert '_base_ = ["./input_random_fixed_50pct_adapter.py"]' in config
     assert "quality_head_cfg=dict(" in config
@@ -66,6 +71,8 @@ def test_adapter_quality_rescore_config_and_launcher_keep_random_fixed_contract(
     assert 'train_load.method == "random_fixed_subsample"' in launch_script
     assert 'val_load.method == "random_fixed_subsample"' in launch_script
     assert 'test_load.method == "random_fixed_subsample"' in launch_script
+    assert "EXPECT_BATCH_SIZE" in launch_script
+    assert "solver.train.batch_size" in launch_script
     assert "input_pdrop" in launch_script
 
 

@@ -111,9 +111,9 @@ model = dict(
 )
 
 solver = dict(
-    train=dict(batch_size=8, num_workers=2),
-    val=dict(batch_size=8, num_workers=2),
-    test=dict(batch_size=8, num_workers=2),
+    train=dict(batch_size=2, num_workers=2),
+    val=dict(batch_size=2, num_workers=2),
+    test=dict(batch_size=2, num_workers=2),
     clip_grad_norm=1,
     amp=True,
     fp16_compress=True,

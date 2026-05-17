@@ -146,18 +146,45 @@
   `../research-wiki/experiments/ADAPTER_ACTIONFORMER_ROADMAP_20260518.md`.
 - Training-system audit:
   `../research-wiki/experiments/ADAPTER_QUALITY_TRAINING_SYSTEM_AUDIT_20260518.md`.
-- 2026-05-18 latest monitor:
+- 2026-05-18 first validation update:
   - Use local helper:
     `powershell -ExecutionPolicy Bypass -File logs/monitor_adapter_quality_active.ps1 -Tail 20`.
-  - 35407 neutral reached epoch 27:
-    `Loss=0.5485 cls_loss=0.2912 reg_loss=0.2573 quality_loss=0.0000`.
-  - 25876 neg025 reached epoch 27:
-    `Loss=0.5735 cls_loss=0.2901 reg_loss=0.2563 quality_loss=0.0271`.
+  - Remote mAP collector:
+    `powershell -ExecutionPolicy Bypass -File logs/collect_adapter_quality_remote_metrics.ps1 -Tail 2600`.
+  - The first validation actually triggered after training epoch `[041]`, not
+    immediately after `[040]`, because `tools/train.py` checks
+    `epoch >= val_start_epoch` and `(epoch + 1) % val_eval_interval == 0`.
+  - 35407 neutral first validation at 2026-05-18 04:34:17:
+    `Average-mAP=37.33`, mAP@0.3/0.4/0.5/0.6/0.7 =
+    `60.03/50.49/38.20/25.48/12.44`.
+  - 25876 neg025 first validation at 2026-05-18 04:38:56:
+    `Average-mAP=37.71`, mAP@0.3/0.4/0.5/0.6/0.7 =
+    `60.54/51.02/38.67/25.37/12.96`.
+  - Second validations:
+    - 35407 neutral at 2026-05-18 05:00:36:
+      `Average-mAP=38.81`, mAP@0.3/0.4/0.5/0.6/0.7 =
+      `60.90/51.69/40.10/27.37/13.97`.
+    - 25876 neg025 at 2026-05-18 05:07:16:
+      `Average-mAP=39.29`, mAP@0.3/0.4/0.5/0.6/0.7 =
+      `62.02/52.12/40.62/27.62/14.07`.
+  - Audit finding: these runs used `batch_size=8`, so each training epoch had
+    only `24` iterations. The healthy `input_random_fixed_50pct_adapter.log`
+    baseline used `batch_size=2`, `99` iterations/epoch, and reached `61.95`
+    Average-mAP at the first eval. This invalidates the two quality runs as
+    evidence about quality supervision.
+  - Both quality runs were stopped after preserving logs/checkpoints:
+    `screen -S adapter_quality_neutral -X quit` and
+    `screen -S adapter_quality_neg025 -X quit`.
+  - Local fix in progress: restore
+    `configs/adatad/thumos/e2e_thumos_videomae_s_768x1_160_adapter.py` to
+    `train/val/test batch_size=2`, and make
+    `scripts/run_adapter_quality_rescore.sh` assert `EXPECT_BATCH_SIZE=2`.
+    Relaunch only after check-only self-check passes on both servers.
   - Both runs still have only one recorded non-finite-gradient skip at epoch 1
     iter 18 and continue normally.
-  - 25876 disk remains tight at about 12G available on `/root/autodl-tmp`.
-  - Each epoch 9 checkpoint is about 595M; expected remaining scheduled
-    checkpoints should add roughly 3G plus any best checkpoint/logs.
+  - 25876 disk remains tight at about 11G available on `/root/autodl-tmp`.
+  - Epoch 9, 19, 29, and 39 checkpoints have been written; each is about
+    `595M`.
   - Alpha-sweep command generator is prepared at
     `logs/prepare_adapter_quality_alpha_sweep.ps1`; use only after neg025
     recovers baseline gate.
@@ -167,5 +194,4 @@
     `logs/collect_adapter_quality_remote_metrics.ps1`.
   - Optional first-eval watcher:
     `logs/watch_adapter_quality_first_eval.ps1`.
-  - Epoch 9 and epoch 19 checkpoints have been written; each is about 595M.
-  - Next scheduled checkpoint is expected after epoch 29.
+  - Next scheduled checkpoint is expected after epoch 49.
