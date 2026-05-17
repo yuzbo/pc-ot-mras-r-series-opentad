@@ -149,10 +149,10 @@
 - 2026-05-18 latest monitor:
   - Use local helper:
     `powershell -ExecutionPolicy Bypass -File logs/monitor_adapter_quality_active.ps1 -Tail 20`.
-  - 35407 neutral reached epoch 15:
-    `Loss=0.6246 cls_loss=0.3465 reg_loss=0.2781 quality_loss=0.0000`.
-  - 25876 neg025 reached epoch 15:
-    `Loss=0.6549 cls_loss=0.3449 reg_loss=0.2800 quality_loss=0.0300`.
+  - 35407 neutral reached epoch 18:
+    `Loss=0.5989 cls_loss=0.3239 reg_loss=0.2750 quality_loss=0.0000`.
+  - 25876 neg025 reached epoch 18:
+    `Loss=0.6247 cls_loss=0.3219 reg_loss=0.2734 quality_loss=0.0295`.
   - Both runs still have only one recorded non-finite-gradient skip at epoch 1
     iter 18 and continue normally.
   - 25876 disk remains tight at about 12G available on `/root/autodl-tmp`.
@@ -161,3 +161,6 @@
   - Alpha-sweep command generator is prepared at
     `logs/prepare_adapter_quality_alpha_sweep.ps1`; use only after neg025
     recovers baseline gate.
+  - Local mAP parser for copied logs:
+    `logs/parse_adapter_quality_metrics.ps1`.
+  - Next scheduled checkpoint is expected after epoch 19.
