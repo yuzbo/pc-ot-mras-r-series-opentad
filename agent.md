@@ -149,10 +149,10 @@
 - 2026-05-18 latest monitor:
   - Use local helper:
     `powershell -ExecutionPolicy Bypass -File logs/monitor_adapter_quality_active.ps1 -Tail 20`.
-  - 35407 neutral reached epoch 23:
-    `Loss=0.5457 cls_loss=0.2914 reg_loss=0.2543 quality_loss=0.0000`.
-  - 25876 neg025 reached epoch 23:
-    `Loss=0.5779 cls_loss=0.2951 reg_loss=0.2545 quality_loss=0.0284`.
+  - 35407 neutral reached epoch 25:
+    `Loss=0.5657 cls_loss=0.3028 reg_loss=0.2629 quality_loss=0.0000`.
+  - 25876 neg025 reached epoch 25:
+    `Loss=0.5982 cls_loss=0.3058 reg_loss=0.2650 quality_loss=0.0274`.
   - Both runs still have only one recorded non-finite-gradient skip at epoch 1
     iter 18 and continue normally.
   - 25876 disk remains tight at about 12G available on `/root/autodl-tmp`.
