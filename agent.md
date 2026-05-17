@@ -142,3 +142,13 @@
     evidence.
   - If neutral recovers and neg025 reaches the random-fixed baseline band,
     perform inference-only `score_alpha` sweep before any further training.
+- Consolidated route and gate document:
+  `../research-wiki/experiments/ADAPTER_ACTIONFORMER_ROADMAP_20260518.md`.
+- 2026-05-18 latest monitor:
+  - 35407 neutral reached epoch 4:
+    `Loss=0.8304 cls_loss=0.4862 reg_loss=0.3442 quality_loss=0.0000`.
+  - 25876 neg025 reached epoch 4:
+    `Loss=0.9811 cls_loss=0.4866 reg_loss=0.3439 quality_loss=0.1506`.
+  - Both runs still have only one recorded non-finite-gradient skip at epoch 1
+    iter 18 and continue normally.
+  - 25876 disk remains tight at about 13G available on `/root/autodl-tmp`.
