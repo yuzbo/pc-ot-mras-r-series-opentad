@@ -149,10 +149,10 @@
 - 2026-05-18 latest monitor:
   - Use local helper:
     `powershell -ExecutionPolicy Bypass -File logs/monitor_adapter_quality_active.ps1 -Tail 20`.
-  - 35407 neutral reached epoch 18:
-    `Loss=0.5989 cls_loss=0.3239 reg_loss=0.2750 quality_loss=0.0000`.
-  - 25876 neg025 reached epoch 18:
-    `Loss=0.6247 cls_loss=0.3219 reg_loss=0.2734 quality_loss=0.0295`.
+  - 35407 neutral reached epoch 22:
+    `Loss=0.5955 cls_loss=0.3189 reg_loss=0.2766 quality_loss=0.0000`.
+  - 25876 neg025 reached epoch 21:
+    `Loss=0.5960 cls_loss=0.3072 reg_loss=0.2599 quality_loss=0.0289`.
   - Both runs still have only one recorded non-finite-gradient skip at epoch 1
     iter 18 and continue normally.
   - 25876 disk remains tight at about 12G available on `/root/autodl-tmp`.
@@ -163,4 +163,7 @@
     recovers baseline gate.
   - Local mAP parser for copied logs:
     `logs/parse_adapter_quality_metrics.ps1`.
-  - Next scheduled checkpoint is expected after epoch 19.
+  - Remote mAP collector:
+    `logs/collect_adapter_quality_remote_metrics.ps1`.
+  - Epoch 9 and epoch 19 checkpoints have been written; each is about 595M.
+  - Next scheduled checkpoint is expected after epoch 29.
