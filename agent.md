@@ -149,10 +149,12 @@
 - 2026-05-18 latest monitor:
   - Use local helper:
     `powershell -ExecutionPolicy Bypass -File logs/monitor_adapter_quality_active.ps1 -Tail 20`.
-  - 35407 neutral reached epoch 10:
-    `Loss=0.7048 cls_loss=0.3983 reg_loss=0.3065 quality_loss=0.0000`.
-  - 25876 neg025 reached epoch 10:
-    `Loss=0.7303 cls_loss=0.3960 reg_loss=0.3041 quality_loss=0.0302`.
+  - 35407 neutral reached epoch 13:
+    `Loss=0.6929 cls_loss=0.3898 reg_loss=0.3031 quality_loss=0.0000`.
+  - 25876 neg025 reached epoch 13:
+    `Loss=0.7322 cls_loss=0.3991 reg_loss=0.3028 quality_loss=0.0303`.
   - Both runs still have only one recorded non-finite-gradient skip at epoch 1
     iter 18 and continue normally.
   - 25876 disk remains tight at about 12G available on `/root/autodl-tmp`.
+  - Each epoch 9 checkpoint is about 595M; expected remaining scheduled
+    checkpoints should add roughly 3G plus any best checkpoint/logs.
