@@ -147,10 +147,12 @@
 - Training-system audit:
   `../research-wiki/experiments/ADAPTER_QUALITY_TRAINING_SYSTEM_AUDIT_20260518.md`.
 - 2026-05-18 latest monitor:
-  - 35407 neutral reached epoch 4:
-    `Loss=0.8304 cls_loss=0.4862 reg_loss=0.3442 quality_loss=0.0000`.
-  - 25876 neg025 reached epoch 4:
-    `Loss=0.9811 cls_loss=0.4866 reg_loss=0.3439 quality_loss=0.1506`.
+  - Use local helper:
+    `powershell -ExecutionPolicy Bypass -File logs/monitor_adapter_quality_active.ps1 -Tail 20`.
+  - 35407 neutral reached epoch 10:
+    `Loss=0.7048 cls_loss=0.3983 reg_loss=0.3065 quality_loss=0.0000`.
+  - 25876 neg025 reached epoch 10:
+    `Loss=0.7303 cls_loss=0.3960 reg_loss=0.3041 quality_loss=0.0302`.
   - Both runs still have only one recorded non-finite-gradient skip at epoch 1
     iter 18 and continue normally.
-  - 25876 disk remains tight at about 13G available on `/root/autodl-tmp`.
+  - 25876 disk remains tight at about 12G available on `/root/autodl-tmp`.
