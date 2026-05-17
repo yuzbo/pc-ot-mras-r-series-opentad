@@ -175,16 +175,39 @@
   - Both quality runs were stopped after preserving logs/checkpoints:
     `screen -S adapter_quality_neutral -X quit` and
     `screen -S adapter_quality_neg025 -X quit`.
-  - Local fix in progress: restore
+  - Local fix landed as commit
+    `a5e476c fix adapter quality batch size contract`: restored
     `configs/adatad/thumos/e2e_thumos_videomae_s_768x1_160_adapter.py` to
-    `train/val/test batch_size=2`, and make
+    `train/val/test batch_size=2`, and made
     `scripts/run_adapter_quality_rescore.sh` assert `EXPECT_BATCH_SIZE=2`.
-    Relaunch only after check-only self-check passes on both servers.
-  - Both runs still have only one recorded non-finite-gradient skip at epoch 1
-    iter 18 and continue normally.
+  - The invalid bs8 remote output directories were preserved by renaming:
+    - 35407:
+      `input_random_fixed_50pct_adapter_quality_neutral_loss0_alpha0_invalid_bs8_20260518`
+    - 25876:
+      `input_random_fixed_50pct_adapter_quality_assigned_neg025_weighted_alpha0_invalid_bs8_20260518`
+  - Remote `CHECK_ONLY=1` passed on both servers and printed
+    `batch_size= 2 2 2`.
+  - Relaunched clean bs2 diagnostics at about 2026-05-18 06:17:
+    - 35407 screen `adapter_quality_neutral`, log
+      `logs/input_random_fixed_50pct_adapter_quality_neutral_loss0_alpha0_20260518_061722.log`.
+    - 25876 screen `adapter_quality_neg025`, log
+      `logs/input_random_fixed_50pct_adapter_quality_assigned_neg025_weighted_alpha0_20260518_061721.log`.
+  - First epoch contract is now correct:
+    - neutral:
+      `[000][00050/00099]` and `[000][00099/00099]`,
+      `quality_loss=0.0000`;
+    - neg025:
+      `[000][00050/00099]` and `[000][00099/00099]`,
+      `quality_loss` about `0.43`.
+  - Both clean bs2 runs recorded early non-finite-gradient skips at epoch 0
+    iter 17 and iter 98 on base head parameters, then continued to epoch 1.
+    Treat this as a monitor item; stop only if it repeats frequently or loss
+    diverges.
   - 25876 disk remains tight at about 11G available on `/root/autodl-tmp`.
-  - Epoch 9, 19, 29, and 39 checkpoints have been written; each is about
-    `595M`.
+  - External review note: Gemini CLI and Claude CLI attempts timed out during
+    this relaunch; direct `gpt-5-pro` arbitration via the configured endpoint
+    also returned no model content because the remote closed the connection.
+    No further expensive retry was made.
   - Alpha-sweep command generator is prepared at
     `logs/prepare_adapter_quality_alpha_sweep.ps1`; use only after neg025
     recovers baseline gate.
@@ -195,3 +218,28 @@
   - Optional first-eval watcher:
     `logs/watch_adapter_quality_first_eval.ps1`.
   - Next scheduled checkpoint is expected after epoch 49.
+
+### 2026-05-18 Next Performance Queue
+
+- Clean bs2 quality diagnostics are still running and have not reached first
+  validation yet. Latest monitor around 06:50 shows both runs in epoch 7, still
+  with `00099` iterations per epoch and no additional non-finite events beyond
+  the two early epoch-0 skips.
+- Do not stop or replace them before first eval unless they crash or loss
+  diverges; the neutral preservation gate determines whether the quality-head
+  route is interpretable.
+- Queued next experiments after the current quality screens finish:
+  - 35407 screen `adapter_pseudo_snap_q64_after_quality`.
+    - Waits for `adapter_quality_neutral`.
+    - Runs Adapter-side pseudo-boundary snap q64 via
+      `scripts/run_adapter_pseudo_boundary_snap_pair.sh` with
+      `START_INDEX=1 END_INDEX=1 SKIP_CACHE_BUILD=1`.
+    - Remote files, teacher checkpoint, and cache are present; `CHECK_ONLY=1`
+      passed.
+  - 25876 screen `adapter_regloss15_after_quality`.
+    - Waits for `adapter_quality_neg025`.
+    - Runs ActionFormer-side `loss_weight=1.5` localization calibration via
+      `scripts/run_adapter_actionformer_regloss.sh`.
+    - Config and launcher were synced to 25876; `CHECK_ONLY=1` passed.
+- Route summary and problem analysis:
+  `../research-wiki/experiments/ADAPTER_ACTIONFORMER_NEXT_ROUTES_20260518.md`.
