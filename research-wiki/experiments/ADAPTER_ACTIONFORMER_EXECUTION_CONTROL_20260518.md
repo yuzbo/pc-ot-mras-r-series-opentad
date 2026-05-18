@@ -69,6 +69,26 @@ Queue safety update at 2026-05-18 07:47:
 - Do not create these files until the quality-run gate has been written into
   the experiment record.
 
+Pseudo-boundary cache provenance update:
+
+- Local commit `1b042d8 guard pseudo boundary cache manifests` adds launcher
+  checks to `scripts/run_adapter_pseudo_boundary_snap_pair.sh`.
+- `CHECK_ONLY=1` now validates existing train/validation cache manifests when
+  `SKIP_CACHE_BUILD=1`:
+  - `uses_gt` must be false;
+  - axis must be `global_snippet_index`;
+  - source must be `postprocessed_teacher_detections`;
+  - subset must match `training` or `validation`;
+  - `videos_written` must be positive.
+- Local verification: `pytest tests/test_adapter_safety_contracts.py
+  tests/test_adapter_quality_rescore_contracts.py -q` passed with `29 passed`,
+  and `bash -n scripts/run_adapter_pseudo_boundary_snap_pair.sh
+  scripts/wait_for_screen_and_gate_then_run.sh` passed.
+- Remote sync is still pending because the AutoDL SSH gateway is currently
+  closing KEX before authentication. Do not approve q64 until this launcher is
+  synced and `CHECK_ONLY=1 START_INDEX=1 END_INDEX=1 SKIP_CACHE_BUILD=1` passes
+  on 35407 again.
+
 Verification after hardening:
 
 - `pytest tests/test_adapter_quality_rescore_contracts.py tests/test_adapter_safety_contracts.py -q`

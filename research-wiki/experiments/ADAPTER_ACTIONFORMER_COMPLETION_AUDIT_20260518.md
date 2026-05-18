@@ -65,6 +65,8 @@ Latest remote state before this audit:
 2. No proof of improved Adapter-side performance yet.
    - q64 is queued but intentionally gated.
    - It must not launch merely because a quality run exits.
+   - Local q64 launcher now has manifest provenance checks in commit `1b042d8`,
+     but this still needs remote sync/check-only once SSH recovers.
 
 3. No proof of improved ActionFormer/head-side performance yet.
    - regloss15 is queued but intentionally gated.
