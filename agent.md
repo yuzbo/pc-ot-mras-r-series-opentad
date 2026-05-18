@@ -286,13 +286,15 @@
       `/root/autodl-tmp/OpenTAD_Back_check/gate_approvals/adapter_regloss15_after_quality.ok`.
       Do not create that file until the quality gate is written and regloss15
       is explicitly approved.
-- Prepared but not queued backup:
+  - Prepared but not queued backup:
   - ActionFormer-side SimOTA iou-sum/min-k assignment route.
   - Implementation updates
     `opentad/models/losses/assigner/anchor_free_simota_assigner.py` with
     `dynamic_k.mode="iou_sum"`, explicit `min_k`,
-    `filter_shortest_gt=False`, assignment stats, and explicit rejection of
-    unknown nested `dynamic_k` options.
+    `dynamic_k.min_candidate_iou=0.05`, `filter_shortest_gt=False`,
+    assignment stats, and explicit rejection of unknown nested `dynamic_k`
+    options. The min-IoU gate prevents `min_k` from forcing near-zero-IoU
+    candidates into positive labels under sparse random-fixed input.
   - Safety launcher: `scripts/run_adapter_simota_iou_sum.sh`.
     It supports `CHECK_ONLY=1`, asserts Adapter + ActionFormer structure,
     `batch_size=2`, random-fixed sampling, no quality head, and the expected
@@ -304,7 +306,7 @@
     pipeline; it is not part of the safe backup launcher.
   - Local verification:
     `pytest tests/test_adapter_quality_rescore_contracts.py tests/test_adapter_safety_contracts.py tests/test_adapter_simota_contracts.py -q`
-    -> `32 passed, 4 skipped`; tensor-level SimOTA tests are skipped on the
+    -> `33 passed, 5 skipped`; tensor-level SimOTA tests are skipped on the
     local Windows interpreter because PyTorch DLL loading is unavailable and
     should be run on the Linux training environment.
   - `bash -n scripts/run_adapter_simota_iou_sum.sh scripts/run_adapter_actionformer_regloss.sh scripts/run_adapter_pseudo_boundary_snap_pair.sh scripts/wait_for_screen_and_gate_then_run.sh`
@@ -320,5 +322,11 @@
     early. A separate read-only code review found no critical blocker and
     accepted the fix that removes the composite center25 variant from the safe
     backup launcher.
+  - 2026-05-18 12:44 Gemini CLI `gemini-3-pro-preview` reviewed the staged
+    SimOTA `min_candidate_iou=0.05` guard and approved it for staging, not
+    immediate deployment. Before any full SimOTA training, run remote
+    `CHECK_ONLY=1` and then a short 50-100 iteration assignment-debug
+    diagnostic checking raw vs post-gate candidate counts, zero-candidate GTs,
+    and early `loss_cls`/`loss_reg` stability.
 - Route summary and problem analysis:
   `../research-wiki/experiments/ADAPTER_ACTIONFORMER_NEXT_ROUTES_20260518.md`.

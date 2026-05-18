@@ -16,6 +16,7 @@ model = dict(
             dynamic_k=dict(
                 type="dynamic_k_matching",
                 mode="iou_sum",
+                min_candidate_iou=0.05,
             ),
         ),
     ),

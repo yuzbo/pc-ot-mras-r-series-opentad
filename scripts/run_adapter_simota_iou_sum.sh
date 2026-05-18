@@ -73,6 +73,7 @@ assert int(assigner.min_k) == 4, assigner
 assert not bool(assigner.filter_shortest_gt), assigner
 assert assigner.dynamic_k.type == "dynamic_k_matching", assigner
 assert assigner.dynamic_k.mode == "iou_sum", assigner
+assert abs(float(assigner.dynamic_k.min_candidate_iou) - 0.05) < 1e-9, assigner
 assert bool(cfg.model.rpn_head.assignment_debug.enabled), cfg.model.rpn_head
 
 train = cfg.dataset.train
@@ -109,6 +110,7 @@ assert int(cfg.solver.test.batch_size) == expected_batch_size, solver
 print("work_dir=", cfg.work_dir)
 print("assigner=", assigner.type)
 print("dynamic_k_mode=", assigner.dynamic_k.mode)
+print("min_candidate_iou=", assigner.dynamic_k.min_candidate_iou)
 print("min_k=", assigner.min_k)
 print("filter_shortest_gt=", assigner.filter_shortest_gt)
 print("train_load=", train_load.method, train_load.method_base)

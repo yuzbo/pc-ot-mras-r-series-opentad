@@ -177,6 +177,45 @@ def test_simota_iou_sum_handles_zero_candidate_gt():
     assert weights.tolist() == [1.0] * 3
 
 
+def test_simota_min_candidate_iou_filters_forced_low_iou_matches():
+    torch = import_torch_or_skip()
+    simota = load_simota_module()
+    assigner = simota.AnchorFreeSimOTAAssigner(
+        topk=4,
+        min_k=4,
+        dynamic_k=dict(type="dynamic_k_matching", mode="iou_sum", min_candidate_iou=0.2),
+    )
+
+    cost = torch.tensor(
+        [
+            [0.1],
+            [0.2],
+            [0.3],
+            [0.4],
+        ],
+        dtype=torch.float32,
+    )
+    positive_pos = torch.tensor([[True], [True], [True], [True]])
+    ious = torch.tensor([[0.9], [0.1], [0.05], [0.01]], dtype=torch.float32)
+
+    matrix, min_inds, weights = assigner.dynamic_k_matching(
+        cost=cost,
+        num_gt=1,
+        valid_mask=torch.ones(cost.shape[0], dtype=torch.bool),
+        valid_cost_matrix_inds=positive_pos,
+        pairwise_ious=ious,
+    )
+
+    stats = assigner.get_last_stats()
+    assert stats["raw_candidate_counts"] == [4]
+    assert stats["candidate_counts"] == [1]
+    assert stats["dynamic_ks"] == [1]
+    assert stats["matched_counts"] == [1]
+    assert matrix[:, 0].tolist() == [1.0, 0.0, 0.0, 0.0]
+    assert min_inds.tolist() == [0, 0, 0, 0]
+    assert weights.tolist() == [1.0] * 4
+
+
 def test_simota_shortest_gt_filter_can_be_disabled_for_overlaps():
     torch = import_torch_or_skip()
     simota = load_simota_module()
@@ -203,6 +242,14 @@ def test_simota_source_rejects_unknown_dynamic_k_options():
     assert "if dynamic_k:" in source
 
 
+def test_simota_source_supports_min_candidate_iou_gate():
+    source = read("opentad/models/losses/assigner/anchor_free_simota_assigner.py")
+
+    assert "min_candidate_iou" in source
+    assert "raw_candidate_counts" in source
+    assert "pairwise_ious >= float(self.min_candidate_iou)" in source
+
+
 def test_adapter_simota_plain_config_and_launcher_are_gated_controls():
     plain = read("configs/adatad/thumos/input_random_fixed_50pct_adapter_simota_mink4_w1.py")
     launch_script = read("scripts/run_adapter_simota_iou_sum.sh")
@@ -210,6 +257,7 @@ def test_adapter_simota_plain_config_and_launcher_are_gated_controls():
     assert "AnchorFreeSimOTAAssigner" in plain
     assert "topk=9" in plain
     assert "min_k=4" in plain
+    assert "min_candidate_iou=0.05" in plain
     assert "filter_shortest_gt=False" in plain
     assert 'mode="iou_sum"' in plain
     assert "assignment_debug=dict(enabled=True)" in plain
@@ -225,6 +273,8 @@ def test_adapter_simota_plain_config_and_launcher_are_gated_controls():
     assert "EXPECT_BATCH_SIZE" in launch_script
     assert 'assigner.type == "AnchorFreeSimOTAAssigner"' in launch_script
     assert 'assigner.dynamic_k.mode == "iou_sum"' in launch_script
+    assert "assigner.dynamic_k.min_candidate_iou" in launch_script
+    assert "min_candidate_iou=" in launch_script
     assert "assignment_debug.enabled" in launch_script
     assert "workflow.checkpoint_interval" in launch_script
     assert "cfg.solver.train.batch_size" in launch_script

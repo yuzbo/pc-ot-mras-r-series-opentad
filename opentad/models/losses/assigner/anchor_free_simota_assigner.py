@@ -32,6 +32,7 @@ class AnchorFreeSimOTAAssigner(object):
         min_k=1,
         dynamic_k=None,
         dynamic_k_mode="candidate_count",
+        min_candidate_iou=0.0,
         filter_shortest_gt=True,
     ):
         if dynamic_k is not None:
@@ -40,11 +41,14 @@ class AnchorFreeSimOTAAssigner(object):
             keep_percent = dynamic_k.pop("keep_percent", keep_percent)
             dynamic_k_mode = dynamic_k.pop("mode", dynamic_k_mode)
             min_k = dynamic_k.pop("min_k", min_k)
+            min_candidate_iou = dynamic_k.pop("min_candidate_iou", min_candidate_iou)
             if dynamic_k:
                 raise ValueError(f"Unsupported dynamic_k options: {sorted(dynamic_k)}")
 
         if dynamic_k_mode not in {"candidate_count", "iou_sum"}:
             raise ValueError(f"Unsupported dynamic_k_mode: {dynamic_k_mode}")
+        if float(min_candidate_iou) < 0.0:
+            raise ValueError(f"min_candidate_iou must be non-negative: {min_candidate_iou}")
 
         self.center_radius = center_radius
         self.iou_weight = iou_weight
@@ -54,6 +58,7 @@ class AnchorFreeSimOTAAssigner(object):
         self.topk = topk
         self.min_k = min_k
         self.dynamic_k_mode = dynamic_k_mode
+        self.min_candidate_iou = min_candidate_iou
         self.filter_shortest_gt = filter_shortest_gt
         self._last_stats = {}
 
@@ -143,6 +148,10 @@ class AnchorFreeSimOTAAssigner(object):
 
     def dynamic_k_matching(self, cost, num_gt, valid_mask, valid_cost_matrix_inds, pairwise_ious):
         positive_pos = valid_cost_matrix_inds
+        raw_candidate_counts = positive_pos.sum(0)
+        if float(self.min_candidate_iou) > 0.0:
+            iou_gate = pairwise_ious >= float(self.min_candidate_iou)
+            positive_pos = torch.logical_and(positive_pos, iou_gate)
         matching_matrix = cost.new_zeros(positive_pos.shape)
         pre_assign_weight = cost.new_ones((len(cost),))
 
@@ -194,6 +203,8 @@ class AnchorFreeSimOTAAssigner(object):
         matched_counts = matching_matrix.sum(0).to(torch.long)
         self._last_stats = {
             "dynamic_k_mode": self.dynamic_k_mode,
+            "min_candidate_iou": float(self.min_candidate_iou),
+            "raw_candidate_counts": [int(x) for x in raw_candidate_counts.detach().cpu().tolist()],
             "candidate_counts": [int(x) for x in candidate_counts.detach().cpu().tolist()],
             "dynamic_ks": [int(x) for x in dynamic_ks.detach().cpu().tolist()],
             "matched_counts": [int(x) for x in matched_counts.detach().cpu().tolist()],
