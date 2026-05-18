@@ -39,6 +39,7 @@ function Copy-RemoteFile {
 
 $queueGuard = Join-Path $repo "scripts\wait_for_screen_and_gate_then_run.sh"
 $pseudoLauncher = Join-Path $repo "scripts\run_adapter_pseudo_boundary_snap_pair.sh"
+$reglossLauncher = Join-Path $repo "scripts\run_adapter_actionformer_regloss.sh"
 
 Write-Host "== Sync queue guard to both servers =="
 Copy-RemoteFile -Port $PseudoPort -LocalPath $queueGuard -RemotePath "$RemoteDir/scripts/wait_for_screen_and_gate_then_run.sh"
@@ -46,6 +47,9 @@ Copy-RemoteFile -Port $ReglossPort -LocalPath $queueGuard -RemotePath "$RemoteDi
 
 Write-Host "== Sync pseudo-boundary launcher to 35407 =="
 Copy-RemoteFile -Port $PseudoPort -LocalPath $pseudoLauncher -RemotePath "$RemoteDir/scripts/run_adapter_pseudo_boundary_snap_pair.sh"
+
+Write-Host "== Sync regloss launcher to 25876 =="
+Copy-RemoteFile -Port $ReglossPort -LocalPath $reglossLauncher -RemotePath "$RemoteDir/scripts/run_adapter_actionformer_regloss.sh"
 
 Write-Host "== Remote syntax and q64 check-only on 35407 =="
 $pseudoCheck = @"
@@ -63,8 +67,9 @@ Write-Host "== Remote queue guard syntax on 25876 =="
 $reglossCheck = @"
 set -euo pipefail
 cd $RemoteDir
-chmod +x scripts/wait_for_screen_and_gate_then_run.sh
-bash -n scripts/wait_for_screen_and_gate_then_run.sh
+chmod +x scripts/wait_for_screen_and_gate_then_run.sh scripts/run_adapter_actionformer_regloss.sh
+bash -n scripts/wait_for_screen_and_gate_then_run.sh scripts/run_adapter_actionformer_regloss.sh
+CHECK_ONLY=1 bash scripts/run_adapter_actionformer_regloss.sh
 test ! -e gate_approvals/adapter_regloss15_after_quality.ok
 echo REGLOSS_GUARD_CHECK_OK
 "@
