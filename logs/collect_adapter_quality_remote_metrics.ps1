@@ -1,5 +1,7 @@
 param(
-    [int]$Tail = 200
+    [int]$Tail = 200,
+    [int]$RetryCount = 2,
+    [int]$RetryDelaySeconds = 30
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,16 +42,31 @@ grep -E '\[Train\]: \[[0-9]+\]\[[0-9]+/[0-9]+\]' "`$latest" | tail -5 || true
     Write-Host "SERVER_PORT=$($run.Port)"
     Write-Host "RUN=$($run.Name)"
 
-    $oldErrorActionPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        $sshOutput = ($remoteScript -replace "`r", "") | & $Ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -p $run.Port root@connect.cqa1.seetacloud.com "bash -s" 2>&1
-        $sshExit = $LASTEXITCODE
-    } catch {
-        $sshOutput = @($_.Exception.Message)
-        $sshExit = 1
-    } finally {
-        $ErrorActionPreference = $oldErrorActionPreference
+    $sshOutput = @()
+    $sshExit = 1
+
+    for ($attempt = 1; $attempt -le $RetryCount; $attempt++) {
+        Write-Host "REMOTE_ATTEMPT=$attempt/$RetryCount"
+
+        $oldErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $sshOutput = ($remoteScript -replace "`r", "") | & $Ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -p $run.Port root@connect.cqa1.seetacloud.com "bash -s" 2>&1
+            $sshExit = $LASTEXITCODE
+        } catch {
+            $sshOutput = @($_.Exception.Message)
+            $sshExit = 1
+        } finally {
+            $ErrorActionPreference = $oldErrorActionPreference
+        }
+
+        if ($sshExit -eq 0) {
+            break
+        }
+
+        if ($attempt -lt $RetryCount -and $RetryDelaySeconds -gt 0) {
+            Start-Sleep -Seconds $RetryDelaySeconds
+        }
     }
 
     if ($sshExit -eq 0) {
