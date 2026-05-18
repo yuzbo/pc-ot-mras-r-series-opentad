@@ -88,6 +88,10 @@ Pseudo-boundary cache provenance update:
   closing KEX before authentication. Do not approve q64 until this launcher is
   synced and `CHECK_ONLY=1 START_INDEX=1 END_INDEX=1 SKIP_CACHE_BUILD=1` passes
   on 35407 again.
+- Recovery helper prepared:
+  `logs/sync_adapter_followup_guards_after_ssh.ps1`. Once SSH recovers, run it
+  to sync the queue guard and q64 launcher, execute remote `bash -n`, rerun q64
+  `CHECK_ONLY=1`, and confirm that no approval sentinel was created.
 
 Verification after hardening:
 

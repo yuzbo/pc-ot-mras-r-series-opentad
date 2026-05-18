@@ -67,6 +67,8 @@ Latest remote state before this audit:
    - It must not launch merely because a quality run exits.
    - Local q64 launcher now has manifest provenance checks in commit `1b042d8`,
      but this still needs remote sync/check-only once SSH recovers.
+   - Recovery helper prepared at
+     `logs/sync_adapter_followup_guards_after_ssh.ps1`.
 
 3. No proof of improved ActionFormer/head-side performance yet.
    - regloss15 is queued but intentionally gated.
