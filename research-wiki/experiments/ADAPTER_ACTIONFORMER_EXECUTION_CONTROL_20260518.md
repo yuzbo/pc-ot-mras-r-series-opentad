@@ -423,6 +423,11 @@ DECISION=WAIT_FOR_NEUTRAL_FIRST_EVAL
    only. It now has local code and a `CHECK_ONLY` launcher, but it must not be
    inserted ahead of the current q64/regloss queue because it changes assignment
    semantics more broadly than the scalar `regloss15` calibration.
+7. SimOTA backup staging update at 2026-05-18 12:44: add
+   `dynamic_k.min_candidate_iou=0.05` to avoid `min_k` forcing near-zero-IoU
+   candidates into positive labels. This is a staged backup-only safety guard,
+   not approval to run SimOTA. Before full SimOTA training, require remote
+   `CHECK_ONLY=1` and a short 50-100 iteration assignment-debug diagnostic.
 
 Approval commands, only after the written gate permits launch:
 
@@ -457,7 +462,7 @@ touch /root/autodl-tmp/OpenTAD_Back_check/gate_approvals/adapter_regloss15_after
   route is a reasonable ActionFormer backup after `regloss15`, not an immediate
   replacement. Local verification for that backup:
   `pytest tests/test_adapter_quality_rescore_contracts.py tests/test_adapter_safety_contracts.py tests/test_adapter_simota_contracts.py -q`
-  -> `32 passed, 4 skipped`; `bash -n` passed for the SimOTA, regloss,
+  -> `33 passed, 5 skipped`; `bash -n` passed for the SimOTA, regloss,
   pseudo-boundary, and gate-wrapper scripts.
 - A read-only code review found no critical blocker in the SimOTA backup. The
   accepted fix was to keep only the plain SimOTA config in the safe backup
@@ -467,5 +472,11 @@ touch /root/autodl-tmp/OpenTAD_Back_check/gate_approvals/adapter_regloss15_after
   recommended continuing the current clean bs2 quality gate, with no forced
   interruption or insertion of SimOTA/q64/regloss before neutral/neg025 metrics
   are available.
+- Gemini CLI `gemini-3-pro-preview` reviewed the staged SimOTA
+  `min_candidate_iou=0.05` guard on 2026-05-18 12:44. Verdict: conceptually
+  sound and approved for staging. Required before any full SimOTA run: remote
+  `CHECK_ONLY=1`, then 50-100 iteration assignment-debug diagnostics checking
+  `raw_candidate_counts` versus post-gate `candidate_counts`, zero-candidate
+  GT frequency, and early classification/regression loss stability.
 - A Gemini MCP route-review attempt failed with
   `unsupported Gemini backend: openai`; it is not counted as valid review.

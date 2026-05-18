@@ -187,9 +187,13 @@ Implementation:
   now supports:
   - `dynamic_k.mode="iou_sum"`;
   - explicit `min_k`;
+  - `dynamic_k.min_candidate_iou=0.05` as a safety gate before dynamic-k
+    selection, to avoid forced near-zero-IoU positives under sparse
+    random-fixed input;
   - `filter_shortest_gt=False` for overlapping actions;
-  - assignment statistics for candidate counts, dynamic-k counts, matched
-    counts, candidate points, confused points, and matched points.
+  - assignment statistics for raw candidate counts, post-IoU-gate candidate
+    counts, dynamic-k counts, matched counts, candidate points, confused
+    points, and matched points.
 - The assigner now rejects unknown nested `dynamic_k` options instead of
   silently ignoring misspelled config keys.
 - The safe SimOTA backup config explicitly enables `assignment_debug`, restores
@@ -200,7 +204,7 @@ Implementation:
   It has `CHECK_ONLY=1`, `EXPECT_BATCH_SIZE=2`, Adapter/ActionFormer structure
   checks, random-fixed sampler checks, and explicit SimOTA iou-sum config
   assertions for the plain SimOTA backup, including `assignment_debug`,
-  checkpoint cadence, and
+  `min_candidate_iou=0.05`, checkpoint cadence, and
   train/val/test `batch_size=2`.
 
 Configs:
@@ -229,14 +233,15 @@ Verification:
 
 - Local static tests:
   `pytest tests/test_adapter_quality_rescore_contracts.py tests/test_adapter_safety_contracts.py tests/test_adapter_simota_contracts.py -q`
-  -> `32 passed, 4 skipped` on Windows. The 4 skipped tests are tensor-level
+  -> `33 passed, 5 skipped` on Windows. The skipped tests are tensor-level
   SimOTA behavior checks intentionally left for the Linux training environment,
   because local Windows PyTorch DLL loading is unavailable.
 - Shell syntax:
   `bash -n scripts/run_adapter_simota_iou_sum.sh scripts/run_adapter_actionformer_regloss.sh scripts/run_adapter_pseudo_boundary_snap_pair.sh scripts/wait_for_screen_and_gate_then_run.sh`
   passed.
 - Python syntax:
-  `python -m py_compile tests/test_adapter_simota_contracts.py` passed.
+  `python -m py_compile opentad/models/losses/assigner/anchor_free_simota_assigner.py tests/test_adapter_simota_contracts.py`
+  passed.
 
 External review note:
 
@@ -257,6 +262,14 @@ External review note:
   neg025 quality diagnostics are interpretable. It ranked experiment contract
   fragility and assignment positive density as the most important risks, and
   recommended remote SimOTA diagnostics only after the current gates.
+- Gemini CLI `gemini-3-pro-preview` reviewed the SimOTA `min_candidate_iou`
+  guard on 2026-05-18 12:44 and approved it for staging, not immediate
+  deployment. The review recommended keeping the threshold at `0.05` rather
+  than `0.1`, because sparse random-fixed input can depress otherwise useful
+  candidate IoUs. Before any full SimOTA training, run remote `CHECK_ONLY=1`
+  and then a short 50-100 iteration assignment-debug diagnostic to inspect
+  `raw_candidate_counts`, post-gate `candidate_counts`, zero-candidate GTs,
+  and early `loss_cls`/`loss_reg` stability.
 - A Gemini MCP review attempt on this route failed with
   `unsupported Gemini backend: openai`, so it is not counted as valid review.
 
