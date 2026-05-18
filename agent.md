@@ -267,6 +267,12 @@
       `/root/autodl-tmp/OpenTAD_Back_check/gate_approvals/adapter_pseudo_snap_q64_after_quality.ok`.
       Do not create that file until the quality gate is written and q64 is
       explicitly approved.
+    - 2026-05-18 08:50 local commit
+      `1b042d8 guard pseudo boundary cache manifests` added manifest
+      provenance checks to `scripts/run_adapter_pseudo_boundary_snap_pair.sh`.
+      This is not yet synced to 35407 because the AutoDL SSH gateway is closing
+      KEX before authentication. Before approving q64, sync this launcher and
+      rerun `CHECK_ONLY=1 START_INDEX=1 END_INDEX=1 SKIP_CACHE_BUILD=1`.
   - 25876 screen `adapter_regloss15_after_quality`.
     - Waits for `adapter_quality_neg025`.
     - Runs ActionFormer-side `loss_weight=1.5` localization calibration via
