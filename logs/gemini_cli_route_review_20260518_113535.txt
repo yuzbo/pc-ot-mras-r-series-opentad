@@ -1,0 +1,54 @@
+作为严格的 ML reviewer，我已仔细阅读了你提供的项目状态、实验上下文以及当前面临的基础设施（SSH 断连）和算法状态。目前处于关键的基础设施排障期，但算法逻辑链条非常清晰。
+
+以下是针对你的五个问题的详细审查和可执行建议：
+
+### A. 当前是否应该坚持等待 clean bs2 quality gate？是否有理由强行中断或插入 SimOTA/q64/regloss？
+**强烈建议：坚持等待 clean bs2 quality gate 完成。绝对不应该强行中断或插入其他实验。**
+
+**理由：**
+1. **历史债务清理：** 之前的 37-39 mAP 和 50 mAP 结果被 `batch_size` 缩放导致的隐式 bug 严重污染。在验证正确的 bs=2/99 iters 下的 quality branch 行为前，你对网络真正的承载力一无所知。
+2. **基线纯洁性：** `adapter_quality_neutral` (loss_weight=0) 是唯一的“计算图无害性”证明。如果网络仅仅多了一个全连接分支和假梯度就崩溃，说明你的 Adapter 架构有底层的梯度泄漏或广播错误。
+3. **梯度毒性验证：** `adapter_quality_neg025` 是“温和监督”测试。如果它崩溃而 neutral 没崩，证明当前 quality loss 的设计（target 或 loss 惩罚）对主干特征有毒。
+4. **中断代价：** 如果现在强行切入 SimOTA 或 q64，你将永远无法确定是 quality branch 的问题，还是 assignment/sampling 的问题。
+
+### B. 算法问题最可能排序
+基于当前的故障历史和 ActionFormer/Adapter 的特性，我认为系统面临的瓶颈优先级如下（从最可能/最致命到相对次要）：
+
+1. **Monitoring/Contract Fragility (监控与契约脆弱性):** 最高风险。`batch_size` 改变直接导致 epoch iterations 改变，说明训练循环、学习率调度或评估频率没有正确地基于有效样本数解耦。如果不巩固这些契约，后续实验都是在掷骰子。
+2. **Assignment Positive Density (正样本分配密度):** 在 random-fixed 50% 采样下，原本密集的 ActionFormer 中心点先验被破坏。许多 GT 内部可能根本没有采样到足够的高质量帧，导致传统的 Center/IoU 阈值分配不到足够的正样本，模型无法收敛或陷入次优。
+3. **Quality Target/Loss (质量目标/损失函数设计):** 多任务学习中常见的梯度冲突。预测当前帧是否“高质量”的梯度，可能抹杀了主干网络提取动作时序边界的特征能力（这解释了之前 `alpha=0` 时 base mAP 掉到了 49.7）。
+4. **Input Selection (输入选择 - q64等):** oracle (75.5) 和 random (63) 差距巨大，输入确实是天花板。但在网络能稳定收敛之前，优化输入选择只是在掩盖分配和训练的脆弱性。
+5. **Quality Branch Training-System (分支训练系统缺陷):** 如果 neutral run 都失败了，那说明网络存在 `keep_zero_graph` 带来的广播错误或 OOM 边缘的显存溢出。
+6. **High-tIoU Localization (高 tIoU 定位):** 属于微调阶段的问题。在 Average-mAP 恢复到 65+ 之前，不需要过度关注 mAP@0.7。
+
+### C. 服务器 SSH 恢复后的最小 GPU 时间/最高信息增益计划
+恢复连通性后，请按照以下严格的门控流程（Gates）执行，最大化信息获取：
+
+*   **Step 1: 基础设施恢复与状态同步 (0 GPU hours)**
+    *   恢复 SSH，立即拉取 35407 (neutral) 和 25876 (neg025) 的日志和早期 epoch (Epoch 10-20) 验证集分数。
+
+*   **Step 2: 评估 Neutral Gate (35407)**
+    *   **Stop Gate:** 如果 mAP 显著低于 63.8 (例如 < 60)。结论：架构改动或 PyTorch `keep_zero_graph` 引入了致命 bug。**Action: 废弃当前 quality branch 设计，直接启动 SimOTA backup**。
+    *   **Continue Gate:** 如果 mAP ≈ 63.8。结论：计算图安全。继续观察 Step 3。
+
+*   **Step 3: 评估 Neg025 Gate (25876)**
+    *   *前置条件：Neutral Gate 已通过。*
+    *   **Stop Gate:** 如果 mAP 显著低于 63.8。结论：Quality 任务的梯度“毒化”了基础检测特征。**Action: 停止 35407 排队的 q64（因为 q64 依赖 quality score），将 25876 服务器切换到 ActionFormer regloss15 实验**。
+    *   **Continue Gate:** 如果 mAP >= 63.8。结论：温和监督有效。**Action: 让 35407 自然过渡到 queued q64，让 25876 自然过渡到 queued regloss15**。
+
+### D. 对 SimOTA iou_sum/min_k Backup 的设计风险与测试建议
+虽然 SimOTA 是合理的 backup，但直接应用于 50% 稀疏输入存在很大风险：
+
+1.  **设计风险 (Forced Assignment of Garbage):** `min_k` 会强制为每个 GT 分配 $k$ 个正样本。如果某个短 GT 在 50% 采样下恰好被略过了关键帧，`min_k` 会强行把远处的背景帧或边缘帧标记为正样本。这会向分类和回归头注入极强的噪声（Garbage In, Garbage Out）。
+2.  **强制远程 CHECK_ONLY 验证:**
+    *   由于本地 Windows Tensor 测试失败，这步是**绝对必要**的。
+    *   你必须利用 `assignment_debug` 标志。在服务器端跑前 1-2 个 Iteration，打印出每个 GT 被分配的 Anchor 数量（`num_pos`）以及分配的 `max_iou`。
+3.  **短诊断指标 (Short Diagnostic Metrics):**
+    *   **监控目标:** 跑 5-10 Epochs，观察 `loss_cls` 和 `loss_reg` 的下降曲线，对比 baseline。
+    *   **危险信号:** 如果 `loss_reg` 居高不下，或者 `loss_cls` 在极低的 Epoch 出现 NaN/激增，说明 `min_k` 正在强迫模型回归不可能的边界。
+    *   **缓解策略建议:** 如果观察到上述危险信号，请准备一个 fallback：在 `iou_sum` 计算 $k$ 之后，加入一个硬性的 `min_iou_threshold`，即“宁可丢弃这个 GT，也不强行分配 IoU 极低的帧”。
+
+### E. 最终裁决 (Verdict)
+**VERDICT: 继续当前路线 (CONTINUE CURRENT ROUTE)**。
+
+当前的实验布局（neutral 和 neg025）是在为系统进行“脱水排雷”。在 bs=2 bug 修复后，你迫切需要这两个实验来确认网络的基本物理定律是否还在起作用。SSH 故障只是运维噪音，不应影响科学决策。耐心等待这几十个 Epoch 的结果，它们提供的 Yes/No 信号将决定整个下半场的走向。不要在基底尚未稳固时，跳跃去测试更复杂的 SimOTA 或特征提取机制。

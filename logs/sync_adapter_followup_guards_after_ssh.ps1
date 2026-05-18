@@ -40,6 +40,9 @@ function Copy-RemoteFile {
 $queueGuard = Join-Path $repo "scripts\wait_for_screen_and_gate_then_run.sh"
 $pseudoLauncher = Join-Path $repo "scripts\run_adapter_pseudo_boundary_snap_pair.sh"
 $reglossLauncher = Join-Path $repo "scripts\run_adapter_actionformer_regloss.sh"
+$simotaLauncher = Join-Path $repo "scripts\run_adapter_simota_iou_sum.sh"
+$simotaAssigner = Join-Path $repo "opentad\models\losses\assigner\anchor_free_simota_assigner.py"
+$simotaPlainConfig = Join-Path $repo "configs\adatad\thumos\input_random_fixed_50pct_adapter_simota_mink4_w1.py"
 
 Write-Host "== Sync queue guard to both servers =="
 Copy-RemoteFile -Port $PseudoPort -LocalPath $queueGuard -RemotePath "$RemoteDir/scripts/wait_for_screen_and_gate_then_run.sh"
@@ -50,6 +53,11 @@ Copy-RemoteFile -Port $PseudoPort -LocalPath $pseudoLauncher -RemotePath "$Remot
 
 Write-Host "== Sync regloss launcher to 25876 =="
 Copy-RemoteFile -Port $ReglossPort -LocalPath $reglossLauncher -RemotePath "$RemoteDir/scripts/run_adapter_actionformer_regloss.sh"
+
+Write-Host "== Sync SimOTA backup route to 25876 =="
+Copy-RemoteFile -Port $ReglossPort -LocalPath $simotaLauncher -RemotePath "$RemoteDir/scripts/run_adapter_simota_iou_sum.sh"
+Copy-RemoteFile -Port $ReglossPort -LocalPath $simotaAssigner -RemotePath "$RemoteDir/opentad/models/losses/assigner/anchor_free_simota_assigner.py"
+Copy-RemoteFile -Port $ReglossPort -LocalPath $simotaPlainConfig -RemotePath "$RemoteDir/configs/adatad/thumos/input_random_fixed_50pct_adapter_simota_mink4_w1.py"
 
 Write-Host "== Remote syntax and q64 check-only on 35407 =="
 $pseudoCheck = @"
@@ -67,11 +75,13 @@ Write-Host "== Remote queue guard syntax on 25876 =="
 $reglossCheck = @"
 set -euo pipefail
 cd $RemoteDir
-chmod +x scripts/wait_for_screen_and_gate_then_run.sh scripts/run_adapter_actionformer_regloss.sh
-bash -n scripts/wait_for_screen_and_gate_then_run.sh scripts/run_adapter_actionformer_regloss.sh
+chmod +x scripts/wait_for_screen_and_gate_then_run.sh scripts/run_adapter_actionformer_regloss.sh scripts/run_adapter_simota_iou_sum.sh
+bash -n scripts/wait_for_screen_and_gate_then_run.sh scripts/run_adapter_actionformer_regloss.sh scripts/run_adapter_simota_iou_sum.sh
 CHECK_ONLY=1 bash scripts/run_adapter_actionformer_regloss.sh
+CHECK_ONLY=1 bash scripts/run_adapter_simota_iou_sum.sh
 test ! -e gate_approvals/adapter_regloss15_after_quality.ok
 echo REGLOSS_GUARD_CHECK_OK
+echo SIMOTA_BACKUP_CHECK_OK
 "@
 Invoke-Remote -Port $ReglossPort -Script $reglossCheck
 

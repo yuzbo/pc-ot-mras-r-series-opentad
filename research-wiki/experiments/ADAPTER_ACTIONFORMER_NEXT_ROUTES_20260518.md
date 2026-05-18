@@ -174,6 +174,92 @@ Success gate:
   Average-mAP improves by at least `0.5` and mAP@0.7 improves by at least `1.0`
   without losing mAP@0.3/0.4.
 
+## Prepared Backup Route
+
+### ActionFormer Assignment Backup: SimOTA IoU-Sum MinK
+
+This route is prepared as a backup after `regloss15`, not as an immediate
+replacement for the currently queued ActionFormer-side run.
+
+Implementation:
+
+- `opentad/models/losses/assigner/anchor_free_simota_assigner.py`
+  now supports:
+  - `dynamic_k.mode="iou_sum"`;
+  - explicit `min_k`;
+  - `filter_shortest_gt=False` for overlapping actions;
+  - assignment statistics for candidate counts, dynamic-k counts, matched
+    counts, candidate points, confused points, and matched points.
+- The assigner now rejects unknown nested `dynamic_k` options instead of
+  silently ignoring misspelled config keys.
+- The safe SimOTA backup config explicitly enables `assignment_debug`, restores
+  checkpoint saving, and uses the same first-eval cadence as the active gate:
+  `val_start_epoch=40`, `val_eval_interval=2`, `end_epoch=60`.
+- Safe launcher:
+  `scripts/run_adapter_simota_iou_sum.sh`.
+  It has `CHECK_ONLY=1`, `EXPECT_BATCH_SIZE=2`, Adapter/ActionFormer structure
+  checks, random-fixed sampler checks, and explicit SimOTA iou-sum config
+  assertions for the plain SimOTA backup, including `assignment_debug`,
+  checkpoint cadence, and
+  train/val/test `batch_size=2`.
+
+Configs:
+
+- Safe backup:
+  `configs/adatad/thumos/input_random_fixed_50pct_adapter_simota_mink4_w1.py`
+- Manual composite diagnostic only:
+  `configs/adatad/thumos/input_random_fixed_50pct_adapter_simota_center25_mink4_w1.py`.
+  It inherits the `input_random_fixed_50pct_adapter_fcos_center25.py` visual
+  pipeline, so it must not be interpreted as a clean center/range-only ablation
+  and is not part of the safe backup launcher.
+
+Why it is backup, not next:
+
+- It changes assignment semantics, positive density, and overlapping-GT
+  handling at once, so it is less isolated than `regloss15`.
+- It should be used only if the scalar localization calibration is weak or if
+  assignment diagnostics point to too few/too narrow positives.
+- A short diagnostic run with assignment stats should precede any full
+  claim-making run.
+- Once AutoDL SSH recovers, `logs/sync_adapter_followup_guards_after_ssh.ps1`
+  will sync the plain backup to 25876 and run `CHECK_ONLY=1` only. It does not
+  start SimOTA training and does not create approval sentinels.
+
+Verification:
+
+- Local static tests:
+  `pytest tests/test_adapter_quality_rescore_contracts.py tests/test_adapter_safety_contracts.py tests/test_adapter_simota_contracts.py -q`
+  -> `32 passed, 4 skipped` on Windows. The 4 skipped tests are tensor-level
+  SimOTA behavior checks intentionally left for the Linux training environment,
+  because local Windows PyTorch DLL loading is unavailable.
+- Shell syntax:
+  `bash -n scripts/run_adapter_simota_iou_sum.sh scripts/run_adapter_actionformer_regloss.sh scripts/run_adapter_pseudo_boundary_snap_pair.sh scripts/wait_for_screen_and_gate_then_run.sh`
+  passed.
+- Python syntax:
+  `python -m py_compile tests/test_adapter_simota_contracts.py` passed.
+
+External review note:
+
+- A read-only xhigh advisor agreed that this SimOTA iou-sum/min-k route is a
+  reasonable ActionFormer backup for testing whether high-tIoU weakness comes
+  from overly narrow positive assignment, but it should not preempt the current
+  clean quality gate or the narrower `regloss15` run.
+- A later read-only code review found no critical implementation blocker. The
+  accepted fix was to remove the `center25` composite variant from the safe
+  backup launcher because it inherits the FCOS-center25 center-crop visual
+  pipeline and would confound assignment diagnosis. The review also noted that
+  `assign_confuse_point_count` is uninformative when `confuse_weight=1.0`; use
+  `candidate_point_count - matched_point_count` for unmatched candidate
+  pressure.
+- Gemini CLI `gemini-3-pro-preview` route review completed on 2026-05-18 and
+  agreed with continuing the current clean bs2 quality gate. It explicitly
+  advised not to interrupt or insert SimOTA/q64/regloss before the neutral and
+  neg025 quality diagnostics are interpretable. It ranked experiment contract
+  fragility and assignment positive density as the most important risks, and
+  recommended remote SimOTA diagnostics only after the current gates.
+- A Gemini MCP review attempt on this route failed with
+  `unsupported Gemini backend: openai`, so it is not counted as valid review.
+
 ## Direction Rules
 
 - If clean neutral quality recovers near `61.95+`, quality-head integration is
@@ -184,3 +270,6 @@ Success gate:
   a concrete check.
 - Do not restart broad irregular/sparse-head work until the two conservative
   queued routes have produced evidence.
+- Do not launch the SimOTA iou-sum/min-k backup until `regloss15` has either
+  failed its gate or produced assignment/localization evidence that justifies an
+  assignment rewrite.

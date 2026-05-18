@@ -51,6 +51,11 @@ Monitoring note at 2026-05-18 08:10:
 - 2026-05-18 09:29 and a 5-minute backoff retry still failed on both ports
   with the same KEX-close symptom. Treat remote monitoring/deployment as
   blocked until the AutoDL SSH gateway or instances become reachable again.
+- 2026-05-18 11:18 retry: `Test-NetConnection` still reports both TCP ports
+  reachable, but the metric collector still returns
+  `REMOTE_STATUS=SSH_FAILED` for both active runs and the gate remains
+  `DECISION=RETRY_REMOTE_MONITORING`. This is still a remote SSH gateway
+  blocker, not experiment evidence.
 
 Queue safety update at 2026-05-18 07:47:
 
@@ -94,7 +99,9 @@ Pseudo-boundary cache provenance update:
 - Recovery helper prepared:
   `logs/sync_adapter_followup_guards_after_ssh.ps1`. Once SSH recovers, run it
   to sync the queue guard and q64 launcher, execute remote `bash -n`, rerun q64
-  `CHECK_ONLY=1`, and confirm that no approval sentinel was created.
+  `CHECK_ONLY=1`, sync the regloss and plain SimOTA-backup launcher/config to
+  25876, run their `CHECK_ONLY=1` checks, and confirm that no approval sentinel
+  was created.
 - Recovery watcher prepared and started:
   `logs/watch_autodl_recovery_and_sync.ps1`.
   - Latest launcher PID: `110816`.
@@ -412,6 +419,10 @@ DECISION=WAIT_FOR_NEUTRAL_FIRST_EVAL
 5. After first eval, update this report, `OpenTAD_Back/agent.md`, and
    `ADAPTER_ACTIONFORMER_NEXT_ROUTES_20260518.md` with raw numbers and the gate
    decision.
+6. Keep the new SimOTA iou-sum/min-k assignment route as a post-regloss backup
+   only. It now has local code and a `CHECK_ONLY` launcher, but it must not be
+   inserted ahead of the current q64/regloss queue because it changes assignment
+   semantics more broadly than the scalar `regloss15` calibration.
 
 Approval commands, only after the written gate permits launch:
 
@@ -442,3 +453,19 @@ touch /root/autodl-tmp/OpenTAD_Back_check/gate_approvals/adapter_regloss15_after
     hurting low-tIoU bands by more than `0.5`;
   - require regloss15 to improve Average-mAP by at least `0.5` and mAP@0.7 by
     at least `1.0` without losing mAP@0.3/0.4.
+- A later read-only xhigh route review agreed that the SimOTA iou-sum/min-k
+  route is a reasonable ActionFormer backup after `regloss15`, not an immediate
+  replacement. Local verification for that backup:
+  `pytest tests/test_adapter_quality_rescore_contracts.py tests/test_adapter_safety_contracts.py tests/test_adapter_simota_contracts.py -q`
+  -> `32 passed, 4 skipped`; `bash -n` passed for the SimOTA, regloss,
+  pseudo-boundary, and gate-wrapper scripts.
+- A read-only code review found no critical blocker in the SimOTA backup. The
+  accepted fix was to keep only the plain SimOTA config in the safe backup
+  launcher; the `center25` variant is now labeled as a manual composite
+  diagnostic because it inherits a different visual pipeline.
+- Gemini CLI `gemini-3-pro-preview` completed a route review on 2026-05-18 and
+  recommended continuing the current clean bs2 quality gate, with no forced
+  interruption or insertion of SimOTA/q64/regloss before neutral/neg025 metrics
+  are available.
+- A Gemini MCP route-review attempt failed with
+  `unsupported Gemini backend: openai`; it is not counted as valid review.

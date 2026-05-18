@@ -1,0 +1,9 @@
+node.exe : Warning: 256-color support not detected. Using a terminal with at least 256-color support is recommended for 
+a better visual experience.
+At C:\Users\skywalker\AppData\Roaming\npm\gemini.ps1:24 char:5
++     & "node$exe"  "$basedir/node_modules/@google/gemini-cli/bundle/ge ...
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Warning: 256-co...ual experience.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Ripgrep is not available. Falling back to GrepTool.
