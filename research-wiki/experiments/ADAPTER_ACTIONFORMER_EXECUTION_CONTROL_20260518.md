@@ -97,12 +97,26 @@ Pseudo-boundary cache provenance update:
   `CHECK_ONLY=1`, and confirm that no approval sentinel was created.
 - Recovery watcher prepared and started:
   `logs/watch_autodl_recovery_and_sync.ps1`.
-  - Latest launcher PID: `105604`.
+  - Latest launcher PID: `110816`.
   - Latest log: `logs/autodl_recovery_watch_latest.log`.
   - Commit `ebb833e fail recovery sync on ssh errors` fixed native `scp/ssh`
     exit-code handling; failed sync now returns nonzero and the watcher backs
     off instead of treating the attempt as successful.
   - The watcher does not create approval sentinels.
+
+Regloss launcher contract update:
+
+- Local commit `84608f9 guard regloss batch size contract` adds
+  `EXPECT_BATCH_SIZE=2` assertions to
+  `scripts/run_adapter_actionformer_regloss.sh`.
+- Local verification: `pytest tests/test_adapter_safety_contracts.py
+  tests/test_adapter_quality_rescore_contracts.py -q` passed with `29 passed`,
+  and `bash -n scripts/run_adapter_actionformer_regloss.sh
+  scripts/run_adapter_pseudo_boundary_snap_pair.sh
+  scripts/wait_for_screen_and_gate_then_run.sh` passed.
+- Recovery helper commit `64f22f8 sync regloss launcher in recovery helper`
+  will sync this launcher to 25876 and run remote `CHECK_ONLY=1` once SSH
+  recovers.
 
 Verification after hardening:
 
