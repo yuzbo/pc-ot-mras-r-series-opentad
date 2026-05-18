@@ -20,6 +20,9 @@ function Invoke-Remote {
         [string]$Script
     )
     ($Script -replace "`r", "") | & $Ssh -o BatchMode=yes -o ConnectTimeout=20 -p $Port "root@$HostName" "bash -s"
+    if ($LASTEXITCODE -ne 0) {
+        throw "ssh failed on port $Port with exit code $LASTEXITCODE"
+    }
 }
 
 function Copy-RemoteFile {
@@ -29,6 +32,9 @@ function Copy-RemoteFile {
         [string]$RemotePath
     )
     & $Scp -P $Port $LocalPath "root@${HostName}:$RemotePath"
+    if ($LASTEXITCODE -ne 0) {
+        throw "scp failed on port $Port with exit code $LASTEXITCODE for $LocalPath"
+    }
 }
 
 $queueGuard = Join-Path $repo "scripts\wait_for_screen_and_gate_then_run.sh"
