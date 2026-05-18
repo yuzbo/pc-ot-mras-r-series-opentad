@@ -37,6 +37,18 @@ Latest checked state at 2026-05-18 07:22:
 - 25876 disk remains the operational risk: `/root/autodl-tmp` has about 9.7GB
   free.
 
+Monitoring note at 2026-05-18 08:10:
+
+- Direct SSH temporarily started failing on both ports with
+  `kex_exchange_identification: Connection closed by remote host`.
+- `Test-NetConnection` still reports both TCP ports reachable, so this looks
+  like SeetaCloud proxy/session throttling or a transient SSH gateway issue,
+  not evidence that training crashed.
+- `logs/collect_adapter_quality_remote_metrics.ps1` now emits structured
+  `REMOTE_STATUS=SSH_FAILED` and retries; `logs/evaluate_adapter_quality_gate.ps1`
+  maps this to `DECISION=RETRY_REMOTE_MONITORING`.
+- Do not make experiment decisions from an unreachable monitor result.
+
 Queue safety update at 2026-05-18 07:47:
 
 - A GPT-5.5 xhigh read-only critique flagged that "screen disappearance" is

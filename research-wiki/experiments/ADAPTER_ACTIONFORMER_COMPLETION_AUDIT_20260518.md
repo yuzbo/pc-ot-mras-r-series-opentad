@@ -52,6 +52,9 @@ Latest remote state before this audit:
 - 25876 disk: about 9.1GB free on `/root/autodl-tmp`.
 - Queued q64/regloss screens are guarded by approval sentinels and cannot
   launch automatically.
+- Subsequent monitoring hit transient SSH gateway failures on both AutoDL
+  ports: TCP was reachable, but SSH KEX was closed by the remote host. This is
+  a monitoring blocker only; it is not evidence of training failure.
 
 ## Missing Or Weakly Verified Items
 
