@@ -29,12 +29,22 @@ class AnchorFreeSimOTAAssigner(object):
         keep_percent=0.65,
         confuse_weight=0.1,
         topk=None,
+        min_k=1,
         dynamic_k=None,
+        dynamic_k_mode="candidate_count",
+        filter_shortest_gt=True,
     ):
         if dynamic_k is not None:
             dynamic_k = dict(dynamic_k)
             dynamic_k.pop("type", None)
             keep_percent = dynamic_k.pop("keep_percent", keep_percent)
+            dynamic_k_mode = dynamic_k.pop("mode", dynamic_k_mode)
+            min_k = dynamic_k.pop("min_k", min_k)
+            if dynamic_k:
+                raise ValueError(f"Unsupported dynamic_k options: {sorted(dynamic_k)}")
+
+        if dynamic_k_mode not in {"candidate_count", "iou_sum"}:
+            raise ValueError(f"Unsupported dynamic_k_mode: {dynamic_k_mode}")
 
         self.center_radius = center_radius
         self.iou_weight = iou_weight
@@ -42,6 +52,13 @@ class AnchorFreeSimOTAAssigner(object):
         self.keep_percent = keep_percent
         self.confuse_weight = confuse_weight
         self.topk = topk
+        self.min_k = min_k
+        self.dynamic_k_mode = dynamic_k_mode
+        self.filter_shortest_gt = filter_shortest_gt
+        self._last_stats = {}
+
+    def get_last_stats(self):
+        return dict(self._last_stats)
 
     def assign(
         self,
@@ -132,12 +149,25 @@ class AnchorFreeSimOTAAssigner(object):
         pre_assign_weight[positive_pos.sum(1) > 0] = self.confuse_weight
 
         candidate_counts = positive_pos.sum(0)
-        dynamic_ks = candidate_counts
-        if self.topk is not None:
-            dynamic_ks = dynamic_ks.clamp(max=int(self.topk))
-
-        dynamic_ks = (dynamic_ks.float() * self.keep_percent).long()
-        dynamic_ks = torch.where(candidate_counts > 0, dynamic_ks.clamp(min=1), dynamic_ks)
+        if self.dynamic_k_mode == "iou_sum":
+            dynamic_ks = candidate_counts.new_zeros(candidate_counts.shape)
+            for gt_idx in range(num_gt):
+                candidate_count = int(candidate_counts[gt_idx].item())
+                if candidate_count <= 0:
+                    continue
+                topk = candidate_count if self.topk is None else min(candidate_count, int(self.topk))
+                valid_ious = pairwise_ious[:, gt_idx].masked_fill(~positive_pos[:, gt_idx], 0.0)
+                dynamic_ks[gt_idx] = (
+                    torch.topk(valid_ious, k=topk, largest=True).values.sum().long().clamp(min=int(self.min_k))
+                )
+        elif self.dynamic_k_mode == "candidate_count":
+            dynamic_ks = candidate_counts
+            if self.topk is not None:
+                dynamic_ks = dynamic_ks.clamp(max=int(self.topk))
+            dynamic_ks = (dynamic_ks.float() * self.keep_percent).long()
+            dynamic_ks = torch.where(candidate_counts > 0, dynamic_ks.clamp(min=int(self.min_k)), dynamic_ks)
+        else:
+            raise ValueError(f"Unsupported dynamic_k_mode: {self.dynamic_k_mode}")
         dynamic_ks = torch.minimum(dynamic_ks, candidate_counts)
 
         for gt_idx in range(num_gt):
@@ -160,6 +190,17 @@ class AnchorFreeSimOTAAssigner(object):
 
         masked_cost = cost.masked_fill(matching_matrix == 0, INF)
         _, min_inds = masked_cost.min(1)
+
+        matched_counts = matching_matrix.sum(0).to(torch.long)
+        self._last_stats = {
+            "dynamic_k_mode": self.dynamic_k_mode,
+            "candidate_counts": [int(x) for x in candidate_counts.detach().cpu().tolist()],
+            "dynamic_ks": [int(x) for x in dynamic_ks.detach().cpu().tolist()],
+            "matched_counts": [int(x) for x in matched_counts.detach().cpu().tolist()],
+            "candidate_point_count": int((positive_pos.sum(1) > 0).sum().item()),
+            "confuse_point_count": int((pre_assign_weight < 1.0).sum().item()),
+            "matched_point_count": int((matching_matrix.sum(1) > 0).sum().item()),
+        }
 
         return matching_matrix, min_inds, pre_assign_weight
 
@@ -218,10 +259,13 @@ class AnchorFreeSimOTAAssigner(object):
         # F T x N -> F T
         min_len, min_len_inds = lens.min(dim=1)
 
-        # corner case: multiple actions with very similar durations (e.g., THUMOS14)
-        pre_assign_mask = torch.logical_and((lens <= (min_len[:, None] + 1e-3)), (lens < INF)).to(reg_targets.dtype)
+        if self.filter_shortest_gt:
+            # corner case: multiple actions with very similar durations (e.g., THUMOS14)
+            pre_assign_mask = torch.logical_and((lens <= (min_len[:, None] + 1e-3)), (lens < INF))
+        else:
+            pre_assign_mask = lens < INF
 
-        return pre_assign_mask
+        return pre_assign_mask.to(reg_targets.dtype)
 
 
 def custom_ctr_diou_loss_1d(input_offsets: torch.Tensor, target_offsets: torch.Tensor, eps: float = 1e-8):

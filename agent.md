@@ -286,5 +286,39 @@
       `/root/autodl-tmp/OpenTAD_Back_check/gate_approvals/adapter_regloss15_after_quality.ok`.
       Do not create that file until the quality gate is written and regloss15
       is explicitly approved.
+- Prepared but not queued backup:
+  - ActionFormer-side SimOTA iou-sum/min-k assignment route.
+  - Implementation updates
+    `opentad/models/losses/assigner/anchor_free_simota_assigner.py` with
+    `dynamic_k.mode="iou_sum"`, explicit `min_k`,
+    `filter_shortest_gt=False`, assignment stats, and explicit rejection of
+    unknown nested `dynamic_k` options.
+  - Safety launcher: `scripts/run_adapter_simota_iou_sum.sh`.
+    It supports `CHECK_ONLY=1`, asserts Adapter + ActionFormer structure,
+    `batch_size=2`, random-fixed sampling, no quality head, and the expected
+    SimOTA settings. The plain backup config explicitly enables
+    `assignment_debug`, saves checkpoints every 10 epochs, and uses the active
+    gate cadence (`val_start_epoch=40`, `val_eval_interval=2`, `end_epoch=60`).
+    The `*_center25_mink4_w1.py` config is only a manually labeled composite
+    diagnostic because it inherits the FCOS-center25 center-crop visual
+    pipeline; it is not part of the safe backup launcher.
+  - Local verification:
+    `pytest tests/test_adapter_quality_rescore_contracts.py tests/test_adapter_safety_contracts.py tests/test_adapter_simota_contracts.py -q`
+    -> `32 passed, 4 skipped`; tensor-level SimOTA tests are skipped on the
+    local Windows interpreter because PyTorch DLL loading is unavailable and
+    should be run on the Linux training environment.
+  - `bash -n scripts/run_adapter_simota_iou_sum.sh scripts/run_adapter_actionformer_regloss.sh scripts/run_adapter_pseudo_boundary_snap_pair.sh scripts/wait_for_screen_and_gate_then_run.sh`
+    passed.
+  - Do not insert this route ahead of q64/regloss. It is a post-regloss backup
+    if scalar localization calibration fails or assignment diagnostics show
+    overly narrow positive matching.
+  - Once AutoDL SSH recovers, the outer recovery helper will sync this backup
+    to 25876 and run `CHECK_ONLY=1` only for the plain config; it does not
+    start SimOTA training or create any approval sentinel.
+  - 2026-05-18 Gemini CLI `gemini-3-pro-preview` route review agreed to keep
+    waiting for the clean bs2 quality gate and not insert SimOTA/q64/regloss
+    early. A separate read-only code review found no critical blocker and
+    accepted the fix that removes the composite center25 variant from the safe
+    backup launcher.
 - Route summary and problem analysis:
   `../research-wiki/experiments/ADAPTER_ACTIONFORMER_NEXT_ROUTES_20260518.md`.
