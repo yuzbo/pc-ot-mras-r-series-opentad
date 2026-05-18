@@ -29,6 +29,8 @@ function New-RunState {
     [pscustomobject]@{
         Name = $Name
         Log = ""
+        RemoteStatus = ""
+        RemoteExit = ""
         Blocks = New-Object System.Collections.Generic.List[object]
         Current = [ordered]@{}
     }
@@ -64,6 +66,18 @@ foreach ($line in ($raw -split "`r?`n")) {
         }
         continue
     }
+    if ($line -match "^REMOTE_STATUS=(.*)$") {
+        if ($null -ne $currentRun) {
+            $currentRun.RemoteStatus = $matches[1].Trim()
+        }
+        continue
+    }
+    if ($line -match "^REMOTE_EXIT=(.*)$") {
+        if ($null -ne $currentRun) {
+            $currentRun.RemoteExit = $matches[1].Trim()
+        }
+        continue
+    }
     if ($line -match "mAP at tIoU ([0-9.]+) is ([0-9.]+)%") {
         if ($null -ne $currentRun) {
             $currentRun.Current["mAP@$($matches[1])"] = [double]$matches[2]
@@ -88,13 +102,28 @@ if ($runs.Count -eq 0) {
 
 $neutralFirst = $null
 $neutralLatest = $null
+$neutralReachable = $true
 $negFirst = $null
 $negLatest = $null
+$negReachable = $true
 
 foreach ($run in $runs.Values) {
     Write-Host "===== gate / $($run.Name) ====="
     if ($run.Log) {
         Write-Host "LOG=$($run.Log)"
+    }
+    if ($run.RemoteStatus -and $run.RemoteStatus -ne "OK") {
+        Write-Host "REMOTE_STATUS=$($run.RemoteStatus)"
+        if ($run.RemoteExit) {
+            Write-Host "REMOTE_EXIT=$($run.RemoteExit)"
+        }
+        Write-Host "STATUS=REMOTE_UNREACHABLE"
+        if ($run.Name -eq "neutral") {
+            $neutralReachable = $false
+        } elseif ($run.Name -eq "neg025") {
+            $negReachable = $false
+        }
+        continue
     }
 
     if ($run.Blocks.Count -eq 0) {
@@ -148,6 +177,11 @@ foreach ($run in $runs.Values) {
 }
 
 Write-Host "===== combined decision ====="
+if (-not $neutralReachable) {
+    Write-Host "DECISION=RETRY_REMOTE_MONITORING"
+    exit 0
+}
+
 if ($null -eq $neutralLatest) {
     Write-Host "DECISION=WAIT_FOR_NEUTRAL_FIRST_EVAL"
     exit 0
@@ -169,6 +203,10 @@ if ($neutralLatest -lt $BaselineAverageMap) {
 }
 
 if ($null -eq $negLatest) {
+    if (-not $negReachable) {
+        Write-Host "DECISION=NEUTRAL_PASS_RETRY_NEG025_MONITORING"
+        exit 0
+    }
     Write-Host "DECISION=NEUTRAL_PASS_WAIT_FOR_NEG025"
     exit 0
 }
