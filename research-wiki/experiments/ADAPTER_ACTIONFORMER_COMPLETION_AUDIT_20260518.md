@@ -55,6 +55,8 @@ Latest remote state before this audit:
 - Subsequent monitoring hit transient SSH gateway failures on both AutoDL
   ports: TCP was reachable, but SSH KEX was closed by the remote host. This is
   a monitoring blocker only; it is not evidence of training failure.
+- 2026-05-18 09:29 and a later 5-minute backoff retry still failed on both
+  ports with the same KEX-close symptom, so remote evidence remains unavailable.
 
 ## Missing Or Weakly Verified Items
 

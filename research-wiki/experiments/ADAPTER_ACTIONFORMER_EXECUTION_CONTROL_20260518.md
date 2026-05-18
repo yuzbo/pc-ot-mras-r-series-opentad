@@ -48,6 +48,9 @@ Monitoring note at 2026-05-18 08:10:
   `REMOTE_STATUS=SSH_FAILED` and retries; `logs/evaluate_adapter_quality_gate.ps1`
   maps this to `DECISION=RETRY_REMOTE_MONITORING`.
 - Do not make experiment decisions from an unreachable monitor result.
+- 2026-05-18 09:29 and a 5-minute backoff retry still failed on both ports
+  with the same KEX-close symptom. Treat remote monitoring/deployment as
+  blocked until the AutoDL SSH gateway or instances become reachable again.
 
 Queue safety update at 2026-05-18 07:47:
 
