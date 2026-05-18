@@ -71,6 +71,9 @@ Latest remote state before this audit:
      but this still needs remote sync/check-only once SSH recovers.
    - Recovery helper prepared at
      `logs/sync_adapter_followup_guards_after_ssh.ps1`.
+   - Recovery watcher is running as PID `105604` and logs to
+     `logs/autodl_recovery_watch_latest.log`; it retries sync/check-only but
+     does not create approval sentinels.
 
 3. No proof of improved ActionFormer/head-side performance yet.
    - regloss15 is queued but intentionally gated.

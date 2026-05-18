@@ -95,6 +95,14 @@ Pseudo-boundary cache provenance update:
   `logs/sync_adapter_followup_guards_after_ssh.ps1`. Once SSH recovers, run it
   to sync the queue guard and q64 launcher, execute remote `bash -n`, rerun q64
   `CHECK_ONLY=1`, and confirm that no approval sentinel was created.
+- Recovery watcher prepared and started:
+  `logs/watch_autodl_recovery_and_sync.ps1`.
+  - Latest launcher PID: `105604`.
+  - Latest log: `logs/autodl_recovery_watch_latest.log`.
+  - Commit `ebb833e fail recovery sync on ssh errors` fixed native `scp/ssh`
+    exit-code handling; failed sync now returns nonzero and the watcher backs
+    off instead of treating the attempt as successful.
+  - The watcher does not create approval sentinels.
 
 Verification after hardening:
 
