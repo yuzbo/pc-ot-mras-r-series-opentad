@@ -243,6 +243,10 @@ def test_adapter_actionformer_regloss_config_is_narrow_random_fixed_control():
     assert 'train_load.method == "random_fixed_subsample"' in launch_script
     assert 'val_load.method == "random_fixed_subsample"' in launch_script
     assert 'test_load.method == "random_fixed_subsample"' in launch_script
+    assert "EXPECT_BATCH_SIZE" in launch_script
+    assert "solver.train.batch_size" in launch_script
+    assert "solver.val.batch_size" in launch_script
+    assert "solver.test.batch_size" in launch_script
 
 
 def test_quality_rescore_supports_explicit_max_iou_targets_without_default_drift():

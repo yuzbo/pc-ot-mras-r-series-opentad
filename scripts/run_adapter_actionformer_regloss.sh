@@ -12,6 +12,7 @@ TORCHRUN="${TORCHRUN:-/root/miniconda3/bin/torchrun}"
 BASE_PORT="${BASE_PORT:-30540}"
 GPU_FREE_MIB="${GPU_FREE_MIB:-900}"
 CHECK_ONLY="${CHECK_ONLY:-0}"
+EXPECT_BATCH_SIZE="${EXPECT_BATCH_SIZE:-2}"
 
 CONFIG="configs/adatad/thumos/input_random_fixed_50pct_adapter_regloss15.py"
 NAME="input_random_fixed_50pct_adapter_regloss15"
@@ -70,11 +71,16 @@ assert test_load.method == "random_fixed_subsample", test_load
 assert test_load.method_base == "sliding_window", test_load
 
 workflow = cfg.workflow
+solver = cfg.solver
 assert int(workflow.checkpoint_interval) == 10, workflow
 assert not bool(workflow.get("disable_checkpoint", False)), workflow
 assert int(workflow.val_start_epoch) == 40, workflow
 assert int(workflow.val_eval_interval) == 2, workflow
 assert int(workflow.end_epoch) == 60, workflow
+expected_batch_size = int("$EXPECT_BATCH_SIZE")
+assert int(solver.train.batch_size) == expected_batch_size, solver
+assert int(solver.val.batch_size) == expected_batch_size, solver
+assert int(solver.test.batch_size) == expected_batch_size, solver
 
 print("work_dir=", cfg.work_dir)
 print("model=", cfg.model.type)
@@ -84,6 +90,7 @@ print("train_load=", train_load.method, train_load.method_base)
 print("val_load=", val_load.method, val_load.method_base)
 print("checkpoint_interval=", workflow.checkpoint_interval)
 print("disable_checkpoint=", workflow.get("disable_checkpoint", False))
+print("batch_size=", solver.train.batch_size, solver.val.batch_size, solver.test.batch_size)
 PY
 }
 
