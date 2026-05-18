@@ -1,0 +1,186 @@
+# Adapter + ActionFormer Next Routes, 2026-05-18
+
+## Current Objective
+
+Improve THUMOS14 Adapter + ActionFormer performance on the two AutoDL servers
+while keeping experiment evidence interpretable. The immediate rule is:
+do not mix quality-head conclusions with new Adapter/ActionFormer changes until
+the clean batch-size-2 quality diagnostics reach validation.
+
+## Completed Evidence
+
+Baseline anchors:
+
+- Random-fixed Adapter baseline: `61.95` first-eval Average-mAP; final baseline
+  around `63.77`.
+- NMS/EMA audited baseline: about `63.75-63.85`.
+- Oracle boundary dense Adapter upper anchor: about `75.50-77.62`.
+
+Invalidated evidence:
+
+- The first neutral/reduced-negative quality runs produced `37-39` early
+  Average-mAP, but used `batch_size=8` and only `24` train iterations per
+  epoch.
+- Healthy Adapter uses `batch_size=2` and `99` iterations per epoch.
+- Those low-mAP runs are therefore invalid evidence about quality supervision.
+
+Clean diagnostics currently running:
+
+- 35407: `adapter_quality_neutral`
+  - config:
+    `configs/adatad/thumos/input_random_fixed_50pct_adapter_quality_neutral_loss0_alpha0.py`
+  - log:
+    `logs/input_random_fixed_50pct_adapter_quality_neutral_loss0_alpha0_20260518_061722.log`
+  - verified epoch-0 contract: `[00050/00099]` and `[00099/00099]`.
+- 25876: `adapter_quality_neg025`
+  - config:
+    `configs/adatad/thumos/input_random_fixed_50pct_adapter_quality_assigned_neg025_weighted_alpha0.py`
+  - log:
+    `logs/input_random_fixed_50pct_adapter_quality_assigned_neg025_weighted_alpha0_20260518_061721.log`
+  - verified epoch-0 contract: `[00050/00099]` and `[00099/00099]`.
+
+Latest monitor at 2026-05-18 07:13:
+
+- Both clean bs2 quality diagnostics are still running around epoch 13.
+- Neither run has reached first validation yet.
+- Losses are decreasing and the only recorded non-finite-gradient skips remain
+  the two early epoch-0 events noted at relaunch.
+- 25876 disk is tight: `/root/autodl-tmp` has about 9.7GB free.
+
+External discussion status:
+
+- `llm-chat` is configured for `gpt-5-pro` through the Responses API with high
+  reasoning and 8192 max output tokens, but this model is reserved for a single
+  critical arbitration only.
+- Gemini CLI was retried twice for a compact current-direction discussion on
+  2026-05-18 07:20. Both replies ignored the supplied experimental context and
+  produced no usable critique, so they are not counted as completed external
+  review.
+- GPT-5.5 xhigh read-only advisor critique on 2026-05-18 flagged a concrete
+  automation risk: queued runs must not start merely because the quality screen
+  disappears. A crash or manual stop has the same observable screen state.
+  Accepted fix: both queued screens were restarted behind explicit
+  gate-approval sentinel files.
+
+## Current Algorithm Problems
+
+1. Quality-head route is not yet proven safe.
+   - The failed detached quality checkpoints stayed near `50` Average-mAP even
+     when re-evaluated with `score_alpha=0`.
+   - The likely issue is training/checkpoint degradation, not only inference
+     score fusion.
+   - The clean neutral run is the necessary preservation test.
+
+2. The current head is localization-limited at high tIoU.
+   - Historical runs and SimOTA diagnostics show mAP@0.7 remains the weak axis.
+   - SimOTA geometry fixes improved low-level collapse but did not approach the
+     `63+` dense/Adapter reference.
+   - This argues for a conservative ActionFormer-side localization calibration
+     before larger assignment rewrites.
+
+3. Input selection still has large oracle headroom.
+   - Boundary-aware oracle input variants substantially exceed random-fixed.
+   - A teacher-guided pseudo-boundary sampler is the most direct Adapter-side
+     attempt to close part of that input-selection gap without using GT at test.
+
+4. Irregular/sparse-head branches remain risky.
+   - Prior irregular experiments repeatedly showed contract mismatch between
+     sparse axes and dense ActionFormer assumptions.
+   - Those lines are useful as diagnosis, but not the next highest-confidence
+     performance route for the two occupied servers.
+
+## Queued Next Experiments
+
+These are queued to start only after the current quality diagnostics finish, so
+they do not steal GPU or confound the neutral preservation gate.
+
+### 35407 Adapter-Side Route: Pseudo-Boundary Snap Q64
+
+Screen:
+
+- `adapter_pseudo_snap_q64_after_quality`
+
+Launch behavior:
+
+- Waits for `adapter_quality_neutral` to finish.
+- Then waits for explicit gate approval file:
+  `/root/autodl-tmp/OpenTAD_Back_check/gate_approvals/adapter_pseudo_snap_q64_after_quality.ok`.
+- Runs `scripts/run_adapter_pseudo_boundary_snap_pair.sh` with:
+  - `START_INDEX=1`
+  - `END_INDEX=1`
+  - `SKIP_CACHE_BUILD=1`
+- Implementation note: the pseudo-boundary launcher itself does not consume a
+  `WAIT_SCREENS` variable, so the active queue uses
+  `scripts/wait_for_screen_and_gate_then_run.sh`. It first loops on
+  `screen -ls` until `adapter_quality_neutral` disappears, then waits for the
+  approval sentinel, then runs `CHECK_ONLY=1` and the launcher.
+
+Config:
+
+- `configs/adatad/thumos/input_random_fixed_50pct_adapter_pseudo_boundary_snap_q64.py`
+
+Why this route:
+
+- It directly targets the input-selection gap indicated by boundary oracle
+  results.
+- It uses existing teacher boundary cache and falls back to random-fixed when
+  cache evidence is absent.
+- Remote `CHECK_ONLY=1` passed, and required teacher checkpoint/cache files are
+  present on 35407.
+- Historical pseudo-boundary q32/q64 logs on 35407 used the old
+  `batch_size=8` / `24`-iteration contract, so their `~51` final Average-mAP is
+  not decisive evidence under the restored bs2 contract.
+
+Success gate:
+
+- First eval should beat the random-fixed Adapter first-eval anchor or show a
+  clear recovery trend over random-fixed.
+- Final result must exceed the `63.75-63.85` audited baseline band to count as a
+  real performance improvement.
+- Because the q64 protocol uses pseudo-boundary cache in val/test, any gain must
+  be labeled as teacher-assisted input selection unless a companion non-teacher
+  evaluation also supports the improvement.
+
+### 25876 ActionFormer-Side Route: Regression-Loss 1.5
+
+Screen:
+
+- `adapter_regloss15_after_quality`
+
+Launch behavior:
+
+- Waits for `adapter_quality_neg025` to finish.
+- Then waits for explicit gate approval file:
+  `/root/autodl-tmp/OpenTAD_Back_check/gate_approvals/adapter_regloss15_after_quality.ok`.
+- Runs `scripts/run_adapter_actionformer_regloss.sh`.
+
+Config:
+
+- `configs/adatad/thumos/input_random_fixed_50pct_adapter_regloss15.py`
+
+Why this route:
+
+- It is a minimal ActionFormer-side localization calibration.
+- It does not change the Adapter sampler, backbone, inference, assignment, or
+  quality-head path.
+- Remote `CHECK_ONLY=1` passed after syncing the config and launcher to 25876.
+
+Success gate:
+
+- Watch high-tIoU metrics, especially mAP@0.7.
+- Treat this as promising only if Average-mAP improves without trading away the
+  lower tIoU bands.
+- Stronger gate from GPT-5.5 critique: continue this scalar route only if
+  Average-mAP improves by at least `0.5` and mAP@0.7 improves by at least `1.0`
+  without losing mAP@0.3/0.4.
+
+## Direction Rules
+
+- If clean neutral quality recovers near `61.95+`, quality-head integration is
+  structurally safe; interpret neg025 and optionally run alpha sweeps.
+- If clean neutral stays far below `60`, stop quality-head development and
+  debug structural training effects before any more quality-loss variants.
+- Do not launch positive-only quality targets until background calibration has
+  a concrete check.
+- Do not restart broad irregular/sparse-head work until the two conservative
+  queued routes have produced evidence.
