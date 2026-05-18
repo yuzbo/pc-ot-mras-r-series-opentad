@@ -208,6 +208,18 @@
     this relaunch; direct `gpt-5-pro` arbitration via the configured endpoint
     also returned no model content because the remote closed the connection.
     No further expensive retry was made.
+  - 2026-05-18 07:20 follow-up: `llm-chat` is configured for `gpt-5-pro`
+    through the Responses API (`LLM_API_STYLE=responses`,
+    `LLM_REASONING_EFFORT=high`, `LLM_MAX_TOKENS=8192`), but do not call it
+    except for a single critical arbitration with complete context.
+  - 2026-05-18 07:20 Gemini CLI follow-up was attempted twice for current
+    direction discussion; both replies ignored the supplied experimental
+    context and produced no usable research critique. Do not count these as
+    external review completion.
+  - 2026-05-18 07:47 GPT-5.5 xhigh read-only advisor flagged a queue-safety
+    issue: waiting for a screen to disappear would also trigger after a crash,
+    manual stop, or invalid run. Accepted fix: queued screens now also wait for
+    explicit gate-approval sentinel files before launching follow-up training.
   - Alpha-sweep command generator is prepared at
     `logs/prepare_adapter_quality_alpha_sweep.ps1`; use only after neg025
     recovers baseline gate.
@@ -215,16 +227,22 @@
     `logs/parse_adapter_quality_metrics.ps1`.
   - Remote mAP collector:
     `logs/collect_adapter_quality_remote_metrics.ps1`.
+  - Gate evaluator:
+    `logs/evaluate_adapter_quality_gate.ps1`; pipe collector output into it to
+    classify neutral preservation and neg025 alpha-sweep eligibility.
   - Optional first-eval watcher:
-    `logs/watch_adapter_quality_first_eval.ps1`.
+    `logs/watch_adapter_quality_first_eval.ps1`; it now runs the gate evaluator
+    automatically when `Average-mAP` appears.
   - Next scheduled checkpoint is expected after epoch 49.
+  - Execution-control report:
+    `../research-wiki/experiments/ADAPTER_ACTIONFORMER_EXECUTION_CONTROL_20260518.md`.
 
 ### 2026-05-18 Next Performance Queue
 
 - Clean bs2 quality diagnostics are still running and have not reached first
-  validation yet. Latest monitor around 06:50 shows both runs in epoch 7, still
-  with `00099` iterations per epoch and no additional non-finite events beyond
-  the two early epoch-0 skips.
+  validation yet. Latest monitor around 07:13 shows both runs around epoch 13,
+  still with `00099` iterations per epoch and no additional non-finite events
+  beyond the two early epoch-0 skips.
 - Do not stop or replace them before first eval unless they crash or loss
   diverges; the neutral preservation gate determines whether the quality-head
   route is interpretable.
@@ -236,10 +254,31 @@
       `START_INDEX=1 END_INDEX=1 SKIP_CACHE_BUILD=1`.
     - Remote files, teacher checkpoint, and cache are present; `CHECK_ONLY=1`
       passed.
+    - Important: the launcher does not implement `WAIT_SCREENS`; the active
+      screen is a wrapper that explicitly waits for `adapter_quality_neutral`
+      before calling `CHECK_ONLY=1` and then the launcher.
+    - Historical pseudo-boundary snap q32/q64 logs used the old bs8/24-iter
+      contract, so their low result is not decisive for the restored bs2 run.
+    - 2026-05-18 07:18 hardcopy confirms the wrapper is still waiting for
+      `adapter_quality_neutral`; it has not started the queued training early.
+    - 2026-05-18 07:47 queue was restarted with
+      `scripts/wait_for_screen_and_gate_then_run.sh`; after
+      `adapter_quality_neutral` exits it still waits for:
+      `/root/autodl-tmp/OpenTAD_Back_check/gate_approvals/adapter_pseudo_snap_q64_after_quality.ok`.
+      Do not create that file until the quality gate is written and q64 is
+      explicitly approved.
   - 25876 screen `adapter_regloss15_after_quality`.
     - Waits for `adapter_quality_neg025`.
     - Runs ActionFormer-side `loss_weight=1.5` localization calibration via
       `scripts/run_adapter_actionformer_regloss.sh`.
     - Config and launcher were synced to 25876; `CHECK_ONLY=1` passed.
+    - 2026-05-18 07:14 hardcopy confirms the wrapper is still waiting for
+      `adapter_quality_neg025`; it has not started the queued training early.
+    - 2026-05-18 07:47 queue was restarted with
+      `scripts/wait_for_screen_and_gate_then_run.sh`; after
+      `adapter_quality_neg025` exits it still waits for:
+      `/root/autodl-tmp/OpenTAD_Back_check/gate_approvals/adapter_regloss15_after_quality.ok`.
+      Do not create that file until the quality gate is written and regloss15
+      is explicitly approved.
 - Route summary and problem analysis:
   `../research-wiki/experiments/ADAPTER_ACTIONFORMER_NEXT_ROUTES_20260518.md`.
