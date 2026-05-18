@@ -1,5 +1,9 @@
 from pathlib import Path
 import importlib.util
+import json
+
+import numpy as np
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -403,6 +407,23 @@ def test_pseudo_boundary_snap_falls_back_to_random_fixed_without_cache():
     assert keep.tolist() == fallback.tolist()
 
 
+def test_pseudo_boundary_loader_rejects_gt_manifest(tmp_path):
+    pseudo = load_module("opentad/datasets/transforms/pseudo_boundary.py", "pseudo_boundary")
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "manifest.json").write_text(
+        json.dumps({"uses_gt": True, "axis": "global_snippet_index"}),
+        encoding="utf-8",
+    )
+    np.savez_compressed(
+        cache_dir / "video_test_0000001.npz",
+        boundary_score=np.zeros((8,), dtype=np.float32),
+    )
+
+    with pytest.raises(ValueError, match="must not use GT"):
+        pseudo.load_boundary_scores(str(cache_dir), "video_test_0000001")
+
+
 def test_pseudo_boundary_configs_are_no_gt_teacher_guided_inputs():
     source = read("opentad/datasets/transforms/end_to_end.py")
     cache_source = read("opentad/datasets/transforms/pseudo_boundary.py")
@@ -478,3 +499,8 @@ def test_pseudo_boundary_snap_configs_are_local_random_fixed_preserving_inputs()
     assert "input_random_fixed_50pct_adapter_pseudo_boundary_snap_q32.py" in launch_script
     assert "input_random_fixed_50pct_adapter_pseudo_boundary_snap_q64.py" in launch_script
     assert 'load.method == "pseudo_boundary_snap_subsample"' in launch_script
+    assert "check_cache_manifest" in launch_script
+    assert "pseudo-boundary cache must not use GT" in launch_script
+    assert "postprocessed_teacher_detections" in launch_script
+    assert 'check_cache_manifest "$CACHE_ROOT/train" "training"' in launch_script
+    assert 'check_cache_manifest "$CACHE_ROOT/validation" "validation"' in launch_script
