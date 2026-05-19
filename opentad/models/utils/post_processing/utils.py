@@ -49,6 +49,95 @@ def load_predictions(metas, infer_cfg):
         return load_single_prediction(metas, infer_cfg.folder)
 
 
+def selected_axis_to_dense_axis(coords, meta):
+    positions = meta.get("irregular_selected_positions", None)
+    valid_len = meta.get("irregular_selected_valid_len", None)
+    if positions is None or valid_len is None or meta.get("irregular_native_axis", False):
+        return coords
+
+    positions = torch.as_tensor(positions, dtype=coords.dtype, device=coords.device).reshape(-1)
+    if positions.numel() == 0:
+        return coords
+
+    xp = torch.arange(positions.numel(), dtype=coords.dtype, device=coords.device)
+    xp = torch.cat([xp, xp.new_tensor([float(positions.numel())])], dim=0)
+    fp = torch.cat([positions, positions.new_tensor([float(valid_len)])], dim=0)
+
+    coord_shape = coords.shape
+    coord_flat = coords.reshape(-1).clamp(min=0.0, max=float(positions.numel()))
+    right_idx = torch.searchsorted(xp, coord_flat, right=True).clamp(min=1, max=xp.numel() - 1)
+    left_idx = right_idx - 1
+    x0 = xp[left_idx]
+    x1 = xp[right_idx]
+    y0 = fp[left_idx]
+    y1 = fp[right_idx]
+    weight = (coord_flat - x0) / (x1 - x0).clamp(min=1e-6)
+    return (y0 + weight * (y1 - y0)).reshape(coord_shape)
+
+
+def sparse_visibility_support(segments, meta, min_support=0.0):
+    """Estimate class-agnostic support of selected-axis proposals.
+
+    A support of 1 means the proposal lies in locally typical selected-frame
+    density. Values below 1 indicate that one endpoint or the proposal span
+    crosses a larger-than-average gap in the sparse selected positions.
+    """
+
+    support = torch.ones(segments.shape[0], dtype=segments.dtype, device=segments.device)
+    positions = meta.get("irregular_selected_positions", None)
+    valid_len = meta.get("irregular_selected_valid_len", None)
+    if (
+        positions is None
+        or valid_len is None
+        or meta.get("irregular_native_axis", False)
+        or segments.numel() == 0
+    ):
+        return support
+
+    positions = torch.as_tensor(positions, dtype=segments.dtype, device=segments.device).reshape(-1)
+    if positions.numel() < 2:
+        return support
+
+    valid_len = float(valid_len)
+    if valid_len <= 0:
+        return support
+
+    fp = torch.cat([positions, positions.new_tensor([valid_len])], dim=0)
+    local_gap = (fp[1:] - fp[:-1]).clamp(min=1e-6)
+    expected_gap = max(valid_len / float(positions.numel()), 1e-6)
+
+    coords = segments.clamp(min=0.0, max=float(positions.numel()))
+    endpoint_idx = torch.floor(coords).to(dtype=torch.long).clamp(min=0, max=local_gap.numel() - 1)
+    endpoint_support = (expected_gap / local_gap[endpoint_idx]).clamp(max=1.0).min(dim=1).values
+
+    dense_segments = selected_axis_to_dense_axis(coords, meta)
+    selected_len = (coords[:, 1] - coords[:, 0]).clamp(min=1e-6)
+    dense_len = (dense_segments[:, 1] - dense_segments[:, 0]).clamp(min=1e-6)
+    span_support = (selected_len * expected_gap / dense_len).clamp(max=1.0)
+
+    support = torch.minimum(endpoint_support, span_support)
+    return support.clamp(min=float(min_support), max=1.0)
+
+
+def apply_visibility_rescore(scores, segments, meta, cfg=None):
+    if cfg is None or not bool(cfg.get("enabled", False)):
+        return scores
+
+    gamma = float(cfg.get("gamma", 0.0))
+    if gamma <= 0:
+        return scores
+
+    support = sparse_visibility_support(
+        segments,
+        meta,
+        min_support=float(cfg.get("min_support", 0.0)),
+    )
+    factor = support.pow(gamma).to(dtype=scores.dtype, device=scores.device)
+    if scores.dim() == 2:
+        factor = factor.unsqueeze(-1)
+    return scores * factor
+
+
 def convert_to_seconds(segments, meta):
     if meta["fps"] == -1:  # resize setting, like in anet / hacs
         segments = segments / meta["resize_length"] * meta["duration"]
@@ -59,22 +148,7 @@ def convert_to_seconds(segments, meta):
         irregular_positions = meta.get("irregular_selected_positions", None)
         irregular_valid_len = meta.get("irregular_selected_valid_len", None)
         if irregular_positions is not None and irregular_valid_len is not None and not meta.get("irregular_native_axis", False):
-            irregular_positions = torch.as_tensor(irregular_positions, dtype=segments.dtype, device=segments.device)
-            if irregular_positions.numel() > 0:
-                xp = torch.arange(irregular_positions.numel(), dtype=segments.dtype, device=segments.device)
-                xp = torch.cat([xp, xp.new_tensor([float(irregular_positions.numel())])], dim=0)
-                fp = torch.cat([irregular_positions, irregular_positions.new_tensor([float(irregular_valid_len)])], dim=0)
-
-                seg_shape = segments.shape
-                seg_flat = segments.reshape(-1).clamp(min=0.0, max=float(irregular_positions.numel()))
-                right_idx = torch.searchsorted(xp, seg_flat, right=True).clamp(min=1, max=xp.numel() - 1)
-                left_idx = right_idx - 1
-                x0 = xp[left_idx]
-                x1 = xp[right_idx]
-                y0 = fp[left_idx]
-                y1 = fp[right_idx]
-                weight = (seg_flat - x0) / (x1 - x0).clamp(min=1e-6)
-                segments = (y0 + weight * (y1 - y0)).reshape(seg_shape)
+            segments = selected_axis_to_dense_axis(segments, meta)
         segments = (segments * snippet_stride + window_start_frame + offset_frames) / meta["fps"]
 
     # truncate all boundaries within [0, duration]
