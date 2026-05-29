@@ -1,0 +1,107 @@
+## Verdict: WARN
+
+不是 FAIL：我没有看到会阻断 BoundarySharp-ST 当前配置运行的代码级 blocker。
+但还不能给 PASS，因为上一轮 WARN 中的“quota target weights 非负校验”只补到了 **action/boundary target weight**，没有覆盖 `quota_uniform_target_weight`。
+
+## Blocking findings
+
+无明确代码级 blocker。
+
+当前 BoundarySharp-ST 路径的核心逻辑看起来成立：
+
+`st_topk_positions_from_logits()` 通过 `valid_len = dense_masks.sum()` 后只取 `logits[:valid_len]` 做 top-k，在 prefix-mask 合同成立时可以忽略 invalid dense tail；同时返回 `hard.detach() - soft.detach() + soft`，保留 soft-quantile surrogate gradient。
+
+short valid length 场景也基本正确：`topk = min(k_valid, valid_len)`，不足部分由 `_pad_positions()` 补到最后一个 valid dense 位置。
+
+## Non-blocking findings
+
+1. **quota target weight 非负校验不完整。**
+   现在有：
+
+   ```python
+   if quota_action_target_weight < 0 or quota_boundary_target_weight < 0:
+       raise ValueError("quota target weights must be non-negative")
+   ```
+
+   但 `quota_uniform_target_weight` 也是 quota target weight，仍允许负值。虽然 `_gt_action_target()` / `_gt_boundary_target()` 里用了 `max(self.quota_uniform_target_weight, self.eps)`，负值不会直接制造负 target，但这属于“静默纠正”，没有真正完成配置合法性校验。建议补成三项都校验，并加一个构造器测试。
+
+2. **prefix dense mask 合同补得正确，但这是有意收紧行为。**
+   `_dense_masks()` 现在会拒绝非 prefix mask 和 all-false mask：
+
+   ```python
+   if (dense_masks[:, 1:] & ~dense_masks[:, :-1]).any():
+       raise ValueError("dense masks must be valid-frame prefixes")
+   if not dense_masks.any(dim=1).all():
+       raise ValueError("dense masks must include at least one valid frame per sample")
+   ```
+
+   这和 selector 内部通过 `sum()` 推导 valid prefix length 的假设一致。风险只在于：如果上游未来传入“中间有洞”的逐帧 mask，现在会直接 fail。但对当前 768-window padding mask 合同来说，这是更安全的显式化。
+
+3. **merged config quota 检查已按 `selection_mode` 修正。**
+   测试里改为：
+
+   ```python
+   if cfg.model.frame_selector.get("selection_mode", "density") == "quota":
+       ...
+   ```
+
+   这比按文件名包含 `quota` 更稳，能保持旧 AB/BH quota 配置和新 BoundarySharp-ST 配置都被正确检查。
+
+4. **自检报告有一个小不一致。**
+   文档 Local Verification 写了 `1 passed, 19 skipped`，后面的 Gate Status 和你当前说明写的是 `1 passed, 20 skipped`。从测试文件数量看，Windows 下 `1 passed, 20 skipped` 更合理。建议更新自检报告，避免后续 review 误读。
+
+5. **建议在 merged config 测试里额外断言 `detach_gt_remap=True`。**
+   BoundarySharp-ST 配置文件本身没有覆盖 `detach_gt_remap`，按 base 名称和自检说明应保持 train-only detached GT remap。但当前贴出的 merged config 测试没有显式断言这一点。不是 blocker，但可以让“train-only GT auxiliary、无梯度捷径”合同更闭环。
+
+## Required fixes before deployment
+
+部署前建议至少补这一项：
+
+```python
+if (
+    quota_action_target_weight < 0
+    or quota_boundary_target_weight < 0
+    or quota_uniform_target_weight < 0
+):
+    raise ValueError("quota target weights must be non-negative")
+```
+
+并加一个轻量测试，覆盖三种负值至少会 raise：
+
+```python
+with pytest.raises(ValueError, match="quota target weights"):
+    TemporalDensityRawFrameSelector(
+        dense_len=16,
+        target_len=8,
+        selection_mode="quota",
+        quota_uniform_count=2,
+        quota_action_count=3,
+        quota_boundary_count=3,
+        quota_uniform_target_weight=-0.1,
+    )
+```
+
+可选但推荐：把自检报告里的 `1 passed, 19 skipped` 改成 `1 passed, 20 skipped`，并在 merged config 测试里加 `detach_gt_remap is True` 断言。
+
+## Contract check
+
+BoundarySharp-ST 当前配置仍符合主要实验合同：
+
+* **384-of-768 fixed 50% budget：是。**
+  新配置 quota 为 `96 + 96 + 192 = 384`，目标仍是 base 的 `target_len=384`、`dense_len=768`。
+
+* **train-only GT auxiliary：是。**
+  `quota_gt_weight=0.04` 只会在 `forward_train()` 的 `selector_losses()` 里使用 `gt_segments`。`forward_test()` 不接收也不使用 GT。
+
+* **无 test-time GT / teacher / cache：未发现破坏。**
+  `forward_test()` 只基于输入 frames、masks 和 learned logits 选帧；测试也检查了 `teacher`、`bata_boundary_cache_dir`、`bata_allow_diagnostic_gt_cache`、raw prediction cache 开关。
+
+* **旧 AB/BH quota 配置向后兼容：是。**
+  两个旧 quota config 没有设置 ST position mode，因此继续使用默认 `soft_quantile`；新增 target weight 默认值为 `1.0`，不会改变旧配置；quota counts 都仍然 sum 到 384。
+
+## Whether Gemini/DeepSeek + N16R4 preflight can proceed
+
+**Gemini/DeepSeek review 可以继续。**
+
+**N16R4 Linux preflight 也可以继续作为验证门，但我建议先补 `quota_uniform_target_weight` 非负校验再跑。**
+原因是 Windows 当前只实际跑了 1 个非 torch 文本测试，20 个 torch/mmengine 合同测试都跳过；如果补完一行校验后再跑 N16R4，可以避免 preflight 后又改代码导致必须重跑。

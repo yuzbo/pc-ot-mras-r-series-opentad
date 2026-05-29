@@ -1,0 +1,248 @@
+## Verdict: WARN
+
+没有看到必须阻塞 Gemini/DeepSeek review 或 N16R4 Linux preflight 的实现错误。`BoundarySharp-ST` 的核心思路基本落地：action/boundary quota 的前向位置使用 hard top-k，反向通过 soft-quantile surrogate 回到 logits；配置也保持 384-of-768 backbone budget，不引入 test-time GT/teacher/cache。
+
+给 WARN 而不是 PASS 的原因是：当前实现依赖“dense mask 是连续 valid prefix”这一隐含合同，测试对 `st_topk + invalid dense tail + short valid_len` 的覆盖还不够；另外 N16R4 sbatch 的 `logs/` 输出目录需要提交前确认存在。
+
+---
+
+## Blocking findings
+
+无代码级 blocker。
+
+可以进入 Gemini/DeepSeek review 和 N16R4 preflight。不要直接进入正式长训；先让 Linux preflight 跑完整测试与 merged config 检查。
+
+---
+
+## Non-blocking findings
+
+### 1. `st_topk` quota position mode：核心实现正确
+
+`st_topk_positions_from_logits()` 的 hard forward 逻辑是正确的：
+
+```python
+scores = logits[batch_idx, :valid_len].float()
+topk = min(k_valid, valid_len)
+indices = torch.topk(scores, k=topk, dim=0).indices.to(dtype=grid_dtype).sort().values
+```
+
+它在 `valid_len` prefix 内做 top-k，然后排序为时间顺序。因此在 THUMOS 当前“valid frames are prefix, invalid frames are dense tail”的 mask 合同下，invalid tail 即使 logits 很高也不会被 hard top-k 选中。
+
+ST 梯度写法也是标准且有效的：
+
+```python
+return hard_positions.detach() - soft_positions.detach() + soft_positions
+```
+
+前向数值等于 `hard_positions`，反向梯度等于 `soft_positions` 的 soft-quantile 梯度。因此 detection loss 通过 `sample_frames()` 对 `positions` 的梯度可以继续回传到 quota channel logits。需要注意的是，这不是 top-k 本身的梯度，而是 soft-quantile surrogate 梯度；这个表述在论文/日志里要保持准确。
+
+### 2. concat / sort / min-gap / pad 交互总体安全
+
+quota 路径的整体流是：
+
+```text
+uniform positions
++ action st_topk/soft_quantile positions
++ boundary st_topk/soft_quantile positions
+→ concat valid chunks
+→ sort
+→ _separate_positions()
+→ _pad_positions()
+```
+
+形状上安全：每个 quota channel 返回 `[B, quota_len]`，最终 merge 后返回 `[B, target_len]`。`selected_valid_lens` 只用于 slicing 有效 chunk，padding 部分不会被 selected mask 使用。
+
+梯度上也基本安全：`sort()` 会按 hard forward 的排序把梯度路由回对应输入；`_separate_positions()` 中的 `torch.maximum()` 在重复或过近位置上会改变/耦合局部梯度，但这是 min-gap 设计本身带来的非光滑性，不是 ST 写法错误。由于 intra-channel top-k index 唯一，重复主要来自 context/action/boundary 跨 chunk 重合；当前 `min_position_gap=1e-3` 很小，影响有限。
+
+边界条件上，`k_valid=0`、quota short tail、padding 到 quota target_len 都能正常处理。`selected_valid_lens` 在正常 forward 中由 dense valid length 缩放并 clamp，理论上不会超过 dense valid length。
+
+### 3. 需要明确：mask 代码假设 valid mask 是 dense prefix
+
+`st_topk_positions_from_logits()` 和老的 `positions_from_logits()` 都使用：
+
+```python
+valid_len = dense_masks[batch_idx].long().sum()
+...
+logits[batch_idx, :valid_len]
+```
+
+这等价于假设 mask 形如：
+
+```text
+[1, 1, 1, ..., 1, 0, 0, ..., 0]
+```
+
+如果未来出现中间有洞的 mask，例如：
+
+```text
+[1, 1, 0, 1, 1, 0, ...]
+```
+
+那么 hard top-k 会错误地把 `:valid_len` 内的 false 位置纳入候选，同时排除后面的 true 位置。当前 THUMOS/LoadFrames 路径看起来就是 dense tail mask，所以这不是 blocker；但这个假设最好在测试或注释里固定下来。
+
+### 4. all-false mask 仍是潜在边界问题
+
+`_forward_select()` 里：
+
+```python
+dense_valid_lens = dense_masks.long().sum(dim=1).clamp(min=1, max=self.dense_len)
+```
+
+但 `positions_from_logits()` 内部又重新用原始 `dense_masks.sum()` 得到 `valid_len`。如果某个样本 mask 全 false，则 `dense_valid_lens` 会变成 1，但 `positions_from_logits()` 的 `valid_len` 会是 0，soft-quantile 路径可能在 empty `cdf_valid` 上出问题。
+
+正常 THUMOS 数据不应产生 all-false clip，所以不是当前 blocker。若要增强鲁棒性，应在 `_dense_masks()` 或 `_forward_select()` 明确 assert 至少一个 valid frame，或让 `positions_from_logits()` 像 `st_topk_positions_from_logits()` 一样处理 `valid_len <= 0`。
+
+### 5. `quota_action_target_weight` / `quota_boundary_target_weight` 向后兼容
+
+新增参数默认值都是 1.0：
+
+```python
+quota_action_target_weight=1.0
+quota_boundary_target_weight=1.0
+```
+
+旧 quota configs 未显式设置这两个参数，因此旧行为保持不变。
+
+新 `BoundarySharp-ST` config 设置：
+
+```python
+quota_boundary_radius=2.5
+quota_boundary_target_weight=3.0
+quota_uniform_target_weight=0.005
+quota_boundary_loss_weight=3.0
+```
+
+这会让 boundary target 相比旧 AB/BH 更尖锐：半径更小、boundary Gaussian 权重更大、背景 uniform floor 更低、boundary loss scale 更高。这里的 target shaping 是 train-only，因为只在 `forward_train()` 的 `quota_gt_losses()` 中使用 GT。
+
+建议补一个参数校验：`quota_action_target_weight` 和 `quota_boundary_target_weight` 应该非负。当前配置没问题，但负值会构造出不合法 target 分布。
+
+### 6. `BoundarySharp-ST` adapter 保持了 384-of-768 固定预算
+
+`e2e_rawdensel_384of768_boundarysharp_st_adapter.py` 只覆盖 `model.frame_selector`，继承 base config 中的：
+
+```python
+dense_window_size = 768
+window_size = 384
+model.projection.max_seq_len = 384
+model.backbone.backbone.total_frames = 384
+train trunc_len = 768
+val/test window_size = 768
+```
+
+因此 expensive backbone 仍然看到 384 帧，输入 dense decode 仍是 768 帧，预算没有变化。
+
+test-time 路径也干净：`ActionFormer.forward_test()` 只调用 `frame_selector.forward_test(inputs, masks, metas)`，没有传 GT；test pipeline 只 collect `imgs` 和 `masks`；config 中没有 teacher/cache/raw prediction load。这个合同成立。
+
+### 7. 新测试覆盖了关键方向，但还有几个缺口
+
+已经覆盖到的关键点：
+
+```text
+- 普通 selector shape / mask / meta
+- uniform remap 与 postprocess round trip
+- detection visual path 梯度到 selector score_net
+- ActionFormer detector loss 梯度到 selector
+- quota action/boundary auxiliary loss 梯度
+- quota visual path 无 aux loss 时仍能回到 action/boundary channels
+- ST top-k hard forward + soft gradient
+- BoundarySharp-ST 小型 quota merge 预期
+- optimizer groups 包含 selector params
+- merged config 保持 768→384 合同与无 teacher/cache
+```
+
+建议补的测试：
+
+```text
+1. st_topk + invalid dense tail：
+   invalid tail logits 设很高，确认 st_topk 不选 tail。
+
+2. BoundarySharp-ST + short valid_len：
+   例如 dense_valid_lens = 1, 2, 5，确认 split、positions、masks、padding 都稳定。
+
+3. prefix mask 合同：
+   要么测试并 assert 非 prefix mask 不支持，要么改实现真正按 dense_masks bool 过滤。
+
+4. merged config quota 检查不要依赖文件名：
+   当前 test_merged_e2e_selector_configs_keep_dense_to_selected_contracts 用
+   `if "quota" in path`，会漏掉 `boundarysharp_st` 的 quota sum 检查。
+   更稳的是看 `cfg.model.frame_selector.selection_mode == "quota"`。
+```
+
+这些是测试完整性问题，不是当前实现 blocker。
+
+### 8. Linux/N16R4 可能失败的非代码风险
+
+`run_e2e_rawdensel_n16r4.sbatch` 中：
+
+```bash
+#SBATCH -o logs/%x-%j.out
+```
+
+Slurm 打开 stdout 文件发生在脚本执行 `mkdir -p "$LOG_DIR"` 之前。如果提交目录下没有 `logs/`，某些集群会直接报 stdout 打不开。提交前确认仓库根目录已有 `logs/`，或先手动创建。脚本内部的 `mkdir -p "$LOG_DIR" "$WORK_DIR"` 对 `tee` 日志是安全的，但不一定能救 Slurm 的 `#SBATCH -o`。
+
+---
+
+## Required fixes before deployment
+
+代码层面：没有必须修复项。
+
+正式长训前建议至少完成这三件事：
+
+```text
+1. 跑 Gemini/DeepSeek review。
+2. 跑 N16R4 Linux preflight，确认 pytest 全量通过，而不是 Windows 上的 skip。
+3. 提交 sbatch 前确认 repo 根目录存在 logs/，并确认只同步本次 reviewed files，避免 unrelated dirty BATA post-processing / cache 文件污染归因。
+```
+
+建议但不阻塞的代码/测试增强：
+
+```text
+- 增加 st_topk invalid-tail test。
+- 增加 short valid_len test。
+- 对非 prefix dense mask 明确 assert 或改为按 bool mask 真过滤。
+- 对 quota target weights 增加非负校验。
+- merged config test 改成按 selection_mode 判断 quota sum，而不是按文件名包含 "quota"。
+```
+
+---
+
+## 是否符合最初设计目的
+
+基本符合。
+
+这个实现允许 selector 改变 raw-frame positions，hard forward 实际影响选入 backbone 的帧；`sample_frames()` 的线性插值路径让 detection loss 能通过 positions 回到 selector logits。对 action/boundary quota 使用 ST top-k 后，前向不再只是 soft coverage，而是真正按 channel logits 抢占 hard positions；反向仍保留 soft-quantile surrogate，避免完全不可训练。
+
+它也降低了退化成 uniform-like coverage 的风险：boundary quota 增到 192，boundary target 更尖锐，uniform floor 降到 0.005，ST hard top-k 让高 boundary logits 直接决定采样点。仍要注意 `spacing_weight`、`tv_weight` 和 96 个 uniform context frames 会保留一定 coverage bias，但新 config 已把 spacing/tv 降得很低，不构成设计冲突。
+
+---
+
+## mAP 归因判断
+
+如果未来 `BoundarySharp-ST` mAP 提升，在以下条件满足时，可以较干净地归因到 selector 内部/ST quota position 与 train-only target shaping：
+
+```text
+- 使用同一个 384-of-768 base adapter。
+- projection.max_seq_len、backbone.total_frames、train/val/test dense window 都保持 768→384。
+- head、assignment、post-processing、adapter pipeline 不变。
+- inference.load_from_raw_predictions=False，save_raw_prediction=False。
+- 无 teacher/cache/test-time GT。
+- worktree 中 unrelated dirty BATA post-processing/cache 文件不参与该 run。
+```
+
+最强对照应是同预算的 soft-quantile quota 配置，例如 AB/BH quota configs，而不是非 e2e 或不同输入预算的 baseline。这样才能把提升主要归因到 ST top-k + boundary target shaping，而不是预算或后处理变化。
+
+---
+
+## Gemini/DeepSeek + N16R4 preflight
+
+可以 proceed。
+
+建议 gate 顺序：
+
+```text
+1. Gemini/DeepSeek 只读 review。
+2. N16R4 Linux preflight：py_compile + pytest + merged config check。
+3. preflight 通过后再启动 BoundarySharp-ST 单卡 Slurm job。
+```
+
+当前没有发现需要先修复才能进入 review/preflight 的 blocker。

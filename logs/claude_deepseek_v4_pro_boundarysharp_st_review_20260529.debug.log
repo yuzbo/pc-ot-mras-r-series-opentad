@@ -1,0 +1,326 @@
+2026-05-29T08:36:03.014Z [DEBUG] MDM settings load completed in 11ms
+2026-05-29T08:36:03.030Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-05-29T08:36:03.033Z [DEBUG] CA certs: Config fallback - globalEnv keys: , settingsEnv keys: ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_MODEL,ANTHROPIC_DEFAULT_HAIKU_MODEL,ANTHROPIC_DEFAULT_SONNET_MODEL,ANTHROPIC_DEFAULT_OPUS_MODEL,CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+2026-05-29T08:36:03.034Z [DEBUG] [init] configureGlobalMTLS starting
+2026-05-29T08:36:03.034Z [DEBUG] [init] configureGlobalMTLS complete
+2026-05-29T08:36:03.034Z [DEBUG] [init] configureGlobalAgents starting
+2026-05-29T08:36:03.035Z [DEBUG] CA certs: stores=bundled,system, extraCertsPath=undefined
+2026-05-29T08:36:03.035Z [DEBUG] CA certs: Loaded 145 bundled root certificates
+2026-05-29T08:36:03.042Z [DEBUG] CA certs: Loaded 136 system CA certificates
+2026-05-29T08:36:03.043Z [DEBUG] mTLS: Creating HTTPS agent with custom certificates
+2026-05-29T08:36:03.043Z [DEBUG] [init] configureGlobalAgents complete
+2026-05-29T08:36:03.044Z [DEBUG] Using bash path: "C:\Program Files\Git\bin\bash.exe"
+2026-05-29T08:36:03.044Z [DEBUG] Error log sink initialized
+2026-05-29T08:36:03.046Z [DEBUG] Applying permission update: Adding 13 allow rule(s) to destination 'userSettings': ["mcp__memory__create_entities","mcp__thinking__sequentialthinking","WebSearch","WebFetch(domain:arxiv.org)","WebFetch(domain:github.com)","WebFetch(domain:paperswithcode.com)","mcp__fetch__imageFetch","mcp__github__fork_repository","mcp__github__create_repository","mcp__github__get_file_contents","mcp__tavily__tavily_search","Skill(research-wiki)","Skill(research-wiki:*)"]
+2026-05-29T08:36:03.047Z [DEBUG] Applying permission update: Adding 2 allow rule(s) to destination 'projectSettings': ["Skill(idea-creator)","Skill(idea-creator:*)"]
+2026-05-29T08:36:03.047Z [DEBUG] Applying permission update: Adding 16 allow rule(s) to destination 'localSettings': ["Bash","Bash(../IDEAS.md:*)","Skill(novelty-check)","Skill(novelty-check:*)","Bash(../NOVELTY_CHECK.md:*)","Bash(python -:*)","Skill(research-review)","Skill(research-review:*)","mcp__codex__codex","Bash(../IDEA3_REVIEW.md:*)","Bash(../REDUNDANCY_VALIDATION.md:*)","Bash(e:/DeskTop/TAD/temrefuse-tad/REDUNDANCY_VALIDATION.md:*)","Read(//tmp/**)","mcp__codex__codex-reply","Skill(experiment-bridge)","Skill(experiment-bridge:*)"]
+2026-05-29T08:36:03.053Z [DEBUG] Applying permission update: Adding 1 directory with destination 'localSettings': ["e:\\DeskTop\\TAD"]
+2026-05-29T08:36:03.053Z [DEBUG] Applying permission update: Adding 1 directory with destination 'localSettings': ["C:\\Users\\skywalker\\.claude\\projects\\e--DeskTop-TAD-temrefuse-tad\\memory"]
+2026-05-29T08:36:03.054Z [DEBUG] [STARTUP] Loading MCP configs...
+2026-05-29T08:36:03.058Z [DEBUG] [claudeai-mcp] No access token
+2026-05-29T08:36:03.059Z [DEBUG] installed_plugins.json doesn't exist, returning empty V2 object
+2026-05-29T08:36:03.059Z [DEBUG] Found 0 plugins (0 enabled, 0 disabled)
+2026-05-29T08:36:03.060Z [DEBUG] [STARTUP] Running setup()...
+2026-05-29T08:36:03.062Z [DEBUG] Loading skills from: managed=C:\Program Files\ClaudeCode\.claude\skills, user=C:\Users\skywalker\.claude\skills, project=[]
+2026-05-29T08:36:03.063Z [DEBUG] Error log sink initialized
+2026-05-29T08:36:03.064Z [DEBUG] getPluginSkills: Processing 0 enabled plugins
+2026-05-29T08:36:03.064Z [DEBUG] Total plugin skills loaded: 0
+2026-05-29T08:36:03.064Z [DEBUG] Total plugin commands loaded: 0
+2026-05-29T08:36:03.064Z [DEBUG] Registered 0 hooks from 0 plugins
+2026-05-29T08:36:03.066Z [DEBUG] Failed to stat directory C:\Program Files\ClaudeCode\.claude\commands: ENOENT: no such file or directory, stat 'C:\Program Files\ClaudeCode\.claude\commands'
+2026-05-29T08:36:03.066Z [DEBUG] Failed to stat directory C:\Users\skywalker\.claude\commands: ENOENT: no such file or directory, stat 'C:\Users\skywalker\.claude\commands'
+2026-05-29T08:36:03.067Z [DEBUG] Failed to stat directory C:\Program Files\ClaudeCode\.claude\agents: ENOENT: no such file or directory, stat 'C:\Program Files\ClaudeCode\.claude\agents'
+2026-05-29T08:36:03.067Z [DEBUG] Failed to stat directory C:\Users\skywalker\.claude\agents: ENOENT: no such file or directory, stat 'C:\Users\skywalker\.claude\agents'
+2026-05-29T08:36:03.067Z [DEBUG] Total plugin agents loaded: 0
+2026-05-29T08:36:03.069Z [DEBUG] [STARTUP] setup() completed in 8ms
+2026-05-29T08:36:03.069Z [DEBUG] Cleared CA certificates cache
+2026-05-29T08:36:03.069Z [DEBUG] Cleared mTLS configuration cache
+2026-05-29T08:36:03.069Z [DEBUG] Cleared proxy agent cache
+2026-05-29T08:36:03.070Z [DEBUG] CA certs: stores=bundled,system, extraCertsPath=undefined
+2026-05-29T08:36:03.070Z [DEBUG] CA certs: Loaded 145 bundled root certificates
+2026-05-29T08:36:03.070Z [DEBUG] CA certs: Loaded 136 system CA certificates
+2026-05-29T08:36:03.070Z [DEBUG] mTLS: Creating HTTPS agent with custom certificates
+2026-05-29T08:36:03.071Z [DEBUG] [STARTUP] Loading commands and agents...
+2026-05-29T08:36:03.071Z [DEBUG] [ToolSearch:optimistic] disabled: ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic is not a first-party Anthropic host. Set ENABLE_TOOL_SEARCH=true (or auto / auto:N) if your proxy forwards tool_reference blocks.
+2026-05-29T08:36:03.098Z [DEBUG] Loaded 83 unique skills (83 unconditional, 0 conditional, managed: 0, user: 82, project: 0, additional: 0, legacy commands: 1)
+2026-05-29T08:36:03.099Z [DEBUG] getSkills returning: 83 skill dir commands, 0 plugin skills, 11 bundled skills, 0 builtin plugin skills
+2026-05-29T08:36:03.100Z [DEBUG] [STARTUP] Commands and agents loaded in 29ms
+2026-05-29T08:36:03.101Z [DEBUG] [LSP MANAGER] initializeLspServerManager() called
+2026-05-29T08:36:03.101Z [DEBUG] [LSP MANAGER] Created manager instance, state=pending
+2026-05-29T08:36:03.101Z [DEBUG] [LSP MANAGER] Starting async initialization (generation 1)
+2026-05-29T08:36:03.101Z [DEBUG] Starting background startup prefetches
+2026-05-29T08:36:03.102Z [DEBUG] [Bootstrap] Skipped: Nonessential traffic disabled
+2026-05-29T08:36:03.102Z [DEBUG] [STARTUP] MCP configs resolved in 5ms (awaited at +48ms)
+2026-05-29T08:36:03.104Z [DEBUG] Total LSP servers loaded: 0
+2026-05-29T08:36:03.104Z [DEBUG] Initialized versioned plugins system with 0 plugins
+2026-05-29T08:36:03.104Z [DEBUG] [LSP SERVER MANAGER] getAllLspServers returned 0 server(s)
+2026-05-29T08:36:03.104Z [DEBUG] LSP manager initialized with 0 servers
+2026-05-29T08:36:03.105Z [DEBUG] Cleared CA certificates cache
+2026-05-29T08:36:03.105Z [DEBUG] Cleared mTLS configuration cache
+2026-05-29T08:36:03.105Z [DEBUG] Cleared proxy agent cache
+2026-05-29T08:36:03.105Z [DEBUG] CA certs: stores=bundled,system, extraCertsPath=undefined
+2026-05-29T08:36:03.105Z [DEBUG] CA certs: Loaded 145 bundled root certificates
+2026-05-29T08:36:03.105Z [DEBUG] CA certs: Loaded 136 system CA certificates
+2026-05-29T08:36:03.106Z [DEBUG] mTLS: Creating HTTPS agent with custom certificates
+2026-05-29T08:36:03.106Z [DEBUG] LSP server manager initialized successfully
+2026-05-29T08:36:03.106Z [DEBUG] LSP notification handlers registered successfully for all 0 server(s)
+2026-05-29T08:36:03.108Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-05-29T08:36:03.109Z [DEBUG] [Perfetto] initializePerfettoTracing called, env value: undefined
+2026-05-29T08:36:03.110Z [DEBUG] [3P telemetry] isTelemetryEnabled=false (CLAUDE_CODE_ENABLE_TELEMETRY=undefined)
+2026-05-29T08:36:03.115Z [DEBUG] MCP server "search": Starting connection with timeout of 30000ms
+2026-05-29T08:36:03.130Z [DEBUG] [auto-mode] verifyAutoModeGateAccess: enabledState=opt-in disabledBySettings=false model=deepseek-v4-pro modelSupported=false disableFastModeBreakerFires=false carouselAvailable=false canEnterAuto=false
+2026-05-29T08:36:03.130Z [WARN] auto mode disabled: model deepseek-v4-pro does not support auto mode
+2026-05-29T08:36:03.131Z [DEBUG] MCP server "github": Starting connection with timeout of 30000ms
+2026-05-29T08:36:03.139Z [DEBUG] [auto-mode] kickOutOfAutoIfNeeded applying: ctx.mode=plan ctx.prePlanMode=undefined reason=model
+2026-05-29T08:36:03.140Z [DEBUG] MCP server "fetch": Starting connection with timeout of 30000ms
+2026-05-29T08:36:03.297Z [DEBUG] Git remote URL: null
+2026-05-29T08:36:03.298Z [DEBUG] No git remote URL found
+2026-05-29T08:36:03.299Z [DEBUG] Ripgrep first use test: PASSED (mode=embedded, path=C:\Users\skywalker\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe)
+2026-05-29T08:36:03.300Z [DEBUG] rg error (signal=undefined, code=2, stderr: rg: C:\Users\skywalker\.claude\plugins\cache: IO error for operation on C:\Users\skywalker\.claude\plugins\cache: 系统找不到指定的文件。 (os error 2)
+), 0 results
+2026-05-29T08:36:04.245Z [ERROR] MCP server "search" Server stderr: Brave Search MCP Server running on stdio
+2026-05-29T08:36:04.246Z [DEBUG] MCP server "search": Successfully connected (transport: stdio) in 1133ms
+2026-05-29T08:36:04.246Z [DEBUG] MCP server "search": Connection established with capabilities: {"hasTools":true,"hasPrompts":false,"hasResources":false,"hasResourceSubscribe":false,"serverVersion":{"name":"example-servers/brave-search","version":"0.1.0"}}
+2026-05-29T08:36:04.246Z [DEBUG] [MCP] Server "search" connected with subscribe=false
+2026-05-29T08:36:04.246Z [WARN] [3P telemetry] Event dropped (no event logger initialized): mcp_server_connection
+2026-05-29T08:36:04.247Z [DEBUG] MCP server "time": Starting connection with timeout of 30000ms
+2026-05-29T08:36:04.299Z [ERROR] MCP server "github" Server stderr: GitHub MCP Server running on stdio
+2026-05-29T08:36:04.299Z [DEBUG] MCP server "github": Successfully connected (transport: stdio) in 1168ms
+2026-05-29T08:36:04.299Z [DEBUG] MCP server "github": Connection established with capabilities: {"hasTools":true,"hasPrompts":false,"hasResources":false,"hasResourceSubscribe":false,"serverVersion":{"name":"github-mcp-server","version":"0.6.2"}}
+2026-05-29T08:36:04.299Z [DEBUG] [MCP] Server "github" connected with subscribe=false
+2026-05-29T08:36:04.300Z [DEBUG] MCP server "puppeteer": Starting connection with timeout of 30000ms
+2026-05-29T08:36:04.750Z [ERROR] MCP server "fetch" Server stderr: Server started with options: respect-robots-txt
+2026-05-29T08:36:04.750Z [DEBUG] MCP server "fetch": Successfully connected (transport: stdio) in 1610ms
+2026-05-29T08:36:04.750Z [DEBUG] MCP server "fetch": Connection established with capabilities: {"hasTools":true,"hasPrompts":false,"hasResources":true,"hasResourceSubscribe":true,"serverVersion":{"name":"mcp-fetch","version":"1.6.2"}}
+2026-05-29T08:36:04.750Z [DEBUG] [MCP] Server "fetch" connected with subscribe=true
+2026-05-29T08:36:04.751Z [DEBUG] MCP server "thinking": Starting connection with timeout of 30000ms
+2026-05-29T08:36:05.453Z [ERROR] MCP server "puppeteer" Server stderr: node:internal/modules/cjs/loader:1456
+  const err = new Error(message);
+              ^
+
+Error: Cannot find module 'debug'
+Require stack:
+- E:\nodejs\node_cache\_npx\ab5cd9f6d13a2312\node_modules\extract-zip\index.js
+    at Module._resolveFilename (node:internal/modules/cjs/loader:1456:15)
+    at defaultResolveImpl (node:internal/modules/cjs/loader:1066:19)
+    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1071:22)
+    at Module._load (node:internal/modules/cjs/loader:1242:25)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.require (node:internal/modules/cjs/loader:1556:12)
+    at require (node:internal/modules/helpers:152:16)
+    at Object.<anonymous> (E:\nodejs\node_cache\_npx\ab5cd9f6d13a2312\node_modules\extract-zip\index.js:1:15)
+    at Module._compile (node:internal/modules/cjs/loader:1812:14)
+    at Object..js (node:internal/modules/cjs/loader:1943:10) {
+  code: 'MODULE_NOT_FOUND',
+  requireStack: [
+    'E:\\nodejs\\node_cache\\_npx\\ab5cd9f6d13a2312\\node_modules\\extract-zip\\index.js'
+  ]
+}
+
+Node.js v24.14.0
+2026-05-29T08:36:05.454Z [DEBUG] MCP server "puppeteer": Connection failed after 1154ms: MCP error -32000: Connection closed
+2026-05-29T08:36:05.454Z [ERROR] MCP server "puppeteer" Connection failed: MCP error -32000: Connection closed
+2026-05-29T08:36:05.455Z [DEBUG] MCP server "postgres": Starting connection with timeout of 30000ms
+2026-05-29T08:36:05.830Z [ERROR] MCP server "thinking" Server stderr: Sequential Thinking MCP Server running on stdio
+2026-05-29T08:36:05.830Z [DEBUG] MCP server "thinking": Successfully connected (transport: stdio) in 1079ms
+2026-05-29T08:36:05.831Z [DEBUG] MCP server "thinking": Connection established with capabilities: {"hasTools":true,"hasPrompts":false,"hasResources":false,"hasResourceSubscribe":false,"serverVersion":{"name":"sequential-thinking-server","version":"0.2.0"}}
+2026-05-29T08:36:05.831Z [DEBUG] [MCP] Server "thinking" connected with subscribe=false
+2026-05-29T08:36:05.832Z [DEBUG] MCP server "slack": Starting connection with timeout of 30000ms
+2026-05-29T08:36:06.473Z [ERROR] MCP server "postgres" Server stderr: Please provide a database URL as a command-line argument
+2026-05-29T08:36:06.474Z [DEBUG] MCP server "postgres": Connection failed after 1020ms: MCP error -32000: Connection closed
+2026-05-29T08:36:06.474Z [ERROR] MCP server "postgres" Connection failed: MCP error -32000: Connection closed
+2026-05-29T08:36:06.475Z [DEBUG] MCP server "tavily": Starting connection with timeout of 30000ms
+2026-05-29T08:36:06.819Z [ERROR] MCP server "tavily" Server stderr: Tavily MCP server running on stdio
+2026-05-29T08:36:06.820Z [DEBUG] MCP server "tavily": Successfully connected (transport: stdio) in 345ms
+2026-05-29T08:36:06.820Z [DEBUG] MCP server "tavily": Connection established with capabilities: {"hasTools":true,"hasPrompts":false,"hasResources":false,"hasResourceSubscribe":false,"serverVersion":{"name":"tavily-mcp","version":"0.2.10"}}
+2026-05-29T08:36:06.820Z [DEBUG] [MCP] Server "tavily" connected with subscribe=false
+2026-05-29T08:36:06.821Z [DEBUG] MCP server "rosetta": Starting connection with timeout of 30000ms
+2026-05-29T08:36:06.883Z [ERROR] MCP server "slack" Server stderr: Please set SLACK_BOT_TOKEN and SLACK_TEAM_ID environment variables
+2026-05-29T08:36:06.883Z [DEBUG] MCP server "slack": Connection failed after 1052ms: MCP error -32000: Connection closed
+2026-05-29T08:36:06.883Z [ERROR] MCP server "slack" Connection failed: MCP error -32000: Connection closed
+2026-05-29T08:36:06.884Z [DEBUG] MCP server "oracle": Starting connection with timeout of 30000ms
+2026-05-29T08:36:07.098Z [DEBUG] MCP server "rosetta": Successfully connected (transport: stdio) in 278ms
+2026-05-29T08:36:07.099Z [DEBUG] MCP server "rosetta": Connection established with capabilities: {"hasTools":true,"hasPrompts":false,"hasResources":false,"hasResourceSubscribe":false,"serverVersion":{"name":"rosetta","version":"0.1.0"}}
+2026-05-29T08:36:07.099Z [DEBUG] [MCP] Server "rosetta" connected with subscribe=false
+2026-05-29T08:36:07.100Z [DEBUG] MCP server "filesystem": Starting connection with timeout of 30000ms
+2026-05-29T08:36:07.644Z [DEBUG] MCP server "oracle": Successfully connected (transport: stdio) in 760ms
+2026-05-29T08:36:07.645Z [DEBUG] MCP server "oracle": Connection established with capabilities: {"hasTools":true,"hasPrompts":false,"hasResources":true,"hasResourceSubscribe":false,"serverVersion":{"name":"oracle-mcp","version":"0.12.1"}}
+2026-05-29T08:36:07.645Z [DEBUG] [MCP] Server "oracle" connected with subscribe=false
+2026-05-29T08:36:07.646Z [DEBUG] MCP server "memory": Starting connection with timeout of 30000ms
+2026-05-29T08:36:08.120Z [DEBUG] [MCP] --mcp-config servers: 6/16 not ready after 5000ms — proceeding; background connection continues
+2026-05-29T08:36:08.212Z [DEBUG] Plugin autoupdate: skipped (auto-updater disabled)
+2026-05-29T08:36:08.216Z [DEBUG] [ScheduledTasks] scheduler start() — enabled=false, hasTasks=true
+2026-05-29T08:36:08.887Z [DEBUG] installPluginsForHeadless: starting
+2026-05-29T08:36:08.887Z [DEBUG] installPluginsForHeadless: no marketplaces declared
+2026-05-29T08:36:08.888Z [DEBUG] Failed to stat directory C:\Program Files\ClaudeCode\.claude\skills: ENOENT: no such file or directory, stat 'C:\Program Files\ClaudeCode\.claude\skills'
+2026-05-29T08:36:08.889Z [DEBUG] [ScheduledTasks] acquired scheduler lock (PID 103428)
+2026-05-29T08:36:08.890Z [DEBUG] Watching for changes in skill/command directories: C:\Users\skywalker\.claude\skills, E:\DeskTop\TAD\temrefuse-tad\.claude\commands...
+2026-05-29T08:36:08.891Z [DEBUG] [ScheduledTasks] released scheduler lock
+2026-05-29T08:36:08.891Z [DEBUG] Watching for changes in setting files C:\Users\skywalker\.claude\settings.json, E:\DeskTop\TAD\temrefuse-tad\.claude\settings.json, E:\DeskTop\TAD\temrefuse-tad\.claude\settings.local.json...
+2026-05-29T08:36:09.151Z [ERROR] MCP server "time" Server stderr: npm error code E404
+npm error 404 Not Found - GET https://registry.npmjs.org/@modelcontextprotocol%2fserver-time - Not found
+npm error 404
+npm error 404  The requested resource '@modelcontextprotocol/server-time@*' could not be found or you do not have permission to access it.
+npm error 404
+npm error 404 Note that you can also install from a
+npm error 404 tarball, folder, http url, or git url.
+npm error A complete log of this run can be found in: E:\nodejs\node_cache\_logs\2026-05-29T08_36_04_485Z-debug-0.log
+2026-05-29T08:36:09.152Z [DEBUG] MCP server "time": Connection failed after 4905ms: MCP error -32000: Connection closed
+2026-05-29T08:36:09.153Z [ERROR] MCP server "time" Connection failed: MCP error -32000: Connection closed
+2026-05-29T08:36:09.154Z [DEBUG] MCP server "codex": Starting connection with timeout of 30000ms
+2026-05-29T08:36:09.177Z [ERROR] MCP server "filesystem" Server stderr: Error accessing directory C:\Users\skywalker\Projects: Error: ENOENT: no such file or directory, stat 'C:\Users\skywalker\Projects'
+    at async Object.stat (node:internal/fs/promises:1030:18)
+    at async file:///E:/nodejs/node_cache/_npx/a3241bba59c344f5/node_modules/@modelcontextprotocol/server-filesystem/dist/index.js:43:23
+    at async Promise.all (index 1)
+    at async file:///E:/nodejs/node_cache/_npx/a3241bba59c344f5/node_modules/@modelcontextprotocol/server-filesystem/dist/index.js:41:1 {
+  errno: -4058,
+  code: 'ENOENT',
+  syscall: 'stat',
+  path: 'C:\\Users\\skywalker\\Projects'
+}
+2026-05-29T08:36:09.178Z [DEBUG] MCP server "filesystem": Connection failed after 2079ms: MCP error -32000: Connection closed
+2026-05-29T08:36:09.178Z [ERROR] MCP server "filesystem" Connection failed: MCP error -32000: Connection closed
+2026-05-29T08:36:09.179Z [DEBUG] MCP server "globalai": Starting connection with timeout of 30000ms
+2026-05-29T08:36:09.195Z [ERROR] MCP server "memory" Server stderr: Knowledge Graph MCP Server running on stdio
+2026-05-29T08:36:09.196Z [DEBUG] MCP server "memory": Successfully connected (transport: stdio) in 1551ms
+2026-05-29T08:36:09.196Z [DEBUG] MCP server "memory": Connection established with capabilities: {"hasTools":true,"hasPrompts":false,"hasResources":false,"hasResourceSubscribe":false,"serverVersion":{"name":"memory-server","version":"0.6.3"}}
+2026-05-29T08:36:09.197Z [DEBUG] [MCP] Server "memory" connected with subscribe=false
+2026-05-29T08:36:09.198Z [DEBUG] MCP server "gemini": Starting connection with timeout of 30000ms
+2026-05-29T08:36:09.836Z [DEBUG] MCP server "codex": Successfully connected (transport: stdio) in 683ms
+2026-05-29T08:36:09.837Z [DEBUG] MCP server "codex": Connection established with capabilities: {"hasTools":true,"hasPrompts":false,"hasResources":false,"hasResourceSubscribe":false,"serverVersion":{"name":"codex-mcp-server","title":"Codex","version":"0.134.0"}}
+2026-05-29T08:36:09.837Z [DEBUG] [MCP] Server "codex" connected with subscribe=false
+2026-05-29T08:36:10.925Z [DEBUG] Failed to stat directory C:\Program Files\ClaudeCode\.claude\output-styles: ENOENT: no such file or directory, stat 'C:\Program Files\ClaudeCode\.claude\output-styles'
+2026-05-29T08:36:11.487Z [DEBUG] Failed to stat directory C:\Users\skywalker\.claude\output-styles: ENOENT: no such file or directory, stat 'C:\Users\skywalker\.claude\output-styles'
+2026-05-29T08:36:11.488Z [DEBUG] Total plugin output styles loaded: 0
+2026-05-29T08:36:11.492Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-05-29T08:36:11.493Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-05-29T08:36:11.493Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-05-29T08:36:11.494Z [DEBUG] Sending 92 skills via attachment (initial, 92 total sent)
+2026-05-29T08:36:11.498Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-05-29T08:36:11.512Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-05-29T08:36:11.515Z [DEBUG] autocompact: tokens=3675 level=ok effectiveWindow=180000
+2026-05-29T08:36:11.517Z [DEBUG] Tool search disabled: ToolSearchTool is not available (may have been disallowed via disallowedTools).
+2026-05-29T08:36:11.536Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.123.ab4; cc_entrypoint=sdk-cli; cch=00000;
+2026-05-29T08:36:11.537Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-05-29T08:36:11.538Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-05-29T08:36:11.539Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-05-29T08:36:11.539Z [DEBUG] [API:auth] OAuth token check starting
+2026-05-29T08:36:11.540Z [DEBUG] [API:auth] OAuth token check complete
+2026-05-29T08:36:11.541Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-05-29T08:36:11.544Z [DEBUG] [API REQUEST] /anthropic/v1/messages source=sdk
+2026-05-29T08:36:11.940Z [DEBUG] Stream started - received first chunk
+2026-05-29T08:36:12.966Z [DEBUG] MCP server "gemini": Successfully connected (transport: stdio) in 3769ms
+2026-05-29T08:36:12.966Z [DEBUG] MCP server "gemini": Connection established with capabilities: {"hasTools":true,"hasPrompts":false,"hasResources":false,"hasResourceSubscribe":false,"serverVersion":{"name":"gemini-mcp-local","version":"2.12.5"}}
+2026-05-29T08:36:12.967Z [DEBUG] [MCP] Server "gemini" connected with subscribe=false
+2026-05-29T08:36:13.772Z [DEBUG] MCP server "globalai": Successfully connected (transport: stdio) in 4593ms
+2026-05-29T08:36:13.773Z [DEBUG] MCP server "globalai": Connection established with capabilities: {"hasTools":true,"hasPrompts":true,"hasResources":true,"hasResourceSubscribe":false,"serverVersion":{"name":"globalai-mcp","version":"1.26.0"}}
+2026-05-29T08:36:13.773Z [DEBUG] [MCP] Server "globalai" connected with subscribe=false
+2026-05-29T08:36:20.758Z [INFO] [Stall] tool_dispatch_start tool=Read toolUseId=call_00_3mDBgd6doOnGIzQ7a9i94327 permissionDecisionMs=12
+2026-05-29T08:36:20.760Z [INFO] [Stall] tool_dispatch_start tool=Read toolUseId=call_01_wwI6Dy8JZ8sebGSvTh186848 permissionDecisionMs=8
+2026-05-29T08:36:20.760Z [INFO] [Stall] tool_dispatch_start tool=Read toolUseId=call_02_AIVfm9lqQvxBNeX06CYE1304 permissionDecisionMs=5
+2026-05-29T08:36:20.762Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-05-29T08:36:20.763Z [DEBUG] [API:auth] OAuth token check starting
+2026-05-29T08:36:20.764Z [INFO] [Stall] tool_dispatch_end tool=Read toolUseId=call_01_wwI6Dy8JZ8sebGSvTh186848 outcome=ok durationMs=4
+2026-05-29T08:36:20.766Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-05-29T08:36:20.767Z [DEBUG] [API:auth] OAuth token check starting
+2026-05-29T08:36:20.767Z [DEBUG] [API:auth] OAuth token check complete
+2026-05-29T08:36:20.768Z [DEBUG] [API:auth] OAuth token check complete
+2026-05-29T08:36:20.770Z [DEBUG] [API REQUEST] /anthropic/v1/messages/count_tokens source=count_tokens
+2026-05-29T08:36:20.771Z [DEBUG] [API REQUEST] /anthropic/v1/messages/count_tokens source=count_tokens
+2026-05-29T08:36:20.916Z [INFO] [Stall] tool_dispatch_end tool=Read toolUseId=call_00_3mDBgd6doOnGIzQ7a9i94327 outcome=ok durationMs=158
+2026-05-29T08:36:20.919Z [INFO] [Stall] tool_dispatch_end tool=Read toolUseId=call_02_AIVfm9lqQvxBNeX06CYE1304 outcome=ok durationMs=159
+2026-05-29T08:36:20.922Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-05-29T08:36:20.922Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-05-29T08:36:20.923Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-05-29T08:36:20.923Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-05-29T08:36:20.936Z [DEBUG] autocompact: tokens=64544 level=ok effectiveWindow=180000
+2026-05-29T08:36:20.937Z [DEBUG] Tool search disabled: ToolSearchTool is not available (may have been disallowed via disallowedTools).
+2026-05-29T08:36:20.938Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.123.ab4; cc_entrypoint=sdk-cli; cch=00000;
+2026-05-29T08:36:20.939Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-05-29T08:36:20.939Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-05-29T08:36:20.939Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-05-29T08:36:20.940Z [DEBUG] [API:auth] OAuth token check starting
+2026-05-29T08:36:20.940Z [DEBUG] [API:auth] OAuth token check complete
+2026-05-29T08:36:20.941Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-05-29T08:36:20.943Z [DEBUG] [API REQUEST] /anthropic/v1/messages source=sdk
+2026-05-29T08:36:21.341Z [DEBUG] Stream started - received first chunk
+2026-05-29T08:36:28.285Z [INFO] [Stall] tool_dispatch_start tool=Read toolUseId=call_00_Dx9lu5LI6WBQBUhGp7LB3921 permissionDecisionMs=2
+2026-05-29T08:36:28.287Z [INFO] [Stall] tool_dispatch_end tool=Read toolUseId=call_00_Dx9lu5LI6WBQBUhGp7LB3921 outcome=ok durationMs=2
+2026-05-29T08:36:28.291Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-05-29T08:36:28.291Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-05-29T08:36:28.291Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-05-29T08:36:28.291Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-05-29T08:36:28.296Z [DEBUG] autocompact: tokens=71807 level=ok effectiveWindow=180000
+2026-05-29T08:36:28.297Z [DEBUG] Tool search disabled: ToolSearchTool is not available (may have been disallowed via disallowedTools).
+2026-05-29T08:36:28.298Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.123.ab4; cc_entrypoint=sdk-cli; cch=00000;
+2026-05-29T08:36:28.299Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-05-29T08:36:28.299Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-05-29T08:36:28.299Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-05-29T08:36:28.300Z [DEBUG] [API:auth] OAuth token check starting
+2026-05-29T08:36:28.300Z [DEBUG] [API:auth] OAuth token check complete
+2026-05-29T08:36:28.301Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-05-29T08:36:28.304Z [DEBUG] [API REQUEST] /anthropic/v1/messages source=sdk
+2026-05-29T08:36:28.571Z [DEBUG] Stream started - received first chunk
+2026-05-29T08:38:54.384Z [INFO] [Stall] tool_dispatch_start tool=Read toolUseId=call_00_WUrGws65ugXADfOD3KcD9085 permissionDecisionMs=5
+2026-05-29T08:38:54.386Z [INFO] [Stall] tool_dispatch_end tool=Read toolUseId=call_00_WUrGws65ugXADfOD3KcD9085 outcome=ok durationMs=2
+2026-05-29T08:38:54.390Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-05-29T08:38:54.391Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-05-29T08:38:54.391Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-05-29T08:38:54.392Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-05-29T08:38:54.397Z [DEBUG] autocompact: tokens=79966 level=ok effectiveWindow=180000
+2026-05-29T08:38:54.398Z [DEBUG] Tool search disabled: ToolSearchTool is not available (may have been disallowed via disallowedTools).
+2026-05-29T08:38:54.399Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.123.ab4; cc_entrypoint=sdk-cli; cch=00000;
+2026-05-29T08:38:54.400Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-05-29T08:38:54.401Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-05-29T08:38:54.401Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-05-29T08:38:54.401Z [DEBUG] [API:auth] OAuth token check starting
+2026-05-29T08:38:54.402Z [DEBUG] [API:auth] OAuth token check complete
+2026-05-29T08:38:54.403Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-05-29T08:38:54.406Z [DEBUG] [API REQUEST] /anthropic/v1/messages source=sdk
+2026-05-29T08:38:54.836Z [DEBUG] Stream started - received first chunk
+2026-05-29T08:40:01.336Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-05-29T08:40:01.337Z [DEBUG] MCP server "search": Sending SIGINT to MCP server process
+2026-05-29T08:40:01.337Z [DEBUG] MCP server "github": Sending SIGINT to MCP server process
+2026-05-29T08:40:01.338Z [DEBUG] MCP server "fetch": Sending SIGINT to MCP server process
+2026-05-29T08:40:01.338Z [DEBUG] MCP server "thinking": Sending SIGINT to MCP server process
+2026-05-29T08:40:01.338Z [DEBUG] MCP server "tavily": Sending SIGINT to MCP server process
+2026-05-29T08:40:01.338Z [DEBUG] MCP server "rosetta": Sending SIGINT to MCP server process
+2026-05-29T08:40:01.339Z [DEBUG] MCP server "oracle": Sending SIGINT to MCP server process
+2026-05-29T08:40:01.339Z [DEBUG] MCP server "memory": Sending SIGINT to MCP server process
+2026-05-29T08:40:01.340Z [DEBUG] MCP server "codex": Sending SIGINT to MCP server process
+2026-05-29T08:40:01.340Z [DEBUG] MCP server "globalai": Sending SIGINT to MCP server process
+2026-05-29T08:40:01.341Z [DEBUG] MCP server "gemini": Sending SIGINT to MCP server process
+2026-05-29T08:40:01.355Z [DEBUG] MCP server "globalai": STDIO connection closed after 227s (cleanly)
+2026-05-29T08:40:01.355Z [DEBUG] MCP server "globalai": Cleared connection cache for reconnection
+2026-05-29T08:40:01.362Z [DEBUG] MCP server "rosetta": STDIO connection closed after 234s (cleanly)
+2026-05-29T08:40:01.363Z [DEBUG] MCP server "rosetta": Cleared connection cache for reconnection
+2026-05-29T08:40:01.376Z [DEBUG] MCP server "tavily": STDIO connection closed after 234s (cleanly)
+2026-05-29T08:40:01.376Z [DEBUG] MCP server "tavily": Cleared connection cache for reconnection
+2026-05-29T08:40:01.377Z [DEBUG] MCP server "oracle": STDIO connection closed after 233s (cleanly)
+2026-05-29T08:40:01.377Z [DEBUG] MCP server "oracle": Cleared connection cache for reconnection
+2026-05-29T08:40:01.377Z [DEBUG] MCP server "codex": STDIO connection closed after 231s (cleanly)
+2026-05-29T08:40:01.377Z [DEBUG] MCP server "codex": Cleared connection cache for reconnection
+2026-05-29T08:40:01.388Z [DEBUG] MCP server "thinking": STDIO connection closed after 235s (cleanly)
+2026-05-29T08:40:01.388Z [DEBUG] MCP server "thinking": Cleared connection cache for reconnection
+2026-05-29T08:40:01.388Z [DEBUG] MCP server "search": MCP server process exited cleanly
+2026-05-29T08:40:01.389Z [DEBUG] MCP server "fetch": STDIO connection closed after 236s (cleanly)
+2026-05-29T08:40:01.389Z [DEBUG] MCP server "fetch": Cleared connection cache for reconnection
+2026-05-29T08:40:01.389Z [DEBUG] MCP server "github": STDIO connection closed after 237s (cleanly)
+2026-05-29T08:40:01.390Z [DEBUG] MCP server "github": Cleared connection cache for reconnection
+2026-05-29T08:40:01.390Z [DEBUG] MCP server "search": STDIO connection closed after 237s (cleanly)
+2026-05-29T08:40:01.390Z [DEBUG] MCP server "search": Cleared connection cache for reconnection
+2026-05-29T08:40:01.390Z [DEBUG] MCP server "memory": STDIO connection closed after 232s (cleanly)
+2026-05-29T08:40:01.391Z [DEBUG] MCP server "memory": Cleared connection cache for reconnection
+2026-05-29T08:40:01.401Z [DEBUG] MCP server "github": MCP server process exited cleanly
+2026-05-29T08:40:01.402Z [DEBUG] MCP server "fetch": MCP server process exited cleanly
+2026-05-29T08:40:01.402Z [DEBUG] MCP server "thinking": MCP server process exited cleanly
+2026-05-29T08:40:01.402Z [DEBUG] MCP server "tavily": MCP server process exited cleanly
+2026-05-29T08:40:01.402Z [DEBUG] MCP server "rosetta": MCP server process exited cleanly
+2026-05-29T08:40:01.403Z [DEBUG] MCP server "oracle": MCP server process exited cleanly
+2026-05-29T08:40:01.403Z [DEBUG] MCP server "memory": MCP server process exited cleanly
+2026-05-29T08:40:01.403Z [DEBUG] MCP server "codex": MCP server process exited cleanly
+2026-05-29T08:40:01.403Z [DEBUG] MCP server "globalai": MCP server process exited cleanly
+2026-05-29T08:40:01.403Z [DEBUG] MCP server "gemini": MCP server process exited cleanly
+2026-05-29T08:40:01.403Z [DEBUG] MCP server "gemini": STDIO connection closed after 228s (cleanly)
+2026-05-29T08:40:01.404Z [DEBUG] MCP server "gemini": Cleared connection cache for reconnection
+2026-05-29T08:40:01.412Z [DEBUG] LSP server manager shut down successfully
