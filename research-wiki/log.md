@@ -13491,3 +13491,52 @@
 - Follow-up monitor at `17:02:45`: BoundarySharp-ST completed Epoch 0 with
   `Loss=2.6498` and entered Epoch 1; failure scan remained `0`.
 - AB job `994707` and BH job `994708` continue on `g0042`; no first mAP yet.
+
+## 2026-05-29T17:07:00+08:00 - Upload gate and three-run monitor
+
+- N16R4 THUMOS14 upload gate is still complete:
+  `ALL_PASS=True`, manifests train/test `200/211`, remote mp4 symlink entries
+  train/test `200/211`, broken symlinks `0`, zero-size targets `0`.
+- Active project jobs are `994707 e2e_quota_ab`, `994708 e2e_quota_bh`, and
+  `994976 e2e_bsharp_st`; all are `RUNNING`.
+- AB latest: Epoch 36 step 50 `Loss=0.8498`; no mAP yet.
+- BH latest: Epoch 38 started after Epoch 37 final `Loss=1.0337`; no mAP yet.
+- BoundarySharp-ST latest: Epoch 1 final `Loss=2.1145`, action/boundary quota
+  losses `0.2558/0.7673`, then Epoch 2 started.
+- Failure scans are `0`; disk remains about `1.9T` free on `/data`.
+
+## 2026-05-29T17:20:00+08:00 - Three-run pre-first-eval monitor
+
+- Active Slurm jobs remain `RUNNING`: AB `994707`, BH `994708`, and
+  BoundarySharp-ST `994976`.
+- No mAP has printed yet for these three runs.
+- AB entered Epoch 39 after Epoch 38 final `Loss=0.8774`.
+- BH reached Epoch 40 step 50 with `Loss=1.0009`; it is in the first-eval
+  window.
+- BoundarySharp-ST entered Epoch 4 after Epoch 3 final `Loss=1.9402`; failure
+  scan remains `0`.
+- Upload gate still reports `ALL_PASS=True`; disk remains about `1.9T` free.
+
+## 2026-05-29T17:25:00+08:00 - Three-run monitor; no mAP yet
+
+- Active jobs `994707`, `994708`, and `994976` remain `RUNNING`.
+- No mAP has printed yet; BH has crossed Epoch 40 and AB has entered Epoch 40,
+  so first-eval trigger is later than initially expected.
+- AB entered Epoch 40 after Epoch 39 final `Loss=0.8423`.
+- BH reached Epoch 41 step 50 with `Loss=0.9698`.
+- BoundarySharp-ST entered Epoch 5 after Epoch 4 final `Loss=1.9073`.
+- Failure scans remain `0`; no intervention or new launch.
+
+## 2026-05-29T17:34:00+08:00 - Three-run workflow check
+
+- Active jobs `994707`, `994708`, and `994976` remain `RUNNING`.
+- Confirmed merged workflow on N16R4 for AB/BH/BoundarySharp-ST:
+  `checkpoint_interval=20`, `val_start_epoch=40`, `val_eval_interval=2`,
+  `end_epoch=60`.
+- No mAP has printed yet. AB and BH both wrote `epoch_39.pth`, and this is
+  consistent with the workflow not necessarily evaluating immediately at that
+  checkpoint boundary.
+- AB entered Epoch 41 after Epoch 40 final `Loss=0.8367`; BH latest visible
+  line is Epoch 41 step 50 `Loss=0.9698`.
+- BoundarySharp-ST reached Epoch 6 step 50 `Loss=1.8143`.
+- Failure scans remain `0`; no cleanup because all three runs are active.
