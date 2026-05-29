@@ -2170,3 +2170,59 @@ Interpretation: Route B has not learned the desired action/boundary-aware select
   changes.
 - Decision: commit/sync only reviewed files, run N16R4 Linux preflight, then
   launch one BoundarySharp-ST GPU job if preflight passes.
+
+## BoundarySharp-ST Commit at 16:42
+
+- Implementation commit in `OpenTAD_BATA_Clean`: `a0decf3 add boundarysharp st
+  selector route`.
+- Top-level review-record commit: `eb2a602 record boundarysharp st review gate`.
+- Child-repo commit includes only the three reviewed files:
+  selector implementation, BoundarySharp-ST config, and selector contract tests.
+  Existing unrelated dirty BATA boundary-acquisition/post-processing files were
+  not staged.
+- Decision: sync only these reviewed implementation files to N16R4 and run
+  Linux preflight.
+
+## BoundarySharp-ST N16R4 Preflight and Route A Stop Decision at 16:51
+
+- Synced only the three reviewed BoundarySharp-ST implementation files to
+  `~/run/yuzibo/OpenTAD_BATA_Clean`.
+- N16R4 preflight passed:
+  `~/run/yuzibo/OpenTAD_BATA_Clean/logs/preflight_boundarysharp_st_n16r4_20260529.log`.
+- Preflight evidence: Python `3.10.20`, `py_compile=PASS`,
+  `22 passed in 22.56s`, `merged_config_preflight=PASS`, final `PASS`.
+- Route A job `994378 e2e_routeA` is still `RUNNING`, but now has enough
+  control evidence: latest `65.37` Avg-mAP at `16:23:28`, vector
+  `80.68 / 75.76 / 68.45 / 58.52 / 43.41`. This is a strong uniform-control
+  result, not learned-selector evidence.
+- Decision: stop Route A to free the third GPU, clean only its own checkpoint
+  directory by keeping `epoch_59.pth`, then launch BoundarySharp-ST as the
+  third parallel E2E selector run alongside AB/BH.
+
+## Route A Stop/Cleanup and BoundarySharp-ST Launch at 17:01
+
+- Applied `scancel 994378` at `2026-05-29T16:52:50+08:00`; `parajobs`
+  then showed only AB/BH among the older E2E jobs.
+- Route A cleanup target resolved inside `~/run/yuzibo`:
+  `~/run/yuzibo/e2e_runs/exps/e2e_routeA_uniform_exact_20260529_074925/gpu1_id0/checkpoint`.
+- Disk before/after: `/data` `2.3T` size, about `421G` used, `1.9T`
+  available.
+- Removed only Route A `epoch_19.pth` and `epoch_39.pth`; kept
+  `epoch_59.pth`. No non-epoch artifacts were touched.
+- Submitted BoundarySharp-ST as Slurm job `994976 e2e_bsharp_st`, run tag
+  `e2e_boundarysharp_st_20260529_1653`, log
+  `~/run/yuzibo/OpenTAD_BATA_Clean/logs/e2e_boundarysharp_st_20260529_1653_n16r4.log`,
+  work dir `~/run/yuzibo/e2e_runs/exps/e2e_boundarysharp_st_20260529_1653`.
+- Job `994976` is `RUNNING` on `g0009` with actual allocation
+  `cpu=8,mem=124400M,gres/gpu=1`.
+- Job-internal preflight printed `merged_config_preflight=PASS`; training
+  started at `16:55:05`.
+- First BoundarySharp-ST Epoch 0 step-50 line at `16:58:12`:
+  `Loss=2.6899`, `selector_quota_action_loss=0.2549`,
+  `selector_quota_boundary_loss=0.7647`, `cls_loss=0.9444`,
+  `reg_loss=0.7256`, `mem=3189MB`.
+- Follow-up at `17:02:45`: BoundarySharp-ST completed Epoch 0 at `17:01:02`
+  with `Loss=2.6498`, action/boundary quota losses `0.2557/0.7671`,
+  `cls_loss=0.9377`, `reg_loss=0.6891`, then entered Epoch 1.
+- AB/BH continue running on `g0042`; no quota mAP yet. Error scans for
+  BoundarySharp-ST, AB, and BH are all `0`.

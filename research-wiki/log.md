@@ -13454,3 +13454,40 @@
 - No blocking findings or required fixes. Next step is to commit/sync reviewed
   files, run N16R4 Linux preflight, then launch one BoundarySharp-ST GPU job if
   preflight passes.
+
+## 2026-05-29T16:42:45+08:00 - BoundarySharp-ST implementation committed
+
+- Child repo commit: `a0decf3 add boundarysharp st selector route`.
+- Top-level review-record commit: `eb2a602 record boundarysharp st review gate`.
+- Only the reviewed selector/config/test files were committed in the child repo;
+  unrelated dirty BATA files were left untouched.
+
+## 2026-05-29T16:51:00+08:00 - BoundarySharp-ST staged and Route A stop decided
+
+- Synced only reviewed BoundarySharp-ST files to N16R4
+  `~/run/yuzibo/OpenTAD_BATA_Clean`.
+- N16R4 preflight passed in
+  `logs/preflight_boundarysharp_st_n16r4_20260529.log`: `py_compile=PASS`,
+  pytest `22 passed in 22.56s`, `merged_config_preflight=PASS`.
+- Route A control job `994378` latest mAP is `65.37`, vector
+  `80.68 / 75.76 / 68.45 / 58.52 / 43.41`; this is uniform-control evidence,
+  not learned-selector evidence.
+- Decision: stop Route A, keep only its `epoch_59.pth`, then launch one
+  BoundarySharp-ST GPU job while AB/BH continue to first mAP.
+
+## 2026-05-29T17:01:00+08:00 - Route A cleaned and BoundarySharp-ST running
+
+- Cancelled Route A job `994378` and cleaned only its checkpoint directory
+  under `~/run/yuzibo/e2e_runs/exps/e2e_routeA_uniform_exact_20260529_074925`.
+- Cleanup kept `epoch_59.pth` and removed `epoch_19.pth` plus `epoch_39.pth`;
+  disk stayed about `/data` `2.3T` size, `421G` used, `1.9T` available.
+- Submitted BoundarySharp-ST job `994976 e2e_bsharp_st`, run tag
+  `e2e_boundarysharp_st_20260529_1653`, running on `g0009`.
+- Log:
+  `~/run/yuzibo/OpenTAD_BATA_Clean/logs/e2e_boundarysharp_st_20260529_1653_n16r4.log`.
+- Job-internal preflight passed, training started at `16:55:05`, and first
+  Epoch 0 step-50 loss at `16:58:12` was `2.6899` with boundary quota loss
+  `0.7647`.
+- Follow-up monitor at `17:02:45`: BoundarySharp-ST completed Epoch 0 with
+  `Loss=2.6498` and entered Epoch 1; failure scan remained `0`.
+- AB job `994707` and BH job `994708` continue on `g0042`; no first mAP yet.
