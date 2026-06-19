@@ -44,6 +44,16 @@ Parsed with `mmengine.Config.fromfile`:
 
 R20 is therefore an `R18 semantic aux + R20 value` combo mainline, matching the saved R20A design. It is not a value-only attribution control.
 
+## Attribution Control
+
+A separate value-only attribution control is provided at:
+
+```text
+configs/adatad/thumos/ctf_bdi_pc_ot_mras_r20_value_only_control.py
+```
+
+It inherits R17 directly, clears the R17 formal-train gate, enables R20 value heads and `pc_ot_mras_reader_value_loss`, and does not define or inherit `pc_ot_mras_reader_aux_loss`. This config is launch-blocked and local-only until a separate review gate approves execution.
+
 ## Verification
 
 Commands run from this repository:
