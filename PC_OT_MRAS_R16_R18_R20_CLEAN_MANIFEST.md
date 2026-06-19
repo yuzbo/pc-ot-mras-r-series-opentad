@@ -186,8 +186,8 @@ Review package prepared but not submitted:
 
 ```text
 logs/ctf_bdi_pc_ot_mras_r18_r20_confirmation_candidates_pro_review_20260619_2050.zip
-SHA256: 402e1753eae9a9e5316e60270f6311590036c5f8bab7648f2e04b53987008fc2
-entries: 31
+SHA256: ad336011b0aa7dac8e0cceb20d7f027561456c2f88b4bc8763cc9f26f8c2ee7e
+entries: 32
 bad_backslash_entries: 0
 sha_missing: 0
 sha_bad: 0
