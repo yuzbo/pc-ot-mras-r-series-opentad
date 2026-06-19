@@ -324,3 +324,54 @@ runtime/FLOPs, deployment, dynamic-budget/scanner-quality validation, metric
 claims, or paper claims. Because it changes the temporal-coordinate protocol,
 the next gate is GPT-5.5 Pro read-only implementation review, then Gemini CLI
 read-only review only if Pro allows it.
+
+## R22 Value-to-Dynamic-Budget Controller Candidate
+
+Commit `9cc3c8291a80eeb5188beffcb31bd08d8e15e52a` adds the R22 local protocol
+candidate that turns R20 reader value signals into a variable-budget dense
+position plan:
+
+- `opentad/models/selectors/pc_ot_mras_dynamic_budget_controller.py` defines
+  `PCOTMRASDynamicBudgetController`, which consumes deploy-visible reader
+  tensors only: `valid_mask`, `value_logits`, optional `risk_logits`,
+  optional `redundancy_logits`, and optional `acquisition_matrix`.
+- The controller rejects GT, oracle, teacher, cache, raw-prediction,
+  checkpoint, result, train-only value-target, and legacy value-transport
+  payloads before computing any budget plan.
+- The output is a local protocol artifact with exact per-sample budgets,
+  sorted unique dense positions, prefix `selected_mask`, coverage/value counts,
+  and explicit `dynamic_budget_validation=False`, `metric_claim_allowed=False`,
+  and `paper_claim_allowed=False` fields.
+- `configs/adatad/thumos/ctf_bdi_pc_ot_mras_r22_dynamic_budget_control.py`
+  inherits the R20 value-only control to keep value-head attribution isolated,
+  adds a launch-blocked R22 gate, and keeps train/test, remote sync, Slurm/GPU,
+  detector mAP, dataset/checkpoint, runtime/FLOPs, deployment, scanner-quality,
+  dynamic-budget validation, metric, and paper claims disabled.
+- `opentad/models/selectors/__init__.py` was added so local PC-OT-MRAS selector
+  modules have an explicit registry import path.
+
+Verification:
+
+```text
+py_compile changed R22 files: pass
+focused R22/R20 pytest: 23 passed in 8.63s
+full PC-OT-MRAS pytest plus train-engine max-iter: 205 passed in 47.07s
+git diff --check: pass, with LF/CRLF warnings only
+```
+
+Known local environment boundary:
+
+```text
+`import opentad.models` in the local torch_1 environment is still blocked by
+the repository's missing optional `mmaction.registry` dependency. This is an
+existing full-package dependency issue; R22 verification used the same
+lightweight PC-OT-MRAS module-loading path as the existing clean-repo tests.
+```
+
+Boundary: R22 is a local implementation candidate only. It does not authorize
+Pro/Gemini completion, remote sync, remote PRECHECK execution, Slurm/GPU,
+`tools/train.py`, `tools/test.py`, detector mAP, dataset/checkpoint access,
+runtime/FLOPs, deployment, dynamic-budget/scanner-quality validation, metric
+claims, or paper claims. Because it adds a dynamic-budget protocol surface, the
+next gate is GPT-5.5 Pro read-only implementation review, then Gemini CLI
+read-only review only if Pro allows it.
