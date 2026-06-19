@@ -14,7 +14,18 @@ module load miniforge3/24.11
 YUZIBO_ROOT="${YUZIBO_ROOT:-$HOME/run/yuzibo}"
 source activate "$YUZIBO_ROOT/conda_envs/opentad"
 
-REPO="$YUZIBO_ROOT/OpenTAD_BATA_Clean"
+CLEAN_REPO_NAME="${OPENTAD_PCOTMRAS_CLEAN_REPO_NAME:-OpenTAD_PCOTMRAS_R16_R18_R20_Clean_20260619_1730}"
+REPO="${OPENTAD_PCOTMRAS_CLEAN_ROOT:-$YUZIBO_ROOT/$CLEAN_REPO_NAME}"
+case "$REPO" in
+  *OpenTAD_BATA_Clean*)
+    echo "[pc-ot-mras-r16a-gpu-smoke] $(date -Is) ERROR refusing dirty historical OpenTAD_BATA_Clean path for clean PC-OT-MRAS run: $REPO" >&2
+    exit 2
+    ;;
+esac
+if [ ! -d "$REPO" ]; then
+  echo "[pc-ot-mras-r16a-gpu-smoke] $(date -Is) ERROR missing clean PC-OT-MRAS repo: $REPO" >&2
+  exit 2
+fi
 cd "$REPO"
 
 CONFIG_REVIEWED="configs/adatad/thumos/ctf_bdi_pc_ot_mras_r16_gpu_smoke_candidate.py"
@@ -56,7 +67,7 @@ CHECKPOINT_PATH="$WORK_DIR/checkpoint/epoch_0.pth"
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 export YUZIBO_ROOT
-export OPENTAD_BATA_ROOT="$REPO"
+export OPENTAD_PCOTMRAS_CLEAN_ROOT="$REPO"
 export THUMOS14_ANNOTATION_PATH="${THUMOS14_ANNOTATION_PATH:-$YUZIBO_ROOT/thumos14/annotations/thumos_14_anno.json}"
 export THUMOS14_CLASS_MAP="${THUMOS14_CLASS_MAP:-$YUZIBO_ROOT/thumos14/annotations/category_idx.txt}"
 export THUMOS14_TRAIN_DATA_PATH="${THUMOS14_TRAIN_DATA_PATH:-$YUZIBO_ROOT/thumos14/train}"

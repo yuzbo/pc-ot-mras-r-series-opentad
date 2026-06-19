@@ -167,6 +167,32 @@ def _smoke_scope_block_reason(cfg, gate_name, gate, entrypoint):
     return None
 
 
+def _entrypoint_scope_block_reason(gate, entrypoint):
+    entrypoint_text = str(entrypoint)
+
+    if entrypoint_text == "tools/train.py" and _is_false(_get_value(gate, "allow_tools_train", _MISSING)):
+        return "allow_tools_train=False forbids tools/train.py"
+    if entrypoint_text == "tools/test.py":
+        if _is_false(_get_value(gate, "allow_tools_test", _MISSING)):
+            return "allow_tools_test=False forbids tools/test.py"
+        if _is_false(_get_value(gate, "allow_detector_map", _MISSING)):
+            return "allow_detector_map=False forbids tools/test.py"
+
+    allowed_entrypoints = _get_value(gate, "allowed_entrypoints", _MISSING)
+    if allowed_entrypoints is not _MISSING:
+        if isinstance(allowed_entrypoints, str):
+            allowed = {allowed_entrypoints}
+        else:
+            try:
+                allowed = {str(item) for item in allowed_entrypoints}
+            except TypeError:
+                allowed = set()
+        if entrypoint_text not in allowed:
+            return f"entrypoint {entrypoint} is not in allowed_entrypoints"
+
+    return None
+
+
 def _format_detail(value):
     if value in (_MISSING, None, ""):
         return None
@@ -209,6 +235,9 @@ def assert_detector_training_allowed(cfg, entrypoint="tools/train.py"):
     """Fail closed when a config explicitly marks detector training as locked."""
     for gate_name, gate in _iter_candidate_gates(cfg):
         reason = _training_block_reason(gate)
+        if reason is not None:
+            raise RuntimeError(_format_training_block_error(gate_name, gate, reason, entrypoint))
+        reason = _entrypoint_scope_block_reason(gate, entrypoint)
         if reason is not None:
             raise RuntimeError(_format_training_block_error(gate_name, gate, reason, entrypoint))
         reason = _smoke_scope_block_reason(cfg, gate_name, gate, entrypoint)

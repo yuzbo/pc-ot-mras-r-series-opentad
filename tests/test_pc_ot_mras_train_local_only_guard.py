@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GUARD_PATH = ROOT / "opentad" / "utils" / "training_guard.py"
 R12_CONFIG_PATH = ROOT / "configs" / "adatad" / "thumos" / "ctf_bdi_pc_ot_mras_r12_p2_optin_adapter_local.py"
 R14_CONFIG_PATH = ROOT / "configs" / "adatad" / "thumos" / "ctf_bdi_pc_ot_mras_r14_trainable_candidate.py"
+R17_CONFIG_PATH = ROOT / "configs" / "adatad" / "thumos" / "ctf_bdi_pc_ot_mras_r17_formal_train_candidate.py"
 
 
 def _load_module(name, path):
@@ -136,3 +137,37 @@ def test_launch_gate_passed_training_candidate_is_allowed_by_guard_contract():
     }
 
     assert guard.assert_detector_training_allowed(cfg, entrypoint="tools/train.py") is None
+
+
+def test_r17_formal_candidate_forbids_direct_tools_test_entrypoint():
+    config = _load_module("r17_pc_ot_mras_formal_train_candidate_under_test", R17_CONFIG_PATH)
+    cfg = {"r17_pc_ot_mras_formal_train_gate": config.r17_pc_ot_mras_formal_train_gate}
+
+    with pytest.raises(RuntimeError) as exc_info:
+        guard.assert_detector_training_allowed(cfg, entrypoint="tools/test.py")
+
+    message = str(exc_info.value)
+    assert "r17_pc_ot_mras_formal_train_gate" in message
+    assert "allow_tools_test=False forbids tools/test.py" in message
+    assert "R17_formal_train_candidate" in message
+
+
+def test_launch_gate_passed_gate_forbids_tools_train_when_flag_is_false():
+    cfg = {
+        "reviewed_gate": {
+            "route": "CTF-BDI/PC-OT-MRAS",
+            "stage": "reviewed_no_train_entrypoint",
+            "allow_detector_training": True,
+            "requires_launch_gate": True,
+            "launch_gate_passed": True,
+            "allow_tools_train": False,
+            "allowed_entrypoints": ("tools/train.py",),
+        }
+    }
+
+    with pytest.raises(RuntimeError) as exc_info:
+        guard.assert_detector_training_allowed(cfg, entrypoint="tools/train.py")
+
+    message = str(exc_info.value)
+    assert "reviewed_gate" in message
+    assert "allow_tools_train=False forbids tools/train.py" in message

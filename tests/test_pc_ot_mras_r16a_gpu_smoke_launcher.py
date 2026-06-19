@@ -14,6 +14,11 @@ def test_r16a_gpu_smoke_launcher_is_fail_closed_by_default():
 
     assert "#SBATCH --gpus=1" in text
     assert "#SBATCH -J pcot_r16smk" in text
+    assert "OPENTAD_PCOTMRAS_CLEAN_ROOT" in text
+    assert "OpenTAD_PCOTMRAS_R16_R18_R20_Clean_20260619_1730" in text
+    assert 'REPO="$YUZIBO_ROOT/OpenTAD_BATA_Clean"' not in text
+    assert "OPENTAD_BATA_ROOT" not in text
+    assert "refusing dirty historical OpenTAD_BATA_Clean path" in text
     assert "ctf_bdi_pc_ot_mras_r16_gpu_smoke_candidate.py" in text
     assert 'PRECHECK_ONLY="${PRECHECK_ONLY:-1}"' in text
     assert 'ALLOW_R16A_GPU_SMOKE="${ALLOW_R16A_GPU_SMOKE:-0}"' in text
