@@ -15,12 +15,18 @@ def train_one_epoch(
     clip_grad_l2norm=-1,
     logging_interval=200,
     scaler=None,
+    max_train_iters=None,
 ):
     """Training the model for one epoch"""
 
     logger.info("[Train]: Epoch {:d} started".format(curr_epoch))
     losses_tracker = {}
     num_iters = len(train_loader)
+    if max_train_iters is not None:
+        max_train_iters = int(max_train_iters)
+        if max_train_iters <= 0:
+            raise ValueError("max_train_iters must be positive when provided")
+        num_iters = min(num_iters, max_train_iters)
     use_amp = False if scaler is None else True
 
     model.train()
@@ -82,6 +88,9 @@ def train_one_epoch(
                 block4 = "lr_backbone={:.1e}".format(curr_backbone_lr) + "  " + block4
             block5 = "mem={:.0f}MB".format(torch.cuda.max_memory_allocated() / 1024.0 / 1024.0)
             logger.info("  ".join([block1, block2, "  ".join(block3), block4, block5]))
+        if max_train_iters is not None and (iter_idx + 1) >= max_train_iters:
+            logger.info("[Train]: max_train_iters=%d reached; ending smoke epoch early", max_train_iters)
+            break
 
 
 def val_one_epoch(

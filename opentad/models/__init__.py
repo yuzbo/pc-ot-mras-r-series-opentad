@@ -1,6 +1,7 @@
 from .builder import build_detector
 from .detectors import *
 from .backbones import *
+from .selectors import *
 from .projections import *
 from .necks import *
 from .dense_heads import *

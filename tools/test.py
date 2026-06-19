@@ -12,9 +12,11 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from mmengine.config import Config, DictAction
 from opentad.models import build_detector
+from opentad.models.utils.pc_ot_mras_raw_prediction_guard import assert_no_raw_prediction_shortcut_for_pc_ot_mras
 from opentad.datasets import build_dataset, build_dataloader
 from opentad.cores import eval_one_epoch
 from opentad.utils import update_workdir, set_seed, create_folder, setup_logger
+from opentad.utils.training_guard import assert_detector_training_allowed
 
 
 def parse_args():
@@ -36,6 +38,8 @@ def main():
     cfg = Config.fromfile(args.config)
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
+    assert_detector_training_allowed(cfg, entrypoint="tools/test.py")
+    assert_no_raw_prediction_shortcut_for_pc_ot_mras(cfg)
 
     # DDP init
     args.local_rank = int(os.environ["LOCAL_RANK"])

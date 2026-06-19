@@ -26,6 +26,19 @@ class BaseDetector(torch.nn.Module):
             return self.forward_detection(inputs, masks, metas, infer_cfg, post_cfg, **kwargs)
 
     def forward_detection(self, inputs, masks, metas, infer_cfg, post_cfg, **kwargs):
+        if getattr(self, "token_compressor", None) is not None:
+            if getattr(infer_cfg, "load_from_raw_predictions", False) or getattr(infer_cfg, "save_raw_prediction", False):
+                raise ValueError(
+                    "token_compressor forbids raw-prediction load/save because cached predictions bypass "
+                    "compressed-axis metadata updates"
+                )
+        if self._uses_pc_ot_mras_live_reader_path():
+            if getattr(infer_cfg, "load_from_raw_predictions", False) or getattr(infer_cfg, "save_raw_prediction", False):
+                raise ValueError(
+                    "PC-OT-MRAS forbids raw-prediction load/save because cached predictions bypass "
+                    "the live ActionFormer reader/bridge path"
+                )
+
         # step1: inference the model
         if infer_cfg.load_from_raw_predictions:  # easier and faster to tune the hyper parameter in postprocessing
             predictions = load_predictions(metas, infer_cfg)
@@ -38,3 +51,11 @@ class BaseDetector(torch.nn.Module):
         # step2: detection post processing
         results = self.post_processing(predictions, metas, post_cfg, **kwargs)
         return results
+
+    def _uses_pc_ot_mras_live_reader_path(self):
+        if getattr(self, "pc_ot_mras_reader", None) is not None:
+            return True
+        neck = getattr(self, "neck", None)
+        if neck is None:
+            return False
+        return neck.__class__.__name__ == "PCOTMRASDetectorBridge"

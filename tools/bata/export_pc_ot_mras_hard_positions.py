@@ -1,0 +1,626 @@
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import sys
+from contextlib import nullcontext
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+
+SCHEMA_VERSION = "pc_ot_mras_hard_positions_v0"
+SUMMARY_SCHEMA_VERSION = "pc_ot_mras_hard_positions_summary_v0"
+GENERATION_SOURCE = "pc_ot_mras_hard_export_resolver_v0"
+READY = "PC_OT_MRAS_HARD_EXPORT_READY"
+NO_GO = "PC_OT_MRAS_HARD_EXPORT_NO_GO"
+MATRIX_PRIORITY = ("acquisition_matrix", "allocation", "transport_prob")
+FORBIDDEN_JSONL_KEY_TOKENS = (
+    "gt",
+    "groundtruth",
+    "teacher",
+    "oracle",
+    "cache",
+    "featurecache",
+    "prediction",
+    "predictions",
+    "predictioncache",
+    "rawprediction",
+    "rawpredictions",
+    "detectionresult",
+    "detectionsresult",
+    "resultdetection",
+    "resultjson",
+    "resultartifact",
+    "checkpoint",
+    "ckpt",
+)
+
+
+def strict_json_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): strict_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [strict_json_value(item) for item in value]
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value) if math.isfinite(value) else None
+    return str(value)
+
+
+def _maybe_no_grad():
+    module = sys.modules.get("torch")
+    no_grad = getattr(module, "no_grad", None) if module is not None else None
+    return no_grad() if callable(no_grad) else nullcontext()
+
+
+def _to_plain(value: Any) -> Any:
+    if hasattr(value, "detach") and hasattr(value, "cpu") and hasattr(value, "tolist"):
+        return value.detach().cpu().tolist()
+    return value
+
+
+def _depth(value: Any) -> int:
+    data = _to_plain(value)
+    depth = 0
+    while isinstance(data, list):
+        depth += 1
+        data = data[0] if data else None
+    return depth
+
+
+def _sample(value: Any, batch_idx: int, batch_size: int) -> Any:
+    data = _to_plain(value)
+    if isinstance(data, list) and batch_size > 1:
+        return data[batch_idx]
+    if isinstance(data, list) and batch_size == 1 and _depth(data) > 1:
+        return data[batch_idx]
+    return data
+
+
+def _batch_size_from(reader_out: Mapping[str, Any]) -> int:
+    for key in (*MATRIX_PRIORITY, "transport_logits"):
+        value = reader_out.get(key)
+        if value is not None and _depth(value) >= 3:
+            return len(_to_plain(value))
+    for key in ("selection_logits", "selection_prob", "soft_selection", "valid_mask"):
+        value = reader_out.get(key)
+        if value is not None and _depth(value) >= 2:
+            return len(_to_plain(value))
+    return 1
+
+
+def _finite_float(value: Any, *, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be numeric")
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be numeric") from None
+    if not math.isfinite(out):
+        raise ValueError(f"{name} must be finite")
+    return out
+
+
+def _as_int_list(value: Any, *, name: str) -> list[int]:
+    data = _to_plain(value)
+    if data is None:
+        return []
+    if not isinstance(data, list):
+        raise ValueError(f"{name} must be a list")
+    out: list[int] = []
+    for idx, item in enumerate(data):
+        if isinstance(item, bool):
+            raise ValueError(f"{name}[{idx}] must be an integer position")
+        try:
+            out.append(int(item))
+        except (TypeError, ValueError):
+            raise ValueError(f"{name}[{idx}] must be an integer position") from None
+    return out
+
+
+def _as_float_list(value: Any, *, name: str) -> list[float]:
+    data = _to_plain(value)
+    if data is None:
+        return []
+    if not isinstance(data, list):
+        raise ValueError(f"{name} must be a list")
+    return [_finite_float(item, name=f"{name}[{idx}]") for idx, item in enumerate(data)]
+
+
+def _normalized_key(key: Any) -> str:
+    return "".join(ch for ch in str(key).lower() if ch.isalnum())
+
+
+def _validate_no_forbidden_jsonl_keys(value: Any, *, path: str = "row") -> None:
+    data = _to_plain(value)
+    if isinstance(data, Mapping):
+        for key, item in data.items():
+            normalized = _normalized_key(key)
+            if any(token in normalized for token in FORBIDDEN_JSONL_KEY_TOKENS):
+                raise ValueError(f"{path}.{key}: forbidden deploy-invisible key in hard export input")
+            _validate_no_forbidden_jsonl_keys(item, path=f"{path}.{key}")
+    elif isinstance(data, list):
+        for idx, item in enumerate(data):
+            _validate_no_forbidden_jsonl_keys(item, path=f"{path}[{idx}]")
+
+
+def _row_budget(row: Mapping[str, Any], *, cli_budget: int, row_idx: int) -> int:
+    declared: list[tuple[str, int]] = []
+    for key in ("budget", "target_budget"):
+        if key not in row:
+            continue
+        value = row.get(key)
+        if isinstance(value, bool):
+            raise ValueError(f"row {row_idx}: {key} must be an integer budget")
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"row {row_idx}: {key} must be an integer budget") from None
+        declared.append((key, parsed))
+    if not declared:
+        return int(cli_budget)
+    mismatched = [(key, value) for key, value in declared if int(value) != int(cli_budget)]
+    if mismatched:
+        detail = ", ".join(f"{key}={value}" for key, value in mismatched)
+        raise ValueError(f"row {row_idx}: row budget conflicts with CLI budget {int(cli_budget)} ({detail})")
+    return int(cli_budget)
+
+
+def _argmax(values: Sequence[Any], *, name: str) -> int:
+    if not values:
+        return -1
+    best_idx = 0
+    best_value = _finite_float(values[0], name=f"{name}[0]")
+    for idx, item in enumerate(values[1:], start=1):
+        score = _finite_float(item, name=f"{name}[{idx}]")
+        if score > best_value:
+            best_idx = idx
+            best_value = score
+    return int(best_idx)
+
+
+def _valid_positions(valid_mask: Any, *, dense_len: int | None, valid_len: int | None) -> list[int]:
+    if valid_mask is not None:
+        mask = _to_plain(valid_mask)
+        if not isinstance(mask, list):
+            raise ValueError("valid_mask must be a list or tensor-like value")
+        positions: list[int] = []
+        for idx, item in enumerate(mask):
+            if item not in (0, 1, False, True):
+                raise ValueError(f"valid_mask[{idx}] must be binary")
+            if bool(item):
+                positions.append(int(idx))
+        if not positions:
+            raise ValueError("valid_mask must contain at least one valid position")
+        if dense_len is not None and len(mask) != int(dense_len):
+            raise ValueError("valid_mask length must equal dense_len")
+        return positions
+
+    if valid_len is not None:
+        if int(valid_len) <= 0:
+            raise ValueError("valid_len must be positive")
+        return list(range(int(valid_len)))
+    if dense_len is not None:
+        if int(dense_len) <= 0:
+            raise ValueError("dense_len must be positive")
+        return list(range(int(dense_len)))
+    raise ValueError("one of valid_mask, valid_len, or dense_len is required")
+
+
+def _expected_matrix_width(valid_mask: Any, *, dense_len: int | None, valid_len: int | None, valid: Sequence[int]) -> int:
+    if valid_mask is not None:
+        mask = _to_plain(valid_mask)
+        if not isinstance(mask, list):
+            raise ValueError("valid_mask must be a list or tensor-like value")
+        return int(len(mask))
+    if dense_len is not None:
+        return int(dense_len)
+    if valid_len is not None:
+        return int(valid_len)
+    return int(max(valid) + 1)
+
+
+def _matrix_rows(
+    reader_out: Mapping[str, Any],
+    matrix_key: str,
+    *,
+    batch_idx: int,
+    batch_size: int,
+    expected_width: int,
+) -> list[list[float]]:
+    rows = _sample(reader_out[matrix_key], batch_idx, batch_size)
+    if not isinstance(rows, list) or not rows:
+        raise ValueError(f"{matrix_key} sample must be [K,T]")
+    if not all(isinstance(row, list) for row in rows):
+        raise ValueError(f"{matrix_key} sample must be [K,T]")
+
+    width: int | None = None
+    out: list[list[float]] = []
+    for slot_idx, row in enumerate(rows):
+        if not row:
+            raise ValueError(f"{matrix_key} sample must be [K,T]")
+        if width is None:
+            width = len(row)
+        elif len(row) != width:
+            raise ValueError(f"{matrix_key} sample must be rectangular [K,T]")
+        checked_row: list[float] = []
+        for pos, item in enumerate(row):
+            if isinstance(item, bool) or not isinstance(item, (int, float)):
+                raise ValueError(f"{matrix_key}[{slot_idx}][{pos}] must be numeric")
+            checked_row.append(_finite_float(item, name=f"{matrix_key}[{slot_idx}][{pos}]"))
+        out.append(checked_row)
+
+    if width != int(expected_width):
+        raise ValueError(f"{matrix_key} width must equal dense axis T={int(expected_width)}")
+    return out
+
+
+def _score_vector(
+    reader_out: Mapping[str, Any],
+    batch_idx: int,
+    batch_size: int,
+    valid: Sequence[int],
+    *,
+    expected_width: int,
+) -> list[float]:
+    for matrix_key in MATRIX_PRIORITY:
+        if matrix_key not in reader_out:
+            continue
+        rows = _matrix_rows(reader_out, matrix_key, batch_idx=batch_idx, batch_size=batch_size, expected_width=expected_width)
+        width = len(rows[0])
+        scores = [0.0] * width
+        for slot_idx, row in enumerate(rows):
+            for pos, item in enumerate(row):
+                scores[pos] += float(item)
+        return scores
+    for key in ("selection_logits", "selection_prob", "soft_selection"):
+        if key in reader_out:
+            return _as_float_list(_sample(reader_out[key], batch_idx, batch_size), name=key)
+    if not valid:
+        return []
+    return [1.0 / max(1, abs(pos - valid[len(valid) // 2]) + 1) for pos in range(max(valid) + 1)]
+
+
+def _candidate_positions(
+    reader_out: Mapping[str, Any],
+    *,
+    batch_idx: int,
+    batch_size: int,
+    valid: Sequence[int],
+    expected_width: int,
+) -> list[dict[str, Any]]:
+    valid_set = set(int(pos) for pos in valid)
+    for matrix_key in MATRIX_PRIORITY:
+        if matrix_key not in reader_out:
+            continue
+        rows = _matrix_rows(reader_out, matrix_key, batch_idx=batch_idx, batch_size=batch_size, expected_width=expected_width)
+        candidates: list[dict[str, Any]] = []
+        for slot_idx, row in enumerate(rows):
+            best_pos = -1
+            best_score = -math.inf
+            for pos, item in enumerate(row):
+                if int(pos) not in valid_set:
+                    continue
+                score = float(item)
+                if score > best_score:
+                    best_pos = int(pos)
+                    best_score = score
+            if best_pos >= 0:
+                candidates.append({"pos": best_pos, "slot": slot_idx, "score": best_score})
+        return sorted(
+            candidates,
+            key=lambda item: (-float(item["score"]), int(item["pos"]), int(item["slot"])),
+        )
+
+    if "hard_selected_positions" in reader_out:
+        positions = _as_int_list(
+            _sample(reader_out["hard_selected_positions"], batch_idx, batch_size),
+            name="hard_selected_positions",
+        )
+        return [{"pos": pos, "slot": idx, "score": None} for idx, pos in enumerate(positions) if pos >= 0]
+
+    if "selected_positions" in reader_out:
+        positions = _as_int_list(_sample(reader_out["selected_positions"], batch_idx, batch_size), name="selected_positions")
+        return [{"pos": pos, "slot": idx, "score": None} for idx, pos in enumerate(positions) if pos >= 0]
+
+    scores = _score_vector(reader_out, batch_idx, batch_size, valid, expected_width=expected_width)
+    ranked = sorted(
+        ({"pos": int(pos), "slot": idx, "score": scores[pos] if pos < len(scores) else 0.0} for idx, pos in enumerate(valid)),
+        key=lambda item: (-float(item["score"]), int(item["pos"])),
+    )
+    return ranked
+
+
+def _slot_metadata(reader_out: Mapping[str, Any], key: str, logits_key: str, batch_idx: int, batch_size: int, slot: int) -> int:
+    if key in reader_out:
+        values = _sample(reader_out[key], batch_idx, batch_size)
+        if isinstance(values, list) and 0 <= int(slot) < len(values):
+            return int(values[int(slot)])
+    if logits_key in reader_out:
+        rows = _sample(reader_out[logits_key], batch_idx, batch_size)
+        if isinstance(rows, list) and 0 <= int(slot) < len(rows) and isinstance(rows[int(slot)], list):
+            return _argmax(rows[int(slot)], name=f"{logits_key}[{slot}]")
+    return -1
+
+
+def _time_metadata(reader_out: Mapping[str, Any], key: str, logits_key: str, batch_idx: int, batch_size: int, pos: int) -> int:
+    if key in reader_out:
+        values = _sample(reader_out[key], batch_idx, batch_size)
+        if isinstance(values, list) and 0 <= int(pos) < len(values):
+            return int(values[int(pos)])
+    if logits_key in reader_out:
+        rows = _sample(reader_out[logits_key], batch_idx, batch_size)
+        if isinstance(rows, list) and 0 <= int(pos) < len(rows) and isinstance(rows[int(pos)], list):
+            return _argmax(rows[int(pos)], name=f"{logits_key}[{pos}]")
+    return -1
+
+
+def _soft_hard_time_error(scores: Sequence[float], selected: Sequence[int], valid: Sequence[int]) -> float:
+    if not selected or not valid:
+        return 0.0
+    denom = max(float(max(valid) - min(valid)), 1.0)
+    hard_mean = sum((float(pos) - float(min(valid))) / denom for pos in selected) / float(len(selected))
+    valid_scores = [(pos, max(0.0, float(scores[pos]) if pos < len(scores) else 0.0)) for pos in valid]
+    mass = sum(score for _pos, score in valid_scores)
+    if mass <= 0.0:
+        soft_mean = sum((float(pos) - float(min(valid))) / denom for pos in valid) / float(len(valid))
+    else:
+        soft_mean = sum(((float(pos) - float(min(valid))) / denom) * score for pos, score in valid_scores) / mass
+    return float(abs(hard_mean - soft_mean))
+
+
+def _resolve_sample(
+    reader_out: Mapping[str, Any],
+    *,
+    batch_idx: int,
+    batch_size: int,
+    budget: int,
+    sample_id: str,
+    dense_len: int | None,
+    valid_len: int | None,
+) -> dict[str, Any]:
+    if int(budget) <= 0:
+        raise ValueError("budget must be positive")
+
+    sample_valid_mask = None
+    if "valid_mask" in reader_out:
+        sample_valid_mask = _sample(reader_out["valid_mask"], batch_idx, batch_size)
+    valid = _valid_positions(sample_valid_mask, dense_len=dense_len, valid_len=valid_len)
+    if int(budget) > len(valid):
+        raise ValueError(f"{sample_id}: budget exceeds valid positions")
+    expected_width = _expected_matrix_width(sample_valid_mask, dense_len=dense_len, valid_len=valid_len, valid=valid)
+
+    valid_set = set(valid)
+    scores = _score_vector(reader_out, batch_idx, batch_size, valid, expected_width=expected_width)
+    candidates = _candidate_positions(
+        reader_out,
+        batch_idx=batch_idx,
+        batch_size=batch_size,
+        valid=valid,
+        expected_width=expected_width,
+    )
+
+    selected_by_pos: dict[int, dict[str, Any]] = {}
+    duplicate_repair_count = 0
+    invalid_repair_count = 0
+    for item in candidates:
+        pos = int(item["pos"])
+        if pos not in valid_set:
+            invalid_repair_count += 1
+            continue
+        if pos in selected_by_pos:
+            duplicate_repair_count += 1
+            continue
+        selected_by_pos[pos] = item
+        if len(selected_by_pos) == int(budget):
+            break
+
+    repair_fill_count = 0
+    if len(selected_by_pos) < int(budget):
+        ranked_fill = sorted(
+            (pos for pos in valid if pos not in selected_by_pos),
+            key=lambda pos: (-(scores[pos] if pos < len(scores) else 0.0), int(pos)),
+        )
+        need = int(budget) - len(selected_by_pos)
+        for pos in ranked_fill[:need]:
+            selected_by_pos[int(pos)] = {"pos": int(pos), "slot": None, "score": scores[pos] if pos < len(scores) else None}
+            repair_fill_count += 1
+
+    selected = sorted(selected_by_pos)
+    if len(selected) != int(budget):
+        raise ValueError(f"{sample_id}: failed to resolve exact budget")
+    if len(selected) != len(set(selected)):
+        raise ValueError(f"{sample_id}: resolved positions are not unique")
+
+    max_position = dense_len if dense_len is not None else (max(valid) + 1)
+    selected_mask = [1 if idx in selected_by_pos else 0 for idx in range(int(max_position))]
+
+    role_ids: list[int] = []
+    round_ids: list[int] = []
+    for pos in selected:
+        item = selected_by_pos[pos]
+        slot = item.get("slot")
+        if slot is None:
+            role_ids.append(_time_metadata(reader_out, "role_ids_by_time", "role_logits_by_time", batch_idx, batch_size, pos))
+            round_ids.append(_time_metadata(reader_out, "round_ids_by_time", "round_logits_by_time", batch_idx, batch_size, pos))
+        else:
+            role_ids.append(_slot_metadata(reader_out, "role_ids", "role_logits", batch_idx, batch_size, int(slot)))
+            round_ids.append(_slot_metadata(reader_out, "round_ids", "round_logits", batch_idx, batch_size, int(slot)))
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "sample_id": sample_id,
+        "batch_index": int(batch_idx),
+        "budget": int(budget),
+        "dense_len": int(max_position),
+        "valid_len": int(len(valid)),
+        "selected_positions": selected,
+        "selected_mask": selected_mask,
+        "duplicate_repair_count": int(duplicate_repair_count),
+        "invalid_repair_count": int(invalid_repair_count),
+        "repair_fill_count": int(repair_fill_count),
+        "soft_hard_time_error": _soft_hard_time_error(scores, selected, valid),
+        "role_ids": role_ids,
+        "round_ids": round_ids,
+        "role_round_metadata": [{"position": pos, "role_id": role, "round_id": rnd} for pos, role, rnd in zip(selected, role_ids, round_ids)],
+        "resolver_generation": {
+            "source": GENERATION_SOURCE,
+            "diagnostic_or_deploy_only": True,
+            "training_backprop_allowed": False,
+            "detached_reader_tensors": True,
+        },
+    }
+
+
+def resolve_pc_ot_mras_hard_positions(
+    reader_out: Mapping[str, Any],
+    *,
+    budget: int,
+    sample_ids: Sequence[str] | None = None,
+    dense_len: int | None = None,
+    valid_len: int | None = None,
+) -> list[dict[str, Any]]:
+    """Resolve soft PC-OT-MRAS reader output into fixed hard positions.
+
+    The returned rows contain only plain JSON values. Tensor-like inputs are
+    detached before ranking so this function cannot provide a differentiable
+    training path.
+    """
+
+    if not isinstance(reader_out, Mapping):
+        raise ValueError("reader_out must be a mapping")
+
+    def _run() -> list[dict[str, Any]]:
+        batch_size = _batch_size_from(reader_out)
+        ids = list(sample_ids or [f"sample_{idx}" for idx in range(batch_size)])
+        if len(ids) != batch_size:
+            raise ValueError("sample_ids length must equal inferred batch size")
+        return [
+            _resolve_sample(
+                reader_out,
+                batch_idx=batch_idx,
+                batch_size=batch_size,
+                budget=int(budget),
+                sample_id=str(ids[batch_idx]),
+                dense_len=dense_len,
+                valid_len=valid_len,
+            )
+            for batch_idx in range(batch_size)
+        ]
+
+    with _maybe_no_grad():
+        return _run()
+
+
+def export_pc_ot_mras_hard_positions(
+    reader_out: Mapping[str, Any],
+    valid_mask: Any | None = None,
+    *,
+    budget: int,
+    sample_ids: Sequence[str] | None = None,
+    dense_len: int | None = None,
+    valid_len: int | None = None,
+) -> list[dict[str, Any]]:
+    payload = dict(reader_out)
+    if valid_mask is not None:
+        payload["valid_mask"] = valid_mask
+    return resolve_pc_ot_mras_hard_positions(
+        payload,
+        budget=budget,
+        sample_ids=sample_ids,
+        dense_len=dense_len,
+        valid_len=valid_len,
+    )
+
+
+def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    with Path(path).expanduser().open("r", encoding="utf-8-sig") as f:
+        for line_no, line in enumerate(f, start=1):
+            text = line.strip()
+            if not text:
+                continue
+            row = json.loads(text)
+            if not isinstance(row, dict):
+                raise ValueError(f"line {line_no}: JSONL row must be an object")
+            rows.append(row)
+    if not rows:
+        raise ValueError(f"JSONL has no rows: {path}")
+    return rows
+
+
+def write_jsonl(path: str | Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    out_path = Path(path).expanduser()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(strict_json_value(dict(row)), sort_keys=True) + "\n")
+
+
+def write_json(path: str | Path, payload: Mapping[str, Any]) -> None:
+    out_path = Path(path).expanduser()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(strict_json_value(dict(payload)), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def run_jsonl_export(input_jsonl: str | Path, output_jsonl: str | Path, *, budget: int, summary_json: str | Path | None = None) -> dict[str, Any]:
+    source_rows = read_jsonl(input_jsonl)
+    out_rows: list[dict[str, Any]] = []
+    for idx, row in enumerate(source_rows):
+        _validate_no_forbidden_jsonl_keys(row, path=f"row[{idx}]")
+        reader_out = row.get("reader_out", row)
+        sample_id = str(row.get("sample_id", f"row_{idx}"))
+        dense_len = row.get("dense_len")
+        valid_len = row.get("valid_len")
+        resolved = resolve_pc_ot_mras_hard_positions(
+            reader_out,
+            budget=_row_budget(row, cli_budget=int(budget), row_idx=idx),
+            sample_ids=[sample_id],
+            dense_len=int(dense_len) if dense_len is not None else None,
+            valid_len=int(valid_len) if valid_len is not None else None,
+        )
+        out_rows.extend(resolved)
+
+    write_jsonl(output_jsonl, out_rows)
+    summary = {
+        "schema_version": SUMMARY_SCHEMA_VERSION,
+        "decision": READY,
+        "row_count": len(out_rows),
+        "output_jsonl": str(output_jsonl),
+        "total_duplicate_repair_count": sum(int(row["duplicate_repair_count"]) for row in out_rows),
+        "total_repair_fill_count": sum(int(row["repair_fill_count"]) for row in out_rows),
+    }
+    if summary_json is not None:
+        write_json(summary_json, summary)
+    return summary
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Resolve PC-OT-MRAS soft reader output to hard positions.")
+    parser.add_argument("--input-jsonl", required=True)
+    parser.add_argument("--output-jsonl", required=True)
+    parser.add_argument("--summary-json")
+    parser.add_argument("--budget", type=int, required=True)
+    args = parser.parse_args(argv)
+
+    try:
+        summary = run_jsonl_export(
+            args.input_jsonl,
+            args.output_jsonl,
+            budget=int(args.budget),
+            summary_json=args.summary_json,
+        )
+    except Exception as exc:  # pragma: no cover - CLI guard
+        print(json.dumps({"schema_version": SUMMARY_SCHEMA_VERSION, "decision": NO_GO, "error": str(exc)}))
+        return 1
+
+    print(json.dumps(strict_json_value(summary), sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

@@ -4,6 +4,8 @@ from .backbones import BackboneWrapper
 MODELS = Registry("models")
 
 PROJECTIONS = MODELS
+SELECTORS = MODELS
+TOKEN_COMPRESSORS = MODELS
 NECKS = MODELS
 ROI_EXTRACTORS = MODELS
 PRIOR_GENERATORS = MODELS
@@ -28,6 +30,16 @@ def build_backbone(cfg):
 def build_projection(cfg):
     """Build projection."""
     return PROJECTIONS.build(cfg)
+
+
+def build_selector(cfg):
+    """Build frame selector."""
+    return SELECTORS.build(cfg)
+
+
+def build_token_compressor(cfg):
+    """Build temporal token compressor."""
+    return TOKEN_COMPRESSORS.build(cfg)
 
 
 def build_neck(cfg):

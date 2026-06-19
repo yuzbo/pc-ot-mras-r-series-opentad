@@ -1,3 +1,4 @@
+import inspect
 import torch
 from ..builder import DETECTORS, build_backbone, build_projection, build_head, build_neck
 from .base import BaseDetector
@@ -56,12 +57,13 @@ class SingleStageDetector(BaseDetector):
             x, masks = self.projection(x, masks)
 
         if self.with_neck:
-            x, masks = self.neck(x, masks)
+            x, masks, metas = self._call_neck_forward(x, masks, metas=metas)
 
         if self.with_rpn_head:
-            rpn_losses = self.rpn_head.forward_train(
+            rpn_losses = self._call_rpn_head_forward_train(
                 x,
                 masks,
+                metas=metas,
                 gt_segments=gt_segments,
                 gt_labels=gt_labels,
                 **kwargs,
@@ -82,10 +84,10 @@ class SingleStageDetector(BaseDetector):
             x, masks = self.projection(x, masks)
 
         if self.with_neck:
-            x, masks = self.neck(x, masks)
+            x, masks, metas = self._call_neck_forward(x, masks, metas=metas)
 
         if self.with_rpn_head:
-            rpn_proposals, rpn_scores = self.rpn_head.forward_test(x, masks)
+            rpn_proposals, rpn_scores = self._call_rpn_head_forward_test(x, masks, metas=metas)
         else:
             rpn_proposals = rpn_scores = None
 
@@ -165,3 +167,44 @@ class SingleStageDetector(BaseDetector):
                 results[video_id] = results_per_video
 
         return results
+
+    def _call_neck_forward(self, feat_list, mask_list, metas):
+        if self._callable_accepts_metas(self.neck.forward):
+            out = self.neck(feat_list, mask_list, metas=metas)
+        else:
+            out = self.neck(feat_list, mask_list)
+        if not isinstance(out, (tuple, list)):
+            raise TypeError("neck forward must return (features, masks) or (features, masks, metas)")
+        if len(out) == 2:
+            feat_out, mask_out = out
+            return feat_out, mask_out, metas
+        if len(out) == 3:
+            feat_out, mask_out, meta_out = out
+            return feat_out, mask_out, meta_out
+        raise ValueError("neck forward must return (features, masks) or (features, masks, metas)")
+
+    def _call_rpn_head_forward_train(self, feat_list, mask_list, metas, gt_segments, gt_labels, **kwargs):
+        call_kwargs = dict(kwargs)
+        if self._callable_accepts_metas(self.rpn_head.forward_train):
+            call_kwargs["metas"] = metas
+        return self.rpn_head.forward_train(
+            feat_list,
+            mask_list,
+            gt_segments=gt_segments,
+            gt_labels=gt_labels,
+            **call_kwargs,
+        )
+
+    def _call_rpn_head_forward_test(self, feat_list, mask_list, metas):
+        call_kwargs = {}
+        if self._callable_accepts_metas(self.rpn_head.forward_test):
+            call_kwargs["metas"] = metas
+        return self.rpn_head.forward_test(feat_list, mask_list, **call_kwargs)
+
+    @staticmethod
+    def _callable_accepts_metas(fn):
+        signature = inspect.signature(fn)
+        for param in signature.parameters.values():
+            if param.name == "metas":
+                return True
+        return False
