@@ -9,7 +9,6 @@ if path not in sys.path:
 import argparse
 import torch
 import torch.distributed as dist
-from torch.distributed.elastic.multiprocessing.errors import record
 from torch.distributed.algorithms.ddp_comm_hooks import default as comm_hooks
 from torch.nn.parallel import DistributedDataParallel
 from torch.cuda.amp import GradScaler
@@ -26,7 +25,6 @@ from opentad.utils import (
     ModelEma,
     save_checkpoint,
     save_best_checkpoint,
-    validate_incompatible_checkpoint_keys,
 )
 from opentad.utils.training_guard import assert_detector_training_allowed
 
@@ -37,7 +35,6 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42, help="random seed")
     parser.add_argument("--id", type=int, default=0, help="repeat experiment id")
     parser.add_argument("--resume", type=str, default=None, help="resume from a checkpoint")
-    parser.add_argument("--load_from", type=str, default=None, help="initialize model weights from a checkpoint only")
     parser.add_argument("--not_eval", action="store_true", help="whether not to eval, only do inference")
     parser.add_argument("--disable_deterministic", action="store_true", help="disable deterministic for faster speed")
     parser.add_argument("--cfg-options", nargs="+", action=DictAction, help="override settings")
@@ -45,11 +42,8 @@ def parse_args():
     return args
 
 
-@record
 def main():
     args = parse_args()
-    if args.resume is not None and args.load_from is not None:
-        raise ValueError("--resume and --load_from are mutually exclusive")
 
     # load config
     cfg = Config.fromfile(args.config)
@@ -168,45 +162,6 @@ def main():
         del checkpoint  #  save memory if the model is very large such as ViT-g
         torch.cuda.empty_cache()
     else:
-        if args.load_from != None:
-            logger.info("Initialize model weights from: {}".format(args.load_from))
-            device = f"cuda:{args.local_rank}"
-            checkpoint = torch.load(args.load_from, map_location=device)
-            preferred_key = cfg.workflow.get("load_from_key", None)
-            if preferred_key is None:
-                preferred_key = "state_dict_ema" if "state_dict_ema" in checkpoint else "state_dict"
-            if preferred_key not in checkpoint:
-                raise KeyError(f"checkpoint does not contain requested load_from_key={preferred_key}")
-            strict = bool(cfg.workflow.get("load_from_strict", True))
-            incompatible = model.load_state_dict(checkpoint[preferred_key], strict=strict)
-            if not strict:
-                validate_incompatible_checkpoint_keys(
-                    incompatible,
-                    allowed_missing_prefixes=cfg.workflow.get("load_from_allowed_missing_prefixes", []),
-                    allowed_unexpected_prefixes=cfg.workflow.get("load_from_allowed_unexpected_prefixes", []),
-                    required_missing_prefixes=cfg.workflow.get("load_from_required_missing_prefixes", []),
-                    context="model load_from",
-                )
-            logger.info(
-                "Loaded %s with strict=%s, missing=%s, unexpected=%s"
-                % (preferred_key, strict, incompatible.missing_keys, incompatible.unexpected_keys)
-            )
-            if model_ema != None:
-                incompatible_ema = model_ema.module.load_state_dict(checkpoint[preferred_key], strict=strict)
-                if not strict:
-                    validate_incompatible_checkpoint_keys(
-                        incompatible_ema,
-                        allowed_missing_prefixes=cfg.workflow.get("load_from_allowed_missing_prefixes", []),
-                        allowed_unexpected_prefixes=cfg.workflow.get("load_from_allowed_unexpected_prefixes", []),
-                        required_missing_prefixes=cfg.workflow.get("load_from_required_missing_prefixes", []),
-                        context="model_ema load_from",
-                    )
-                logger.info(
-                    "Initialized EMA from %s with strict=%s, missing=%s, unexpected=%s"
-                    % (preferred_key, strict, incompatible_ema.missing_keys, incompatible_ema.unexpected_keys)
-                )
-            del checkpoint
-            torch.cuda.empty_cache()
         resume_epoch = -1
 
     # train the detector

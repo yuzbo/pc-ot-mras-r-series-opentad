@@ -1,4 +1,7 @@
 import importlib.util
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -6,6 +9,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 GUARD_PATH = ROOT / "opentad" / "utils" / "training_guard.py"
+TRAIN_TOOL_PATH = ROOT / "tools" / "train.py"
+UTILS_INIT_PATH = ROOT / "opentad" / "utils" / "__init__.py"
 R12_CONFIG_PATH = ROOT / "configs" / "adatad" / "thumos" / "ctf_bdi_pc_ot_mras_r12_p2_optin_adapter_local.py"
 R14_CONFIG_PATH = ROOT / "configs" / "adatad" / "thumos" / "ctf_bdi_pc_ot_mras_r14_trainable_candidate.py"
 R17_CONFIG_PATH = ROOT / "configs" / "adatad" / "thumos" / "ctf_bdi_pc_ot_mras_r17_formal_train_candidate.py"
@@ -19,6 +24,34 @@ def _load_module(name, path):
 
 
 guard = _load_module("training_guard_under_test", GUARD_PATH)
+
+
+def test_opentad_utils_import_has_no_stale_checkpoint_audit_dependency():
+    train_text = TRAIN_TOOL_PATH.read_text(encoding="utf-8")
+    utils_text = UTILS_INIT_PATH.read_text(encoding="utf-8")
+    assert "checkpoint_key_audit" not in train_text
+    assert "checkpoint_key_audit" not in utils_text
+    assert "validate_incompatible_checkpoint_keys" not in train_text
+    assert "validate_incompatible_checkpoint_keys" not in utils_text
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import opentad.utils as u; assert hasattr(u, 'save_checkpoint'); "
+            "assert not hasattr(u, 'validate_incompatible_checkpoint_keys')",
+        ],
+        cwd=str(ROOT),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 class ConfigLike:
