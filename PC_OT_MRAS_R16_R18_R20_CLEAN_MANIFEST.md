@@ -1,6 +1,6 @@
 # PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24 Clean Implementation Manifest
 
-Timestamp: 2026-06-20T04:11+08:00
+Timestamp: 2026-06-20T04:37+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -33,6 +33,8 @@ a09a247 Fix PC-OT-MRAS bridge neck registration
 05e7388 Add PC-OT-MRAS R23 dynamic budget hard export
 678d907 Record PC-OT-MRAS R23 clean manifest
 3f466ee Add PC-OT-MRAS R24 temporal metadata contract
+b86012e Record PC-OT-MRAS R24 clean manifest
+3ffec40 Fix PC-OT-MRAS R24 hard row validation
 ```
 
 ## Objective
@@ -585,10 +587,47 @@ git diff --check: pass, with LF/CRLF warnings only
 full PC-OT-MRAS pytest plus train-engine max-iter in torch_1: 216 passed in 48.22s
 ```
 
+Focused GPT-5.5 Pro same-thread recall review for the single-file inline R24
+context returned `PASS_ALLOW_GEMINI_REVIEW_ONLY`. Gemini CLI read-only review
+then returned `REJECT_REQUIRES_FIXES` for two R24 hard-row validation blockers:
+
+```text
+Gemini CLI stdout: logs/gemini3_pro_preview_ctf_bdi_pc_ot_mras_r24_20260620_0429.txt
+exitcode: 0
+verdict: REJECT_REQUIRES_FIXES
+blocking finding 1: _as_int_list silently truncated non-integer float positions
+blocking finding 2: forbidden generic string values could carry deploy-invisible teacher/oracle/cache/provenance terms
+```
+
+Commit `3ffec40` fixes both accepted Gemini blockers:
+
+- `tools/bata/export_pc_ot_mras_hard_positions.py` now routes
+  `selected_positions` through `_strict_int_scalar(...)`, rejecting bools,
+  non-integer floats, and other non-integer scalars instead of silently using
+  `int(...)`.
+- `_validate_no_forbidden_jsonl_keys(...)` now rejects forbidden
+  deploy-invisible fragments in generic string values, not only in JSON object
+  keys.
+- `tests/test_pc_ot_mras_dynamic_budget_temporal_metadata.py` adds regression
+  coverage for non-integer float selected positions and generic forbidden
+  provenance strings.
+
+Post-fix verification:
+
+```text
+py_compile changed R24 files: pass
+focused R24 pytest in torch_1: 4 passed in 4.46s
+R22/R23/R24 temporal metadata regression in torch_1: 20 passed in 10.02s
+full PC-OT-MRAS pytest plus train-engine max-iter in torch_1: 216 passed in 48.83s
+git diff --check: pass, with LF/CRLF warnings only
+```
+
 Boundary: R24 is local protocol/geometry evidence only. It is not
 dynamic-budget quality validation, detector mAP evidence, runtime/FLOPs proof,
 deployment evidence, scanner-quality validation, or a paper claim. Because it
 extends the dynamic-budget and detector-geometry protocol surface, the next
-required gate is GPT-5.5 Pro read-only implementation review, followed by
-Gemini CLI read-only review only if Pro returns
-`PASS_ALLOW_GEMINI_REVIEW_ONLY`.
+required gate is a focused Gemini CLI read-only review of commit `3ffec40`
+against the previous Gemini blockers. This does not authorize remote sync,
+remote PRECHECK execution, Slurm/GPU, `tools/train.py`, `tools/test.py`,
+detector mAP, dataset/checkpoint access, runtime/FLOPs, deployment,
+dynamic-budget/scanner-quality validation, metric claims, or paper claims.
