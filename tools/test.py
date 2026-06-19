@@ -16,7 +16,10 @@ from opentad.models.utils.pc_ot_mras_raw_prediction_guard import assert_no_raw_p
 from opentad.datasets import build_dataset, build_dataloader
 from opentad.cores import eval_one_epoch
 from opentad.utils import update_workdir, set_seed, create_folder, setup_logger
-from opentad.utils.training_guard import assert_detector_training_allowed
+from opentad.utils.training_guard import (
+    assert_detector_training_allowed,
+    assert_safe_cfg_options_for_gated_config,
+)
 
 
 def parse_args():
@@ -36,6 +39,7 @@ def main():
 
     # load config
     cfg = Config.fromfile(args.config)
+    assert_safe_cfg_options_for_gated_config(cfg, args.cfg_options, entrypoint="tools/test.py")
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
     assert_detector_training_allowed(cfg, entrypoint="tools/test.py")

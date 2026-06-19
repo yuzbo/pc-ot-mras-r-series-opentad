@@ -132,31 +132,25 @@ fi
 if [ -n "${LOAD_FROM_RAW_PREDICTIONS:-}" ] || [ -n "${RAW_PREDICTION_CACHE:-}" ] || [ -n "${PREDICTION_CACHE:-}" ]; then
   fail "raw prediction/cache environment shortcuts are forbidden for R20 precheck"
 fi
+EXPECTED_GIT_BRANCH="${OPENTAD_PCOTMRAS_EXPECTED_BRANCH:-codex/pcotmras-r16-r18-r20-clean}"
+GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || fail "clean repo must be a git checkout"
+GIT_HEAD="$(git rev-parse HEAD 2>/dev/null)" || fail "clean repo HEAD is unavailable"
+if [ "$GIT_BRANCH" != "$EXPECTED_GIT_BRANCH" ]; then
+  fail "expected branch $EXPECTED_GIT_BRANCH; got $GIT_BRANCH"
+fi
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  fail "tracked clean repo files are modified; refusing precheck"
+fi
 
 log "host=$(hostname) job=${SLURM_JOB_ID:-none}"
 log "repo=$REPO"
+log "git_branch=$GIT_BRANCH git_head=$GIT_HEAD"
 log "config=$CONFIG"
 log "run_root=$RUN_ROOT"
 log "scope=R20_VALUE_PRECHECK_ONLY no_train=true no_test=true no_map=true no_data=true no_claims=true"
 log "python=$(python -c 'import sys; print(sys.executable)')"
-log "git_head=$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 
 test -f "$CONFIG" || fail "missing reviewed config: $CONFIG"
-
-log "writing active SHA256 manifest=$SHA_MANIFEST"
-sha256sum \
-  "$CONFIG_MAIN" \
-  "$CONFIG_VALUE_ONLY" \
-  scripts/run_ctf_bdi_pc_ot_mras_r20_value_precheck_n16r4.sbatch \
-  opentad/models/detectors/actionformer.py \
-  opentad/models/losses/pc_ot_mras_value_distillation_losses.py \
-  opentad/models/selectors/pc_ot_mras_reader.py \
-  opentad/models/utils/pc_ot_mras_raw_prediction_guard.py \
-  tests/test_pc_ot_mras_r20_value_only_control_config.py \
-  tests/test_pc_ot_mras_value_distillation_losses.py \
-  > "$SHA_MANIFEST"
-ACTIVE_MANIFEST_SHA256="$(sha256sum "$SHA_MANIFEST" | awk '{print $1}')"
-log "active_sha256_manifest_sha256=$ACTIVE_MANIFEST_SHA256"
 
 log "python/torch/cuda probe"
 python - <<'PY'
@@ -217,6 +211,59 @@ else:
 
 print("ctf_bdi_pc_ot_mras_r20_value_precheck_config=PASS")
 PY
+RESOLVED_CONFIG_SHA256="$(sha256sum "$RESOLVED_CONFIG_DUMP" | awk '{print $1}')"
+log "resolved_config_sha256=$RESOLVED_CONFIG_SHA256"
+
+mapfile -t CONFIG_DEP_FILES < <(python - "$CONFIG_MAIN" "$CONFIG_VALUE_ONLY" <<'PY'
+import ast
+import sys
+from pathlib import Path
+
+seen = []
+
+def visit(path):
+    path = Path(path).resolve()
+    if path in seen:
+        return
+    seen.append(path)
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == "_base_" for target in node.targets):
+            continue
+        value = ast.literal_eval(node.value)
+        if isinstance(value, str):
+            bases = [value]
+        else:
+            bases = list(value)
+        for base in bases:
+            visit(path.parent / base)
+
+for arg in sys.argv[1:]:
+    visit(Path(arg))
+for path in seen:
+    print(path.relative_to(Path.cwd()).as_posix())
+PY
+)
+log "resolved_config_dependency_count=${#CONFIG_DEP_FILES[@]}"
+log "writing active SHA256 manifest=$SHA_MANIFEST"
+sha256sum \
+  "${CONFIG_DEP_FILES[@]}" \
+  "$RESOLVED_CONFIG_DUMP" \
+  scripts/run_ctf_bdi_pc_ot_mras_r20_value_precheck_n16r4.sbatch \
+  tools/train.py \
+  tools/test.py \
+  opentad/utils/training_guard.py \
+  opentad/models/detectors/actionformer.py \
+  opentad/models/losses/pc_ot_mras_value_distillation_losses.py \
+  opentad/models/selectors/pc_ot_mras_reader.py \
+  opentad/models/utils/pc_ot_mras_raw_prediction_guard.py \
+  tests/test_pc_ot_mras_r20_value_only_control_config.py \
+  tests/test_pc_ot_mras_value_distillation_losses.py \
+  > "$SHA_MANIFEST"
+ACTIVE_MANIFEST_SHA256="$(sha256sum "$SHA_MANIFEST" | awk '{print $1}')"
+log "active_sha256_manifest_sha256=$ACTIVE_MANIFEST_SHA256"
 
 log "static py_compile"
 python -m py_compile \

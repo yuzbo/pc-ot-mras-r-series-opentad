@@ -204,3 +204,40 @@ def test_launch_gate_passed_gate_forbids_tools_train_when_flag_is_false():
     message = str(exc_info.value)
     assert "reviewed_gate" in message
     assert "allow_tools_train=False forbids tools/train.py" in message
+
+
+def test_pc_ot_mras_gated_config_rejects_unsafe_cfg_options():
+    cfg = {
+        "r18_pc_ot_mras_aux_diag_gate": {
+            "route": "CTF-BDI/PC-OT-MRAS",
+            "stage": "R18_aux_on_formal_train_candidate",
+            "allow_detector_training": True,
+        }
+    }
+
+    with pytest.raises(RuntimeError, match="unsafe --cfg-options"):
+        guard.assert_safe_cfg_options_for_gated_config(
+            cfg,
+            {"r18_pc_ot_mras_aux_diag_gate.launch_gate_passed": True},
+            entrypoint="tools/train.py",
+        )
+
+    with pytest.raises(RuntimeError, match="unsafe --cfg-options"):
+        guard.assert_safe_cfg_options_for_gated_config(
+            cfg,
+            {"workflow.val_eval_interval": 1},
+            entrypoint="tools/train.py",
+        )
+
+    assert (
+        guard.assert_safe_cfg_options_for_gated_config(
+            cfg,
+            {
+                "work_dir": "logs/run",
+                "dataset.train.ann_file": "ann.json",
+                "evaluation.ground_truth_filename": "ann.json",
+            },
+            entrypoint="tools/train.py",
+        )
+        is None
+    )

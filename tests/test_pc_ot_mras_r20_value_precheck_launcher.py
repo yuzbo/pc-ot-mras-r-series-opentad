@@ -12,6 +12,8 @@ def test_r20_value_precheck_launcher_is_precheck_only_and_fail_closed():
     assert "#SBATCH -J pcot_r20chk" in text
     assert "OpenTAD_PCOTMRAS_R16_R18_R20_Clean_20260619_1730" in text
     assert "refusing dirty historical OpenTAD_BATA_Clean path" in text
+    assert "expected branch $EXPECTED_GIT_BRANCH" in text
+    assert "tracked clean repo files are modified" in text
     assert "ctf_bdi_pc_ot_mras_r20_value_distill_candidate.py" in text
     assert "ctf_bdi_pc_ot_mras_r20_value_only_control.py" in text
     assert 'PRECHECK_ONLY="${PRECHECK_ONLY:-1}"' in text
@@ -22,6 +24,9 @@ def test_r20_value_precheck_launcher_is_precheck_only_and_fail_closed():
     assert "allow_tools_train is False" in text
     assert "allow_slurm is False" in text
     assert "assert_detector_training_allowed" in text
+    assert "resolved_config_dependency_count" in text
+    assert "RESOLVED_CONFIG_SHA256" in text
+    assert "tools/train.py" in text
     assert "R20_VALUE_PRECHECK_ONLY_PASS_NO_TRAIN_NO_DATA_NO_MAP" in text
     assert 'tools/train.py "$CONFIG"' not in text
     assert 'tools/test.py "$CONFIG"' not in text

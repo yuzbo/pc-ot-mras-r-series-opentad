@@ -1,4 +1,8 @@
+import hashlib
+import json
+import os
 from collections.abc import Mapping
+from pathlib import Path
 
 
 _MISSING = object()
@@ -48,6 +52,21 @@ def _iter_items(node):
     return tuple()
 
 
+def _iter_option_paths(node, prefix=""):
+    if node is None:
+        return
+    if isinstance(node, Mapping):
+        for key, value in node.items():
+            key_text = str(key)
+            path = f"{prefix}.{key_text}" if prefix else key_text
+            if isinstance(value, Mapping):
+                yield from _iter_option_paths(value, path)
+            else:
+                yield path
+        return
+    yield prefix or str(node)
+
+
 def _is_false(value):
     if value is False:
         return True
@@ -66,6 +85,12 @@ def _is_true(value):
 
 def _is_gate_name(name):
     return name in {"training_guard", "local_only_gate", "local_only_training_gate"} or name.endswith("_gate")
+
+
+def _is_pc_ot_mras_gate(gate):
+    route = _lower_text(_get_value(gate, "route", _MISSING))
+    stage = _lower_text(_get_value(gate, "stage", _MISSING))
+    return "pc-ot-mras" in route or "pc_ot_mras" in stage or "pc-ot-mras" in stage
 
 
 def _as_int(value, default=None):
@@ -221,6 +246,162 @@ def _format_training_block_error(gate_name, gate, reason, entrypoint):
     )
 
 
+def _has_pc_ot_mras_gate(cfg):
+    return any(_is_pc_ot_mras_gate(gate) for _, gate in _iter_candidate_gates(cfg))
+
+
+def assert_safe_cfg_options_for_gated_config(cfg, cfg_options, entrypoint="tools/train.py"):
+    """Reject CLI config overrides that can mutate PC-OT-MRAS gate boundaries."""
+    if not cfg_options or not _has_pc_ot_mras_gate(cfg):
+        return
+
+    safe_exact = {
+        "work_dir",
+        "model.projection.pretrained",
+        "dataset.train.ann_file",
+        "dataset.val.ann_file",
+        "dataset.test.ann_file",
+        "dataset.train.class_map",
+        "dataset.val.class_map",
+        "dataset.test.class_map",
+        "dataset.train.data_path",
+        "dataset.val.data_path",
+        "dataset.test.data_path",
+        "evaluation.ground_truth_filename",
+    }
+    unsafe_fragments = (
+        "_gate",
+        "training_guard",
+        "local_only",
+        "allow_",
+        "allowed_checks",
+        "forbidden_checks",
+        "raw_prediction",
+        "prediction_cache",
+        "checkpoint",
+        "resume",
+        "load_from",
+        "teacher",
+        "oracle",
+        "workflow.val_eval_interval",
+        "workflow.val_start_epoch",
+        "workflow.max_train_iters",
+        "workflow.end_epoch",
+        "tools_train",
+        "tools_test",
+        "detector_map",
+        "metric_claim",
+        "paper_claim",
+        "runtime_flops",
+        "deploy_claim",
+        "scanner_quality",
+        "dynamic_budget",
+    )
+
+    bad_paths = []
+    for path in _iter_option_paths(cfg_options):
+        path = str(path)
+        path_lower = path.lower()
+        if path in safe_exact:
+            continue
+        if any(fragment in path_lower for fragment in unsafe_fragments):
+            bad_paths.append(path)
+            continue
+        bad_paths.append(path)
+
+    if bad_paths:
+        joined = ", ".join(sorted(bad_paths))
+        raise RuntimeError(
+            f"{entrypoint} rejected unsafe --cfg-options for PC-OT-MRAS gated config: {joined}. "
+            "Use the reviewed launcher allowlist for runtime paths only; gate, workflow, "
+            "checkpoint, raw-prediction, metric, and claim fields are immutable."
+        )
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _entrypoint_gate_context_block_reason(gate):
+    context = _get_value(gate, "entrypoint_gate_context", _MISSING)
+    if context in (_MISSING, None) or not _is_true(_get_value(context, "required", _MISSING)):
+        return None
+
+    gate_json_env = str(_get_value(context, "gate_json_env", "OPENTAD_PCOTMRAS_ENTRYPOINT_GATE_JSON"))
+    gate_sha_env = str(_get_value(context, "gate_sha256_env", "OPENTAD_PCOTMRAS_ENTRYPOINT_GATE_SHA256"))
+    manifest_env = str(
+        _get_value(context, "active_manifest_sha256_env", "OPENTAD_PCOTMRAS_ACTIVE_MANIFEST_SHA256")
+    )
+    resolved_env = str(
+        _get_value(context, "resolved_config_sha256_env", "OPENTAD_PCOTMRAS_RESOLVED_CONFIG_SHA256")
+    )
+
+    gate_json_path = os.environ.get(gate_json_env)
+    gate_sha256 = os.environ.get(gate_sha_env)
+    active_manifest_sha256 = os.environ.get(manifest_env)
+    resolved_config_sha256 = os.environ.get(resolved_env)
+
+    if not gate_json_path:
+        return f"missing required entrypoint gate env {gate_json_env}"
+    if not gate_sha256:
+        return f"missing required entrypoint gate env {gate_sha_env}"
+    if not active_manifest_sha256:
+        return f"missing required entrypoint gate env {manifest_env}"
+    if _is_true(_get_value(context, "require_resolved_config_sha256", True)) and not resolved_config_sha256:
+        return f"missing required entrypoint gate env {resolved_env}"
+
+    gate_path = Path(gate_json_path)
+    if not gate_path.is_file():
+        return f"entrypoint gate JSON does not exist: {gate_json_path}"
+    actual_sha256 = _sha256_file(gate_path)
+    if actual_sha256 != gate_sha256:
+        return f"entrypoint gate JSON sha256 mismatch: expected={gate_sha256} actual={actual_sha256}"
+
+    try:
+        gate_payload = json.loads(gate_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return f"entrypoint gate JSON is not valid JSON: {exc}"
+
+    allowed_decisions = _get_value(context, "allowed_decisions", _MISSING)
+    if allowed_decisions is not _MISSING:
+        if isinstance(allowed_decisions, str):
+            allowed = {allowed_decisions}
+        else:
+            allowed = {str(item) for item in allowed_decisions}
+        if str(gate_payload.get("decision")) not in allowed:
+            return f"entrypoint gate decision is not allowed: {gate_payload.get('decision')}"
+
+    expected_manifest = gate_payload.get("active_sha256_manifest_sha256") or gate_payload.get(
+        "expected_active_sha256_manifest_sha256"
+    )
+    if expected_manifest != active_manifest_sha256:
+        return (
+            "entrypoint gate active manifest sha256 mismatch: "
+            f"expected={expected_manifest} actual={active_manifest_sha256}"
+        )
+
+    expected_resolved = gate_payload.get("resolved_config_sha256") or gate_payload.get(
+        "expected_resolved_config_sha256"
+    )
+    if resolved_config_sha256 and expected_resolved not in (None, resolved_config_sha256):
+        return (
+            "entrypoint gate resolved config sha256 mismatch: "
+            f"expected={expected_resolved} actual={resolved_config_sha256}"
+        )
+
+    forbidden_true = _get_value(context, "forbidden_true_keys", _MISSING)
+    if forbidden_true is not _MISSING:
+        for key in forbidden_true:
+            if gate_payload.get(str(key)) is True:
+                return f"entrypoint gate must not set {key}=true"
+
+    return None
+
+
 def _iter_candidate_gates(cfg):
     direct = _get_value(cfg, "allow_detector_training", _MISSING)
     if direct is not _MISSING:
@@ -241,5 +422,8 @@ def assert_detector_training_allowed(cfg, entrypoint="tools/train.py"):
         if reason is not None:
             raise RuntimeError(_format_training_block_error(gate_name, gate, reason, entrypoint))
         reason = _smoke_scope_block_reason(cfg, gate_name, gate, entrypoint)
+        if reason is not None:
+            raise RuntimeError(_format_training_block_error(gate_name, gate, reason, entrypoint))
+        reason = _entrypoint_gate_context_block_reason(gate)
         if reason is not None:
             raise RuntimeError(_format_training_block_error(gate_name, gate, reason, entrypoint))

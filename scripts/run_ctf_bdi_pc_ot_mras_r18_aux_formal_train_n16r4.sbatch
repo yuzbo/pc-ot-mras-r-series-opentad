@@ -191,9 +191,19 @@ fi
 if [ -n "${CFG_OPTIONS:-}" ] || [ -n "${EXTRA_CFG_OPTIONS:-}" ]; then
   fail "arbitrary cfg-options are forbidden for R18"
 fi
+EXPECTED_GIT_BRANCH="${OPENTAD_PCOTMRAS_EXPECTED_BRANCH:-codex/pcotmras-r16-r18-r20-clean}"
+GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || fail "clean repo must be a git checkout"
+GIT_HEAD="$(git rev-parse HEAD 2>/dev/null)" || fail "clean repo HEAD is unavailable"
+if [ "$GIT_BRANCH" != "$EXPECTED_GIT_BRANCH" ]; then
+  fail "expected branch $EXPECTED_GIT_BRANCH; got $GIT_BRANCH"
+fi
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  fail "tracked clean repo files are modified; refusing execution"
+fi
 
 log "host=$(hostname) job=${SLURM_JOB_ID:-none}"
 log "repo=$REPO"
+log "git_branch=$GIT_BRANCH git_head=$GIT_HEAD"
 log "config=$CONFIG"
 log "run_root=$RUN_ROOT"
 log "work_dir=$WORK_DIR"
@@ -201,7 +211,6 @@ log "seed=$SEED train_id=$TRAIN_ID master_port=$MASTER_PORT"
 log "precheck_only=$PRECHECK_ONLY allow_r18_aux_formal_train=$ALLOW_R18_AUX_FORMAL_TRAIN"
 log "scope=R18_AUX_ON_FORMAL tools_train=true direct_tools_test=false no_map_claim=true no_claims=true"
 log "python=$(python -c 'import sys; print(sys.executable)')"
-log "git_head=$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 
 test -f "$CONFIG" || fail "missing reviewed config: $CONFIG"
 test -f "$PRETRAINED_PATH" || fail "missing reviewed pretrained initialization file: $PRETRAINED_PATH"
@@ -209,25 +218,6 @@ test -f "$THUMOS14_ANNOTATION_PATH" || fail "missing annotation: $THUMOS14_ANNOT
 test -f "$THUMOS14_CLASS_MAP" || fail "missing class map: $THUMOS14_CLASS_MAP"
 test -d "$THUMOS14_TRAIN_DATA_PATH" || fail "missing train data dir: $THUMOS14_TRAIN_DATA_PATH"
 test -d "$THUMOS14_TEST_DATA_PATH" || fail "missing test data dir: $THUMOS14_TEST_DATA_PATH"
-
-log "writing active SHA256 manifest=$SHA_MANIFEST"
-sha256sum \
-  "$CONFIG" \
-  "$PRETRAINED_PATH" \
-  scripts/run_ctf_bdi_pc_ot_mras_r18_aux_formal_train_n16r4.sbatch \
-  tools/train.py \
-  tools/test.py \
-  opentad/cores/train_engine.py \
-  opentad/utils/training_guard.py \
-  opentad/models/detectors/actionformer.py \
-  opentad/models/losses/pc_ot_mras_auxiliary_losses.py \
-  opentad/models/necks/pc_ot_mras_detector_bridge.py \
-  opentad/models/selectors/pc_ot_mras_reader.py \
-  opentad/models/utils/pc_ot_mras_raw_prediction_guard.py \
-  tests/test_pc_ot_mras_r18_aux_formal_train_config.py \
-  > "$SHA_MANIFEST"
-ACTIVE_MANIFEST_SHA256="$(sha256sum "$SHA_MANIFEST" | awk '{print $1}')"
-log "active_sha256_manifest_sha256=$ACTIVE_MANIFEST_SHA256"
 
 log "python/torch/cuda probe"
 python - <<'PY'
@@ -283,10 +273,11 @@ require(gate.metric_claim_allowed is False, gate)
 require(gate.paper_claim_allowed is False, gate)
 require(tuple(gate.allowed_entrypoints) == ("tools/train.py",), gate)
 require(int(cfg.workflow.end_epoch) == 60, cfg.workflow)
+require(int(cfg.workflow.val_start_epoch) == 999, cfg.workflow)
+require(int(cfg.workflow.val_eval_interval) == -1, cfg.workflow)
 require(cfg.model.pc_ot_mras_reader_aux_loss.enabled is True, cfg.model.pc_ot_mras_reader_aux_loss)
 require(cfg.inference.load_from_raw_predictions is False, cfg.inference)
 require(cfg.inference.save_raw_prediction is False, cfg.inference)
-assert_detector_training_allowed(cfg, entrypoint="tools/train.py")
 try:
     assert_detector_training_allowed(cfg, entrypoint="tools/test.py")
 except RuntimeError:
@@ -301,6 +292,61 @@ for split in ("train", "val", "test"):
 
 print("ctf_bdi_pc_ot_mras_r18_aux_formal_config_preflight=PASS")
 PY
+RESOLVED_CONFIG_SHA256="$(sha256sum "$RESOLVED_CONFIG_DUMP" | awk '{print $1}')"
+log "resolved_config_sha256=$RESOLVED_CONFIG_SHA256"
+
+mapfile -t CONFIG_DEP_FILES < <(python - "$CONFIG" <<'PY'
+import ast
+import sys
+from pathlib import Path
+
+seen = []
+root = Path(sys.argv[1]).resolve()
+
+def visit(path):
+    path = Path(path).resolve()
+    if path in seen:
+        return
+    seen.append(path)
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == "_base_" for target in node.targets):
+            continue
+        value = ast.literal_eval(node.value)
+        if isinstance(value, str):
+            bases = [value]
+        else:
+            bases = list(value)
+        for base in bases:
+            visit(path.parent / base)
+
+visit(root)
+for path in seen:
+    print(path.relative_to(Path.cwd()).as_posix())
+PY
+)
+log "resolved_config_dependency_count=${#CONFIG_DEP_FILES[@]}"
+log "writing active SHA256 manifest=$SHA_MANIFEST"
+sha256sum \
+  "${CONFIG_DEP_FILES[@]}" \
+  "$RESOLVED_CONFIG_DUMP" \
+  "$PRETRAINED_PATH" \
+  scripts/run_ctf_bdi_pc_ot_mras_r18_aux_formal_train_n16r4.sbatch \
+  tools/train.py \
+  tools/test.py \
+  opentad/cores/train_engine.py \
+  opentad/utils/training_guard.py \
+  opentad/models/detectors/actionformer.py \
+  opentad/models/losses/pc_ot_mras_auxiliary_losses.py \
+  opentad/models/necks/pc_ot_mras_detector_bridge.py \
+  opentad/models/selectors/pc_ot_mras_reader.py \
+  opentad/models/utils/pc_ot_mras_raw_prediction_guard.py \
+  tests/test_pc_ot_mras_r18_aux_formal_train_config.py \
+  > "$SHA_MANIFEST"
+ACTIVE_MANIFEST_SHA256="$(sha256sum "$SHA_MANIFEST" | awk '{print $1}')"
+log "active_sha256_manifest_sha256=$ACTIVE_MANIFEST_SHA256"
 
 log "static py_compile"
 python -m py_compile \
@@ -332,7 +378,7 @@ if [ "$ACTUAL_GATE_SHA256" != "$R18_AUX_FORMAL_GATE_SHA256" ]; then
   fail "R18 execution gate SHA256 mismatch: expected $R18_AUX_FORMAL_GATE_SHA256 got $ACTUAL_GATE_SHA256"
 fi
 
-python - "$R18_AUX_FORMAL_GATE_JSON" "$ACTIVE_MANIFEST_SHA256" <<'PY'
+python - "$R18_AUX_FORMAL_GATE_JSON" "$ACTIVE_MANIFEST_SHA256" "$RESOLVED_CONFIG_SHA256" <<'PY'
 import json
 import sys
 
@@ -342,6 +388,9 @@ if gate.get("decision") != "ALLOW_R18_AUX_FORMAL_TRAIN":
     raise SystemExit("R18 execution gate decision does not allow aux formal train")
 if gate.get("active_sha256_manifest_sha256") != expected_manifest:
     raise SystemExit("R18 execution gate active manifest sha256 mismatch")
+expected_resolved = gate.get("resolved_config_sha256") or gate.get("expected_resolved_config_sha256")
+if expected_resolved != sys.argv[3]:
+    raise SystemExit("R18 execution gate resolved config sha256 mismatch")
 for key in ("tools_test", "detector_map", "metric_claim", "paper_claim", "runtime_flops_claim", "deploy_claim"):
     if gate.get(key) is True:
         raise SystemExit(f"R18 execution gate must not enable {key}")
@@ -349,6 +398,10 @@ print("ctf_bdi_pc_ot_mras_r18_execution_gate=PASS_BOUND_TO_ACTIVE_MANIFEST")
 PY
 
 mkdir -p "$WORK_DIR"
+export OPENTAD_PCOTMRAS_ENTRYPOINT_GATE_JSON="$R18_AUX_FORMAL_GATE_JSON"
+export OPENTAD_PCOTMRAS_ENTRYPOINT_GATE_SHA256="$R18_AUX_FORMAL_GATE_SHA256"
+export OPENTAD_PCOTMRAS_ACTIVE_MANIFEST_SHA256="$ACTIVE_MANIFEST_SHA256"
+export OPENTAD_PCOTMRAS_RESOLVED_CONFIG_SHA256="$RESOLVED_CONFIG_SHA256"
 log "launching R18 aux-on formal tools/train.py"
 torchrun --nproc_per_node=1 --master_port="$MASTER_PORT" \
   tools/train.py "$CONFIG" --id "$TRAIN_ID" --seed "$SEED" \

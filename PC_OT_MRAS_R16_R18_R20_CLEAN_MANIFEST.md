@@ -1,6 +1,6 @@
 # PC-OT-MRAS R16/R18/R20 Clean Implementation Manifest
 
-Timestamp: 2026-06-19T20:55+08:00
+Timestamp: 2026-06-19T22:10+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -16,6 +16,7 @@ f19492b Import clean OpenTAD baseline
 709bf9783d0e12104e352e3b863ce6373c2b441d Update clean PC-OT-MRAS manifest after guard fixes
 21f8dbabfc61158ac21c000066b8fbae24866148 Remove stale checkpoint audit dependency from clean PC-OT-MRAS
 96eaaeb Add R18 and R20 confirmation candidates
+b5b4448 Update R18 R20 review package manifest
 ```
 
 ## Objective
@@ -197,3 +198,43 @@ Boundary: this layer is ready for GPT-5.5 Pro read-only review only. It does
 not authorize remote sync, remote PRECHECK execution, Slurm/GPU execution,
 `tools/train.py`, `tools/test.py`, detector mAP, dataset/checkpoint access,
 runtime/FLOPs, deployment, metric claims, or paper claims.
+
+## R18/R20 Complete-Package Pro Fix Layer
+
+The complete R18/R20 package follow-up returned `FAIL_FIX_BEFORE_GEMINI`. The
+package was visible and complete, but Pro rejected Gemini for this package
+because the direct entrypoint and launch-context boundary was still too soft.
+
+Accepted blocker fixes in this layer:
+
+- `tools/train.py` and `tools/test.py` now call
+  `assert_safe_cfg_options_for_gated_config()` before merging `--cfg-options`,
+  so PC-OT-MRAS gate, workflow, checkpoint, raw-prediction, metric, and claim
+  fields cannot be changed through direct CLI overrides.
+- `opentad/utils/training_guard.py` now supports optional entrypoint gate
+  context validation: gate JSON path, gate SHA256, active manifest SHA256,
+  resolved config SHA256, allowed decisions, and forbidden true keys.
+- `ctf_bdi_pc_ot_mras_r18_aux_formal_train_candidate.py` keeps R18 aux-on
+  training as a confirmation candidate but disables train-time detector mAP for
+  this package and requires launcher-provided entrypoint gate context before
+  `tools/train.py` is allowed.
+- R18/R20 N16R4 launchers now check the expected clean branch, reject tracked
+  dirty files, write resolved config dumps, include recursively discovered
+  `_base_` config dependencies in the active manifest, and bind resolved config
+  SHA256 into the R18 execution gate and entrypoint environment.
+
+Verification:
+
+```text
+py_compile affected files: pass
+bash -n R18/R20 sbatch launchers: pass, with local WSL warning noise
+focused tests: 17 passed in 5.75s
+full PC-OT-MRAS tests plus train-engine max-iter: 190 passed in 48.85s
+git diff --check: pass, with LF/CRLF warnings only
+```
+
+Boundary: this is a local hardening fix after Pro rejection. It does not
+authorize Gemini, remote sync, remote PRECHECK execution, Slurm/GPU execution,
+`tools/train.py`, `tools/test.py`, detector mAP, dataset/checkpoint access,
+runtime/FLOPs, deployment, metric claims, or paper claims. A fresh complete Pro
+package from the new HEAD is required next.

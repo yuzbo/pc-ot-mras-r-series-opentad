@@ -26,7 +26,10 @@ from opentad.utils import (
     save_checkpoint,
     save_best_checkpoint,
 )
-from opentad.utils.training_guard import assert_detector_training_allowed
+from opentad.utils.training_guard import (
+    assert_detector_training_allowed,
+    assert_safe_cfg_options_for_gated_config,
+)
 
 
 def parse_args():
@@ -47,6 +50,7 @@ def main():
 
     # load config
     cfg = Config.fromfile(args.config)
+    assert_safe_cfg_options_for_gated_config(cfg, args.cfg_options, entrypoint="tools/train.py")
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
     assert_detector_training_allowed(cfg, entrypoint="tools/train.py")
