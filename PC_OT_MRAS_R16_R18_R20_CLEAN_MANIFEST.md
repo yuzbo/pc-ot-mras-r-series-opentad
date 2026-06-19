@@ -1,6 +1,6 @@
-# PC-OT-MRAS R16/R18/R19/R20 Clean Implementation Manifest
+# PC-OT-MRAS R16/R17/R18/R19/R20 Clean Implementation Manifest
 
-Timestamp: 2026-06-20T00:38+08:00
+Timestamp: 2026-06-20T03:20+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -17,9 +17,18 @@ f19492b Import clean OpenTAD baseline
 21f8dbabfc61158ac21c000066b8fbae24866148 Remove stale checkpoint audit dependency from clean PC-OT-MRAS
 1a95068 Update clean PC-OT-MRAS purity manifest
 96eaaeb Add R18 and R20 confirmation candidates
+4a4c92a Record R18 R20 confirmation candidate manifest
 b5b4448 Update R18 R20 review package manifest
 f18c708b188464235f7732b71cfac205f47d4be3 Harden PC-OT-MRAS R18 R20 gates
 4a0864b24ce44ac46e4ceb9fddba8c1f36ee8cea Add PC-OT-MRAS R19 soft hard consistency candidate
+96f431c Record PC-OT-MRAS R19 clean manifest
+a7fa6bc Add PC-OT-MRAS R21 tensor temporal grid path
+719f928 Record PC-OT-MRAS R21 clean manifest
+9cc3c82 Add PC-OT-MRAS R22 dynamic budget controller
+85d64d5 Record PC-OT-MRAS R22 clean manifest
+a09a247 Fix PC-OT-MRAS bridge neck registration
+6753ba8 Record PC-OT-MRAS R16 bridge registry fix
+87d3404 Add clean PC-OT-MRAS R17 formal launcher
 ```
 
 ## Objective
@@ -27,6 +36,7 @@ f18c708b188464235f7732b71cfac205f47d4be3 Harden PC-OT-MRAS R18 R20 gates
 Implement only the PC-OT-MRAS continuous route stages on a clean OpenTAD baseline:
 
 - R16 bounded GPU smoke candidate.
+- R17 reader-only formal training candidate.
 - R18 train-only reader auxiliary diagnostic candidate.
 - R19 train-only soft/hard consistency candidate.
 - R20 train-only value-of-information distillation candidate.
@@ -438,3 +448,50 @@ authorize remote sync, remote PRECHECK execution, Slurm/GPU, `tools/train.py`,
 `tools/test.py`, detector mAP, dataset/checkpoint access, runtime/FLOPs,
 deployment, dynamic-budget/scanner-quality validation, metric claims, or paper
 claims.
+
+## R17 Clean Formal Launcher Gate
+
+Commit `87d3404a371b3edf7a98d43f0e84089bfb7d534a` adds the missing clean-repo
+R17 formal training launcher and tightens the R17 config entrypoint boundary.
+
+Accepted implementation details:
+
+- `configs/adatad/thumos/ctf_bdi_pc_ot_mras_r17_formal_train_candidate.py`
+  now requires launcher-provided entrypoint gate context before
+  `tools/train.py` is accepted. The required gate binds
+  `OPENTAD_PCOTMRAS_ENTRYPOINT_GATE_JSON`,
+  `OPENTAD_PCOTMRAS_ENTRYPOINT_GATE_SHA256`,
+  `OPENTAD_PCOTMRAS_ACTIVE_MANIFEST_SHA256`, and
+  `OPENTAD_PCOTMRAS_RESOLVED_CONFIG_SHA256`.
+- `scripts/run_ctf_bdi_pc_ot_mras_r17_formal_train_n16r4.sbatch` is scoped to
+  the clean repo name `OpenTAD_PCOTMRAS_R16_R18_R20_Clean_20260619_1730` and
+  refuses any path containing `OpenTAD_BATA_Clean`.
+- The launcher defaults to `PRECHECK_ONLY=1`. Formal `tools/train.py`
+  execution requires `PRECHECK_ONLY=0`, `ALLOW_R17_FORMAL_TRAIN=1`, and an
+  explicit `R17_FORMAL_GATE_JSON`/`R17_FORMAL_GATE_SHA256` pair bound to the
+  active SHA manifest and resolved config SHA.
+- Direct `tools/test.py`, raw prediction caches, checkpoint/load/resume
+  shortcuts, arbitrary `CFG_OPTIONS`, metric/paper/runtime/deploy claims, and
+  dirty tracked clean-repo files remain rejected.
+- R17 remains reader-only: it does not add R18 aux loss, R19 soft/hard loss,
+  R20 value loss, R21 tensor temporal-coordinate changes, or R22 dynamic budget
+  logic. Train-time validation can be produced by `tools/train.py`, but it is
+  not a metric or paper claim without later audit.
+
+Verification:
+
+```text
+py_compile changed R17 config/test files: pass
+focused R17/R18/R20/guard pytest: 19 passed in 5.78s
+bash -n R17 sbatch launcher: exit code 0, with local WSL warning noise
+git diff --check: pass, with LF/CRLF warnings only
+full PC-OT-MRAS pytest plus train-engine max-iter: 207 passed in 47.80s
+```
+
+Boundary: this is local clean-repo launcher/gate preparation. It does not
+authorize remote sync, remote PRECHECK execution, Slurm/GPU execution,
+`tools/train.py`, `tools/test.py`, detector mAP, dataset/checkpoint access,
+runtime/FLOPs, deployment, dynamic-budget/scanner-quality validation, metric
+claims, or paper claims. Because it changes launcher/gate logic, the next gate
+is a complete GPT-5.5 Pro read-only review package, then Gemini CLI read-only
+review only if Pro allows it.
