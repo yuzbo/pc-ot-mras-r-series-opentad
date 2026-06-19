@@ -30,6 +30,7 @@ class ActionFormer(SingleStageDetector):
         pc_ot_mras_reader=None,
         pc_ot_mras_reader_feature_level=0,
         pc_ot_mras_reader_aux_loss=None,
+        pc_ot_mras_reader_soft_hard_loss=None,
         pc_ot_mras_reader_value_loss=None,
         selector_train_only=False,
     ):
@@ -44,9 +45,14 @@ class ActionFormer(SingleStageDetector):
         self.pc_ot_mras_reader = build_selector(pc_ot_mras_reader) if pc_ot_mras_reader is not None else None
         self.pc_ot_mras_reader_feature_level = int(pc_ot_mras_reader_feature_level)
         self.pc_ot_mras_reader_aux_loss = self._normalize_pc_ot_mras_reader_aux_loss(pc_ot_mras_reader_aux_loss)
+        self.pc_ot_mras_reader_soft_hard_loss = self._normalize_pc_ot_mras_reader_soft_hard_loss(
+            pc_ot_mras_reader_soft_hard_loss
+        )
         self.pc_ot_mras_reader_value_loss = self._normalize_pc_ot_mras_reader_value_loss(pc_ot_mras_reader_value_loss)
         if self.pc_ot_mras_reader_aux_loss is not None and self.pc_ot_mras_reader is None:
             raise ValueError("pc_ot_mras_reader_aux_loss requires pc_ot_mras_reader")
+        if self.pc_ot_mras_reader_soft_hard_loss is not None and self.pc_ot_mras_reader is None:
+            raise ValueError("pc_ot_mras_reader_soft_hard_loss requires pc_ot_mras_reader")
         if self.pc_ot_mras_reader_value_loss is not None and self.pc_ot_mras_reader is None:
             raise ValueError("pc_ot_mras_reader_value_loss requires pc_ot_mras_reader")
         self.selector_train_only = bool(selector_train_only)
@@ -168,6 +174,7 @@ class ActionFormer(SingleStageDetector):
         metas = self._inject_pc_ot_mras_reader_outputs(x, masks, metas)
         reader_extra_losses = {}
         reader_extra_losses.update(self._pc_ot_mras_reader_auxiliary_losses(metas, gt_segments))
+        reader_extra_losses.update(self._pc_ot_mras_reader_soft_hard_losses(metas))
         reader_extra_losses.update(self._pc_ot_mras_reader_value_losses(metas))
         metas = self._strip_pc_ot_mras_value_targets_from_metas(metas)
 
@@ -477,6 +484,27 @@ class ActionFormer(SingleStageDetector):
             config["weights"] = dict(weights)
         return config
 
+    @staticmethod
+    def _normalize_pc_ot_mras_reader_soft_hard_loss(config):
+        if config is None:
+            return None
+        if not isinstance(config, Mapping):
+            raise ValueError("pc_ot_mras_reader_soft_hard_loss must be a mapping when provided")
+        config = dict(config)
+        enabled = bool(config.pop("enabled", False))
+        if not enabled:
+            return None
+        allowed = {"weights", "eps"}
+        unknown = sorted(set(config) - allowed)
+        if unknown:
+            raise ValueError(f"unknown pc_ot_mras_reader_soft_hard_loss keys: {unknown}")
+        if "weights" in config:
+            weights = config["weights"]
+            if not isinstance(weights, Mapping):
+                raise ValueError("pc_ot_mras_reader_soft_hard_loss.weights must be a mapping")
+            config["weights"] = dict(weights)
+        return config
+
     def _pc_ot_mras_reader_auxiliary_losses(self, metas, gt_segments):
         if self.pc_ot_mras_reader_aux_loss is None:
             return {}
@@ -499,6 +527,17 @@ class ActionFormer(SingleStageDetector):
             reader_outputs,
             metas,
             **self.pc_ot_mras_reader_value_loss,
+        )
+
+    def _pc_ot_mras_reader_soft_hard_losses(self, metas):
+        if self.pc_ot_mras_reader_soft_hard_loss is None:
+            return {}
+        reader_outputs = self._pc_ot_mras_reader_outputs_from_metas(metas)
+        from ..losses.pc_ot_mras_soft_hard_consistency_losses import pc_ot_mras_soft_hard_consistency_losses
+
+        return pc_ot_mras_soft_hard_consistency_losses(
+            reader_outputs,
+            **self.pc_ot_mras_reader_soft_hard_loss,
         )
 
     @staticmethod

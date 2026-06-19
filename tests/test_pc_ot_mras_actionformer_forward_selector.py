@@ -92,6 +92,7 @@ def _install_actionformer_runtime():
         "opentad.models.selectors.lowcost_acquisition_browser",
         "opentad.models.selectors.pc_ot_mras_reader",
         "opentad.models.losses.pc_ot_mras_auxiliary_losses",
+        "opentad.models.losses.pc_ot_mras_soft_hard_consistency_losses",
         "opentad.models.losses.pc_ot_mras_value_distillation_losses",
         "opentad.models.necks.pc_ot_mras_detector_bridge",
         "opentad.models.detectors.base",
@@ -249,6 +250,7 @@ ActionFormer, PCOTMRASReader, PCOTMRASDetectorBridge = _install_actionformer_run
 def _model(
     projection_type="SyntheticIdentityProjection",
     pc_ot_mras_reader_aux_loss=None,
+    pc_ot_mras_reader_soft_hard_loss=None,
     pc_ot_mras_reader_value_loss=None,
     enable_value_heads=False,
 ):
@@ -266,6 +268,7 @@ def _model(
             enable_value_heads=enable_value_heads,
         ),
         pc_ot_mras_reader_aux_loss=pc_ot_mras_reader_aux_loss,
+        pc_ot_mras_reader_soft_hard_loss=pc_ot_mras_reader_soft_hard_loss,
         pc_ot_mras_reader_value_loss=pc_ot_mras_reader_value_loss,
     )
 
@@ -499,6 +502,69 @@ def test_pc_ot_mras_reader_aux_loss_disabled_config_preserves_default_loss_surfa
 
     assert "detector_loss" in losses
     assert not any(key.startswith("pc_ot_mras_aux_") for key in losses)
+
+
+def test_actionformer_soft_hard_consistency_loss_is_train_only_and_backprops_to_reader():
+    model = _model(
+        pc_ot_mras_reader_soft_hard_loss=dict(
+            enabled=True,
+            weights=dict(
+                slot_allocation=0.02,
+                global_acquisition=0.02,
+                selected_time=0.01,
+                gate_confidence=0.005,
+                duplicate_mass=0.005,
+            ),
+        )
+    )
+    inputs, masks, metas, gt_segments, gt_labels = _inputs()
+
+    losses = model.forward_train(
+        inputs,
+        masks,
+        metas=metas,
+        gt_segments=gt_segments,
+        gt_labels=gt_labels,
+    )
+
+    soft_hard_keys = {key for key in losses if key.startswith("pc_ot_mras_soft_hard_")}
+    assert {
+        "pc_ot_mras_soft_hard_slot_allocation_loss",
+        "pc_ot_mras_soft_hard_global_acquisition_loss",
+        "pc_ot_mras_soft_hard_selected_time_loss",
+        "pc_ot_mras_soft_hard_gate_confidence_loss",
+        "pc_ot_mras_soft_hard_duplicate_mass_loss",
+    } <= soft_hard_keys
+    expected_cost = sum(value for key, value in losses.items() if key != "cost")
+    assert torch.allclose(losses["cost"], expected_cost)
+
+    losses["cost"].backward()
+    for name, param in {
+        "key_proj": model.pc_ot_mras_reader.key_proj.weight,
+        "gate_head": model.pc_ot_mras_reader.gate_head.weight,
+        "center_inc_head": model.pc_ot_mras_reader.center_inc_head.weight,
+    }.items():
+        assert param.grad is not None, name
+        assert torch.isfinite(param.grad).all(), name
+        assert param.grad.abs().sum().item() > 0, name
+
+
+def test_actionformer_soft_hard_consistency_loss_does_not_run_in_forward_test():
+    model = _model(pc_ot_mras_reader_soft_hard_loss=dict(enabled=True))
+    inputs, masks, metas, gt_segments, gt_labels = _inputs()
+
+    def fail_if_called(_metas):
+        raise AssertionError("soft-hard consistency loss must not run during forward_test")
+
+    model._pc_ot_mras_reader_soft_hard_losses = fail_if_called
+    model.eval()
+
+    with torch.no_grad():
+        proposals, scores = model.forward_test(inputs, masks, metas=metas)
+
+    assert len(proposals) == 1
+    assert len(scores) == 1
+    assert READER_OUTPUTS_META_KEY in model.rpn_head.last_test_metas[0]
 
 
 def test_actionformer_value_loss_train_only_and_strips_targets_before_head():
