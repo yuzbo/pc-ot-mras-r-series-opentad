@@ -13,6 +13,8 @@ SCHEMA_VERSION = "pc_ot_mras_hard_positions_v0"
 SUMMARY_SCHEMA_VERSION = "pc_ot_mras_hard_positions_summary_v0"
 GENERATION_SOURCE = "pc_ot_mras_hard_export_resolver_v0"
 DYNAMIC_BUDGET_GENERATION_SOURCE = "pc_ot_mras_dynamic_budget_hard_export_resolver_v0"
+TEMPORAL_METADATA_SCHEMA_VERSION = "pc_ot_mras_temporal_metadata_v0"
+TEMPORAL_METADATA_GENERATION_SOURCE = "pc_ot_mras_hard_rows_to_temporal_metadata_v0"
 READY = "PC_OT_MRAS_HARD_EXPORT_READY"
 NO_GO = "PC_OT_MRAS_HARD_EXPORT_NO_GO"
 MATRIX_PRIORITY = ("acquisition_matrix", "allocation", "transport_prob")
@@ -26,6 +28,27 @@ FALSE_ONLY_DYNAMIC_PLAN_FLAGS = frozenset(
         "dynamic_budget_validation",
         "metric_claim_allowed",
         "paper_claim_allowed",
+    }
+)
+FALSE_ONLY_TEMPORAL_METADATA_FLAGS = frozenset(
+    {
+        *FALSE_ONLY_DYNAMIC_PLAN_FLAGS,
+        "uses_prediction_cache",
+        "deploy_claim_allowed",
+        "runtime_flops_claim_allowed",
+        "scanner_quality_claim_allowed",
+        "dynamic_budget_claim_allowed",
+        "allow_detector_training",
+        "allow_tools_train",
+        "allow_tools_test",
+        "allow_detector_map",
+        "allow_remote_sync",
+        "allow_precheck_only",
+        "allow_slurm",
+        "allow_gpu",
+        "allow_real_dataset",
+        "allow_checkpoint",
+        "allow_raw_prediction_cache",
     }
 )
 FORBIDDEN_JSONL_KEY_TOKENS = (
@@ -183,6 +206,19 @@ def _validate_dynamic_budget_plan_payload(value: Any, *, path: str = "dynamic_bu
             _validate_dynamic_budget_plan_payload(item, path=f"{path}[{idx}]")
     elif isinstance(data, str) and _contains_forbidden_export_fragment(data):
         raise ValueError(f"{path}: forbidden deploy-invisible value in dynamic budget plan")
+
+
+def _validate_false_only_temporal_flags(value: Any, *, path: str = "row") -> None:
+    data = _to_plain(value)
+    if isinstance(data, Mapping):
+        for key, item in data.items():
+            key_text = str(key or "")
+            if key_text in FALSE_ONLY_TEMPORAL_METADATA_FLAGS and bool(_to_plain(item)):
+                raise ValueError(f"{path}.{key_text} must be false for deploy-visible temporal metadata")
+            _validate_false_only_temporal_flags(item, path=f"{path}.{key_text}")
+    elif isinstance(data, list):
+        for idx, item in enumerate(data):
+            _validate_false_only_temporal_flags(item, path=f"{path}[{idx}]")
 
 
 def _row_budget(row: Mapping[str, Any], *, cli_budget: int, row_idx: int) -> int:
@@ -718,6 +754,115 @@ def resolve_pc_ot_mras_dynamic_budget_plan(
         )
         for batch_idx in range(batch_size)
     ]
+
+
+def _validate_hard_row_for_temporal_meta(row: Mapping[str, Any], *, row_idx: int) -> dict[str, Any]:
+    if not isinstance(row, Mapping):
+        raise ValueError(f"row {row_idx}: hard-position row must be a mapping")
+    _validate_no_forbidden_jsonl_keys(row, path=f"row[{row_idx}]")
+    _validate_false_only_temporal_flags(row, path=f"row[{row_idx}]")
+    if "dynamic_budget_plan" in row:
+        _validate_dynamic_budget_plan_payload(row["dynamic_budget_plan"], path=f"row[{row_idx}].dynamic_budget_plan")
+
+    schema = str(row.get("schema_version", ""))
+    if schema != SCHEMA_VERSION:
+        raise ValueError(f"row {row_idx}: schema_version must be {SCHEMA_VERSION}")
+    sample_id = str(row.get("sample_id", f"sample_{row_idx}"))
+    budget = _strict_int_scalar(row.get("budget"), name=f"row[{row_idx}].budget")
+    dense_axis_len = _strict_int_scalar(row.get("dense_len"), name=f"row[{row_idx}].dense_len")
+    valid_dense_len = _strict_int_scalar(row.get("valid_len", dense_axis_len), name=f"row[{row_idx}].valid_len")
+    if budget <= 0:
+        raise ValueError(f"row {row_idx}: budget must be positive")
+    if dense_axis_len <= 0 or valid_dense_len <= 0:
+        raise ValueError(f"row {row_idx}: dense_len and valid_len must be positive")
+    if valid_dense_len > dense_axis_len:
+        raise ValueError(f"row {row_idx}: valid_len must not exceed dense_len")
+
+    selected = _as_int_list(row.get("selected_positions"), name=f"row[{row_idx}].selected_positions")
+    if len(selected) != budget:
+        raise ValueError(f"row {row_idx}: selected_positions length must equal budget")
+    if len(selected) != len(set(selected)):
+        raise ValueError(f"row {row_idx}: selected_positions must be unique")
+    if selected != sorted(selected):
+        raise ValueError(f"row {row_idx}: selected_positions must be sorted")
+    if selected[0] < 0 or selected[-1] >= valid_dense_len:
+        raise ValueError(f"row {row_idx}: selected_positions must stay inside valid_len")
+
+    raw_mask = _to_plain(row.get("selected_mask"))
+    if not isinstance(raw_mask, list):
+        raise ValueError(f"row {row_idx}: selected_mask must be a dense-axis list")
+    if len(raw_mask) != dense_axis_len:
+        raise ValueError(f"row {row_idx}: selected_mask length must equal dense_len")
+    dense_mask: list[bool] = []
+    for pos, item in enumerate(raw_mask):
+        if item not in (0, 1, False, True):
+            raise ValueError(f"row {row_idx}: selected_mask[{pos}] must be binary")
+        dense_mask.append(bool(item))
+    if sum(dense_mask) != budget:
+        raise ValueError(f"row {row_idx}: selected_mask true count must equal budget")
+    mask_positions = [idx for idx, item in enumerate(dense_mask) if item]
+    if mask_positions != selected:
+        raise ValueError(f"row {row_idx}: selected_mask must match selected_positions")
+    if any(dense_mask[valid_dense_len:]):
+        raise ValueError(f"row {row_idx}: selected_mask must not select padded dense tail")
+
+    return {
+        "sample_id": sample_id,
+        "budget": int(budget),
+        "dense_axis_len": int(dense_axis_len),
+        "valid_dense_len": int(valid_dense_len),
+        "selected_positions": selected,
+    }
+
+
+def pc_ot_mras_hard_rows_to_temporal_metas(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Convert hard-position rows into deploy-visible detector metadata.
+
+    The returned metadata is suitable for ``validate_sampling_contract`` and
+    ``temporal_grid_from_metas``. It keeps GT/proposal axes in native dense time
+    and does not validate dynamic-budget quality or detector accuracy.
+    """
+
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        raise ValueError("rows must be a sequence of hard-position mappings")
+    metas: list[dict[str, Any]] = []
+    for row_idx, row in enumerate(rows):
+        checked = _validate_hard_row_for_temporal_meta(row, row_idx=row_idx)
+        selected = [float(pos) for pos in checked["selected_positions"]]
+        valid_dense_len = int(checked["valid_dense_len"])
+        meta = {
+            "sample_id": checked["sample_id"],
+            "irregular_selected_positions": selected,
+            "irregular_dense_valid_len": valid_dense_len,
+            "irregular_selected_valid_len": valid_dense_len,
+            "irregular_selected_valid_len_semantics": "carried_forward_dense_valid_len_alias",
+            "irregular_selected_count": int(checked["budget"]),
+            "irregular_native_axis": True,
+            "gt_axis": "dense",
+            "segments_axis": "dense",
+            "target_axis": "dense",
+            "proposal_axis": "dense",
+            "temporal_axis": "native_dense",
+            "decode_axis": "dense",
+            "pc_ot_mras_dynamic_budget_export": {
+                "schema_version": TEMPORAL_METADATA_SCHEMA_VERSION,
+                "source_schema_version": SCHEMA_VERSION,
+                "generation_source": TEMPORAL_METADATA_GENERATION_SOURCE,
+                "source_sample_id": checked["sample_id"],
+                "source_dense_axis_len": int(checked["dense_axis_len"]),
+                "source_valid_dense_len": valid_dense_len,
+                "source_budget": int(checked["budget"]),
+                "dynamic_budget_validation": False,
+                "metric_claim_allowed": False,
+                "paper_claim_allowed": False,
+                "runtime_flops_claim_allowed": False,
+                "deploy_claim_allowed": False,
+                "scanner_quality_claim_allowed": False,
+                "training_backprop_allowed": False,
+            },
+        }
+        metas.append(meta)
+    return metas
 
 
 def resolve_pc_ot_mras_hard_positions(
