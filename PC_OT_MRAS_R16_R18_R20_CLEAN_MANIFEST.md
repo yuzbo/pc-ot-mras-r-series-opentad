@@ -495,3 +495,46 @@ runtime/FLOPs, deployment, dynamic-budget/scanner-quality validation, metric
 claims, or paper claims. Because it changes launcher/gate logic, the next gate
 is a complete GPT-5.5 Pro read-only review package, then Gemini CLI read-only
 review only if Pro allows it.
+
+## R23 Dynamic Budget Hard Export
+
+Commit `05e738861997022631364babd75ed866d617aec9` adds the local-only R23
+dynamic-budget hard export protocol layer. This closes the immediate gap after
+R22 by converting a deploy-visible R22 budget plan into validated hard-position
+rows for later detector-geometry plumbing.
+
+Accepted implementation details:
+
+- `tools/bata/export_pc_ot_mras_hard_positions.py` now exposes
+  `resolve_pc_ot_mras_dynamic_budget_plan(...)`.
+- The resolver consumes only dynamic-plan fields such as `budgets`,
+  `dense_valid_len`, `selected_dense_positions`, and `selected_mask`; it does
+  not read GT, teacher, cache, raw prediction, checkpoint, result, or
+  train-only value-target payloads.
+- It validates exact per-sample variable budgets, prefix selected masks,
+  sorted unique selected dense positions, dense selected-mask serialization,
+  and false-only claim/safety flags.
+- The output stays in the existing `pc_ot_mras_hard_positions_v0` row schema
+  and records `pc_ot_mras_dynamic_budget_hard_export_resolver_v0` as its
+  generation source.
+- `configs/adatad/thumos/ctf_bdi_pc_ot_mras_r23_dynamic_budget_hard_export.py`
+  is launch-blocked and inherits the R22 controller without enabling detector
+  training, `tools/train.py`, `tools/test.py`, mAP, remote sync, Slurm/GPU,
+  raw-prediction cache, checkpoint access, or claims.
+
+Verification:
+
+```text
+py_compile changed R23 files: pass
+R22/R23 focused pytest in torch_1: 11 passed in 8.15s
+hard-export/controller pytest in torch_1: 39 passed in 6.16s
+git diff --check: pass, with LF/CRLF warnings only
+full PC-OT-MRAS pytest plus train-engine max-iter in torch_1: 212 passed in 47.70s
+```
+
+Boundary: R23 is local implementation evidence only. It is not
+dynamic-budget quality validation, detector mAP evidence, runtime/FLOPs proof,
+deployment evidence, or a paper claim. Because it extends the dynamic-budget
+protocol surface, the next required gate is GPT-5.5 Pro read-only
+implementation review, followed by Gemini CLI read-only review only if Pro
+returns `PASS_ALLOW_GEMINI_REVIEW_ONLY`.
