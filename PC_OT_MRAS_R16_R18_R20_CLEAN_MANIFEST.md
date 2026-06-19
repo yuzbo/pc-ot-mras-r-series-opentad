@@ -375,3 +375,66 @@ runtime/FLOPs, deployment, dynamic-budget/scanner-quality validation, metric
 claims, or paper claims. Because it adds a dynamic-budget protocol surface, the
 next gate is GPT-5.5 Pro read-only implementation review, then Gemini CLI
 read-only review only if Pro allows it.
+
+## R16 Bridge Registry Fix
+
+Commit `a09a2476f79a4a78dba590f55e855e2a2f5fcd1b` fixes the registry/import
+path that caused remote R16 smoke job `1105455` to fail during model build:
+
+```text
+KeyError: 'PCOTMRASDetectorBridge is not in the opentad::models registry'
+```
+
+Accepted fix:
+
+- `opentad/models/necks/__init__.py` now imports and exports
+  `PCOTMRASDetectorBridge` and
+  `ProcessConditionedOrderedTransportMRASDetectorBridge`, so the normal
+  OpenTAD package import path registers the bridge before `build_neck()`.
+- `tests/test_pc_ot_mras_config_integration.py` now includes a regression test
+  for the package-level `opentad.models.necks` import path and verifies that
+  `builder.build_neck({"type": "PCOTMRASDetectorBridge", ...})` succeeds.
+
+Verification:
+
+```text
+py_compile changed files: pass
+tests/test_pc_ot_mras_config_integration.py: 3 passed in 6.17s
+full PC-OT-MRAS pytest plus train-engine max-iter: 206 passed in 47.82s
+git diff --check: pass, with LF/CRLF warnings only
+```
+
+Remote state refreshed at `2026-06-20T02:32:59+08:00`:
+
+```text
+R16 1105455: FAILED 1:0 due PCOTMRASDetectorBridge registry miss.
+R17 1105456: PENDING, dependency-blocked by failed R16.
+R20 1105574: COMPLETED 0:0, R20_VALUE_PRECHECK_ONLY_PASS_NO_TRAIN_NO_DATA_NO_MAP.
+R18 1105575: FAILED 2:0 in PRECHECK_ONLY due missing reviewed pretrained file.
+```
+
+Boundary: this is an infrastructure registration fix only. It does not change
+input sampling, dynamic budget policy, token compression, Adapter/backbone
+internals, detector head logic, loss/assignment, post-processing, or launcher
+gate logic. It does not authorize remote sync, remote PRECHECK execution,
+Slurm/GPU, `tools/train.py`, `tools/test.py`, detector mAP,
+dataset/checkpoint access, runtime/FLOPs, deployment, dynamic-budget or
+scanner-quality validation, metric claims, or paper claims. A focused Gemini
+CLI read-only review is required before using this fix for a clean remote
+R16/R17 requeue.
+
+Focused Gemini CLI read-only review result:
+
+```text
+gemini-3-pro-preview exitcode: 0
+elapsed: 34.77s
+verdict: PASS_ALLOW_CLEAN_R16_REQUEUE_PREPARATION_ONLY
+blocking findings: none
+stdout: logs/gemini3_pro_preview_ctf_bdi_pc_ot_mras_r16_bridge_registry_fix_20260620_0233.txt
+```
+
+The Gemini pass allows only clean R16/R17 requeue preparation. It does not
+authorize remote sync, remote PRECHECK execution, Slurm/GPU, `tools/train.py`,
+`tools/test.py`, detector mAP, dataset/checkpoint access, runtime/FLOPs,
+deployment, dynamic-budget/scanner-quality validation, metric claims, or paper
+claims.
