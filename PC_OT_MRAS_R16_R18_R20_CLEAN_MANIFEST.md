@@ -1,6 +1,6 @@
-# PC-OT-MRAS R16/R17/R18/R19/R20 Clean Implementation Manifest
+# PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24 Clean Implementation Manifest
 
-Timestamp: 2026-06-20T03:20+08:00
+Timestamp: 2026-06-20T04:11+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -29,6 +29,10 @@ a7fa6bc Add PC-OT-MRAS R21 tensor temporal grid path
 a09a247 Fix PC-OT-MRAS bridge neck registration
 6753ba8 Record PC-OT-MRAS R16 bridge registry fix
 87d3404 Add clean PC-OT-MRAS R17 formal launcher
+6262129 Record PC-OT-MRAS R17 clean launcher manifest
+05e7388 Add PC-OT-MRAS R23 dynamic budget hard export
+678d907 Record PC-OT-MRAS R23 clean manifest
+3f466ee Add PC-OT-MRAS R24 temporal metadata contract
 ```
 
 ## Objective
@@ -40,6 +44,10 @@ Implement only the PC-OT-MRAS continuous route stages on a clean OpenTAD baselin
 - R18 train-only reader auxiliary diagnostic candidate.
 - R19 train-only soft/hard consistency candidate.
 - R20 train-only value-of-information distillation candidate.
+- R21 tensor-native temporal coordinate path.
+- R22 value-to-dynamic-budget controller candidate.
+- R23 dynamic-budget hard-position export candidate.
+- R24 dynamic-budget temporal metadata and detector geometry contract candidate.
 
 The implementation intentionally does not copy unrelated BATA/UGIT/MFCSD/DBAC/ITMI experiment families from the dirty working tree.
 
@@ -538,3 +546,49 @@ deployment evidence, or a paper claim. Because it extends the dynamic-budget
 protocol surface, the next required gate is GPT-5.5 Pro read-only
 implementation review, followed by Gemini CLI read-only review only if Pro
 returns `PASS_ALLOW_GEMINI_REVIEW_ONLY`.
+
+## R24 Dynamic Budget Temporal Metadata Contract
+
+Commit `3f466eeb2c53a34807c17159b96f63ff90fa0c32` adds the local-only R24
+protocol layer that connects R23 hard-position rows to the detector temporal
+metadata contract.
+
+Accepted implementation details:
+
+- `tools/bata/export_pc_ot_mras_hard_positions.py` now exposes
+  `pc_ot_mras_hard_rows_to_temporal_metas(...)`.
+- The converter validates `pc_ot_mras_hard_positions_v0` rows before producing
+  metadata: exact budget, sorted unique selected positions, selected-mask
+  consistency, dense valid length bounds, forbidden payload rejection, and
+  false-only claim/safety flags.
+- The produced metadata carries
+  `irregular_selected_positions`, `irregular_dense_valid_len`,
+  `irregular_selected_valid_len`, `irregular_selected_count`, and
+  `irregular_native_axis=True`, plus dense/native axis tags for GT, targets,
+  proposals, temporal decode, and segments.
+- The metadata is designed for `validate_sampling_contract(...)` and
+  `temporal_grid_from_metas(...)` and records
+  `pc_ot_mras_hard_rows_to_temporal_metadata_v0` as its generation source.
+- `configs/adatad/thumos/ctf_bdi_pc_ot_mras_r24_dynamic_budget_temporal_metadata.py`
+  is launch-blocked and inherits R23 without enabling detector training,
+  `tools/train.py`, `tools/test.py`, mAP, remote sync, Slurm/GPU,
+  raw-prediction cache, checkpoint access, dynamic-budget validation, or
+  claims.
+
+Verification:
+
+```text
+py_compile changed R24 files: pass
+focused R24 pytest in torch_1: 4 passed in 4.51s
+R22/R23/R24 temporal metadata regression in torch_1: 20 passed in 10.38s
+git diff --check: pass, with LF/CRLF warnings only
+full PC-OT-MRAS pytest plus train-engine max-iter in torch_1: 216 passed in 48.22s
+```
+
+Boundary: R24 is local protocol/geometry evidence only. It is not
+dynamic-budget quality validation, detector mAP evidence, runtime/FLOPs proof,
+deployment evidence, scanner-quality validation, or a paper claim. Because it
+extends the dynamic-budget and detector-geometry protocol surface, the next
+required gate is GPT-5.5 Pro read-only implementation review, followed by
+Gemini CLI read-only review only if Pro returns
+`PASS_ALLOW_GEMINI_REVIEW_ONLY`.
