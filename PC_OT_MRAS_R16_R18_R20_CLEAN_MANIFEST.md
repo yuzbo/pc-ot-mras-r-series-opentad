@@ -1,6 +1,6 @@
-# PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24 Clean Implementation Manifest
+# PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24/R25 Clean Implementation Manifest
 
-Timestamp: 2026-06-20T04:40+08:00
+Timestamp: 2026-06-20T04:49+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -35,6 +35,9 @@ a09a247 Fix PC-OT-MRAS bridge neck registration
 3f466ee Add PC-OT-MRAS R24 temporal metadata contract
 b86012e Record PC-OT-MRAS R24 clean manifest
 3ffec40 Fix PC-OT-MRAS R24 hard row validation
+c3c1ab2 Record PC-OT-MRAS R24 validation fix
+dc972e1 Record PC-OT-MRAS R24 Gemini fix review
+da59fe3 Add PC-OT-MRAS R25 pipeline validation
 ```
 
 ## Objective
@@ -50,6 +53,7 @@ Implement only the PC-OT-MRAS continuous route stages on a clean OpenTAD baselin
 - R22 value-to-dynamic-budget controller candidate.
 - R23 dynamic-budget hard-position export candidate.
 - R24 dynamic-budget temporal metadata and detector geometry contract candidate.
+- R25 dynamic-budget pipeline validation candidate.
 
 The implementation intentionally does not copy unrelated BATA/UGIT/MFCSD/DBAC/ITMI experiment families from the dirty working tree.
 
@@ -650,3 +654,46 @@ authorize remote sync, remote PRECHECK execution, Slurm/GPU, `tools/train.py`,
 `tools/test.py`, detector mAP, dataset/checkpoint access, runtime/FLOPs,
 deployment, dynamic-budget/scanner-quality validation, metric claims, or paper
 claims.
+
+## R25 Dynamic Budget Pipeline Validation
+
+Commit `da59fe334f667977ec04e6a09d350c21c0f17d76` adds the local-only R25
+protocol validation layer. It turns the existing R22 -> R23 -> R24 inline
+contract checks into a reusable function/CLI and a launch-blocked config for
+future review/precheck packages.
+
+Accepted implementation details:
+
+- `tools/bata/validate_pc_ot_mras_dynamic_budget_pipeline.py` exposes
+  `validate_pc_ot_mras_dynamic_budget_pipeline(...)` and `run_json_validation(...)`.
+- The validator chains `resolve_pc_ot_mras_dynamic_budget_plan(...)`,
+  `pc_ot_mras_hard_rows_to_temporal_metas(...)`,
+  `validate_sampling_contract(...)`, and `temporal_grid_from_metas(...)`.
+- The summary reports row count, sample ids, per-sample budgets, dense valid
+  lengths, selected counts, temporal-grid valid counts, budget min/max/mean,
+  coverage share summary, exact-budget violations, and center-row alignment.
+- All summary claim/execution flags remain false: no remote sync, remote
+  PRECHECK, Slurm/GPU, `tools/train.py`, `tools/test.py`, detector mAP,
+  dataset/checkpoint, runtime/FLOPs, deployment, dynamic-budget validation,
+  scanner-quality validation, metric claim, or paper claim.
+- `configs/adatad/thumos/ctf_bdi_pc_ot_mras_r25_dynamic_budget_pipeline_validation.py`
+  inherits R24 and is launch-blocked.
+- Tests cover function-level synthetic validation, JSON roundtrip, forbidden
+  generic provenance-string rejection, and config/guard closure.
+
+Verification:
+
+```text
+py_compile changed R25 files: pass
+focused R25 pytest in torch_1: 4 passed in 4.41s
+R22/R23/R24/R25 regression in torch_1: 19 passed in 11.42s
+full PC-OT-MRAS pytest plus train-engine max-iter in torch_1: 220 passed in 53.22s
+git diff --check: pass
+```
+
+Boundary: R25 is local protocol validation evidence only. It is not
+dynamic-budget quality validation, detector mAP evidence, runtime/FLOPs proof,
+deployment evidence, scanner-quality validation, or a paper claim. Because it
+adds a new local validation tool/config, it requires the normal post-
+implementation review chain before it can be used for any later remote package
+or execution gate.
