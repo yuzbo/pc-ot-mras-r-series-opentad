@@ -137,12 +137,22 @@ def test_actionformer_style_neck_call_returns_tuple_and_continuous_aux():
     assert aux["selected_tokens_masked"] is True
     assert "selected_times" in aux
     assert "centers" in aux
+    assert "selected_dense_positions" in aux
+    assert "dense_valid_len_tensor" in aux
     assert "widths" in aux
     assert "gates" in aux
     assert "acquisition_matrix" in aux
     assert aux["selected_tokens"].shape == (3, 4)
     assert aux_1["selected_tokens"].shape == (3, 4)
     assert aux_1["selected_mask"].shape == (3,)
+    assert aux["selected_dense_positions"].shape == (3,)
+    assert aux_1["selected_dense_positions"].shape == (3,)
+    assert torch.allclose(aux["selected_dense_positions"][:3], torch.tensor(meta_out[0]["irregular_selected_positions"]))
+    assert torch.allclose(aux_1["selected_dense_positions"][:2], torch.tensor(meta_out[1]["irregular_selected_positions"]))
+    assert torch.allclose(aux["dense_valid_len_tensor"], torch.tensor(6.0))
+    assert torch.allclose(aux_1["dense_valid_len_tensor"], torch.tensor(4.0))
+    assert aux["temporal_tensor_metadata_mode"] == "selected_dense_positions_from_centers"
+    assert aux_1["temporal_tensor_metadata_mode"] == "selected_dense_positions_from_centers"
     assert aux_1["acquisition_matrix"].shape == (3, 6)
     assert torch.all(aux_1["selected_times"][2] == 0)
     assert torch.all(aux_1["centers"][2] == 0)

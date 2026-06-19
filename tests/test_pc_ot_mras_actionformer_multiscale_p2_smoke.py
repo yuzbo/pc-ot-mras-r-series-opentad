@@ -316,12 +316,18 @@ def _assert_multiscale_p2_call(captured, split):
     assert bridge_meta["uses_hard_gather"] is False
     assert bridge_meta["selected_tokens_source"] == "recomputed_from_acquisition_matrix"
     assert bridge_meta["selected_tokens_source_verified"] is True
+    assert "selected_dense_positions" in bridge_meta
+    assert "dense_valid_len_tensor" in bridge_meta
+    assert bridge_meta["selected_dense_positions"].shape == (8,)
+    assert torch.allclose(bridge_meta["dense_valid_len_tensor"], torch.tensor(32.0))
+    assert bridge_meta["temporal_tensor_metadata_mode"] == "selected_dense_positions_from_centers"
     assert metas[0]["irregular_native_axis"] is True
     assert metas[0]["irregular_selected_count"] == 8
     assert metas[0]["irregular_dense_valid_len"] == 32
     assert metas[0]["irregular_selected_valid_len"] == 32
     positions = metas[0]["irregular_selected_positions"]
     assert len(positions) == 8
+    assert torch.allclose(bridge_meta["selected_dense_positions"], torch.tensor(positions))
     assert all(0.0 <= pos < 32.0 for pos in positions)
     assert all(left < right for left, right in zip(positions, positions[1:]))
 
@@ -422,4 +428,3 @@ def test_actionformer_internal_reader_multiscale_bridge_p2_train_and_test_smoke(
     assert torch.isfinite(scores[0]).all()
     if proposals[0].numel():
         assert torch.all(proposals[0][:, 1] > proposals[0][:, 0])
-

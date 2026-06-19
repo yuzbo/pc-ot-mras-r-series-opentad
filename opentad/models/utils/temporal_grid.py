@@ -1,3 +1,5 @@
+from collections.abc import Mapping
+
 import torch
 
 
@@ -102,24 +104,27 @@ def build_temporal_grid(
         if left.shape != center.shape or right.shape != center.shape:
             raise ValueError("cell_left and cell_right must match center shape.")
     else:
-        left = torch.ones_like(center)
-        right = torch.ones_like(center)
+        left_rows = []
+        right_rows = []
         valid_counts = valid_mask.sum(dim=1)
         for batch_idx in range(center.shape[0]):
             valid_count = int(valid_counts[batch_idx].item())
             valid_center = center[batch_idx, :valid_count]
             if valid_count == 1:
-                left[batch_idx, 0] = 1.0
-                right[batch_idx, 0] = 1.0
+                left_valid = valid_center.new_ones((1,))
+                right_valid = valid_center.new_ones((1,))
             else:
                 delta = (valid_center[1:] - valid_center[:-1]).clamp_min(min_scale)
-                left[batch_idx, 0] = delta[0]
-                left[batch_idx, 1:valid_count] = delta
-                right[batch_idx, : valid_count - 1] = delta
-                right[batch_idx, valid_count - 1] = delta[-1]
+                left_valid = torch.cat((delta[:1], delta), dim=0)
+                right_valid = torch.cat((delta, delta[-1:]), dim=0)
             if valid_count < center.shape[1]:
-                left[batch_idx, valid_count:] = left[batch_idx, valid_count - 1]
-                right[batch_idx, valid_count:] = right[batch_idx, valid_count - 1]
+                pad_len = center.shape[1] - valid_count
+                left_valid = torch.cat((left_valid, left_valid[-1:].expand(pad_len)), dim=0)
+                right_valid = torch.cat((right_valid, right_valid[-1:].expand(pad_len)), dim=0)
+            left_rows.append(left_valid)
+            right_rows.append(right_valid)
+        left = torch.stack(left_rows, dim=0)
+        right = torch.stack(right_rows, dim=0)
 
     left = left.clamp_min(min_scale)
     right = right.clamp_min(min_scale)
@@ -183,6 +188,97 @@ def normalize_temporal_grid_input(temporal_grid, mask, device=None, dtype=torch.
     return grid
 
 
+def _bridge_tensor_temporal_payload(
+    meta,
+    *,
+    mask_row,
+    true_valid,
+    positions_key,
+    valid_len_key,
+    batch_idx,
+):
+    if not isinstance(meta, Mapping):
+        return None
+    bridge = meta.get("pc_ot_mras_bridge")
+    if not isinstance(bridge, Mapping):
+        return None
+
+    has_positions = "selected_dense_positions" in bridge
+    has_dense_len = "dense_valid_len_tensor" in bridge
+    if not has_positions and not has_dense_len:
+        return None
+    if not has_positions or not has_dense_len:
+        raise ValueError(
+            f"meta[{batch_idx}].pc_ot_mras_bridge tensor temporal metadata must contain "
+            "'selected_dense_positions' and 'dense_valid_len_tensor' together."
+        )
+
+    raw_positions = bridge["selected_dense_positions"]
+    raw_dense_len = bridge["dense_valid_len_tensor"]
+    if not torch.is_tensor(raw_positions):
+        raise ValueError(f"meta[{batch_idx}].pc_ot_mras_bridge.selected_dense_positions must be a tensor.")
+    if not torch.is_tensor(raw_dense_len):
+        raise ValueError(f"meta[{batch_idx}].pc_ot_mras_bridge.dense_valid_len_tensor must be a tensor.")
+
+    positions = raw_positions.to(device=mask_row.device, dtype=torch.float32).flatten()
+    dense_len_tensor = raw_dense_len.to(device=mask_row.device, dtype=torch.float32).flatten()
+    if dense_len_tensor.numel() != 1:
+        raise ValueError(f"meta[{batch_idx}].pc_ot_mras_bridge.dense_valid_len_tensor must be scalar.")
+    if positions.numel() < true_valid:
+        raise ValueError(
+            f"meta[{batch_idx}].pc_ot_mras_bridge.selected_dense_positions length must cover "
+            f"valid token count {true_valid}, got {positions.numel()}."
+        )
+
+    raw_selected_mask = bridge.get("selected_mask")
+    if raw_selected_mask is not None:
+        if not torch.is_tensor(raw_selected_mask):
+            raise ValueError(f"meta[{batch_idx}].pc_ot_mras_bridge.selected_mask must be a tensor.")
+        selected_mask = raw_selected_mask.to(device=mask_row.device).bool().flatten()
+        if selected_mask.numel() != positions.numel():
+            raise ValueError(
+                f"meta[{batch_idx}].pc_ot_mras_bridge.selected_mask shape must match selected_dense_positions."
+            )
+        expected = torch.arange(selected_mask.numel(), device=mask_row.device) < int(true_valid)
+        if not torch.equal(selected_mask, expected):
+            raise ValueError(f"meta[{batch_idx}].pc_ot_mras_bridge.selected_mask must match the feature mask prefix.")
+        if positions.numel() == mask_row.numel() and not torch.equal(selected_mask, mask_row.bool()):
+            raise ValueError(f"meta[{batch_idx}].pc_ot_mras_bridge.selected_mask must match the feature mask.")
+
+    valid_positions = positions[:true_valid]
+    dense_len = float(dense_len_tensor[0].item())
+    if dense_len <= 0:
+        raise ValueError(f"meta[{batch_idx}].pc_ot_mras_bridge.dense_valid_len_tensor must be positive.")
+    if true_valid > 0 and (
+        valid_positions.detach().min().item() < 0 or valid_positions.detach().max().item() >= dense_len
+    ):
+        raise ValueError(
+            f"meta[{batch_idx}].pc_ot_mras_bridge.selected_dense_positions must be in [0, {dense_len})."
+        )
+
+    dense_valid_len_key = "irregular_dense_valid_len" if "irregular_dense_valid_len" in meta else valid_len_key
+    if positions_key in meta:
+        legacy_positions = torch.as_tensor(meta[positions_key], device=mask_row.device, dtype=torch.float32).flatten()
+        if legacy_positions.numel() != true_valid:
+            raise ValueError(
+                f"meta[{batch_idx}]['{positions_key}'] length must equal valid token count {true_valid}."
+            )
+        if not torch.allclose(legacy_positions, valid_positions.detach(), atol=1e-4, rtol=1e-4):
+            raise ValueError(
+                f"meta[{batch_idx}] bridge tensor temporal positions must match '{positions_key}' legacy alias."
+            )
+    if dense_valid_len_key in meta:
+        if abs(float(meta[dense_valid_len_key]) - dense_len) > 1e-4:
+            raise ValueError(
+                f"meta[{batch_idx}] bridge tensor dense_valid_len must match '{dense_valid_len_key}' legacy alias."
+            )
+    if "irregular_dense_valid_len" in meta and valid_len_key in meta:
+        if float(meta["irregular_dense_valid_len"]) != float(meta[valid_len_key]):
+            raise ValueError(f"meta[{batch_idx}] irregular_dense_valid_len must match '{valid_len_key}' alias.")
+
+    return valid_positions, dense_len_tensor[0]
+
+
 def temporal_grid_from_metas(
     metas,
     mask,
@@ -202,42 +298,56 @@ def temporal_grid_from_metas(
     if len(metas) != mask.shape[0]:
         raise ValueError(f"metas length {len(metas)} must match batch size {mask.shape[0]}.")
 
-    center = torch.zeros(mask.shape, device=mask.device, dtype=torch.float32)
-    dense_valid_len = torch.zeros(mask.shape[0], device=mask.device, dtype=torch.float32)
+    center_rows = []
+    dense_valid_len_rows = []
     valid_counts = mask.sum(dim=1)
 
     for batch_idx, meta in enumerate(metas):
+        if not isinstance(meta, Mapping):
+            raise ValueError(f"meta[{batch_idx}] must be a mapping when temporal_grid is enabled.")
+        true_valid = int(valid_counts[batch_idx].item())
+        if "irregular_selected_count" in meta and int(meta["irregular_selected_count"]) != true_valid:
+            raise ValueError(
+                f"meta[{batch_idx}] irregular_selected_count must equal valid token count {true_valid}."
+            )
+        tensor_payload = _bridge_tensor_temporal_payload(
+            meta,
+            mask_row=mask[batch_idx],
+            true_valid=true_valid,
+            positions_key=positions_key,
+            valid_len_key=valid_len_key,
+            batch_idx=batch_idx,
+        )
         dense_valid_len_key = "irregular_dense_valid_len" if "irregular_dense_valid_len" in meta else valid_len_key
-        if positions_key not in meta or dense_valid_len_key not in meta:
+        if tensor_payload is not None:
+            valid_positions, dense_len_tensor = tensor_payload
+            dense_len = float(dense_len_tensor.item())
+        elif positions_key not in meta or dense_valid_len_key not in meta:
             if required:
                 raise ValueError(
                     f"meta[{batch_idx}] must contain '{positions_key}' and '{dense_valid_len_key}' "
                     "when temporal_grid is enabled."
                 )
             return normalize_temporal_grid_input(None, mask, required=False, strict=strict)
-        if "irregular_dense_valid_len" in meta and valid_len_key in meta:
-            if float(meta["irregular_dense_valid_len"]) != float(meta[valid_len_key]):
+        else:
+            if "irregular_dense_valid_len" in meta and valid_len_key in meta:
+                if float(meta["irregular_dense_valid_len"]) != float(meta[valid_len_key]):
+                    raise ValueError(
+                        f"meta[{batch_idx}] irregular_dense_valid_len must match '{valid_len_key}' alias."
+                    )
+            positions = torch.as_tensor(meta[positions_key], device=mask.device, dtype=torch.float32).flatten()
+            if positions.numel() != true_valid:
                 raise ValueError(
-                    f"meta[{batch_idx}] irregular_dense_valid_len must match '{valid_len_key}' alias."
+                    f"meta[{batch_idx}]['{positions_key}'] length must equal valid token count "
+                    f"{true_valid}; padded tail positions are not allowed, got {positions.numel()}."
                 )
+            valid_positions = positions[:true_valid]
+            dense_len = float(meta[dense_valid_len_key])
+            dense_len_tensor = mask.new_tensor(dense_len, dtype=torch.float32)
 
-        positions = torch.as_tensor(meta[positions_key], device=mask.device, dtype=torch.float32).flatten()
-        true_valid = int(valid_counts[batch_idx].item())
-        if "irregular_selected_count" in meta and int(meta["irregular_selected_count"]) != true_valid:
-            raise ValueError(
-                f"meta[{batch_idx}] irregular_selected_count must equal valid token count {true_valid}."
-            )
-        if positions.numel() != true_valid:
-            raise ValueError(
-                f"meta[{batch_idx}]['{positions_key}'] length must equal valid token count "
-                f"{true_valid}; padded tail positions are not allowed, got {positions.numel()}."
-            )
-
-        valid_positions = positions[:true_valid]
         if true_valid > 1 and ((valid_positions[1:] - valid_positions[:-1]) <= 0).any().item():
             raise ValueError(f"meta[{batch_idx}]['{positions_key}'] must be strictly increasing.")
 
-        dense_len = float(meta[dense_valid_len_key])
         if dense_len <= 0:
             raise ValueError(f"meta[{batch_idx}]['{dense_valid_len_key}'] must be positive.")
         if true_valid > 0 and (valid_positions.min().item() < 0 or valid_positions.max().item() >= dense_len):
@@ -246,11 +356,14 @@ def temporal_grid_from_metas(
                 f"got min={valid_positions.min().item()}, max={valid_positions.max().item()}."
             )
 
-        center[batch_idx, :true_valid] = valid_positions
+        row_center = valid_positions
         if true_valid < mask.shape[1]:
-            center[batch_idx, true_valid:] = valid_positions[-1]
-        dense_valid_len[batch_idx] = dense_len
+            row_center = torch.cat((row_center, valid_positions[-1:].expand(mask.shape[1] - true_valid)), dim=0)
+        center_rows.append(row_center)
+        dense_valid_len_rows.append(dense_len_tensor)
 
+    center = torch.stack(center_rows, dim=0)
+    dense_valid_len = torch.stack(dense_valid_len_rows, dim=0).to(device=mask.device, dtype=torch.float32)
     grid = build_temporal_grid(center, valid_mask=mask, fresh_mask=mask, strict=strict)
     grid["dense_valid_len"] = dense_valid_len
     return grid
@@ -411,12 +524,21 @@ def build_area_time_grid(
                 * float(observation_support_scale)
             ).clamp_min(min_width)
         else:
-            left_half = positions.new_full((valid_count,), float(observation_half_width))
-            right_half = positions.new_full((valid_count,), float(observation_half_width))
+            base_half = positions.new_full((valid_count,), float(observation_half_width))
             if valid_count > 1:
                 prev_dist = positions[1:] - positions[:-1]
-                left_half[1:] = torch.minimum(left_half[1:], 0.5 * prev_dist.clamp_min(min_width))
-                right_half[:-1] = torch.minimum(right_half[:-1], 0.5 * prev_dist.clamp_min(min_width))
+                limited_half = 0.5 * prev_dist.clamp_min(min_width)
+                left_half = torch.cat(
+                    (base_half[:1], torch.minimum(base_half[1:], limited_half)),
+                    dim=0,
+                )
+                right_half = torch.cat(
+                    (torch.minimum(base_half[:-1], limited_half), base_half[-1:]),
+                    dim=0,
+                )
+            else:
+                left_half = base_half
+                right_half = base_half
         left_half = left_half.clamp_min(min_width)
         right_half = right_half.clamp_min(min_width)
 

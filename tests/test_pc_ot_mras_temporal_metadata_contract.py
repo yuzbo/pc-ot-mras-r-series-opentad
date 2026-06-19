@@ -137,6 +137,18 @@ def test_pc_ot_mras_metadata_separates_dense_len_selected_count_and_physical_pos
 
     assert meta_out[0]["pc_ot_mras_bridge"]["output_strides"] == "(1, 2, 4, 8)"
     assert meta_out[1]["pc_ot_mras_bridge"]["output_strides"] == "(1, 2, 4, 8)"
+    assert torch.allclose(
+        meta_out[0]["pc_ot_mras_bridge"]["selected_dense_positions"][:4],
+        torch.tensor([1.0, 4.0, 6.5, 9.0]),
+    )
+    assert torch.allclose(
+        meta_out[1]["pc_ot_mras_bridge"]["selected_dense_positions"][:3],
+        torch.tensor([1.0, 4.0, 7.0]),
+    )
+    assert torch.allclose(meta_out[0]["pc_ot_mras_bridge"]["dense_valid_len_tensor"], torch.tensor(10.0))
+    assert torch.allclose(meta_out[1]["pc_ot_mras_bridge"]["dense_valid_len_tensor"], torch.tensor(8.0))
+    assert meta_out[0]["pc_ot_mras_bridge"]["temporal_tensor_metadata_mode"] == "selected_dense_positions_from_centers"
+    assert meta_out[1]["pc_ot_mras_bridge"]["temporal_tensor_metadata_mode"] == "selected_dense_positions_from_centers"
 
     assert meta_out[0]["irregular_selected_count"] == 4
     assert meta_out[1]["irregular_selected_count"] == 3
@@ -160,6 +172,54 @@ def test_pc_ot_mras_metadata_separates_dense_len_selected_count_and_physical_pos
     assert torch.allclose(grid["dense_valid_len"], torch.tensor([10.0, 8.0], device=grid["dense_valid_len"].device))
     assert torch.allclose(grid["center"][0, :4], torch.tensor([1.0, 4.0, 6.5, 9.0]))
     assert torch.allclose(grid["center"][1, :3], torch.tensor([1.0, 4.0, 7.0]))
+
+
+def test_pc_ot_mras_temporal_grid_prefers_tensor_bridge_payload_with_grad_alias_check():
+    positions = torch.tensor([1.0, 3.0, 5.0], dtype=torch.float32, requires_grad=True)
+    metas = [
+        {
+            "sample_id": "pc_ot_mras_tensor_temporal|0",
+            "irregular_selected_positions": [1.0, 3.0, 5.0],
+            "irregular_dense_valid_len": 8,
+            "irregular_selected_valid_len": 8,
+            "irregular_selected_count": 3,
+            "pc_ot_mras_bridge": {
+                "selected_dense_positions": positions,
+                "dense_valid_len_tensor": torch.tensor(8.0),
+                "selected_mask": torch.tensor([1, 1, 1], dtype=torch.bool),
+            },
+        }
+    ]
+    mask = torch.tensor([[1, 1, 1]], dtype=torch.bool)
+
+    grid = temporal_grid_from_metas(metas, mask, required=True, strict=True)
+
+    assert torch.allclose(grid["center"][0, :3], positions.detach())
+    loss = grid["center"][0, :3].square().sum()
+    loss.backward()
+    assert positions.grad is not None
+    assert torch.allclose(positions.grad, 2.0 * positions.detach())
+
+
+def test_pc_ot_mras_temporal_grid_rejects_tensor_legacy_position_mismatch():
+    metas = [
+        {
+            "sample_id": "pc_ot_mras_tensor_temporal|bad",
+            "irregular_selected_positions": [1.0, 2.0, 5.0],
+            "irregular_dense_valid_len": 8,
+            "irregular_selected_valid_len": 8,
+            "irregular_selected_count": 3,
+            "pc_ot_mras_bridge": {
+                "selected_dense_positions": torch.tensor([1.0, 3.0, 5.0]),
+                "dense_valid_len_tensor": torch.tensor(8.0),
+                "selected_mask": torch.tensor([1, 1, 1], dtype=torch.bool),
+            },
+        }
+    ]
+    mask = torch.tensor([[1, 1, 1]], dtype=torch.bool)
+
+    with pytest.raises(ValueError, match="bridge tensor temporal positions must match"):
+        temporal_grid_from_metas(metas, mask, required=True, strict=True)
 
 
 def test_pc_ot_mras_metadata_rejects_selected_valid_len_alias_mismatch():
