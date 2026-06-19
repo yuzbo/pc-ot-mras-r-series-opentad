@@ -1,6 +1,6 @@
 # PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24 Clean Implementation Manifest
 
-Timestamp: 2026-06-20T04:37+08:00
+Timestamp: 2026-06-20T04:40+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -622,12 +622,31 @@ full PC-OT-MRAS pytest plus train-engine max-iter in torch_1: 216 passed in 48.8
 git diff --check: pass, with LF/CRLF warnings only
 ```
 
+Focused Gemini CLI read-only review of the blocker fix returned pass:
+
+```text
+prompt: logs/gemini3_pro_preview_ctf_bdi_pc_ot_mras_r24_fix_prompt_20260620_0438.md
+stdout: logs/gemini3_pro_preview_ctf_bdi_pc_ot_mras_r24_fix_20260620_0438.txt
+stderr: logs/gemini3_pro_preview_ctf_bdi_pc_ot_mras_r24_fix_20260620_0438.err.txt
+exitcode: logs/gemini3_pro_preview_ctf_bdi_pc_ot_mras_r24_fix_20260620_0438.exitcode.txt
+verdict: PASS_R24_FIX_GEMINI_REVIEW_ONLY
+blocking findings: none
+accepted decision: GEMINI_R24_FIX_REVIEW=YES; all remote sync, remote PRECHECK,
+Slurm/GPU, tools/train.py, tools/test.py, detector mAP, dataset/checkpoint,
+runtime/FLOPs, deployment, dynamic-budget/scanner-quality validation, metric
+claim, and paper claim remain NO.
+```
+
+Review caveat: stderr contains Gemini terminal-color warnings and two internal
+`run_shell_command` tool-not-found messages. The process still exited `0` and
+stdout gave a substantive file/function/test-level review. This caveat is
+recorded so the review is not later described as a noise-free tool run.
+
 Boundary: R24 is local protocol/geometry evidence only. It is not
 dynamic-budget quality validation, detector mAP evidence, runtime/FLOPs proof,
-deployment evidence, scanner-quality validation, or a paper claim. Because it
-extends the dynamic-budget and detector-geometry protocol surface, the next
-required gate is a focused Gemini CLI read-only review of commit `3ffec40`
-against the previous Gemini blockers. This does not authorize remote sync,
-remote PRECHECK execution, Slurm/GPU, `tools/train.py`, `tools/test.py`,
-detector mAP, dataset/checkpoint access, runtime/FLOPs, deployment,
-dynamic-budget/scanner-quality validation, metric claims, or paper claims.
+deployment evidence, scanner-quality validation, or a paper claim. The R24
+blocker-fix review gate is complete for local source status only. It does not
+authorize remote sync, remote PRECHECK execution, Slurm/GPU, `tools/train.py`,
+`tools/test.py`, detector mAP, dataset/checkpoint access, runtime/FLOPs,
+deployment, dynamic-budget/scanner-quality validation, metric claims, or paper
+claims.
