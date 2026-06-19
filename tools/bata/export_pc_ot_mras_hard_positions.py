@@ -12,9 +12,22 @@ from typing import Any, Mapping, Sequence
 SCHEMA_VERSION = "pc_ot_mras_hard_positions_v0"
 SUMMARY_SCHEMA_VERSION = "pc_ot_mras_hard_positions_summary_v0"
 GENERATION_SOURCE = "pc_ot_mras_hard_export_resolver_v0"
+DYNAMIC_BUDGET_GENERATION_SOURCE = "pc_ot_mras_dynamic_budget_hard_export_resolver_v0"
 READY = "PC_OT_MRAS_HARD_EXPORT_READY"
 NO_GO = "PC_OT_MRAS_HARD_EXPORT_NO_GO"
 MATRIX_PRIORITY = ("acquisition_matrix", "allocation", "transport_prob")
+FALSE_ONLY_DYNAMIC_PLAN_FLAGS = frozenset(
+    {
+        "uses_gt",
+        "uses_teacher",
+        "uses_cache",
+        "uses_raw_prediction",
+        "uses_checkpoint",
+        "dynamic_budget_validation",
+        "metric_claim_allowed",
+        "paper_claim_allowed",
+    }
+)
 FORBIDDEN_JSONL_KEY_TOKENS = (
     "gt",
     "groundtruth",
@@ -146,6 +159,30 @@ def _validate_no_forbidden_jsonl_keys(value: Any, *, path: str = "row") -> None:
     elif isinstance(data, list):
         for idx, item in enumerate(data):
             _validate_no_forbidden_jsonl_keys(item, path=f"{path}[{idx}]")
+
+
+def _contains_forbidden_export_fragment(value: Any) -> bool:
+    normalized = _normalized_key(value)
+    return any(token in normalized for token in FORBIDDEN_JSONL_KEY_TOKENS)
+
+
+def _validate_dynamic_budget_plan_payload(value: Any, *, path: str = "dynamic_budget_plan") -> None:
+    data = _to_plain(value)
+    if isinstance(data, Mapping):
+        for key, item in data.items():
+            key_text = str(key or "")
+            if key_text in FALSE_ONLY_DYNAMIC_PLAN_FLAGS:
+                if bool(_to_plain(item)):
+                    raise ValueError(f"{path}.{key_text} must be false for deploy-visible hard export")
+                continue
+            if _contains_forbidden_export_fragment(key_text):
+                raise ValueError(f"{path}.{key_text}: forbidden deploy-invisible key in dynamic budget plan")
+            _validate_dynamic_budget_plan_payload(item, path=f"{path}.{key_text}")
+    elif isinstance(data, list):
+        for idx, item in enumerate(data):
+            _validate_dynamic_budget_plan_payload(item, path=f"{path}[{idx}]")
+    elif isinstance(data, str) and _contains_forbidden_export_fragment(data):
+        raise ValueError(f"{path}: forbidden deploy-invisible value in dynamic budget plan")
 
 
 def _row_budget(row: Mapping[str, Any], *, cli_budget: int, row_idx: int) -> int:
@@ -474,6 +511,213 @@ def _resolve_sample(
             "detached_reader_tensors": True,
         },
     }
+
+
+def _require_plan_key(dynamic_plan: Mapping[str, Any], key: str) -> Any:
+    if key not in dynamic_plan:
+        raise ValueError(f"dynamic_budget_plan missing '{key}'")
+    return _to_plain(dynamic_plan[key])
+
+
+def _strict_int_scalar(value: Any, *, name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        if not math.isfinite(value) or not float(value).is_integer():
+            raise ValueError(f"{name} must be an integer")
+        return int(value)
+    raise ValueError(f"{name} must be an integer")
+
+
+def _strict_float_scalar(value: Any, *, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be numeric")
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be numeric") from None
+    if not math.isfinite(out):
+        raise ValueError(f"{name} must be finite")
+    return out
+
+
+def _plan_batch_vector(value: Any, *, name: str, batch_size: int) -> list[Any]:
+    data = _to_plain(value)
+    if not isinstance(data, list) or len(data) != int(batch_size):
+        raise ValueError(f"{name} must be a batch vector of length {int(batch_size)}")
+    return data
+
+
+def _optional_plan_batch_value(dynamic_plan: Mapping[str, Any], key: str, batch_idx: int, batch_size: int) -> Any:
+    if key not in dynamic_plan:
+        return None
+    data = _to_plain(dynamic_plan[key])
+    if isinstance(data, list) and len(data) == int(batch_size):
+        return data[batch_idx]
+    return data
+
+
+def _resolve_dynamic_budget_plan_sample(
+    dynamic_plan: Mapping[str, Any],
+    *,
+    batch_idx: int,
+    batch_size: int,
+    sample_id: str,
+    budgets: Sequence[Any],
+    dense_valid_lens: Sequence[Any],
+    selected_positions_rows: Sequence[Any],
+    selected_mask_rows: Sequence[Any],
+) -> dict[str, Any]:
+    budget = _strict_int_scalar(budgets[batch_idx], name=f"budgets[{batch_idx}]")
+    if budget <= 0:
+        raise ValueError(f"{sample_id}: dynamic budget must be positive")
+    dense_valid_len = _strict_int_scalar(dense_valid_lens[batch_idx], name=f"dense_valid_len[{batch_idx}]")
+    if dense_valid_len <= 0:
+        raise ValueError(f"{sample_id}: dense_valid_len must be positive")
+    if budget > dense_valid_len:
+        raise ValueError(f"{sample_id}: dynamic budget exceeds dense_valid_len")
+
+    row_positions = selected_positions_rows[batch_idx]
+    row_mask = selected_mask_rows[batch_idx]
+    if not isinstance(row_positions, list) or not isinstance(row_mask, list):
+        raise ValueError(f"{sample_id}: selected positions and mask must be batch rows")
+    if len(row_positions) < budget or len(row_mask) < budget:
+        raise ValueError(f"{sample_id}: selected positions/mask shorter than budget")
+
+    mask_values: list[bool] = []
+    for idx, item in enumerate(row_mask):
+        if item not in (0, 1, False, True):
+            raise ValueError(f"{sample_id}: selected_mask[{idx}] must be binary")
+        mask_values.append(bool(item))
+    mask_count = int(sum(mask_values))
+    if mask_count != budget:
+        raise ValueError(f"{sample_id}: selected_mask true count must equal dynamic budget")
+    if mask_values[:budget] != [True] * budget or any(mask_values[budget:]):
+        raise ValueError(f"{sample_id}: selected_mask must be a contiguous prefix of length budget")
+
+    selected: list[int] = []
+    for idx, item in enumerate(row_positions[:budget]):
+        pos = _strict_int_scalar(item, name=f"{sample_id}.selected_dense_positions[{idx}]")
+        if pos < 0 or pos >= dense_valid_len:
+            raise ValueError(f"{sample_id}: selected position outside dense_valid_len")
+        selected.append(pos)
+    if len(selected) != len(set(selected)):
+        raise ValueError(f"{sample_id}: dynamic selected positions must be unique")
+    if selected != sorted(selected):
+        raise ValueError(f"{sample_id}: dynamic selected positions must be sorted")
+
+    selected_set = set(selected)
+    dense_selected_mask = [1 if idx in selected_set else 0 for idx in range(dense_valid_len)]
+    budget_score = _optional_plan_batch_value(dynamic_plan, "budget_scores", batch_idx, batch_size)
+    coverage_count = _optional_plan_batch_value(dynamic_plan, "coverage_counts", batch_idx, batch_size)
+    value_count = _optional_plan_batch_value(dynamic_plan, "value_counts", batch_idx, batch_size)
+    coverage_share = _optional_plan_batch_value(dynamic_plan, "coverage_share", batch_idx, batch_size)
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "sample_id": sample_id,
+        "batch_index": int(batch_idx),
+        "budget": int(budget),
+        "dense_len": int(dense_valid_len),
+        "valid_len": int(dense_valid_len),
+        "selected_positions": selected,
+        "selected_mask": dense_selected_mask,
+        "duplicate_repair_count": 0,
+        "invalid_repair_count": 0,
+        "repair_fill_count": 0,
+        "soft_hard_time_error": 0.0,
+        "role_ids": [-1 for _pos in selected],
+        "round_ids": [-1 for _pos in selected],
+        "role_round_metadata": [
+            {"position": pos, "role_id": -1, "round_id": -1}
+            for pos in selected
+        ],
+        "dynamic_budget_plan": {
+            "schema_version": str(dynamic_plan.get("schema_version", "")),
+            "controller_family": str(dynamic_plan.get("controller_family", "")),
+            "budget_score": None
+            if budget_score is None
+            else _strict_float_scalar(budget_score, name=f"{sample_id}.budget_score"),
+            "coverage_count": None
+            if coverage_count is None
+            else _strict_int_scalar(coverage_count, name=f"{sample_id}.coverage_count"),
+            "value_count": None
+            if value_count is None
+            else _strict_int_scalar(value_count, name=f"{sample_id}.value_count"),
+            "coverage_share": None
+            if coverage_share is None
+            else _strict_float_scalar(coverage_share, name=f"{sample_id}.coverage_share"),
+            "dynamic_budget_validation": False,
+            "metric_claim_allowed": False,
+            "paper_claim_allowed": False,
+        },
+        "resolver_generation": {
+            "source": DYNAMIC_BUDGET_GENERATION_SOURCE,
+            "diagnostic_or_deploy_only": True,
+            "training_backprop_allowed": False,
+            "detached_reader_tensors": True,
+            "dynamic_budget_validation": False,
+            "metric_claim_allowed": False,
+            "paper_claim_allowed": False,
+        },
+    }
+
+
+def resolve_pc_ot_mras_dynamic_budget_plan(
+    dynamic_plan: Mapping[str, Any],
+    *,
+    sample_ids: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Resolve an R22 dynamic-budget plan into hard-position rows.
+
+    The input must already contain deploy-visible dynamic-budget tensors such as
+    ``budgets``, ``dense_valid_len``, ``selected_dense_positions``, and
+    ``selected_mask``. This resolver only validates and serializes that plan; it
+    does not run detector evaluation or validate dynamic-budget quality.
+    """
+
+    if not isinstance(dynamic_plan, Mapping):
+        raise ValueError("dynamic_budget_plan must be a mapping")
+    _validate_dynamic_budget_plan_payload(dynamic_plan)
+
+    budgets = _require_plan_key(dynamic_plan, "budgets")
+    if not isinstance(budgets, list) or not budgets:
+        raise ValueError("budgets must be a non-empty batch vector")
+    batch_size = len(budgets)
+    dense_valid_lens = _plan_batch_vector(
+        _require_plan_key(dynamic_plan, "dense_valid_len"),
+        name="dense_valid_len",
+        batch_size=batch_size,
+    )
+    selected_positions_rows = _plan_batch_vector(
+        _require_plan_key(dynamic_plan, "selected_dense_positions"),
+        name="selected_dense_positions",
+        batch_size=batch_size,
+    )
+    selected_mask_rows = _plan_batch_vector(
+        _require_plan_key(dynamic_plan, "selected_mask"),
+        name="selected_mask",
+        batch_size=batch_size,
+    )
+    ids = list(sample_ids or [f"sample_{idx}" for idx in range(batch_size)])
+    if len(ids) != batch_size:
+        raise ValueError("sample_ids length must equal dynamic plan batch size")
+
+    return [
+        _resolve_dynamic_budget_plan_sample(
+            dynamic_plan,
+            batch_idx=batch_idx,
+            batch_size=batch_size,
+            sample_id=str(ids[batch_idx]),
+            budgets=budgets,
+            dense_valid_lens=dense_valid_lens,
+            selected_positions_rows=selected_positions_rows,
+            selected_mask_rows=selected_mask_rows,
+        )
+        for batch_idx in range(batch_size)
+    ]
 
 
 def resolve_pc_ot_mras_hard_positions(
