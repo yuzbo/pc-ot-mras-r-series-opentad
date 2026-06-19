@@ -1,6 +1,6 @@
-# PC-OT-MRAS R16/R18/R20 Clean Implementation Manifest
+# PC-OT-MRAS R16/R18/R19/R20 Clean Implementation Manifest
 
-Timestamp: 2026-06-19T22:10+08:00
+Timestamp: 2026-06-20T00:38+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -15,8 +15,11 @@ f19492b Import clean OpenTAD baseline
 73fc7ba Fix clean PC-OT-MRAS launch guards
 709bf9783d0e12104e352e3b863ce6373c2b441d Update clean PC-OT-MRAS manifest after guard fixes
 21f8dbabfc61158ac21c000066b8fbae24866148 Remove stale checkpoint audit dependency from clean PC-OT-MRAS
+1a95068 Update clean PC-OT-MRAS purity manifest
 96eaaeb Add R18 and R20 confirmation candidates
 b5b4448 Update R18 R20 review package manifest
+f18c708b188464235f7732b71cfac205f47d4be3 Harden PC-OT-MRAS R18 R20 gates
+4a0864b24ce44ac46e4ceb9fddba8c1f36ee8cea Add PC-OT-MRAS R19 soft hard consistency candidate
 ```
 
 ## Objective
@@ -25,6 +28,7 @@ Implement only the PC-OT-MRAS continuous route stages on a clean OpenTAD baselin
 
 - R16 bounded GPU smoke candidate.
 - R18 train-only reader auxiliary diagnostic candidate.
+- R19 train-only soft/hard consistency candidate.
 - R20 train-only value-of-information distillation candidate.
 
 The implementation intentionally does not copy unrelated BATA/UGIT/MFCSD/DBAC/ITMI experiment families from the dirty working tree.
@@ -50,13 +54,14 @@ The implementation was assembled by white-list overlays:
 
 Parsed with `mmengine.Config.fromfile`:
 
-| Config | Reader | Aux loss | Value loss | Raw prediction cache |
-| --- | --- | --- | --- | --- |
-| `ctf_bdi_pc_ot_mras_r16_gpu_smoke_candidate.py` | present | absent | absent | disabled |
-| `ctf_bdi_pc_ot_mras_r17_formal_train_candidate.py` | present | absent | absent | disabled |
-| `ctf_bdi_pc_ot_mras_r18_aux_diag_candidate.py` | present | present | absent | disabled |
-| `ctf_bdi_pc_ot_mras_r18_aux_formal_train_candidate.py` | present | present | absent | disabled |
-| `ctf_bdi_pc_ot_mras_r20_value_distill_candidate.py` | present, `enable_value_heads=True` | present | present | disabled |
+| Config | Reader | Aux loss | Soft/hard loss | Value loss | Raw prediction cache |
+| --- | --- | --- | --- | --- | --- |
+| `ctf_bdi_pc_ot_mras_r16_gpu_smoke_candidate.py` | present | absent | absent | absent | disabled |
+| `ctf_bdi_pc_ot_mras_r17_formal_train_candidate.py` | present | absent | absent | absent | disabled |
+| `ctf_bdi_pc_ot_mras_r18_aux_diag_candidate.py` | present | present | absent | absent | disabled |
+| `ctf_bdi_pc_ot_mras_r18_aux_formal_train_candidate.py` | present | present | absent | absent | disabled |
+| `ctf_bdi_pc_ot_mras_r19_soft_hard_consistency_candidate.py` | present | present | present | absent | disabled |
+| `ctf_bdi_pc_ot_mras_r20_value_distill_candidate.py` | present, `enable_value_heads=True` | present | absent | present | disabled |
 
 R20 is therefore an `R18 semantic aux + R20 value` combo mainline, matching the saved R20A design. It is not a value-only attribution control.
 
@@ -238,3 +243,38 @@ authorize Gemini, remote sync, remote PRECHECK execution, Slurm/GPU execution,
 `tools/train.py`, `tools/test.py`, detector mAP, dataset/checkpoint access,
 runtime/FLOPs, deployment, metric claims, or paper claims. A fresh complete Pro
 package from the new HEAD is required next.
+
+## R19 Soft/Hard Consistency Candidate
+
+Commit `4a0864b24ce44ac46e4ceb9fddba8c1f36ee8cea` adds the R19 local candidate
+layer requested by the long-term PC-OT-MRAS plan:
+
+- `opentad/models/losses/pc_ot_mras_soft_hard_consistency_losses.py` defines
+  train-only consistency losses between the differentiable reader allocation
+  and detached hard anchors derived from that allocation. It does not read
+  hard-export JSON, GT, teacher outputs, raw predictions, checkpoints, or
+  caches.
+- `ActionFormer.forward_train()` can optionally merge the R19 losses after
+  reader-output injection. `forward_test()` does not call the R19 loss path.
+- `configs/adatad/thumos/ctf_bdi_pc_ot_mras_r19_soft_hard_consistency_candidate.py`
+  inherits the R18 aux formal candidate, enables the soft/hard loss, and keeps
+  the config launch-blocked/local-synthetic-only.
+- Focused tests cover loss gradients, bad reader contracts, config parsing,
+  guard denial for `tools/train.py`/`tools/test.py`, and the ActionFormer
+  train-only/test-time boundary.
+
+Verification:
+
+```text
+py_compile changed R19 files: pass
+focused R19 pytest: 22 passed in 9.81s
+full PC-OT-MRAS pytest plus train-engine max-iter: 197 passed in 44.21s
+git diff --check: pass, with LF/CRLF warnings only
+```
+
+Boundary: R19 is a local implementation candidate only. It does not authorize
+Pro/Gemini completion, remote sync, remote PRECHECK execution, Slurm/GPU,
+`tools/train.py`, `tools/test.py`, detector mAP, dataset/checkpoint access,
+runtime/FLOPs, deployment, dynamic-budget/scanner-quality validation, metric
+claims, or paper claims. The next gate is a complete GPT-5.5 Pro read-only
+implementation review package for R19, then Gemini CLI only if Pro allows it.
