@@ -1,6 +1,6 @@
 # PC-OT-MRAS R16/R18/R20 Clean Implementation Manifest
 
-Timestamp: 2026-06-19T18:44+08:00
+Timestamp: 2026-06-19T20:55+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -15,6 +15,7 @@ f19492b Import clean OpenTAD baseline
 73fc7ba Fix clean PC-OT-MRAS launch guards
 709bf9783d0e12104e352e3b863ce6373c2b441d Update clean PC-OT-MRAS manifest after guard fixes
 21f8dbabfc61158ac21c000066b8fbae24866148 Remove stale checkpoint audit dependency from clean PC-OT-MRAS
+96eaaeb Add R18 and R20 confirmation candidates
 ```
 
 ## Objective
@@ -53,6 +54,7 @@ Parsed with `mmengine.Config.fromfile`:
 | `ctf_bdi_pc_ot_mras_r16_gpu_smoke_candidate.py` | present | absent | absent | disabled |
 | `ctf_bdi_pc_ot_mras_r17_formal_train_candidate.py` | present | absent | absent | disabled |
 | `ctf_bdi_pc_ot_mras_r18_aux_diag_candidate.py` | present | present | absent | disabled |
+| `ctf_bdi_pc_ot_mras_r18_aux_formal_train_candidate.py` | present | present | absent | disabled |
 | `ctf_bdi_pc_ot_mras_r20_value_distill_candidate.py` | present, `enable_value_heads=True` | present | present | disabled |
 
 R20 is therefore an `R18 semantic aux + R20 value` combo mainline, matching the saved R20A design. It is not a value-only attribution control.
@@ -137,3 +139,61 @@ ignored cache cleanup: 72 cache directories removed inside this clean repo
 ```
 
 Direct `tools.train/tools.test` import in the local Windows `torch_1` environment still reaches the upstream OpenTAD optional dependency issue `ModuleNotFoundError: No module named 'mmaction.registry'` after the stale `opentad.utils` error is removed. This is an environment/dependency boundary of the local Windows env, not evidence that the PC-OT-MRAS stale dependency remains.
+
+## R18/R20 Confirmation Candidates
+
+Commit `96eaaeb` adds the next confirmation candidate layer requested after R16
+restart:
+
+- `configs/adatad/thumos/ctf_bdi_pc_ot_mras_r18_aux_formal_train_candidate.py`
+  defines an aux-on R18 formal-training candidate. It inherits the reviewed R18
+  aux diagnostic config, keeps train-only reader auxiliary losses enabled,
+  permits only `tools/train.py`, rejects direct `tools/test.py`, and keeps
+  metric/paper/runtime/deploy claims disabled.
+- `scripts/run_ctf_bdi_pc_ot_mras_r18_aux_formal_train_n16r4.sbatch` is a
+  fail-closed launcher. It defaults to `PRECHECK_ONLY=1`; formal training
+  requires `ALLOW_R18_AUX_FORMAL_TRAIN=1` plus an explicit gate JSON/SHA bound
+  to the active manifest. It rejects dirty `OpenTAD_BATA_Clean` paths,
+  checkpoint/load/resume shortcuts, raw-prediction caches, and arbitrary
+  cfg-options.
+- `scripts/run_ctf_bdi_pc_ot_mras_r20_value_precheck_n16r4.sbatch` is
+  precheck-only for R20 main and value-only control. It runs static/config/value
+  focused checks only and intentionally never calls `tools/train.py` or
+  `tools/test.py`.
+
+Verification for this layer:
+
+```text
+py_compile changed candidate files: pass
+R18/R20 launcher/config tests: 8 passed, 1 warning
+git diff --check: pass
+bash -n R18/R20 sbatch launchers: exit code 0, with local WSL warning noise
+torch_1 R20 value/action tests: 31 passed
+torch_1 R17/R18/guard tests: 16 passed
+torch_1 all PC-OT-MRAS tests plus train-engine max-iter test: 189 passed in 51.75s
+```
+
+Known local environment boundary:
+
+```text
+Default Python value/action tests skipped because user-site torch is unavailable.
+Default Python guard bundle has one expected import-smoke failure caused by
+user-site torch c10.dll loading failure. The torch_1 environment passes the
+relevant checks above.
+```
+
+Review package prepared but not submitted:
+
+```text
+logs/ctf_bdi_pc_ot_mras_r18_r20_confirmation_candidates_pro_review_20260619_2050.zip
+SHA256: 402e1753eae9a9e5316e60270f6311590036c5f8bab7648f2e04b53987008fc2
+entries: 31
+bad_backslash_entries: 0
+sha_missing: 0
+sha_bad: 0
+```
+
+Boundary: this layer is ready for GPT-5.5 Pro read-only review only. It does
+not authorize remote sync, remote PRECHECK execution, Slurm/GPU execution,
+`tools/train.py`, `tools/test.py`, detector mAP, dataset/checkpoint access,
+runtime/FLOPs, deployment, metric claims, or paper claims.
