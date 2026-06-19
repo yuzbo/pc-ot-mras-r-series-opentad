@@ -190,8 +190,23 @@ def test_dynamic_budget_temporal_metadata_rejects_invalid_positions_and_payloads
     rows = _rows()
     bad = [dict(row) for row in rows]
     bad[0] = dict(bad[0])
+    bad[0]["selected_positions"] = list(bad[0]["selected_positions"])
+    bad[0]["selected_positions"][0] = float(bad[0]["selected_positions"][0]) + 0.5
+    with pytest.raises(ValueError, match="must be an integer position"):
+        pc_ot_mras_hard_rows_to_temporal_metas(bad)
+
+    rows = _rows()
+    bad = [dict(row) for row in rows]
+    bad[0] = dict(bad[0])
     bad[0]["teacher_logits"] = [0.1, 0.2]
     with pytest.raises(ValueError, match="forbidden deploy-invisible key"):
+        pc_ot_mras_hard_rows_to_temporal_metas(bad)
+
+    rows = _rows()
+    bad = [dict(row) for row in rows]
+    bad[0] = dict(bad[0])
+    bad[0]["source_note"] = "teacher_prediction_side_input"
+    with pytest.raises(ValueError, match="forbidden deploy-invisible value"):
         pc_ot_mras_hard_rows_to_temporal_metas(bad)
 
     rows = _rows()

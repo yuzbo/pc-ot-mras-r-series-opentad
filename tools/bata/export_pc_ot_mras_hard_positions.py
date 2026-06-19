@@ -149,11 +149,9 @@ def _as_int_list(value: Any, *, name: str) -> list[int]:
         raise ValueError(f"{name} must be a list")
     out: list[int] = []
     for idx, item in enumerate(data):
-        if isinstance(item, bool):
-            raise ValueError(f"{name}[{idx}] must be an integer position")
         try:
-            out.append(int(item))
-        except (TypeError, ValueError):
+            out.append(_strict_int_scalar(item, name=f"{name}[{idx}]"))
+        except ValueError:
             raise ValueError(f"{name}[{idx}] must be an integer position") from None
     return out
 
@@ -182,6 +180,8 @@ def _validate_no_forbidden_jsonl_keys(value: Any, *, path: str = "row") -> None:
     elif isinstance(data, list):
         for idx, item in enumerate(data):
             _validate_no_forbidden_jsonl_keys(item, path=f"{path}[{idx}]")
+    elif isinstance(data, str) and _contains_forbidden_export_fragment(data):
+        raise ValueError(f"{path}: forbidden deploy-invisible value in hard export input")
 
 
 def _contains_forbidden_export_fragment(value: Any) -> bool:
