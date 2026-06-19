@@ -697,3 +697,52 @@ deployment evidence, scanner-quality validation, or a paper claim. Because it
 adds a new local validation tool/config, it requires the normal post-
 implementation review chain before it can be used for any later remote package
 or execution gate.
+
+## R25 Pro Blocker Fix
+
+The first GPT-5.5 Pro R25 package review was harvested from the browser page
+after Rosetta local stdout/stderr harvest stalled. The model-visible page
+contained the uploaded R25 zip and prompt and returned:
+
+```text
+Verdict: FIX_BEFORE_GEMINI
+Gemini CLI read-only review: DENY for this R25 package
+```
+
+Accepted blockers:
+
+- The dynamic-budget plan validator still accepted deploy-invisible or
+  permission/claim fields such as value targets, labels, segments,
+  annotation paths, `allow_*` execution flags, and non-approved claim or
+  validation flags.
+- The review zip omitted `tests/pc_ot_mras_test_utils.py`, so included tests
+  could not be collected from the overlay package alone.
+
+Commit `c01bae7` fixes the source blocker:
+
+- `tools/bata/export_pc_ot_mras_hard_positions.py` now uses an explicit
+  allowlist for deploy-visible dynamic-budget plan keys.
+- Unknown dynamic-plan keys fail closed, while explicit execution/claim,
+  annotation/label/segment/target, teacher/oracle/cache/raw-prediction,
+  result, and checkpoint fragments remain forbidden.
+- Existing false-only flags must stay false.
+- R23 and R25 tests now cover the Pro-listed forbidden payloads and permission
+  / claim flags, plus an unknown side-channel key.
+
+Post-fix verification:
+
+```text
+py_compile changed R25 fix files: pass
+focused R23/R25 dynamic-budget pytest in torch_1: 47 passed in 5.95s
+R22/R23/R24/R25 regression in torch_1: 59 passed in 10.08s
+full PC-OT-MRAS pytest plus train-engine max-iter in torch_1: 260 passed in 51.36s
+git diff --check: pass, with LF/CRLF warnings only
+```
+
+Boundary: this closes only the local R25 blocker in source. It does not
+authorize Gemini, remote sync, remote PRECHECK execution, Slurm/GPU,
+`tools/train.py`, `tools/test.py`, detector mAP, dataset/checkpoint access,
+runtime/FLOPs, deployment, dynamic-budget/scanner-quality validation, metric
+claim, or paper claim. A rebuilt R25 fix Pro package must include
+`tests/pc_ot_mras_test_utils.py` and request only whether Gemini CLI read-only
+review may run.
