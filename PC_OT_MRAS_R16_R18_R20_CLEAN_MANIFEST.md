@@ -278,3 +278,49 @@ Pro/Gemini completion, remote sync, remote PRECHECK execution, Slurm/GPU,
 runtime/FLOPs, deployment, dynamic-budget/scanner-quality validation, metric
 claims, or paper claims. The next gate is a complete GPT-5.5 Pro read-only
 implementation review package for R19, then Gemini CLI only if Pro allows it.
+
+## R21 Tensor-Native Temporal Coordinate Path
+
+Commit `a7fa6bc46aa88890208bae5f25c39aade0c3815a` adds the R21 local
+infrastructure layer for tensor-native PC-OT-MRAS temporal coordinates:
+
+- `PCOTMRASDetectorBridge` now emits tensor temporal metadata in
+  `pc_ot_mras_bridge`: `selected_dense_positions`, `dense_valid_len_tensor`,
+  and `temporal_tensor_metadata_mode`. Legacy
+  `irregular_selected_positions` / `irregular_dense_valid_len` fields are still
+  written for compatibility.
+- `temporal_grid_from_metas()` now prefers the bridge tensor payload when it is
+  present, validates the bridge selected-mask prefix, and fail-closes if the
+  tensor payload disagrees with legacy sidecar aliases.
+- `build_temporal_grid()` and the fixed-width branch of
+  `build_area_time_grid()` now avoid the in-place operations that broke
+  autograd once temporal coordinates became tensor-derived.
+- Tests cover tensor payload emission, legacy alias consistency, gradient flow
+  from temporal grid centers back to tensor positions, detector-facing bridge
+  metadata, and ActionFormer/P2 smoke metadata.
+
+Verification:
+
+```text
+py_compile changed R21 files: pass
+focused R21 pytest: 64 passed in 12.63s
+targeted detector runtime smoke after autograd fix: 1 passed in 5.56s
+full PC-OT-MRAS pytest plus train-engine max-iter: 199 passed in 44.69s
+git diff --check: pass, with LF/CRLF warnings only
+```
+
+Known local environment boundary:
+
+```text
+Default Anaconda base Python cannot import user-site torch because c10.dll
+fails to initialize. Verification used the working torch_1 conda environment
+at C:\Users\skywalker\.conda\envs\torch_1\python.exe, torch 2.3.0+cu121.
+```
+
+Boundary: R21 is a local implementation candidate only. It does not authorize
+Pro/Gemini completion, remote sync, remote PRECHECK execution, Slurm/GPU,
+`tools/train.py`, `tools/test.py`, detector mAP, dataset/checkpoint access,
+runtime/FLOPs, deployment, dynamic-budget/scanner-quality validation, metric
+claims, or paper claims. Because it changes the temporal-coordinate protocol,
+the next gate is GPT-5.5 Pro read-only implementation review, then Gemini CLI
+read-only review only if Pro allows it.
