@@ -303,3 +303,71 @@ def test_pc_ot_mras_config_registry_bridge_and_hard_export_round_trip():
     assert payload["row_selected_unique"] == [True, True]
     assert payload["row_generation_no_grad"] == [True, True]
     assert payload["row_valid_bounds"] == [True, True]
+
+
+def test_pc_ot_mras_bridge_registered_by_necks_package_import():
+    code = textwrap.dedent(
+        f"""
+        import importlib
+        import json
+        import sys
+        import types
+        from pathlib import Path
+
+        root = Path(r"{ROOT}")
+
+        opentad_pkg = types.ModuleType("opentad")
+        opentad_pkg.__path__ = [str(root / "opentad")]
+        sys.modules["opentad"] = opentad_pkg
+
+        models_pkg = types.ModuleType("opentad.models")
+        models_pkg.__path__ = [str(root / "opentad" / "models")]
+        sys.modules["opentad.models"] = models_pkg
+
+        backbones = types.ModuleType("opentad.models.backbones")
+        class BackboneWrapper:
+            pass
+        backbones.BackboneWrapper = BackboneWrapper
+        sys.modules["opentad.models.backbones"] = backbones
+
+        necks = importlib.import_module("opentad.models.necks")
+        from opentad.models import builder
+
+        bridge_cls = builder.MODELS.get("PCOTMRASDetectorBridge")
+        bridge = builder.build_neck({{
+            "type": "PCOTMRASDetectorBridge",
+            "in_channels": 2,
+            "out_channels": 2,
+            "add_time_features": False,
+            "norm": False,
+        }})
+        payload = {{
+            "registered_by_package_import": bridge_cls is necks.PCOTMRASDetectorBridge,
+            "built_type": type(bridge).__name__,
+            "alias_exported": necks.ProcessConditionedOrderedTransportMRASDetectorBridge is necks.PCOTMRASDetectorBridge,
+            "all": list(necks.__all__),
+        }}
+        print(json.dumps(payload, sort_keys=True))
+        """
+    )
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=str(ROOT),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert payload["registered_by_package_import"] is True
+    assert payload["built_type"] == "PCOTMRASDetectorBridge"
+    assert payload["alias_exported"] is True
+    assert "PCOTMRASDetectorBridge" in payload["all"]
+    assert "ProcessConditionedOrderedTransportMRASDetectorBridge" in payload["all"]
