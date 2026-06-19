@@ -18,6 +18,26 @@ TEMPORAL_METADATA_GENERATION_SOURCE = "pc_ot_mras_hard_rows_to_temporal_metadata
 READY = "PC_OT_MRAS_HARD_EXPORT_READY"
 NO_GO = "PC_OT_MRAS_HARD_EXPORT_NO_GO"
 MATRIX_PRIORITY = ("acquisition_matrix", "allocation", "transport_prob")
+FORBIDDEN_JSONL_KEY_TOKENS = (
+    "gt",
+    "groundtruth",
+    "teacher",
+    "oracle",
+    "cache",
+    "featurecache",
+    "prediction",
+    "predictions",
+    "predictioncache",
+    "rawprediction",
+    "rawpredictions",
+    "detectionresult",
+    "detectionsresult",
+    "resultdetection",
+    "resultjson",
+    "resultartifact",
+    "checkpoint",
+    "ckpt",
+)
 FALSE_ONLY_DYNAMIC_PLAN_FLAGS = frozenset(
     {
         "uses_gt",
@@ -29,6 +49,42 @@ FALSE_ONLY_DYNAMIC_PLAN_FLAGS = frozenset(
         "metric_claim_allowed",
         "paper_claim_allowed",
     }
+)
+DYNAMIC_PLAN_ALLOWED_KEYS = frozenset(
+    {
+        *FALSE_ONLY_DYNAMIC_PLAN_FLAGS,
+        "schema_version",
+        "controller_family",
+        "budget_values",
+        "budget_scores",
+        "budget_score",
+        "budgets",
+        "dense_valid_len",
+        "utility_scores",
+        "selected_dense_positions",
+        "selected_mask",
+        "coverage_counts",
+        "coverage_count",
+        "value_counts",
+        "value_count",
+        "coverage_share",
+        "max_coverage_share",
+    }
+)
+DYNAMIC_PLAN_FORBIDDEN_KEY_TOKENS = (
+    *FORBIDDEN_JSONL_KEY_TOKENS,
+    "label",
+    "labels",
+    "segment",
+    "segments",
+    "annotation",
+    "annotations",
+    "valuetarget",
+    "valuetargets",
+    "trainvaluetarget",
+    "trainvaluetargets",
+    "targetlogit",
+    "targetlogits",
 )
 FALSE_ONLY_TEMPORAL_METADATA_FLAGS = frozenset(
     {
@@ -50,26 +106,6 @@ FALSE_ONLY_TEMPORAL_METADATA_FLAGS = frozenset(
         "allow_checkpoint",
         "allow_raw_prediction_cache",
     }
-)
-FORBIDDEN_JSONL_KEY_TOKENS = (
-    "gt",
-    "groundtruth",
-    "teacher",
-    "oracle",
-    "cache",
-    "featurecache",
-    "prediction",
-    "predictions",
-    "predictioncache",
-    "rawprediction",
-    "rawpredictions",
-    "detectionresult",
-    "detectionsresult",
-    "resultdetection",
-    "resultjson",
-    "resultartifact",
-    "checkpoint",
-    "ckpt",
 )
 
 
@@ -189,6 +225,15 @@ def _contains_forbidden_export_fragment(value: Any) -> bool:
     return any(token in normalized for token in FORBIDDEN_JSONL_KEY_TOKENS)
 
 
+def _contains_forbidden_dynamic_plan_fragment(value: Any) -> bool:
+    normalized = _normalized_key(value)
+    if normalized.startswith("allow"):
+        return True
+    if normalized.endswith("claimallowed"):
+        return True
+    return any(token in normalized for token in DYNAMIC_PLAN_FORBIDDEN_KEY_TOKENS)
+
+
 def _validate_dynamic_budget_plan_payload(value: Any, *, path: str = "dynamic_budget_plan") -> None:
     data = _to_plain(value)
     if isinstance(data, Mapping):
@@ -198,13 +243,17 @@ def _validate_dynamic_budget_plan_payload(value: Any, *, path: str = "dynamic_bu
                 if bool(_to_plain(item)):
                     raise ValueError(f"{path}.{key_text} must be false for deploy-visible hard export")
                 continue
-            if _contains_forbidden_export_fragment(key_text):
+            if key_text not in DYNAMIC_PLAN_ALLOWED_KEYS:
+                if _contains_forbidden_dynamic_plan_fragment(key_text):
+                    raise ValueError(f"{path}.{key_text}: forbidden deploy-invisible key in dynamic budget plan")
+                raise ValueError(f"{path}.{key_text}: unsupported key in deploy-visible dynamic budget plan")
+            if _contains_forbidden_dynamic_plan_fragment(key_text):
                 raise ValueError(f"{path}.{key_text}: forbidden deploy-invisible key in dynamic budget plan")
             _validate_dynamic_budget_plan_payload(item, path=f"{path}.{key_text}")
     elif isinstance(data, list):
         for idx, item in enumerate(data):
             _validate_dynamic_budget_plan_payload(item, path=f"{path}[{idx}]")
-    elif isinstance(data, str) and _contains_forbidden_export_fragment(data):
+    elif isinstance(data, str) and _contains_forbidden_dynamic_plan_fragment(data):
         raise ValueError(f"{path}: forbidden deploy-invisible value in dynamic budget plan")
 
 

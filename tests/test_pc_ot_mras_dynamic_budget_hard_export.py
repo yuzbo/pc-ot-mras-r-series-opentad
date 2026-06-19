@@ -114,6 +114,39 @@ def test_dynamic_budget_plan_rejects_forbidden_payloads_and_true_claim_flags():
         resolve_pc_ot_mras_dynamic_budget_plan(plan)
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("pc_ot_mras_value_targets", [0.1, 0.2]),
+        ("value_targets", [0.1, 0.2]),
+        ("train_value_targets_at_test", [0.1, 0.2]),
+        ("target_logits", [[1.0, 0.0]]),
+        ("labels", [1, 2]),
+        ("segments", [[0.0, 1.0]]),
+        ("annotation_path", "ann.json"),
+        ("allow_remote_sync", True),
+        ("allow_slurm", True),
+        ("allow_gpu", True),
+        ("allow_detector_training", True),
+        ("allow_tools_train", True),
+        ("allow_tools_test", True),
+        ("allow_detector_map", True),
+        ("deploy_claim_allowed", True),
+        ("runtime_flops_claim_allowed", True),
+        ("scanner_quality_claim_allowed", True),
+        ("dynamic_budget_claim_allowed", True),
+        ("scanner_quality_validation", True),
+        ("debug_side_channel", {"safe": 1}),
+    ],
+)
+def test_dynamic_budget_plan_rejects_forbidden_or_unknown_plan_keys(key, value):
+    plan = dict(_dynamic_plan())
+    plan[key] = value
+
+    with pytest.raises(ValueError, match="dynamic budget plan"):
+        resolve_pc_ot_mras_dynamic_budget_plan(plan)
+
+
 def test_dynamic_budget_plan_rejects_mask_budget_mismatch():
     plan = dict(_dynamic_plan())
     selected_mask = plan["selected_mask"].clone()
