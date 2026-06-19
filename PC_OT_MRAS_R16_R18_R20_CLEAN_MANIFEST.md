@@ -1,6 +1,6 @@
 # PC-OT-MRAS R16/R18/R20 Clean Implementation Manifest
 
-Timestamp: 2026-06-19T18:34+08:00
+Timestamp: 2026-06-19T18:44+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -13,6 +13,8 @@ f19492b Import clean OpenTAD baseline
 2301aaa50810d6fe7d8d88760bd2e789896e93d8 Implement clean PC-OT-MRAS R16 R18 R20
 5ca29aba79ca152b9070905f97c93b29948258ac Add R20 value-only attribution control
 73fc7ba Fix clean PC-OT-MRAS launch guards
+709bf9783d0e12104e352e3b863ce6373c2b441d Update clean PC-OT-MRAS manifest after guard fixes
+21f8dbabfc61158ac21c000066b8fbae24866148 Remove stale checkpoint audit dependency from clean PC-OT-MRAS
 ```
 
 ## Objective
@@ -105,3 +107,33 @@ Additional verification after R20 value-only control and Pro v2 blocker fixes:
 ## Local R20 Fix
 
 During clean-repo verification, the R20 value-target loss rejected a non-contiguous `valid_mask` through the earlier sum-mismatch branch. The validation order was corrected so non-contiguous masks report `value target valid_mask must be a contiguous valid prefix` before the redundant sum check. This is a local R20 correctness fix in the clean implementation.
+
+## Purity Recheck and Shared-Entrypoint Fix
+
+The clean baseline commit `f19492b` was rechecked against the manually extracted `OpenTAD-main` tree:
+
+```text
+git_file_count=408
+manual_file_count=408
+only_in_git=0
+only_in_manual=0
+hash_mismatch=0
+```
+
+This confirms that the baseline commit is the manually downloaded clean OpenTAD source, not a filtered copy of the dirty historical experiment tree.
+
+During the same recheck, `opentad/utils/__init__.py` was found to import a non-existent `checkpoint_key_audit.py`, and `tools/train.py` still contained a `--load_from` / checkpoint-key-audit path from the historical dirty tree. This was not needed by R16/R18/R20 and would break `import opentad.utils` before training. Commit `21f8dbabfc61158ac21c000066b8fbae24866148` removes the stale dependency and the unrelated `--load_from` branch instead of copying the old ITMI/BATA checkpoint-audit file into the clean route.
+
+Post-fix verification:
+
+```text
+opentad.utils import: PASS, save_checkpoint present, stale validate_incompatible_checkpoint_keys absent
+config parse: R16/R17 reader-only, R18 reader+aux, R20 combo reader+aux+value, R20 value-only reader+value without aux
+raw prediction cache: disabled for all checked R16/R17/R18/R20/R20-control configs
+git diff --check: pass, with LF/CRLF warnings only
+py_compile: pass for tracked Python files
+pytest: 184 passed in 40.82s
+ignored cache cleanup: 72 cache directories removed inside this clean repo
+```
+
+Direct `tools.train/tools.test` import in the local Windows `torch_1` environment still reaches the upstream OpenTAD optional dependency issue `ModuleNotFoundError: No module named 'mmaction.registry'` after the stale `opentad.utils` error is removed. This is an environment/dependency boundary of the local Windows env, not evidence that the PC-OT-MRAS stale dependency remains.
