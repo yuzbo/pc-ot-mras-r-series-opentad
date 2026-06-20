@@ -746,3 +746,43 @@ runtime/FLOPs, deployment, dynamic-budget/scanner-quality validation, metric
 claim, or paper claim. A rebuilt R25 fix Pro package must include
 `tests/pc_ot_mras_test_utils.py` and request only whether Gemini CLI read-only
 review may run.
+
+## R16/R17/R18 Slurm Master-Port Guard Fix
+
+After clean-head formal queue submission, R16A job `1105984 pcot_r16run`
+failed before model training because the Slurm environment provided an invalid
+`MASTER_PORT=415984`. The old launchers accepted any numeric `MASTER_PORT`, so
+`torchrun` failed while parsing rendezvous endpoint `127.0.0.1:415984`.
+
+This fix hardens the clean repo launchers:
+
+- `scripts/run_ctf_bdi_pc_ot_mras_r16a_gpu_smoke_n16r4.sbatch`
+- `scripts/run_ctf_bdi_pc_ot_mras_r17_formal_train_n16r4.sbatch`
+- `scripts/run_ctf_bdi_pc_ot_mras_r18_aux_formal_train_n16r4.sbatch`
+
+Each launcher now computes a safe default port from the Slurm job id, records
+`MASTER_PORT_SOURCE`, and falls back to the default if an inherited
+environment `MASTER_PORT` is non-numeric or outside `[1024, 65535]`. The port
+source and default are printed in the launch log so future failures can be
+audited. `tests/test_pc_ot_mras_launcher_master_port.py` covers the static
+contract for all three launchers.
+
+Verification in `torch_1`:
+
+```text
+pytest tests/test_pc_ot_mras_launcher_master_port.py \
+  tests/test_pc_ot_mras_r16a_gpu_smoke_launcher.py \
+  tests/test_pc_ot_mras_r17_formal_train_config.py \
+  tests/test_pc_ot_mras_r18_aux_formal_train_config.py \
+  tests/test_pc_ot_mras_train_local_only_guard.py -q
+  25 passed in 3.94s
+
+py_compile tests/test_pc_ot_mras_launcher_master_port.py: pass
+git diff --check: pass, with LF/CRLF warnings only
+full PC-OT-MRAS pytest plus train-engine max-iter in torch_1:
+  262 passed in 51.16s
+```
+
+Boundary: this is a launcher robustness fix only. It does not produce detector
+mAP, runtime/FLOPs, deployment, dynamic-budget/scanner-quality validation,
+metric claims, or paper claims.

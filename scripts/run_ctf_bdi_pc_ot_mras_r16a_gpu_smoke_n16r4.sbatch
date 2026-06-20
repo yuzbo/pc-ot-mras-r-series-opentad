@@ -41,7 +41,15 @@ R16A_GPU_SMOKE_GATE_SHA256="${R16A_GPU_SMOKE_GATE_SHA256:-}"
 TRAIN_ID="${TRAIN_ID:-0}"
 SEED="${SEED:-20260619}"
 SLURM_JOB_ID_FOR_PORT="${SLURM_JOB_ID:-0}"
-MASTER_PORT="${MASTER_PORT:-$((31000 + SLURM_JOB_ID_FOR_PORT % 20000))}"
+DEFAULT_MASTER_PORT=$((31000 + (SLURM_JOB_ID_FOR_PORT % 20000)))
+REQUESTED_MASTER_PORT="${MASTER_PORT:-}"
+MASTER_PORT_SOURCE="default_from_slurm_job_id"
+if [ -n "$REQUESTED_MASTER_PORT" ]; then
+  MASTER_PORT="$REQUESTED_MASTER_PORT"
+  MASTER_PORT_SOURCE="environment"
+else
+  MASTER_PORT="$DEFAULT_MASTER_PORT"
+fi
 RUN_TAG="${RUN_TAG:-ctf_bdi_pc_ot_mras_r16a_gpu_smoke_${SLURM_JOB_ID:-nojob}_$(date '+%Y%m%d_%H%M%S')}"
 
 case "$RUN_TAG" in
@@ -164,8 +172,31 @@ case "$ALLOW_R16A_DETECTOR_MAP" in
   *) fail "detector mAP is not approved for R16A; ALLOW_R16A_DETECTOR_MAP must remain 0" ;;
 esac
 case "$MASTER_PORT" in
-  ''|*[!0-9]*) fail "MASTER_PORT must be numeric; got $MASTER_PORT" ;;
+  ''|*[!0-9]*)
+    if [ "$MASTER_PORT_SOURCE" = "environment" ]; then
+      log "WARN ignoring invalid inherited MASTER_PORT=$MASTER_PORT; using default $DEFAULT_MASTER_PORT"
+      MASTER_PORT="$DEFAULT_MASTER_PORT"
+      MASTER_PORT_SOURCE="default_after_invalid_environment"
+    else
+      fail "MASTER_PORT must be numeric; got $MASTER_PORT"
+    fi
+    ;;
 esac
+case "$MASTER_PORT" in
+  ''|*[!0-9]*) fail "normalized MASTER_PORT must be numeric; got $MASTER_PORT" ;;
+esac
+if [ "$MASTER_PORT" -lt 1024 ] || [ "$MASTER_PORT" -gt 65535 ]; then
+  if [ "$MASTER_PORT_SOURCE" = "environment" ]; then
+    log "WARN ignoring inherited MASTER_PORT=$MASTER_PORT outside [1024,65535]; using default $DEFAULT_MASTER_PORT"
+    MASTER_PORT="$DEFAULT_MASTER_PORT"
+    MASTER_PORT_SOURCE="default_after_invalid_environment"
+  else
+    fail "MASTER_PORT must be between 1024 and 65535; got $MASTER_PORT"
+  fi
+fi
+if [ "$MASTER_PORT" -lt 1024 ] || [ "$MASTER_PORT" -gt 65535 ]; then
+  fail "normalized MASTER_PORT must be between 1024 and 65535; got $MASTER_PORT"
+fi
 case "$TRAIN_ID" in
   ''|*[!0-9]*) fail "TRAIN_ID must be numeric; got $TRAIN_ID" ;;
 esac
@@ -214,7 +245,7 @@ log "config=$CONFIG"
 log "run_root=$RUN_ROOT"
 log "work_dir=$WORK_DIR"
 log "checkpoint_path=$CHECKPOINT_PATH"
-log "seed=$SEED train_id=$TRAIN_ID master_port=$MASTER_PORT"
+log "seed=$SEED train_id=$TRAIN_ID master_port=$MASTER_PORT master_port_source=$MASTER_PORT_SOURCE default_master_port=$DEFAULT_MASTER_PORT"
 log "precheck_only=$PRECHECK_ONLY allow_r16a_gpu_smoke=$ALLOW_R16A_GPU_SMOKE"
 log "scope=GPU_SMOKE_ONLY no_tools_test=true no_map=true no_long_training=true no_claims=true"
 log "python=$(python -c 'import sys; print(sys.executable)')"
