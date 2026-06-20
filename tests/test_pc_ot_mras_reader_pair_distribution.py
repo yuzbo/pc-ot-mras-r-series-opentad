@@ -59,6 +59,31 @@ def test_pc_ot_mras_pair_distribution_single_timestep_all_invalid():
     assert torch.isfinite(out["regularizers"]["pair_entropy_loss"]).all()
 
 
+def test_pc_ot_mras_pair_distribution_accepts_amp_softmax_dtype(monkeypatch):
+    torch.manual_seed(135)
+    reader = PCOTMRASReader(in_dim=4, hidden_dim=12, num_slots=4, num_blocks=1)
+    module = sys.modules["opentad.models.selectors.pc_ot_mras_reader"]
+    original_softmax = module._masked_softmax
+
+    def half_softmax(logits, mask, dim):
+        return original_softmax(logits, mask, dim).to(dtype=torch.float16)
+
+    monkeypatch.setattr(module, "_masked_softmax", half_softmax)
+    h = torch.randn(2, 6, 12, dtype=torch.float32)
+    valid = torch.ones(2, 6, dtype=torch.bool)
+    coords = torch.linspace(0.0, 1.0, 6, dtype=torch.float32)[None, :].expand(2, -1)
+    dense = {
+        "start_logits": torch.randn(2, 6, dtype=torch.float32),
+        "end_logits": torch.randn(2, 6, dtype=torch.float32),
+    }
+
+    _logits, pair_prob, pair_mask = reader._pair_distribution(h, valid, coords, dense)
+
+    assert pair_prob.dtype == torch.float32
+    assert torch.all(pair_prob[~pair_mask] == 0)
+    assert torch.allclose(pair_prob.sum(dim=(1, 2)), torch.ones(2), atol=1e-3)
+
+
 def test_process_boundary_logits_influence_allocation():
     torch.manual_seed(137)
     reader = PCOTMRASReader(in_dim=4, hidden_dim=10, num_slots=3, num_blocks=1)

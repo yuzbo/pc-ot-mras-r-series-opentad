@@ -324,7 +324,8 @@ class PCOTMRASReader(nn.Module):
         flat_prob = torch.zeros_like(flat_logits)
         has_pair = flat_mask.any(dim=1)
         if bool(has_pair.any().item()):
-            flat_prob[has_pair] = _masked_softmax(flat_logits[has_pair], flat_mask[has_pair], dim=-1)
+            pair_prob = _masked_softmax(flat_logits[has_pair], flat_mask[has_pair], dim=-1)
+            flat_prob[has_pair] = pair_prob.to(dtype=flat_prob.dtype)
         pair_prob = flat_prob.view(batch, time, time).masked_fill(~pair_mask, 0.0)
         return masked_logits, pair_prob, pair_mask
 
