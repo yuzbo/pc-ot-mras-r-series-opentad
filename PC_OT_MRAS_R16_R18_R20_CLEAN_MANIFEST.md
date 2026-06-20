@@ -907,3 +907,53 @@ git diff --check:
 Boundary: this is gate-manifest hardening only. It does not authorize
 `tools/test.py`, detector mAP, runtime/FLOPs, deployment, metric claims, or
 paper claims.
+
+## R27 Synthetic Task-Utility Audit
+
+R27 adds a local-only synthetic task-utility audit above the R22-R26 dynamic
+budget protocol chain. Unlike R26, which only checks budget distribution,
+savings, monotonicity, and coverage-cap behavior, R27 asks whether a dynamic
+budget plan selects TAD-sensitive synthetic structure under the same resolved
+hard-position protocol:
+
+- start/end boundary support;
+- interior evidence peak recall;
+- redundant/background suppression;
+- same-budget exact-uniform control comparison;
+- synthetic oracle top-k utility ratio;
+- hard/medium/easy difficulty budget ordering.
+
+Changed files:
+
+```text
+tools/bata/audit_pc_ot_mras_synthetic_task_utility.py
+configs/adatad/thumos/ctf_bdi_pc_ot_mras_r27_synthetic_task_utility_audit.py
+tests/test_pc_ot_mras_synthetic_task_utility_audit.py
+tests/test_pc_ot_mras_r27_synthetic_task_utility_config.py
+PC_OT_MRAS_R16_R18_R20_CLEAN_MANIFEST.md
+```
+
+Verification in `torch_1`:
+
+```text
+py_compile R27 tool/config/tests:
+  pass
+
+focused R27 pytest:
+  7 passed in 4.38s
+
+R22-R27 dynamic-budget regression:
+  72 passed in 16.22s
+
+full PC-OT-MRAS pytest plus train-engine max-train-iter test:
+  276 passed in 63.17s
+```
+
+Boundary: R27 is a synthetic local utility audit only. It does not read real
+annotations, datasets, checkpoints, raw predictions, teacher outputs, or result
+caches. It produces no detector mAP, runtime/FLOPs, deployment evidence,
+dynamic-budget quality validation, scanner-quality validation, metric claim, or
+paper claim. It should be used to decide whether further local protocol-only
+audits are becoming low-information: after R27, the next high-information step
+is a valid read-only review package and then a real no-GT detector/precheck
+gate, not another budget-mechanics-only diagnostic.
