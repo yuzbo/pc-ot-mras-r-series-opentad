@@ -1,6 +1,6 @@
-# PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24/R25/R26 Clean Implementation Manifest
+# PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24/R25/R26/R27/R28 Clean Implementation Manifest
 
-Timestamp: 2026-06-20T15:00:29+08:00
+Timestamp: 2026-06-20T16:54:27+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -47,6 +47,9 @@ d546ca877c644eb4a209a004c592f24aa3ff3d86 Record PC-OT-MRAS native head registry 
 8effdb01da43e7641f172806a3d326552a73eca4 Bind PC-OT-MRAS native head files in launch manifests
 7f3fb178dce78f2f9f61522ddde5c2a75a424d48 Record PC-OT-MRAS native head manifest binding
 01d41a6b1976dd2ca6d0e538c1fdead47df67180 Add PC-OT-MRAS R26 dynamic budget frontier audit
+834fb49cf4b1466a3c21ff1dc73337ba823772f7 Record PC-OT-MRAS R26 clean manifest
+c63d3e0538b26c7504a0cd44ba2a6c389d15ec68 add r27 synthetic task utility audit
+a1cb470b8e23e2dc78f3d966d2cfb946e7beff1b Add PC-OT-MRAS R28 tubelet token redundancy audit
 ```
 
 ## Objective
@@ -64,6 +67,8 @@ Implement only the PC-OT-MRAS continuous route stages on a clean OpenTAD baselin
 - R24 dynamic-budget temporal metadata and detector geometry contract candidate.
 - R25 dynamic-budget pipeline validation candidate.
 - R26 dynamic-budget frontier audit candidate.
+- R27 synthetic task-utility audit candidate.
+- R28 tubelet/token redundancy auxiliary audit candidate.
 
 The implementation intentionally does not copy unrelated BATA/UGIT/MFCSD/DBAC/ITMI experiment families from the dirty working tree.
 
@@ -101,6 +106,76 @@ py_compile changed R26 files: pass
 R26 focused pytest: 6 passed in 6.98s
 R22-R26 dynamic-budget regression pytest: 65 passed in 14.17s
 full PC-OT-MRAS plus train-engine pytest: 269 passed in 62.65s
+git diff --check: pass
+```
+
+## R27 Synthetic Task-Utility Audit
+
+Commit `c63d3e0538b26c7504a0cd44ba2a6c389d15ec68` adds a local-only
+synthetic task-utility audit above R22-R26:
+
+- `tools/bata/audit_pc_ot_mras_synthetic_task_utility.py` reuses R26/R25
+  protocol validation and then checks synthetic start/end boundary support,
+  interior peak recall, background selected share, same-budget exact-uniform
+  control, synthetic oracle top-k utility ratio, and difficulty-budget
+  ordering.
+- `configs/adatad/thumos/ctf_bdi_pc_ot_mras_r27_synthetic_task_utility_audit.py`
+  is launch-blocked and local-synthetic-only. It keeps detector training,
+  `tools/train.py`, `tools/test.py`, detector mAP, remote sync, Slurm/GPU,
+  real data/checkpoints, runtime/FLOPs, dynamic-budget quality validation,
+  scanner-quality validation, metric claims, and paper claims disabled.
+- `tests/test_pc_ot_mras_synthetic_task_utility_audit.py` and
+  `tests/test_pc_ot_mras_r27_synthetic_task_utility_config.py` cover task
+  utility pass/fail behavior, JSON roundtrip, leakage-key rejection, and
+  launch-gate behavior.
+
+R27 verification in the local Windows `torch_1` environment:
+
+```text
+py_compile changed R27 files: pass
+R27 focused pytest: 7 passed
+R22-R27 dynamic-budget regression pytest: 72 passed
+full PC-OT-MRAS plus train-engine pytest: 276 passed
+```
+
+## R28 Tubelet/Token Redundancy Auxiliary Audit
+
+Commit `a1cb470b8e23e2dc78f3d966d2cfb946e7beff1b` adds the first local
+space/token redundancy bridge for the PC-OT-MRAS route:
+
+- `opentad/models/backbones/vit_adapter.py` now includes
+  `TubeletTokenRedundancyAux`, a default-off, local-only auxiliary auditor
+  attached immediately after VideoMAE patch embedding and before positional
+  encoding. It scores temporal tubelet groups from spatial-token energy
+  statistics, records a proposed tubelet keep mask, forbids arbitrary spatial
+  patch crop, and returns the dense token sequence unchanged.
+- `configs/adatad/thumos/ctf_bdi_pc_ot_mras_r28_tubelet_token_redundancy_aux.py`
+  inherits R27, configures the auxiliary as disabled by default, and keeps
+  detector training, `tools/train.py`, `tools/test.py`, detector mAP, remote
+  sync, Slurm/GPU, real data/checkpoints, runtime/FLOPs, spatial redundancy
+  claims, metric claims, and paper claims disabled.
+- `tools/bata/audit_pc_ot_mras_tubelet_token_redundancy.py` runs a synthetic
+  local audit that verifies dense shape/value preservation, temporal
+  tubelet-group routing, no spatial crop, no GT/teacher/cache/raw-prediction
+  inputs, and no runtime/FLOPs or metric claim.
+- `tests/test_pc_ot_mras_tubelet_token_redundancy_aux.py` and
+  `tests/test_pc_ot_mras_r28_tubelet_token_redundancy_config.py` cover dense
+  output parity, deterministic keep-mask contract, spatial-crop rejection,
+  JSON audit roundtrip, no-claim boundaries, config parse, and training/test
+  fail-closed behavior.
+
+R28 is not true packed compute yet. It is the local contract layer that makes
+the tubelet/token spatial redundancy route reviewable before any backbone
+runtime, remote sync, Slurm/GPU, mAP, runtime/FLOPs, deployment, or paper
+claim.
+
+R28 verification in the local Windows `torch_1` environment:
+
+```text
+py_compile changed R28 files: pass
+R28 focused pytest: 6 passed in 4.82s
+R28 synthetic audit smoke: PC_OT_MRAS_TUBELET_TOKEN_REDUNDANCY_AUDIT_READY
+full PC-OT-MRAS plus train-engine pytest: 282 passed in 68.18s
 git diff --check: pass
 ```
 
