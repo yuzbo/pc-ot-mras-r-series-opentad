@@ -9,6 +9,14 @@ import torch.nn as nn
 from ..builder import SELECTORS
 
 
+def _neg(dtype: torch.dtype) -> float:
+    return float(torch.finfo(dtype).min / 4.0)
+
+
+def _mask_logits(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    return logits.masked_fill(~mask, _neg(logits.dtype))
+
+
 @dataclass(frozen=True)
 class LowCostBrowserConfig:
     in_dim: int
@@ -156,11 +164,10 @@ class LowCostAcquisitionBrowser(nn.Module):
             x = (x + y).masked_fill(~valid_f, 0.0)
 
         h = self.head_norm(x).masked_fill(~valid_f, 0.0)
-        neg = torch.finfo(h.dtype).min / 4.0
-        acq_logits = self.acq_head(h).squeeze(-1).masked_fill(~valid, neg)
-        start_logits = self.start_head(h).squeeze(-1).masked_fill(~valid, neg)
-        end_logits = self.end_head(h).squeeze(-1).masked_fill(~valid, neg)
-        boundary_logits = self.boundary_head(h).squeeze(-1).masked_fill(~valid, neg)
+        acq_logits = _mask_logits(self.acq_head(h).squeeze(-1), valid)
+        start_logits = _mask_logits(self.start_head(h).squeeze(-1), valid)
+        end_logits = _mask_logits(self.end_head(h).squeeze(-1), valid)
+        boundary_logits = _mask_logits(self.boundary_head(h).squeeze(-1), valid)
 
         pooled = (h * valid.unsqueeze(-1).to(dtype=h.dtype)).sum(dim=1)
         pooled = pooled / valid.long().sum(dim=1, keepdim=True).clamp_min(1).to(dtype=h.dtype)

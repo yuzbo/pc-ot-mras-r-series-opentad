@@ -34,6 +34,10 @@ def _neg(dtype: torch.dtype) -> float:
     return float(torch.finfo(dtype).min / 4.0)
 
 
+def _mask_logits(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    return logits.masked_fill(~mask, _neg(logits.dtype))
+
+
 def _validate_binary_mask(
     valid_mask: torch.Tensor,
     expected_shape: torch.Size,
@@ -76,7 +80,7 @@ def _masked_softmax(logits: torch.Tensor, mask: torch.Tensor, dim: int) -> torch
         raise ValueError(f"mask shape mismatch: {tuple(mask.shape)} vs {tuple(logits.shape)}")
     if mask.device != logits.device:
         raise ValueError("mask must be on the same device as logits")
-    masked = logits.masked_fill(~mask, _neg(logits.dtype))
+    masked = _mask_logits(logits, mask)
     max_values = masked.max(dim=dim, keepdim=True).values
     exp = torch.exp(masked - max_values).masked_fill(~mask, 0.0)
     denom = exp.sum(dim=dim, keepdim=True).clamp_min(torch.finfo(logits.dtype).eps)
@@ -246,19 +250,20 @@ class PCOTMRASReader(nn.Module):
         return centers, widths
 
     def _dense_heads(self, h: torch.Tensor, valid: torch.Tensor) -> Dict[str, torch.Tensor]:
-        neg = _neg(h.dtype)
+        valid_t = valid
+        valid_ts = valid.unsqueeze(-1)
         dense = {
-            "process_logits": self.process_head(h).masked_fill(~valid.unsqueeze(-1), neg),
-            "start_logits": self.start_head(h).squeeze(-1).masked_fill(~valid, neg),
-            "end_logits": self.end_head(h).squeeze(-1).masked_fill(~valid, neg),
-            "boundary_logits": self.boundary_head(h).squeeze(-1).masked_fill(~valid, neg),
-            "body_logits": self.body_head(h).squeeze(-1).masked_fill(~valid, neg),
-            "uncertainty_logits": self.uncertainty_head(h).squeeze(-1).masked_fill(~valid, neg),
-            "redundancy_logits": self.redundancy_head(h).squeeze(-1).masked_fill(~valid, neg),
+            "process_logits": _mask_logits(self.process_head(h), valid_ts),
+            "start_logits": _mask_logits(self.start_head(h).squeeze(-1), valid_t),
+            "end_logits": _mask_logits(self.end_head(h).squeeze(-1), valid_t),
+            "boundary_logits": _mask_logits(self.boundary_head(h).squeeze(-1), valid_t),
+            "body_logits": _mask_logits(self.body_head(h).squeeze(-1), valid_t),
+            "uncertainty_logits": _mask_logits(self.uncertainty_head(h).squeeze(-1), valid_t),
+            "redundancy_logits": _mask_logits(self.redundancy_head(h).squeeze(-1), valid_t),
         }
         if self.cfg.enable_value_heads:
-            dense["value_logits"] = self.value_head(h).squeeze(-1).masked_fill(~valid, neg)
-            dense["risk_logits"] = self.risk_head(h).squeeze(-1).masked_fill(~valid, neg)
+            dense["value_logits"] = _mask_logits(self.value_head(h).squeeze(-1), valid_t)
+            dense["risk_logits"] = _mask_logits(self.risk_head(h).squeeze(-1), valid_t)
         return dense
 
     def _allocation(
@@ -295,7 +300,7 @@ class PCOTMRASReader(nn.Module):
         logits = dot + local + 0.1 * role_bias + 0.1 * process_bias[:, None, :]
         mask = valid[:, None, :].expand_as(logits)
         allocation = _masked_softmax(logits, mask, dim=-1)
-        return logits.masked_fill(~mask, _neg(logits.dtype)), allocation.masked_fill(~mask, 0.0)
+        return _mask_logits(logits, mask), allocation.masked_fill(~mask, 0.0)
 
     def _pair_distribution(
         self,
@@ -313,7 +318,7 @@ class PCOTMRASReader(nn.Module):
         learned = self.pair_scorer(pair_input).squeeze(-1)
         logits = dense["start_logits"][:, :, None] + dense["end_logits"][:, None, :] + learned
         pair_mask = valid[:, :, None] & valid[:, None, :] & (raw_duration > 0.0)
-        masked_logits = logits.masked_fill(~pair_mask, _neg(logits.dtype))
+        masked_logits = _mask_logits(logits, pair_mask)
         flat_logits = masked_logits.flatten(1)
         flat_mask = pair_mask.flatten(1)
         flat_prob = torch.zeros_like(flat_logits)

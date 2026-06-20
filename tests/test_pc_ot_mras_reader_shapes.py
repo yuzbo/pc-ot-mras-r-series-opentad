@@ -25,6 +25,9 @@ from pc_ot_mras_test_utils import load_pc_ot_mras_classes
 
 
 PCOTMRASReader, PCOTMRASDetectorBridge = load_pc_ot_mras_classes()
+LowCostAcquisitionBrowser = sys.modules[
+    "opentad.models.selectors.lowcost_acquisition_browser"
+].LowCostAcquisitionBrowser
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -104,6 +107,71 @@ def test_pc_ot_mras_reader_value_heads_are_explicit_opt_in():
     assert torch.isfinite(out["risk_logits"][:, :8]).all()
     assert torch.all(out["allocation"][:, :, :] >= 0)
     assert torch.allclose(out["allocation"].sum(dim=-1), torch.ones(2, 6), atol=1e-5)
+
+
+def test_pc_ot_mras_dense_heads_mask_half_logits_with_output_dtype_sentinel():
+    class HalfHead(torch.nn.Module):
+        def __init__(self, out_dim):
+            super().__init__()
+            self.out_dim = out_dim
+
+        def forward(self, h):
+            return torch.zeros((*h.shape[:2], self.out_dim), dtype=torch.float16, device=h.device)
+
+    reader = PCOTMRASReader(
+        in_dim=5,
+        hidden_dim=8,
+        num_slots=4,
+        num_blocks=1,
+        num_roles=6,
+        enable_value_heads=True,
+    )
+    reader.process_head = HalfHead(reader.cfg.num_process_states)
+    for name in (
+        "start_head",
+        "end_head",
+        "boundary_head",
+        "body_head",
+        "uncertainty_head",
+        "redundancy_head",
+        "value_head",
+        "risk_head",
+    ):
+        setattr(reader, name, HalfHead(1))
+
+    h = torch.randn(2, 6, 8, dtype=torch.float32)
+    valid = torch.tensor([[1, 1, 1, 0, 0, 0], [1, 1, 1, 1, 1, 1]], dtype=torch.bool)
+    out = reader._dense_heads(h, valid)
+
+    expected = torch.tensor(torch.finfo(torch.float16).min / 4.0, dtype=torch.float16)
+    for key, logits in out.items():
+        mask = valid.unsqueeze(-1).expand_as(logits) if logits.ndim == 3 else valid
+        assert logits.dtype == torch.float16
+        assert torch.isfinite(logits).all()
+        assert torch.all(logits[~mask] == expected)
+        assert torch.all(logits[mask] == 0)
+
+
+def test_lowcost_browser_masks_half_logits_with_output_dtype_sentinel():
+    class HalfHead(torch.nn.Module):
+        def forward(self, h):
+            return torch.zeros((*h.shape[:2], 1), dtype=torch.float16, device=h.device)
+
+    browser = LowCostAcquisitionBrowser(in_dim=5, hidden_dim=8, num_blocks=1)
+    for name in ("acq_head", "start_head", "end_head", "boundary_head"):
+        setattr(browser, name, HalfHead())
+
+    features = torch.randn(2, 6, 5, dtype=torch.float32)
+    valid = torch.tensor([[1, 1, 1, 0, 0, 0], [1, 1, 1, 1, 1, 1]], dtype=torch.bool)
+    out = browser(features, valid)
+
+    expected = torch.tensor(torch.finfo(torch.float16).min / 4.0, dtype=torch.float16)
+    for key in ("acq_logits", "start_logits", "end_logits", "boundary_logits"):
+        logits = out[key]
+        assert logits.dtype == torch.float16
+        assert torch.isfinite(logits).all()
+        assert torch.all(logits[~valid] == expected)
+        assert torch.all(logits[valid] == 0)
 
 
 def test_pc_ot_mras_reader_centers_are_monotonic_without_posthoc_sort():
