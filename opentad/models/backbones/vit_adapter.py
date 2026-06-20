@@ -253,15 +253,16 @@ class TubeletTokenRedundancyAux(BaseModule):
 class PackedTubeletRuntimeRoute(BaseModule):
     """Opt-in packed temporal-tubelet execution inside ViT forward.
 
-    This route is intentionally narrow. It only handles temporal-tubelet groups,
-    keeps all spatial patches within a selected tubelet, and refuses Adapter
-    blocks because the current Adapter convolution requires a dense temporal
-    grid. It is disabled by default and exists to make the R30 packed-runtime
+    This route is intentionally narrow. It only handles temporal-tubelet groups
+    and keeps all spatial patches within a selected tubelet. Packed execution
+    is applied inside each transformer block's attention/MLP subpath, then the
+    selected outputs are scattered back before Adapter convolution sees the
+    tensor. It is disabled by default and exists to make the R30 packed-runtime
     proof executable through the production backbone forward path.
     """
 
     valid_modes = ("deterministic_tubelet_cap",)
-    valid_scatter_modes = ("zero",)
+    valid_scatter_modes = ("identity", "zero")
 
     def __init__(
         self,
@@ -273,9 +274,9 @@ class PackedTubeletRuntimeRoute(BaseModule):
         route_pattern: str = "round_linspace",
         forbid_spatial_crop: bool = True,
         local_forward_only: bool = True,
-        require_no_adapter_blocks: bool = True,
+        require_no_adapter_blocks: bool = False,
         allow_training_mode: bool = False,
-        scatter_unselected: str = "zero",
+        scatter_unselected: str = "identity",
         **kwargs,
     ) -> None:
         super().__init__()
@@ -364,18 +365,23 @@ class PackedTubeletRuntimeRoute(BaseModule):
             raise ValueError("packed tubelet route requires equal selected-token count across batch")
         return x[dense_mask].reshape(int(x.shape[0]), int(per_batch_counts[0].item()), int(x.shape[2]))
 
-    def _scatter_tokens(self, packed: Tensor, dense_mask: Tensor, dense_shape: torch.Size) -> Tensor:
-        if self.scatter_unselected != "zero":
+    def _scatter_tokens(self, base: Tensor, packed: Tensor, dense_mask: Tensor) -> Tensor:
+        if self.scatter_unselected == "identity":
+            scattered = base.clone()
+        elif self.scatter_unselected == "zero":
+            scattered = packed.new_zeros(base.shape)
+        else:
             raise ValueError(f"unsupported packed tubelet scatter mode: {self.scatter_unselected}")
-        scattered = packed.new_zeros(dense_shape)
         scattered[dense_mask] = packed.reshape(-1, int(packed.shape[-1]))
         return scattered
 
     @staticmethod
-    def _run_blocks(blocks, x: Tensor, h: int, w: int) -> Tensor:
+    def _run_blocks(blocks, x: Tensor, h: int, w: int, dense_mask: Tensor, stats: Dict[str, int]) -> Tensor:
         out = x
         for block in blocks:
-            out = block(out, h, w)
+            if bool(getattr(block, "use_adapter", False)):
+                stats["adapter_forward_count"] += 1
+            out = block(out, h, w, packed_dense_mask=dense_mask, packed_stats=stats)
         return out
 
     def forward(self, x: Tensor, blocks, h: int, w: int, *, training: bool = False) -> Tensor:
@@ -391,14 +397,20 @@ class PackedTubeletRuntimeRoute(BaseModule):
         tubelet_mask, temporal_tubelets, spatial_tokens = self._tubelet_mask(x, h, w)
         dense_mask = self._expand_tubelet_mask(tubelet_mask, spatial_tokens)
         packed = self._pack_tokens(x, dense_mask)
-        packed_output = self._run_blocks(blocks, packed, h, w)
-        scattered = self._scatter_tokens(packed_output, dense_mask, x.shape)
+        stats = {
+            "packed_attention_forward_count": 0,
+            "packed_mlp_forward_count": 0,
+            "adapter_forward_count": 0,
+        }
+        out = self._run_blocks(blocks, x, h, w, dense_mask, stats)
 
-        selected_output = scattered[dense_mask].reshape_as(packed_output)
-        selected_outputs_preserved_after_scatter = bool(torch.allclose(selected_output, packed_output))
-        unselected_zero = bool(torch.count_nonzero(scattered[~dense_mask]).item() == 0)
-        packed_output_finite = bool(torch.isfinite(packed_output).all().item())
-        scattered_output_finite = bool(torch.isfinite(scattered).all().item())
+        selected_output = out[dense_mask].reshape(int(out.shape[0]), int(packed.shape[1]), int(out.shape[2]))
+        selected_output_finite = bool(torch.isfinite(selected_output).all().item())
+        scattered_output_finite = bool(torch.isfinite(out).all().item())
+        if self.scatter_unselected == "identity" and adapter_block_count == 0:
+            unselected_identity = bool(torch.allclose(out[~dense_mask], x[~dense_mask]))
+        else:
+            unselected_identity = None
 
         self.last_summary = {
             "schema_version": "packed_tubelet_runtime_route_summary_v0",
@@ -409,16 +421,18 @@ class PackedTubeletRuntimeRoute(BaseModule):
             "local_forward_only": self.local_forward_only,
             "production_forward_changed": True,
             "training_mode_allowed": self.allow_training_mode,
-            "adapter_blocks_supported": False,
+            "adapter_blocks_supported": not self.require_no_adapter_blocks,
             "adapter_block_count": int(adapter_block_count),
+            "adapter_dense_contract_preserved": not self.require_no_adapter_blocks,
+            "dense_scatter_before_adapter": bool(adapter_block_count and not self.require_no_adapter_blocks),
             "spatial_patch_crop_allowed": False,
             "spatial_filtering_allowed": False,
             "arbitrary_spatial_patch_filtering_allowed": False,
             "scatter_unselected": self.scatter_unselected,
             "dense_token_shape": list(x.shape),
             "packed_token_shape": list(packed.shape),
-            "dense_output_shape": list(scattered.shape),
-            "packed_output_shape": list(packed_output.shape),
+            "dense_output_shape": list(out.shape),
+            "selected_output_shape": list(selected_output.shape),
             "temporal_tubelets": int(temporal_tubelets),
             "spatial_tokens_per_tubelet": int(spatial_tokens),
             "selected_tubelets": int(tubelet_mask[0].sum().item()),
@@ -428,9 +442,11 @@ class PackedTubeletRuntimeRoute(BaseModule):
             "packed_attention_executed_in_forward": True,
             "packed_mlp_executed_in_forward": True,
             "scatter_back_executed": True,
-            "selected_outputs_preserved_after_scatter": selected_outputs_preserved_after_scatter,
-            "unselected_positions_zero_after_scatter": unselected_zero,
-            "packed_output_finite": packed_output_finite,
+            "packed_attention_forward_count": int(stats["packed_attention_forward_count"]),
+            "packed_mlp_forward_count": int(stats["packed_mlp_forward_count"]),
+            "adapter_forward_count": int(stats["adapter_forward_count"]),
+            "unselected_positions_identity_bypass_without_adapter": unselected_identity,
+            "selected_output_finite": selected_output_finite,
             "scattered_output_finite": scattered_output_finite,
             "measured_runtime": False,
             "measured_flops": False,
@@ -438,7 +454,7 @@ class PackedTubeletRuntimeRoute(BaseModule):
             "metric_claim_allowed": False,
             "paper_claim_allowed": False,
         }
-        return scattered
+        return out
 
 
 class Attention(BaseModule):
@@ -606,7 +622,41 @@ class Block(BaseModule):
                 mlp_ratio=adapter_mlp_ratio,
             )
 
-    def forward(self, x: Tensor, h, w) -> Tensor:
+    @staticmethod
+    def _pack_selected_tokens(x: Tensor, dense_mask: Tensor) -> Tensor:
+        if dense_mask.shape != x.shape[:2]:
+            raise ValueError("packed_dense_mask must match x batch/token shape")
+        per_batch_counts = dense_mask.sum(dim=1)
+        if int(per_batch_counts.min().item()) <= 0:
+            raise ValueError("packed block path requires at least one selected token per sample")
+        if not torch.equal(per_batch_counts, per_batch_counts[:1].expand_as(per_batch_counts)):
+            raise ValueError("packed block path requires equal selected-token count across batch")
+        return x[dense_mask].reshape(int(x.shape[0]), int(per_batch_counts[0].item()), int(x.shape[2]))
+
+    def _packed_attention_mlp_forward(
+        self,
+        x: Tensor,
+        dense_mask: Tensor,
+        packed_stats: Optional[Dict[str, int]],
+    ) -> Tensor:
+        selected = self._pack_selected_tokens(x, dense_mask)
+        selected = selected + self.drop_path(self.attn(self.norm1(selected)))
+        selected = selected + self.drop_path(self.mlp(self.norm2(selected)))
+        if packed_stats is not None:
+            packed_stats["packed_attention_forward_count"] = int(packed_stats.get("packed_attention_forward_count", 0)) + 1
+            packed_stats["packed_mlp_forward_count"] = int(packed_stats.get("packed_mlp_forward_count", 0)) + 1
+        out = x.clone()
+        out[dense_mask] = selected.reshape(-1, int(selected.shape[-1]))
+        return out
+
+    def forward(
+        self,
+        x: Tensor,
+        h,
+        w,
+        packed_dense_mask: Optional[Tensor] = None,
+        packed_stats: Optional[Dict[str, int]] = None,
+    ) -> Tensor:
         """Defines the computation performed at every call.
 
         Args:
@@ -617,8 +667,11 @@ class Block(BaseModule):
 
         def _inner_forward(x):
             """Forward wrapper for utilizing checkpoint."""
-            x = x + self.drop_path(self.attn(self.norm1(x)))
-            x = x + self.drop_path(self.mlp(self.norm2(x)))
+            if packed_dense_mask is None:
+                x = x + self.drop_path(self.attn(self.norm1(x)))
+                x = x + self.drop_path(self.mlp(self.norm2(x)))
+            else:
+                x = self._packed_attention_mlp_forward(x, packed_dense_mask, packed_stats)
 
             if self.use_adapter:
                 x = self.adapter(x, h, w)

@@ -1,6 +1,6 @@
-# PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24/R25/R26/R27/R28/R29/R30 Clean Implementation Manifest
+# PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24/R25/R26/R27/R28/R29/R30/R31 Clean Implementation Manifest
 
-Timestamp: 2026-06-20T19:35:32+08:00
+Timestamp: 2026-06-20T23:25:18+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -51,6 +51,11 @@ d546ca877c644eb4a209a004c592f24aa3ff3d86 Record PC-OT-MRAS native head registry 
 c63d3e0538b26c7504a0cd44ba2a6c389d15ec68 add r27 synthetic task utility audit
 a1cb470b8e23e2dc78f3d966d2cfb946e7beff1b Add PC-OT-MRAS R28 tubelet token redundancy audit
 9744e6fb0f45a1db2702d45e034f95e98b29cb11 Fix PC-OT-MRAS AMP mask sentinels
+d0478cc Record PC-OT-MRAS R28 clean manifest
+3493337 Record PC-OT-MRAS AMP sentinel fix
+fa216a9 Add PC-OT-MRAS R29 tubelet packed profile audit
+36687dc Add PC-OT-MRAS R30 tubelet packed runtime proof
+a5e2507847f0ea1ef32b6903323ed087751e2934 Add PC-OT-MRAS R31 packed forward opt-in
 ```
 
 ## Objective
@@ -72,6 +77,7 @@ Implement only the PC-OT-MRAS continuous route stages on a clean OpenTAD baselin
 - R28 tubelet/token redundancy auxiliary audit candidate.
 - R29 profiler-only temporal-tubelet packed-profile audit candidate.
 - R30 local synthetic true packed temporal-tubelet runtime proof candidate.
+- R31 local-only packed temporal-tubelet production-forward opt-in candidate.
 
 The implementation intentionally does not copy unrelated BATA/UGIT/MFCSD/DBAC/ITMI experiment families from the dirty working tree.
 
@@ -278,6 +284,55 @@ R28/R29/R30 focused pytest: 16 passed in 9.21s
 R30 synthetic runtime smoke: PC_OT_MRAS_TUBELET_PACKED_RUNTIME_AUDIT_READY
 full PC-OT-MRAS pytest: 291 passed in 73.16s
 git diff --check: pass with LF/CRLF warning only
+```
+
+## R31 Packed Tubelet Forward Opt-In
+
+R31 connects the R30 packed temporal-tubelet runtime proof to the production
+`VisionTransformerAdapter.forward()` path as an explicit local-only opt-in. It
+does not enable detector training, remote sync, precheck, Slurm/GPU, real
+datasets/checkpoints, detector mAP, measured deploy runtime/FLOPs, deployment,
+spatial-redundancy, metric, or paper claims.
+
+- `opentad/models/backbones/vit_adapter.py` adds
+  `PackedTubeletRuntimeRoute`. The route builds a temporal-tubelet keep mask
+  after patch embedding and positional encoding, then passes the mask into each
+  transformer `Block`.
+- `Block.forward()` now has an optional packed subpath for attention/MLP only:
+  selected temporal-tubelet tokens are packed, processed, and scattered back to
+  dense shape inside the block. Adapter convolution then receives dense tokens,
+  preserving the existing Adapter temporal-grid contract.
+- The route keeps unselected tokens on an identity bypass before Adapter. It is
+  disabled by default and still rejects training mode unless explicitly allowed
+  by a future gate.
+- `configs/adatad/thumos/ctf_bdi_pc_ot_mras_r31_packed_forward_optin_local.py`
+  inherits R30 and remains launch-blocked. The config keeps the packed route
+  default-off and records only local synthetic forward checks as allowed.
+- `tests/test_pc_ot_mras_packed_tubelet_forward_route.py` covers direct route
+  execution, dense scatter-back shape, finite selected outputs, Adapter dense
+  contract preservation, strict adapter-free fail-closed mode, training-mode
+  fail-closed behavior, full `VisionTransformerAdapter.forward()` opt-in
+  behavior, and default-path preservation.
+- `tests/test_pc_ot_mras_r31_packed_forward_config.py` covers config parse,
+  default-off route config, and training/test entrypoint fail-closed behavior.
+
+R31 verification in the local Windows `torch_1` environment:
+
+```text
+py_compile changed R31 files:
+  pass
+
+R31 focused pytest:
+  5 passed in 5.18s
+
+R28/R29/R30/R31 focused regression:
+  21 passed in 13.27s
+
+full PC-OT-MRAS pytest plus train-engine max-train-iter selection:
+  299 passed in 69.59s
+
+git diff --check:
+  pass with LF/CRLF warning only
 ```
 
 ## Source Provenance

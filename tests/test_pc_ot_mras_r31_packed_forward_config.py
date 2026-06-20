@@ -40,8 +40,11 @@ def test_r31_packed_forward_config_is_parseable_default_off_and_launch_blocked()
     assert gate.route_unit == "temporal_tubelet_group"
     assert gate.spatial_patch_crop_allowed is False
     assert gate.spatial_filtering_allowed is False
-    assert gate.adapter_blocks_supported is False
-    assert gate.adapter_block_fail_closed is True
+    assert gate.adapter_blocks_supported is True
+    assert gate.adapter_dense_contract_preserved is True
+    assert gate.dense_scatter_before_adapter is True
+    assert gate.unselected_identity_bypass_before_adapter is True
+    assert gate.adapter_block_fail_closed is False
     assert gate.training_mode_allowed is False
     assert gate.local_forward_only is True
     assert gate.measured_runtime is False
@@ -65,15 +68,18 @@ def test_r31_packed_forward_config_is_parseable_default_off_and_launch_blocked()
     assert route_cfg.keep_ratio == 0.5
     assert route_cfg.forbid_spatial_crop is True
     assert route_cfg.local_forward_only is True
-    assert route_cfg.require_no_adapter_blocks is True
+    assert route_cfg.require_no_adapter_blocks is False
     assert route_cfg.allow_training_mode is False
-    assert route_cfg.scatter_unselected == "zero"
+    assert route_cfg.scatter_unselected == "identity"
 
     smoke = cfg.pc_ot_mras_tubelet_packed_forward_smoke
     assert smoke.auditor == "synthetic_vit_adapter_forward_optin"
     assert smoke.summary_schema == "packed_tubelet_runtime_route_summary_v0"
-    assert smoke.adapter_blocks_supported is False
-    assert smoke.adapter_block_fail_closed is True
+    assert smoke.adapter_blocks_supported is True
+    assert smoke.adapter_dense_contract_preserved is True
+    assert smoke.dense_scatter_before_adapter is True
+    assert smoke.unselected_identity_bypass_before_adapter is True
+    assert smoke.adapter_block_fail_closed is False
     assert smoke.runtime_flops_claim_allowed is False
     assert smoke.metric_claim_allowed is False
     assert smoke.paper_claim_allowed is False

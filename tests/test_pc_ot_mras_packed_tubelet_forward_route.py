@@ -164,7 +164,7 @@ def test_packed_tubelet_route_executes_blocks_and_scatters_to_dense_shape():
         mode="deterministic_tubelet_cap",
         keep_ratio=0.5,
         local_forward_only=True,
-        require_no_adapter_blocks=True,
+        require_no_adapter_blocks=False,
     )
 
     y = route(x, _blocks(use_adapter=False), 2, 3, training=False)
@@ -177,29 +177,43 @@ def test_packed_tubelet_route_executes_blocks_and_scatters_to_dense_shape():
     assert summary["dense_token_shape"] == [2, 48, 8]
     assert summary["packed_token_shape"] == [2, 24, 8]
     assert summary["dense_output_shape"] == [2, 48, 8]
-    assert summary["packed_output_shape"] == [2, 24, 8]
+    assert summary["selected_output_shape"] == [2, 24, 8]
     assert summary["has_strict_token_saving"] is True
     assert summary["true_packed_compute_enabled"] is True
     assert summary["packed_attention_executed_in_forward"] is True
     assert summary["packed_mlp_executed_in_forward"] is True
     assert summary["scatter_back_executed"] is True
-    assert summary["selected_outputs_preserved_after_scatter"] is True
-    assert summary["unselected_positions_zero_after_scatter"] is True
-    assert summary["packed_output_finite"] is True
+    assert summary["packed_attention_forward_count"] == 1
+    assert summary["packed_mlp_forward_count"] == 1
+    assert summary["adapter_forward_count"] == 0
+    assert summary["unselected_positions_identity_bypass_without_adapter"] is True
+    assert summary["selected_output_finite"] is True
     assert summary["scattered_output_finite"] is True
-    assert summary["adapter_blocks_supported"] is False
+    assert summary["adapter_blocks_supported"] is True
+    assert summary["adapter_dense_contract_preserved"] is True
     assert summary["measured_runtime"] is False
     assert summary["runtime_flops_claim_allowed"] is False
     assert summary["metric_claim_allowed"] is False
     assert summary["paper_claim_allowed"] is False
 
 
-def test_packed_tubelet_route_rejects_adapter_blocks_and_training_mode():
+def test_packed_tubelet_route_supports_adapter_dense_contract_and_keeps_fail_closed_modes():
     x = torch.randn(2, 48, 8)
-    route = PackedTubeletRuntimeRoute(enabled=True, keep_ratio=0.5)
+    route = PackedTubeletRuntimeRoute(enabled=True, keep_ratio=0.5, require_no_adapter_blocks=False)
+    y = route(x, _blocks(use_adapter=True), 2, 3, training=False)
+    summary = route.last_summary
 
+    assert y.shape == x.shape
+    assert summary["adapter_block_count"] == 1
+    assert summary["adapter_forward_count"] == 1
+    assert summary["dense_scatter_before_adapter"] is True
+    assert summary["adapter_dense_contract_preserved"] is True
+    assert summary["packed_attention_forward_count"] == 1
+    assert summary["packed_mlp_forward_count"] == 1
+
+    strict_route = PackedTubeletRuntimeRoute(enabled=True, keep_ratio=0.5, require_no_adapter_blocks=True)
     with pytest.raises(ValueError, match="adapter-free blocks"):
-        route(x, _blocks(use_adapter=True), 2, 3, training=False)
+        strict_route(x, _blocks(use_adapter=True), 2, 3, training=False)
 
     with pytest.raises(ValueError, match="forbids training mode"):
         route(x, _blocks(use_adapter=False), 2, 3, training=True)
@@ -224,14 +238,16 @@ def test_vit_adapter_forward_optin_returns_dense_feature_map_and_summary():
         use_mean_pooling=False,
         return_feat_map=True,
         with_cp=False,
-        adapter_index=[],
+        adapter_index=[0],
+        total_frames=4,
         tubelet_packed_runtime_route=dict(
             enabled=True,
             mode="deterministic_tubelet_cap",
             keep_ratio=0.5,
             local_forward_only=True,
-            require_no_adapter_blocks=True,
+            require_no_adapter_blocks=False,
             allow_training_mode=False,
+            scatter_unselected="identity",
         ),
         init_cfg=None,
     )
@@ -247,6 +263,10 @@ def test_vit_adapter_forward_optin_returns_dense_feature_map_and_summary():
     assert summary["dense_token_shape"] == [2, 12, 8]
     assert summary["packed_token_shape"] == [2, 6, 8]
     assert summary["dense_output_shape"] == [2, 12, 8]
+    assert summary["adapter_block_count"] == 1
+    assert summary["adapter_forward_count"] == 1
+    assert summary["dense_scatter_before_adapter"] is True
+    assert summary["adapter_dense_contract_preserved"] is True
     assert summary["scatter_back_executed"] is True
     assert summary["spatial_patch_crop_allowed"] is False
     assert summary["runtime_flops_claim_allowed"] is False

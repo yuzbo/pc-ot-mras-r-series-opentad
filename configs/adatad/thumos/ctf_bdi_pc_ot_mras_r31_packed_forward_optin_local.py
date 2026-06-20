@@ -1,7 +1,9 @@
 _base_ = ["ctf_bdi_pc_ot_mras_r30_tubelet_packed_runtime_proof.py"]
 
 # R31 connects the R30 packed temporal-tubelet proof to the production
-# VisionTransformerAdapter.forward path as an explicit local-only opt-in.
+# VisionTransformerAdapter.forward path as an explicit local-only opt-in. Packed
+# execution is scoped to each Block's attention/MLP subpath; selected outputs
+# scatter back to dense token shape before Adapter convolution sees the tensor.
 # It stays launch-blocked and default-off; it is not detector precheck,
 # training, measured deploy runtime/FLOPs, mAP, or paper evidence.
 
@@ -29,8 +31,11 @@ r31_pc_ot_mras_packed_forward_optin_gate = dict(
     arbitrary_spatial_patch_filtering_allowed=False,
     dense_output_length_preserved=True,
     scatter_back_executed=True,
-    adapter_blocks_supported=False,
-    adapter_block_fail_closed=True,
+    adapter_blocks_supported=True,
+    adapter_dense_contract_preserved=True,
+    dense_scatter_before_adapter=True,
+    unselected_identity_bypass_before_adapter=True,
+    adapter_block_fail_closed=False,
     training_mode_allowed=False,
     local_forward_only=True,
     measured_runtime=False,
@@ -59,7 +64,8 @@ r31_pc_ot_mras_packed_forward_optin_gate = dict(
         "mmengine_config_parse",
         "static_config_contract",
         "vit_adapter_forward_synthetic_optin",
-        "adapter_block_fail_closed",
+        "adapter_dense_contract_preserved",
+        "block_internal_packed_attention_mlp",
         "dense_scatter_back_shape",
         "selected_output_finiteness",
         "py_compile_changed_files",
@@ -92,9 +98,9 @@ model = dict(
             route_pattern="round_linspace",
             forbid_spatial_crop=True,
             local_forward_only=True,
-            require_no_adapter_blocks=True,
+            require_no_adapter_blocks=False,
             allow_training_mode=False,
-            scatter_unselected="zero",
+            scatter_unselected="identity",
         )
     )
 )
@@ -107,8 +113,11 @@ pc_ot_mras_tubelet_packed_forward_smoke = dict(
     synthetic_only=True,
     local_forward_only=True,
     keep_ratio=0.5,
-    adapter_blocks_supported=False,
-    adapter_block_fail_closed=True,
+    adapter_blocks_supported=True,
+    adapter_dense_contract_preserved=True,
+    dense_scatter_before_adapter=True,
+    unselected_identity_bypass_before_adapter=True,
+    adapter_block_fail_closed=False,
     spatial_patch_crop_allowed=False,
     spatial_filtering_allowed=False,
     arbitrary_spatial_patch_filtering_allowed=False,
