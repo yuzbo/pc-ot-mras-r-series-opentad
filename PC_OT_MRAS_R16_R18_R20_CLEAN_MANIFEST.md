@@ -1,6 +1,6 @@
 # PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24/R25/R26/R27/R28/R29/R30/R31 Clean Implementation Manifest
 
-Timestamp: 2026-06-20T23:25:18+08:00
+Timestamp: 2026-06-20T23:48:35+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -56,6 +56,8 @@ d0478cc Record PC-OT-MRAS R28 clean manifest
 fa216a9 Add PC-OT-MRAS R29 tubelet packed profile audit
 36687dc Add PC-OT-MRAS R30 tubelet packed runtime proof
 a5e2507847f0ea1ef32b6903323ed087751e2934 Add PC-OT-MRAS R31 packed forward opt-in
+b83897048434c51688cb10dd012c92195cab330c Refine PC-OT-MRAS R31 adapter packed forward
+7d590c305519ccef4c594ee8f16c5c8942ff8990 Fix PC-OT-MRAS pair softmax AMP dtype
 ```
 
 ## Objective
@@ -330,6 +332,42 @@ R28/R29/R30/R31 focused regression:
 
 full PC-OT-MRAS pytest plus train-engine max-train-iter selection:
   299 passed in 69.59s
+
+git diff --check:
+  pass with LF/CRLF warning only
+```
+
+## R16A Pair-Distribution AMP Dtype Repair
+
+The second R16A bounded GPU smoke job `1106714` reached AMP training on N16R4
+and failed during launch sanity, before any detector mAP or training conclusion:
+
+```text
+RuntimeError: expected scalar type Float but found Half
+opentad/models/selectors/pc_ot_mras_reader.py:327
+flat_prob[has_pair] = _masked_softmax(flat_logits[has_pair], flat_mask[has_pair], dim=-1)
+```
+
+The failure was in `_pair_distribution()`: AMP/autocast can make the local
+masked-softmax result and the preallocated flattened probability buffer use
+different floating dtypes. Commit `7d590c3` casts the softmax result to
+`flat_prob.dtype` before assignment. This is a launch-sanity dtype-contract
+repair only. It does not change pair validity, role allocation semantics, input
+sampling, dynamic-budget policy, Adapter/backbone routing, detector head logic,
+loss/assignment, post-processing, GT/teacher/cache boundaries, or any metric
+claim.
+
+Verification in the local Windows `torch_1` environment:
+
+```text
+py_compile:
+  pass
+
+focused reader pair-distribution and half-head tests:
+  11 passed in 6.34s
+
+full PC-OT-MRAS pytest plus train-engine max-train-iter selection:
+  300 passed in 70.36s
 
 git diff --check:
   pass with LF/CRLF warning only
