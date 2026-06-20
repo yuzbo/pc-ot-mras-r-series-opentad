@@ -1,6 +1,6 @@
 # PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24/R25 Clean Implementation Manifest
 
-Timestamp: 2026-06-20T04:49+08:00
+Timestamp: 2026-06-20T13:05+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -38,6 +38,11 @@ b86012e Record PC-OT-MRAS R24 clean manifest
 c3c1ab2 Record PC-OT-MRAS R24 validation fix
 dc972e1 Record PC-OT-MRAS R24 Gemini fix review
 da59fe3 Add PC-OT-MRAS R25 pipeline validation
+15bca1c Record PC-OT-MRAS R25 clean manifest
+c01bae7 Fix PC-OT-MRAS R25 dynamic plan gate
+1c1bf65 Record PC-OT-MRAS R25 gate fix
+70e7ca3 Fix PC-OT-MRAS Slurm master port guard
+42b9ab7c94389aa3532481c520138017f442b22c Fix PC-OT-MRAS native area head registration
 ```
 
 ## Objective
@@ -786,3 +791,45 @@ full PC-OT-MRAS pytest plus train-engine max-iter in torch_1:
 Boundary: this is a launcher robustness fix only. It does not produce detector
 mAP, runtime/FLOPs, deployment, dynamic-budget/scanner-quality validation,
 metric claims, or paper claims.
+
+## NativeIrregularAreaHeadP2 Registry Fix
+
+Rootfix R16A Slurm job `1106086` reached `tools/train.py`, built the dataset,
+loaded the reviewed pretrained initialization, and then failed during model
+construction because `NativeIrregularAreaHeadP2` was not registered through the
+normal OpenTAD package import path:
+
+```text
+KeyError: 'NativeIrregularAreaHeadP2 is not in the opentad::models registry'
+```
+
+Commit `42b9ab7c94389aa3532481c520138017f442b22c` fixes this clean-repo
+runtime registration gap:
+
+- `opentad/models/dense_heads/__init__.py` imports and exports
+  `NativeIrregularAreaHeadP2`, so `from opentad.models import *` registers the
+  PC-OT-MRAS native irregular-area head before `build_head(...)`.
+- `tests/test_pc_ot_mras_config_integration.py` adds a package-import
+  regression test that imports `opentad.models.dense_heads`, verifies the
+  registered class, and builds a minimal `NativeIrregularAreaHeadP2` through
+  `builder.build_head(...)`.
+
+Verification in `torch_1`:
+
+```text
+py_compile opentad/models/dense_heads/__init__.py \
+  tests/test_pc_ot_mras_config_integration.py: pass
+
+focused registry/R16/R17/R18 pytest:
+  22 passed in 9.00s
+
+full PC-OT-MRAS pytest plus train-engine max-iter:
+  263 passed in 53.18s
+
+git diff --check:
+  pass, with LF/CRLF warnings only
+```
+
+Boundary: this is a package-import/registry fix only. It does not change input
+sampling, dynamic budget policy, losses, assignment, post-processing, detector
+mAP, runtime/FLOPs, deployment, or any metric/paper claim.
