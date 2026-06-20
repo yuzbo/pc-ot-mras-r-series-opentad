@@ -1,6 +1,6 @@
-# PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24/R25/R26/R27/R28 Clean Implementation Manifest
+# PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24/R25/R26/R27/R28/R29 Clean Implementation Manifest
 
-Timestamp: 2026-06-20T17:48:48+08:00
+Timestamp: 2026-06-20T19:04:00+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -70,6 +70,7 @@ Implement only the PC-OT-MRAS continuous route stages on a clean OpenTAD baselin
 - R26 dynamic-budget frontier audit candidate.
 - R27 synthetic task-utility audit candidate.
 - R28 tubelet/token redundancy auxiliary audit candidate.
+- R29 profiler-only temporal-tubelet packed-profile audit candidate.
 
 The implementation intentionally does not copy unrelated BATA/UGIT/MFCSD/DBAC/ITMI experiment families from the dirty working tree.
 
@@ -177,6 +178,43 @@ py_compile changed R28 files: pass
 R28 focused pytest: 6 passed in 4.82s
 R28 synthetic audit smoke: PC_OT_MRAS_TUBELET_TOKEN_REDUNDANCY_AUDIT_READY
 full PC-OT-MRAS plus train-engine pytest: 282 passed in 68.18s
+git diff --check: pass
+```
+
+## R29 Tubelet Packed-Profile Audit
+
+R29 adds the first profiler-only proof for the R28 tubelet/token route. It does
+not change `VisionTransformerAdapter.forward()`, does not run packed
+attention/MLP, and does not touch detector training or evaluation paths.
+
+- `tools/bata/audit_pc_ot_mras_tubelet_packed_profile.py` reuses the R28
+  synthetic tubelet redundancy summary, expands the temporal tubelet keep mask
+  to dense token space, packs selected temporal-tubelet groups into a
+  rectangular token tensor, scatters selected values back into dense shape, and
+  computes hypothetical attention-token-pair and linear-token accounting.
+- `configs/adatad/thumos/ctf_bdi_pc_ot_mras_r29_tubelet_packed_profile_audit.py`
+  inherits R28 and remains launch-blocked. It keeps detector training,
+  `tools/train.py`, `tools/test.py`, detector mAP, remote sync, Slurm/GPU,
+  real data/checkpoints, measured runtime/FLOPs, spatial-redundancy claims,
+  metric claims, and paper claims disabled.
+- `tests/test_pc_ot_mras_tubelet_packed_profile_audit.py` covers pack/scatter
+  bookkeeping, selected-value preservation, no-go behavior when identity has
+  no strict saving, JSON roundtrip, and no-claim boundaries.
+- `tests/test_pc_ot_mras_r29_tubelet_packed_profile_config.py` covers config
+  parse and training/test entrypoint fail-closed behavior.
+
+R29 is not true packed compute. It proves only that the temporal-tubelet mask
+can support a future packed-compute implementation and that the accounting
+frontier is non-trivial under synthetic inputs.
+
+R29 verification in the local Windows `torch_1` environment:
+
+```text
+py_compile changed R29 files: pass
+R29 focused pytest: 5 passed in 9.78s
+R28/R29 focused regression pytest: 11 passed in 9.59s
+R29 synthetic audit smoke: PC_OT_MRAS_TUBELET_PACKED_PROFILE_AUDIT_READY
+full PC-OT-MRAS plus train-engine pytest: 289 passed in 68.79s
 git diff --check: pass
 ```
 
