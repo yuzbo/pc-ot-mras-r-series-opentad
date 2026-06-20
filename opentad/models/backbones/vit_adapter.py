@@ -1,5 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import math
 import torch
@@ -102,6 +102,152 @@ class PlainAdapter(BaseModule):
         x = self.act(x)
         x = self.up_proj(x)
         return x * self.gamma + inputs
+
+
+class TubeletTokenRedundancyAux(BaseModule):
+    """Local-only tubelet/token redundancy auditor for VideoMAE tokens.
+
+    The first R28 use is deliberately non-destructive: it scores temporal
+    tubelet groups using their spatial-token statistics, records a proposed
+    tubelet keep mask, and returns the dense token sequence unchanged.
+    """
+
+    valid_modes = ("identity", "shadow", "deterministic_tubelet_cap")
+
+    def __init__(
+        self,
+        enabled: bool = False,
+        mode: str = "identity",
+        route_unit: str = "temporal_tubelet_group",
+        keep_ratio: float = 1.0,
+        min_keep_tubelets: int = 1,
+        route_pattern: str = "round_linspace",
+        spatial_pool: str = "energy_std",
+        forbid_spatial_crop: bool = True,
+        local_audit_only: bool = True,
+        **kwargs,
+    ) -> None:
+        super().__init__()
+        if mode not in self.valid_modes:
+            raise ValueError(f"unsupported tubelet redundancy mode: {mode}")
+        if route_unit != "temporal_tubelet_group":
+            raise ValueError("R28 v0 only supports temporal_tubelet_group routing")
+        if route_pattern != "round_linspace":
+            raise ValueError("R28 v0 only supports round_linspace route_pattern")
+        keep_ratio = float(keep_ratio)
+        if keep_ratio <= 0.0 or keep_ratio > 1.0:
+            raise ValueError("keep_ratio must lie in (0, 1]")
+        if int(min_keep_tubelets) <= 0:
+            raise ValueError("min_keep_tubelets must be positive")
+        if not bool(forbid_spatial_crop):
+            raise ValueError("R28 v0 forbids spatial patch crop")
+        if not bool(local_audit_only):
+            raise ValueError("R28 v0 is local_audit_only")
+
+        self.enabled = bool(enabled)
+        self.mode = mode
+        self.route_unit = route_unit
+        self.keep_ratio = keep_ratio
+        self.min_keep_tubelets = int(min_keep_tubelets)
+        self.route_pattern = route_pattern
+        self.spatial_pool = spatial_pool
+        self.forbid_spatial_crop = bool(forbid_spatial_crop)
+        self.local_audit_only = bool(local_audit_only)
+        self.last_summary = None
+
+    @staticmethod
+    def _round_linspace_indices(length: int, count: int, device: torch.device) -> Tensor:
+        length = int(length)
+        count = min(int(count), length)
+        if count <= 0 or length <= 0:
+            raise ValueError("length and count must be positive")
+        if count >= length:
+            return torch.arange(length, device=device, dtype=torch.long)
+        if count == 1:
+            return torch.zeros(1, device=device, dtype=torch.long)
+
+        selected: List[int] = []
+        for idx in range(count):
+            pos = int(round(float(idx) * float(length - 1) / float(count - 1)))
+            if pos not in selected:
+                selected.append(pos)
+        filler = 0
+        while len(selected) < count:
+            if filler not in selected:
+                selected.append(filler)
+            filler += 1
+        return torch.tensor(sorted(selected[:count]), device=device, dtype=torch.long)
+
+    def _shape_contract(self, x: Tensor, h: int, w: int) -> Tuple[int, int]:
+        if x.ndim != 3:
+            raise ValueError("tubelet redundancy aux expects x with shape [B, N, C]")
+        spatial_tokens = int(h) * int(w)
+        if spatial_tokens <= 0:
+            raise ValueError("spatial token count must be positive")
+        if int(x.shape[1]) % spatial_tokens != 0:
+            raise ValueError("token length must be divisible by h*w")
+        temporal_tubelets = int(x.shape[1]) // spatial_tokens
+        if temporal_tubelets <= 0:
+            raise ValueError("temporal tubelet count must be positive")
+        return temporal_tubelets, spatial_tokens
+
+    def summarize(self, x: Tensor, h: int, w: int) -> Dict[str, object]:
+        temporal_tubelets, spatial_tokens = self._shape_contract(x, h, w)
+        keep_count = max(
+            self.min_keep_tubelets,
+            int(math.ceil(float(temporal_tubelets) * float(self.keep_ratio))),
+        )
+        keep_count = min(keep_count, temporal_tubelets)
+
+        token_energy = x.detach().float().pow(2).mean(dim=-1)
+        token_energy = token_energy.reshape(int(x.shape[0]), temporal_tubelets, spatial_tokens)
+        spatial_energy_mean = token_energy.mean(dim=-1)
+        spatial_energy_std = token_energy.std(dim=-1, unbiased=False)
+        redundancy_score = 1.0 / (1.0 + spatial_energy_std)
+
+        proposed_mask = torch.zeros(
+            (int(x.shape[0]), temporal_tubelets),
+            dtype=torch.bool,
+            device=x.device,
+        )
+        if self.mode in ("identity", "shadow"):
+            proposed_mask[:] = True
+        else:
+            keep_idx = self._round_linspace_indices(temporal_tubelets, keep_count, x.device)
+            proposed_mask[:, keep_idx] = True
+
+        return {
+            "schema_version": "tubelet_token_redundancy_aux_summary_v0",
+            "enabled": self.enabled,
+            "mode": self.mode,
+            "route_unit": self.route_unit,
+            "route_pattern": self.route_pattern,
+            "local_audit_only": self.local_audit_only,
+            "spatial_patch_crop_allowed": False,
+            "spatial_crop_forbidden": self.forbid_spatial_crop,
+            "dense_output_preserved": True,
+            "compute_route_applied": False,
+            "runtime_flops_claim_allowed": False,
+            "batch_size": int(x.shape[0]),
+            "token_length": int(x.shape[1]),
+            "channels": int(x.shape[2]),
+            "temporal_tubelets": temporal_tubelets,
+            "spatial_tokens_per_tubelet": spatial_tokens,
+            "keep_ratio": float(self.keep_ratio),
+            "proposed_keep_count": int(proposed_mask[0].sum().item()),
+            "effective_dense_token_count": int(x.shape[1]),
+            "proposed_tubelet_keep_mask": proposed_mask,
+            "spatial_energy_mean": spatial_energy_mean,
+            "spatial_energy_std": spatial_energy_std,
+            "redundancy_score": redundancy_score,
+        }
+
+    def forward(self, x: Tensor, h: int, w: int) -> Tensor:
+        if not self.enabled:
+            self.last_summary = None
+            return x
+        self.last_summary = self.summarize(x, h, w)
+        return x
 
 
 class Attention(BaseModule):
@@ -364,6 +510,7 @@ class VisionTransformerAdapter(BaseModule):
         adapter_mlp_ratio: float = 0.25,
         total_frames: int = 768,
         adapter_index: list = [3, 5, 7, 11],
+        tubelet_token_redundancy_aux: Optional[Dict] = None,
         init_cfg: Optional[Union[Dict, List[Dict]]] = [
             dict(type="TruncNormal", layer="Linear", std=0.02, bias=0.0),
             dict(type="Constant", layer="LayerNorm", val=1.0, bias=0.0),
@@ -378,6 +525,7 @@ class VisionTransformerAdapter(BaseModule):
 
         self.embed_dims = embed_dims
         self.patch_size = patch_size
+        self.latest_tubelet_token_redundancy_summary = None
 
         self.patch_embed = PatchEmbed(
             in_channels=in_channels,
@@ -398,6 +546,9 @@ class VisionTransformerAdapter(BaseModule):
         self.register_buffer("pos_embed", pos_embed)
 
         self.pos_drop = nn.Dropout(p=drop_rate)
+        self.tubelet_token_redundancy_aux = None
+        if tubelet_token_redundancy_aux is not None:
+            self.tubelet_token_redundancy_aux = TubeletTokenRedundancyAux(**dict(tubelet_token_redundancy_aux))
 
         # stochastic depth decay rule
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
@@ -454,6 +605,10 @@ class VisionTransformerAdapter(BaseModule):
         h //= self.patch_size
         w //= self.patch_size
         x = self.patch_embed(x)[0]
+        if self.tubelet_token_redundancy_aux is not None:
+            x = self.tubelet_token_redundancy_aux(x, h, w)
+            self.latest_tubelet_token_redundancy_summary = self.tubelet_token_redundancy_aux.last_summary
+
         if (h, w) != self.grid_size:
             pos_embed = self.pos_embed.reshape(-1, *self.grid_size, self.embed_dims)
             pos_embed = pos_embed.permute(0, 3, 1, 2)
