@@ -376,6 +376,8 @@ sha256sum \
   opentad/cores/train_engine.py \
   opentad/utils/training_guard.py \
   opentad/models/detectors/actionformer.py \
+  opentad/models/dense_heads/__init__.py \
+  opentad/models/dense_heads/native_irregular_area_head_p2.py \
   opentad/models/necks/pc_ot_mras_detector_bridge.py \
   opentad/models/selectors/pc_ot_mras_reader.py \
   opentad/models/utils/pc_ot_mras_raw_prediction_guard.py \
@@ -391,6 +393,8 @@ python -m py_compile \
   opentad/cores/train_engine.py \
   opentad/utils/training_guard.py \
   opentad/models/detectors/actionformer.py \
+  opentad/models/dense_heads/__init__.py \
+  opentad/models/dense_heads/native_irregular_area_head_p2.py \
   opentad/models/necks/pc_ot_mras_detector_bridge.py \
   opentad/models/selectors/pc_ot_mras_reader.py \
   tests/test_pc_ot_mras_r17_formal_train_config.py

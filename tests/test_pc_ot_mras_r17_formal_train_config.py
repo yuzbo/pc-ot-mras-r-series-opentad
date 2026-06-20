@@ -119,6 +119,8 @@ def test_r17_formal_launcher_is_clean_repo_gate_bound_and_fail_closed():
     assert "OPENTAD_PCOTMRAS_RESOLVED_CONFIG_SHA256" in text
     assert "resolved_config_dependency_count" in text
     assert "RESOLVED_CONFIG_SHA256" in text
+    assert "opentad/models/dense_heads/__init__.py" in text
+    assert "opentad/models/dense_heads/native_irregular_area_head_p2.py" in text
     assert "tools/test.py" in text
     assert 'tools/test.py "$CONFIG"' not in text
     assert 'tools/train.py "$CONFIG"' in text

@@ -68,6 +68,8 @@ def test_r16a_gpu_smoke_launcher_audits_config_and_train_bounds():
     assert "cfg.inference.save_raw_prediction is False" in text
     assert "tests/test_pc_ot_mras_r16_gpu_smoke_guard.py" in text
     assert "tests/test_train_engine_max_train_iters.py" in text
+    assert "opentad/models/dense_heads/__init__.py" in text
+    assert "opentad/models/dense_heads/native_irregular_area_head_p2.py" in text
     assert "grep -q \"max_train_iters=2 reached\"" in text
     assert "grep -q \"Training Over\"" in text
     assert "active_sha256_manifest_sha256=$ACTIVE_MANIFEST_SHA256" in text
