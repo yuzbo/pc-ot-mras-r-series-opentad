@@ -1,6 +1,6 @@
-# PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24/R25/R26/R27/R28/R29 Clean Implementation Manifest
+# PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24/R25/R26/R27/R28/R29/R30 Clean Implementation Manifest
 
-Timestamp: 2026-06-20T19:04:00+08:00
+Timestamp: 2026-06-20T19:35:32+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -71,6 +71,7 @@ Implement only the PC-OT-MRAS continuous route stages on a clean OpenTAD baselin
 - R27 synthetic task-utility audit candidate.
 - R28 tubelet/token redundancy auxiliary audit candidate.
 - R29 profiler-only temporal-tubelet packed-profile audit candidate.
+- R30 local synthetic true packed temporal-tubelet runtime proof candidate.
 
 The implementation intentionally does not copy unrelated BATA/UGIT/MFCSD/DBAC/ITMI experiment families from the dirty working tree.
 
@@ -216,6 +217,67 @@ R28/R29 focused regression pytest: 11 passed in 9.59s
 R29 synthetic audit smoke: PC_OT_MRAS_TUBELET_PACKED_PROFILE_AUDIT_READY
 full PC-OT-MRAS plus train-engine pytest: 289 passed in 68.79s
 git diff --check: pass
+```
+
+## R30 Tubelet Packed Runtime Proof
+
+R30 adds the first local true packed-compute proof for the R28/R29 tubelet
+route. It still does not change `VisionTransformerAdapter.forward()`, does not
+train or evaluate a detector, and does not touch remote execution paths.
+
+- `tools/bata/audit_pc_ot_mras_tubelet_packed_runtime.py` reuses R29's
+  temporal tubelet mask expansion and rectangular pack/scatter bookkeeping,
+  then executes real `vit_adapter.Block(use_adapter=False)` attention and MLP
+  modules on the packed token tensor. It records packed-path attention/MLP
+  forward-hook counts, compares packed batch output against a selected-only
+  per-sample reference, scatters packed outputs back to dense token shape, and
+  records local synthetic wall-clock timings.
+- `configs/adatad/thumos/ctf_bdi_pc_ot_mras_r30_tubelet_packed_runtime_proof.py`
+  inherits R29 and remains launch-blocked. It keeps detector training,
+  `tools/train.py`, `tools/test.py`, detector mAP, remote sync, precheck,
+  Slurm/GPU, real data/checkpoints, deployment runtime/FLOPs claims,
+  spatial-redundancy claims, metric claims, and paper claims disabled.
+- `tests/test_pc_ot_mras_tubelet_packed_runtime_audit.py` covers true packed
+  attention/MLP execution, hook counts, scatter-back shape, selected-only
+  reference agreement, JSON roundtrip, no-go behavior for no-saving identity
+  input, and invalid head divisibility.
+- `tests/test_pc_ot_mras_r30_tubelet_packed_runtime_config.py` covers config
+  parse and training/test entrypoint fail-closed behavior.
+
+Default R30 synthetic smoke reports:
+
+```text
+decision: PC_OT_MRAS_TUBELET_PACKED_RUNTIME_AUDIT_READY
+packed_block_impl: vit_adapter.Block(use_adapter=False)
+dense_token_count: 48
+packed_token_count: 24
+attention_pair_ratio: 0.25
+linear_token_ratio: 0.5
+packed_attention_forward_count: 8
+packed_mlp_forward_count: 8
+selected_outputs_match_reference: true
+selected_reference_max_abs_error: 0.0
+packed_over_dense_runtime_ratio_observed: 0.806544477497649
+runtime_measurement_scope: local_synthetic_tiny_block_only
+runtime_flops_claim_allowed: false
+detector_map_allowed: false
+```
+
+R30 is not production packed ViT execution. It proves only that the selected
+temporal-tubelet route can run real attention/MLP on packed tokens and scatter
+the result back under a synthetic local contract. Any production forward change,
+real-data precheck, detector mAP, deployment runtime/FLOPs claim, spatial
+redundancy claim, or paper claim still requires a separate review and launch
+gate.
+
+R30 verification in the local Windows `torch_1` environment:
+
+```text
+py_compile changed R28/R29/R30 files: pass
+R28/R29/R30 focused pytest: 16 passed in 9.21s
+R30 synthetic runtime smoke: PC_OT_MRAS_TUBELET_PACKED_RUNTIME_AUDIT_READY
+full PC-OT-MRAS pytest: 291 passed in 73.16s
+git diff --check: pass with LF/CRLF warning only
 ```
 
 ## Source Provenance

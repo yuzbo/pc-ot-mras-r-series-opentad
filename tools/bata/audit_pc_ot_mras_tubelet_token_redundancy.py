@@ -88,7 +88,13 @@ def _install_vit_adapter_import_stubs() -> None:
 
     mmengine_registry.MODELS = _Models()
     mmengine_model = types.ModuleType("mmengine.model")
-    mmengine_model.BaseModule = nn.Module
+
+    class BaseModule(nn.Module):
+        def __init__(self, *args, init_cfg=None, **kwargs):
+            super().__init__()
+            self.init_cfg = init_cfg
+
+    mmengine_model.BaseModule = BaseModule
     mmengine_model.ModuleList = nn.ModuleList
 
     def _noop_init(*_args, **_kwargs):
