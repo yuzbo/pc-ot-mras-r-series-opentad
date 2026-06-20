@@ -9,6 +9,7 @@ from .temporalmaxer_head import TemporalMaxerHead
 from .tem_head import TemporalEvaluationHead, GCNextTemporalEvaluationHead, LocalGlobalTemporalEvaluationHead
 from .vsgn_rpn_head import VSGNRPNHead
 from .dyn_head import TDynHead
+from .native_irregular_area_head_p2 import NativeIrregularAreaHeadP2
 
 __all__ = [
     "AnchorGenerator",
@@ -25,4 +26,5 @@ __all__ = [
     "LocalGlobalTemporalEvaluationHead",
     "VSGNRPNHead",
     "TDynHead",
+    "NativeIrregularAreaHeadP2",
 ]

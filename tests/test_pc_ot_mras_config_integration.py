@@ -371,3 +371,83 @@ def test_pc_ot_mras_bridge_registered_by_necks_package_import():
     assert payload["alias_exported"] is True
     assert "PCOTMRASDetectorBridge" in payload["all"]
     assert "ProcessConditionedOrderedTransportMRASDetectorBridge" in payload["all"]
+
+
+def test_native_irregular_area_head_registered_by_dense_heads_package_import():
+    code = textwrap.dedent(
+        f"""
+        import importlib
+        import json
+        import sys
+        import types
+        from pathlib import Path
+
+        root = Path(r"{ROOT}")
+
+        opentad_pkg = types.ModuleType("opentad")
+        opentad_pkg.__path__ = [str(root / "opentad")]
+        sys.modules["opentad"] = opentad_pkg
+
+        models_pkg = types.ModuleType("opentad.models")
+        models_pkg.__path__ = [str(root / "opentad" / "models")]
+        sys.modules["opentad.models"] = models_pkg
+
+        backbones = types.ModuleType("opentad.models.backbones")
+        class BackboneWrapper:
+            pass
+        backbones.BackboneWrapper = BackboneWrapper
+        sys.modules["opentad.models.backbones"] = backbones
+
+        nms_1d_cpu = types.ModuleType("nms_1d_cpu")
+        nms_1d_cpu.nms = lambda _segs, scores, iou_threshold=0.0: scores.argsort(descending=True).cpu()
+        nms_1d_cpu.softnms = lambda _segs, scores, _dets, **_kwargs: scores.argsort(descending=True).cpu()
+        sys.modules["nms_1d_cpu"] = nms_1d_cpu
+
+        dense_heads = importlib.import_module("opentad.models.dense_heads")
+        from opentad.models import builder
+
+        head_cls = builder.MODELS.get("NativeIrregularAreaHeadP2")
+        head = builder.build_head({{
+            "type": "NativeIrregularAreaHeadP2",
+            "num_classes": 1,
+            "in_channels": 2,
+            "feat_channels": 2,
+            "num_convs": 0,
+            "prior_generator": {{
+                "type": "PointGenerator",
+                "strides": [1],
+                "regression_range": [(0, 10000)],
+            }},
+            "temporal_grid": {{
+                "required": True,
+                "strict": True,
+                "decode_axis": "dense",
+            }},
+        }})
+        payload = {{
+            "registered_by_package_import": head_cls is dense_heads.NativeIrregularAreaHeadP2,
+            "built_type": type(head).__name__,
+            "all": list(dense_heads.__all__),
+        }}
+        print(json.dumps(payload, sort_keys=True))
+        """
+    )
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=str(ROOT),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert payload["registered_by_package_import"] is True
+    assert payload["built_type"] == "NativeIrregularAreaHeadP2"
+    assert "NativeIrregularAreaHeadP2" in payload["all"]
