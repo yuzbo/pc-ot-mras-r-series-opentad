@@ -250,6 +250,197 @@ class TubeletTokenRedundancyAux(BaseModule):
         return x
 
 
+class PackedTubeletRuntimeRoute(BaseModule):
+    """Opt-in packed temporal-tubelet execution inside ViT forward.
+
+    This route is intentionally narrow. It only handles temporal-tubelet groups,
+    keeps all spatial patches within a selected tubelet, and refuses Adapter
+    blocks because the current Adapter convolution requires a dense temporal
+    grid. It is disabled by default and exists to make the R30 packed-runtime
+    proof executable through the production backbone forward path.
+    """
+
+    valid_modes = ("deterministic_tubelet_cap",)
+    valid_scatter_modes = ("zero",)
+
+    def __init__(
+        self,
+        enabled: bool = False,
+        mode: str = "deterministic_tubelet_cap",
+        route_unit: str = "temporal_tubelet_group",
+        keep_ratio: float = 1.0,
+        min_keep_tubelets: int = 1,
+        route_pattern: str = "round_linspace",
+        forbid_spatial_crop: bool = True,
+        local_forward_only: bool = True,
+        require_no_adapter_blocks: bool = True,
+        allow_training_mode: bool = False,
+        scatter_unselected: str = "zero",
+        **kwargs,
+    ) -> None:
+        super().__init__()
+        if mode not in self.valid_modes:
+            raise ValueError(f"unsupported packed tubelet route mode: {mode}")
+        if route_unit != "temporal_tubelet_group":
+            raise ValueError("packed tubelet route only supports temporal_tubelet_group")
+        if route_pattern != "round_linspace":
+            raise ValueError("packed tubelet route only supports round_linspace route_pattern")
+        keep_ratio = float(keep_ratio)
+        if keep_ratio <= 0.0 or keep_ratio > 1.0:
+            raise ValueError("keep_ratio must lie in (0, 1]")
+        if int(min_keep_tubelets) <= 0:
+            raise ValueError("min_keep_tubelets must be positive")
+        if not bool(forbid_spatial_crop):
+            raise ValueError("packed tubelet route forbids spatial patch crop")
+        if not bool(local_forward_only):
+            raise ValueError("packed tubelet route is local_forward_only")
+        if scatter_unselected not in self.valid_scatter_modes:
+            raise ValueError(f"unsupported packed tubelet scatter mode: {scatter_unselected}")
+
+        self.enabled = bool(enabled)
+        self.mode = mode
+        self.route_unit = route_unit
+        self.keep_ratio = keep_ratio
+        self.min_keep_tubelets = int(min_keep_tubelets)
+        self.route_pattern = route_pattern
+        self.forbid_spatial_crop = bool(forbid_spatial_crop)
+        self.local_forward_only = bool(local_forward_only)
+        self.require_no_adapter_blocks = bool(require_no_adapter_blocks)
+        self.allow_training_mode = bool(allow_training_mode)
+        self.scatter_unselected = scatter_unselected
+        self.last_summary = None
+
+    @staticmethod
+    def _shape_contract(x: Tensor, h: int, w: int) -> Tuple[int, int]:
+        if x.ndim != 3:
+            raise ValueError("packed tubelet route expects x with shape [B, N, C]")
+        spatial_tokens = int(h) * int(w)
+        if spatial_tokens <= 0:
+            raise ValueError("spatial token count must be positive")
+        if int(x.shape[1]) % spatial_tokens != 0:
+            raise ValueError("token length must be divisible by h*w")
+        temporal_tubelets = int(x.shape[1]) // spatial_tokens
+        if temporal_tubelets <= 0:
+            raise ValueError("temporal tubelet count must be positive")
+        return temporal_tubelets, spatial_tokens
+
+    @staticmethod
+    def _round_linspace_indices(length: int, count: int, device: torch.device) -> Tensor:
+        return TubeletTokenRedundancyAux._round_linspace_indices(length, count, device)
+
+    def _tubelet_mask(self, x: Tensor, h: int, w: int) -> Tuple[Tensor, int, int]:
+        temporal_tubelets, spatial_tokens = self._shape_contract(x, h, w)
+        keep_count = max(
+            self.min_keep_tubelets,
+            int(math.ceil(float(temporal_tubelets) * float(self.keep_ratio))),
+        )
+        keep_count = min(keep_count, temporal_tubelets)
+        keep_idx = self._round_linspace_indices(temporal_tubelets, keep_count, x.device)
+        tubelet_mask = torch.zeros(
+            (int(x.shape[0]), temporal_tubelets),
+            dtype=torch.bool,
+            device=x.device,
+        )
+        tubelet_mask[:, keep_idx] = True
+        return tubelet_mask, temporal_tubelets, spatial_tokens
+
+    @staticmethod
+    def _expand_tubelet_mask(tubelet_mask: Tensor, spatial_tokens: int) -> Tensor:
+        if tubelet_mask.ndim != 2:
+            raise ValueError("tubelet_mask must have shape [B, T]")
+        return tubelet_mask.unsqueeze(-1).expand(-1, -1, int(spatial_tokens)).reshape(
+            int(tubelet_mask.shape[0]),
+            int(tubelet_mask.shape[1]) * int(spatial_tokens),
+        )
+
+    @staticmethod
+    def _pack_tokens(x: Tensor, dense_mask: Tensor) -> Tensor:
+        if dense_mask.shape != x.shape[:2]:
+            raise ValueError("dense_mask must match x batch/token shape")
+        per_batch_counts = dense_mask.sum(dim=1)
+        if int(per_batch_counts.min().item()) <= 0:
+            raise ValueError("packed tubelet route requires at least one selected token per sample")
+        if not torch.equal(per_batch_counts, per_batch_counts[:1].expand_as(per_batch_counts)):
+            raise ValueError("packed tubelet route requires equal selected-token count across batch")
+        return x[dense_mask].reshape(int(x.shape[0]), int(per_batch_counts[0].item()), int(x.shape[2]))
+
+    def _scatter_tokens(self, packed: Tensor, dense_mask: Tensor, dense_shape: torch.Size) -> Tensor:
+        if self.scatter_unselected != "zero":
+            raise ValueError(f"unsupported packed tubelet scatter mode: {self.scatter_unselected}")
+        scattered = packed.new_zeros(dense_shape)
+        scattered[dense_mask] = packed.reshape(-1, int(packed.shape[-1]))
+        return scattered
+
+    @staticmethod
+    def _run_blocks(blocks, x: Tensor, h: int, w: int) -> Tensor:
+        out = x
+        for block in blocks:
+            out = block(out, h, w)
+        return out
+
+    def forward(self, x: Tensor, blocks, h: int, w: int, *, training: bool = False) -> Tensor:
+        if not self.enabled:
+            self.last_summary = None
+            return x
+        if bool(training) and not self.allow_training_mode:
+            raise ValueError("packed tubelet route is local-forward-only and forbids training mode")
+        adapter_block_count = sum(1 for block in blocks if bool(getattr(block, "use_adapter", False)))
+        if self.require_no_adapter_blocks and adapter_block_count:
+            raise ValueError("packed tubelet route requires adapter-free blocks for R31")
+
+        tubelet_mask, temporal_tubelets, spatial_tokens = self._tubelet_mask(x, h, w)
+        dense_mask = self._expand_tubelet_mask(tubelet_mask, spatial_tokens)
+        packed = self._pack_tokens(x, dense_mask)
+        packed_output = self._run_blocks(blocks, packed, h, w)
+        scattered = self._scatter_tokens(packed_output, dense_mask, x.shape)
+
+        selected_output = scattered[dense_mask].reshape_as(packed_output)
+        selected_outputs_preserved_after_scatter = bool(torch.allclose(selected_output, packed_output))
+        unselected_zero = bool(torch.count_nonzero(scattered[~dense_mask]).item() == 0)
+        packed_output_finite = bool(torch.isfinite(packed_output).all().item())
+        scattered_output_finite = bool(torch.isfinite(scattered).all().item())
+
+        self.last_summary = {
+            "schema_version": "packed_tubelet_runtime_route_summary_v0",
+            "enabled": True,
+            "mode": self.mode,
+            "route_unit": self.route_unit,
+            "route_pattern": self.route_pattern,
+            "local_forward_only": self.local_forward_only,
+            "production_forward_changed": True,
+            "training_mode_allowed": self.allow_training_mode,
+            "adapter_blocks_supported": False,
+            "adapter_block_count": int(adapter_block_count),
+            "spatial_patch_crop_allowed": False,
+            "spatial_filtering_allowed": False,
+            "arbitrary_spatial_patch_filtering_allowed": False,
+            "scatter_unselected": self.scatter_unselected,
+            "dense_token_shape": list(x.shape),
+            "packed_token_shape": list(packed.shape),
+            "dense_output_shape": list(scattered.shape),
+            "packed_output_shape": list(packed_output.shape),
+            "temporal_tubelets": int(temporal_tubelets),
+            "spatial_tokens_per_tubelet": int(spatial_tokens),
+            "selected_tubelets": int(tubelet_mask[0].sum().item()),
+            "selected_dense_tokens": int(dense_mask[0].sum().item()),
+            "has_strict_token_saving": bool(packed.shape[1] < x.shape[1]),
+            "true_packed_compute_enabled": True,
+            "packed_attention_executed_in_forward": True,
+            "packed_mlp_executed_in_forward": True,
+            "scatter_back_executed": True,
+            "selected_outputs_preserved_after_scatter": selected_outputs_preserved_after_scatter,
+            "unselected_positions_zero_after_scatter": unselected_zero,
+            "packed_output_finite": packed_output_finite,
+            "scattered_output_finite": scattered_output_finite,
+            "measured_runtime": False,
+            "measured_flops": False,
+            "runtime_flops_claim_allowed": False,
+            "metric_claim_allowed": False,
+            "paper_claim_allowed": False,
+        }
+        return scattered
+
+
 class Attention(BaseModule):
     """Multi-head Self-attention.
 
@@ -511,6 +702,7 @@ class VisionTransformerAdapter(BaseModule):
         total_frames: int = 768,
         adapter_index: list = [3, 5, 7, 11],
         tubelet_token_redundancy_aux: Optional[Dict] = None,
+        tubelet_packed_runtime_route: Optional[Dict] = None,
         init_cfg: Optional[Union[Dict, List[Dict]]] = [
             dict(type="TruncNormal", layer="Linear", std=0.02, bias=0.0),
             dict(type="Constant", layer="LayerNorm", val=1.0, bias=0.0),
@@ -526,6 +718,7 @@ class VisionTransformerAdapter(BaseModule):
         self.embed_dims = embed_dims
         self.patch_size = patch_size
         self.latest_tubelet_token_redundancy_summary = None
+        self.latest_tubelet_packed_runtime_summary = None
 
         self.patch_embed = PatchEmbed(
             in_channels=in_channels,
@@ -549,6 +742,9 @@ class VisionTransformerAdapter(BaseModule):
         self.tubelet_token_redundancy_aux = None
         if tubelet_token_redundancy_aux is not None:
             self.tubelet_token_redundancy_aux = TubeletTokenRedundancyAux(**dict(tubelet_token_redundancy_aux))
+        self.tubelet_packed_runtime_route = None
+        if tubelet_packed_runtime_route is not None:
+            self.tubelet_packed_runtime_route = PackedTubeletRuntimeRoute(**dict(tubelet_packed_runtime_route))
 
         # stochastic depth decay rule
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
@@ -621,8 +817,13 @@ class VisionTransformerAdapter(BaseModule):
         x = x + pos_embed
         x = self.pos_drop(x)
 
-        for blk in self.blocks:
-            x = blk(x, h, w)
+        if self.tubelet_packed_runtime_route is not None and self.tubelet_packed_runtime_route.enabled:
+            x = self.tubelet_packed_runtime_route(x, self.blocks, h, w, training=self.training)
+            self.latest_tubelet_packed_runtime_summary = self.tubelet_packed_runtime_route.last_summary
+        else:
+            self.latest_tubelet_packed_runtime_summary = None
+            for blk in self.blocks:
+                x = blk(x, h, w)
 
         x = self.norm(x)
 
