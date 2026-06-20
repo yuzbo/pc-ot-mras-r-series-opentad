@@ -1,6 +1,6 @@
-# PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24/R25 Clean Implementation Manifest
+# PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24/R25/R26 Clean Implementation Manifest
 
-Timestamp: 2026-06-20T13:05+08:00
+Timestamp: 2026-06-20T15:00:29+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -45,6 +45,8 @@ c01bae7 Fix PC-OT-MRAS R25 dynamic plan gate
 42b9ab7c94389aa3532481c520138017f442b22c Fix PC-OT-MRAS native area head registration
 d546ca877c644eb4a209a004c592f24aa3ff3d86 Record PC-OT-MRAS native head registry fix
 8effdb01da43e7641f172806a3d326552a73eca4 Bind PC-OT-MRAS native head files in launch manifests
+7f3fb178dce78f2f9f61522ddde5c2a75a424d48 Record PC-OT-MRAS native head manifest binding
+01d41a6b1976dd2ca6d0e538c1fdead47df67180 Add PC-OT-MRAS R26 dynamic budget frontier audit
 ```
 
 ## Objective
@@ -61,8 +63,46 @@ Implement only the PC-OT-MRAS continuous route stages on a clean OpenTAD baselin
 - R23 dynamic-budget hard-position export candidate.
 - R24 dynamic-budget temporal metadata and detector geometry contract candidate.
 - R25 dynamic-budget pipeline validation candidate.
+- R26 dynamic-budget frontier audit candidate.
 
 The implementation intentionally does not copy unrelated BATA/UGIT/MFCSD/DBAC/ITMI experiment families from the dirty working tree.
+
+## R26 Dynamic-Budget Frontier Audit
+
+Commit `01d41a6b1976dd2ca6d0e538c1fdead47df67180` adds a local-only R26
+frontier audit layer:
+
+- `tools/bata/audit_pc_ot_mras_dynamic_budget_frontier.py` reuses the R25
+  pipeline validator before computing budget distribution, average selected
+  count, savings versus a fixed-budget reference, coverage-cap violations,
+  short-valid-len clipping, budget-score monotonicity, and optional difficulty
+  ordering. It returns `PC_OT_MRAS_DYNAMIC_BUDGET_FRONTIER_AUDIT_READY` only
+  when the hard protocol passes and the plan is budget-sensitive.
+- `configs/adatad/thumos/ctf_bdi_pc_ot_mras_r26_dynamic_budget_frontier_audit.py`
+  is launch-blocked and local-synthetic-only. It explicitly keeps detector
+  training, `tools/train.py`, `tools/test.py`, detector mAP, remote sync,
+  Slurm/GPU, real data/checkpoints, runtime/FLOPs, deployment, dynamic-budget
+  quality validation, scanner-quality validation, metric claims, and paper
+  claims disabled.
+- `tests/test_pc_ot_mras_dynamic_budget_frontier_audit.py` covers budget
+  differentiation, JSON roundtrip, forbidden payload rejection, uniform-budget
+  no-go behavior, and short valid-length clipping accounting.
+- `tests/test_pc_ot_mras_r26_dynamic_budget_frontier_config.py` covers config
+  parse and training/test entrypoint fail-closed behavior.
+
+R26 is a calibration/frontier audit only. It does not produce detector mAP,
+runtime/FLOPs evidence, scanner-quality evidence, deployment proof, or a paper
+claim.
+
+R26 verification in the local Windows `torch_1` environment:
+
+```text
+py_compile changed R26 files: pass
+R26 focused pytest: 6 passed in 6.98s
+R22-R26 dynamic-budget regression pytest: 65 passed in 14.17s
+full PC-OT-MRAS plus train-engine pytest: 269 passed in 62.65s
+git diff --check: pass
+```
 
 ## Source Provenance
 
