@@ -1,6 +1,6 @@
 # PC-OT-MRAS R16/R17/R18/R19/R20/R21/R22/R23/R24/R25/R26/R27/R28 Clean Implementation Manifest
 
-Timestamp: 2026-06-20T16:54:27+08:00
+Timestamp: 2026-06-20T17:48:48+08:00
 
 This repository was created from the manually downloaded clean OpenTAD source and initialized as a new git repository. The clean baseline is commit `f19492b` (`Import clean OpenTAD baseline`).
 
@@ -50,6 +50,7 @@ d546ca877c644eb4a209a004c592f24aa3ff3d86 Record PC-OT-MRAS native head registry 
 834fb49cf4b1466a3c21ff1dc73337ba823772f7 Record PC-OT-MRAS R26 clean manifest
 c63d3e0538b26c7504a0cd44ba2a6c389d15ec68 add r27 synthetic task utility audit
 a1cb470b8e23e2dc78f3d966d2cfb946e7beff1b Add PC-OT-MRAS R28 tubelet token redundancy audit
+9744e6fb0f45a1db2702d45e034f95e98b29cb11 Fix PC-OT-MRAS AMP mask sentinels
 ```
 
 ## Objective
@@ -1032,3 +1033,61 @@ paper claim. It should be used to decide whether further local protocol-only
 audits are becoming low-information: after R27, the next high-information step
 is a valid read-only review package and then a real no-GT detector/precheck
 gate, not another budget-mechanics-only diagnostic.
+
+## R16A AMP-Safe Mask Sentinel Fix
+
+Remote R16A GPU smoke job `1106493 pcot_r16smk` reached `tools/train.py`,
+entered AMP training, and failed in
+`opentad/models/selectors/pc_ot_mras_reader.py::_dense_heads` with:
+
+```text
+RuntimeError: value cannot be converted to type at::Half without overflow
+```
+
+Commit `9744e6fb0f45a1db2702d45e034f95e98b29cb11` fixes the dtype mismatch
+that caused this failure. Under autocast, `h` can remain float32 while the
+individual linear head outputs are half tensors. The previous `_dense_heads`
+implementation computed the negative mask sentinel from `h.dtype`, so it could
+try to write a float32-range sentinel into a half logits tensor. The fix adds
+dtype-local `_mask_logits(...)` helpers and always derives the sentinel from
+the logits tensor being masked.
+
+Changed files:
+
+```text
+opentad/models/selectors/pc_ot_mras_reader.py
+opentad/models/selectors/lowcost_acquisition_browser.py
+tests/test_pc_ot_mras_reader_shapes.py
+PC_OT_MRAS_R16_R18_R20_CLEAN_MANIFEST.md
+```
+
+The same output-dtype sentinel fix is applied to
+`lowcost_acquisition_browser.py` because it had the same AMP risk pattern:
+`h.dtype` could differ from the acquisition/head logits dtype.
+
+Verification in `torch_1`:
+
+```text
+py_compile changed files:
+  pass
+
+focused reader/browser sentinel pytest:
+  7 passed in 4.10s
+
+PC-OT-MRAS pytest plus train-engine max-train-iter test:
+  284 passed in 69.62s
+
+git diff --check:
+  pass, with LF/CRLF warnings only
+
+static negative-sentinel search:
+  no remaining selector/loss pattern of h.dtype-derived negative mask fill
+```
+
+Boundary: this is an AMP launch-path bug fix for invalid/padded logits only.
+It does not change valid-position logits, input sampling, dynamic budget
+policy, detector head semantics, loss targets, assignment, post-processing,
+GT/teacher/raw-prediction boundaries, detector mAP, runtime/FLOPs, deployment
+evidence, metric claims, or paper claims. R17/R18 dependency jobs from the
+failed `1106493` wave are dependency-dead and must be cancelled/requeued after
+the fixed head is synced and checked.
