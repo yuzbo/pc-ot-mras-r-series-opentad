@@ -18,6 +18,8 @@ def test_selection_visualization_renders_reader_heatmap_and_summary(tmp_path):
         "snapshot_id": "epoch_002",
         "epoch": 2,
         "budget": 2,
+        "uses_cache": False,
+        "uses_gt": False,
         "reader_out": {
             "acquisition_matrix": [
                 [
@@ -34,6 +36,7 @@ def test_selection_visualization_renders_reader_heatmap_and_summary(tmp_path):
                 ]
             ],
             "valid_mask": [[1, 1, 1, 1, 1, 1]],
+            "valid_lengths": [6],
             "start_logits": [[0.1, 0.4, 0.2, 0.8, 0.0, -0.1]],
             "boundary_logits": [[0.0, 0.9, 0.1, 0.7, 0.2, 0.1]],
             "redundancy_logits": [[0.8, 0.1, 0.7, 0.2, 0.9, 0.4]],
@@ -67,6 +70,47 @@ def test_selection_visualization_renders_reader_heatmap_and_summary(tmp_path):
     assert "acquisition_matrix" in svg_text
     assert "selected=2" in svg_text
     assert Path(summary_json).is_file()
+
+
+def test_selection_visualization_resolves_batched_short_windows_independently(tmp_path):
+    input_jsonl = tmp_path / "batched_reader_rows.jsonl"
+    row = {
+        "sample_ids": ["short_window", "long_window"],
+        "snapshot_id": "epoch_043",
+        "reader_out": {
+            "acquisition_matrix": [
+                [
+                    [0.9, 0.0, 0.0, 0.0],
+                    [0.0, 0.8, 0.0, 0.0],
+                    [0.0, 0.0, 0.7, 0.0],
+                ],
+                [
+                    [0.0, 0.8, 0.0, 0.0],
+                    [0.0, 0.0, 0.7, 0.0],
+                    [0.0, 0.0, 0.0, 0.6],
+                ],
+            ],
+            "valid_mask": [
+                [1, 1, 0, 0],
+                [1, 1, 1, 1],
+            ],
+            "valid_lengths": [2, 4],
+        },
+    }
+    input_jsonl.write_text(json.dumps(row, sort_keys=True) + "\n", encoding="utf-8")
+
+    summary = run_selection_visualization(
+        input_jsonl,
+        output_dir=tmp_path / "figures",
+        snapshot_label="epoch_043",
+    )
+
+    assert summary["decision"] == READY
+    assert summary["sample_count"] == 2
+    assert summary["per_sample"][0]["sample_id"] == "short_window"
+    assert summary["per_sample"][0]["selected_count"] == 2
+    assert summary["per_sample"][1]["sample_id"] == "long_window"
+    assert summary["per_sample"][1]["selected_count"] == 3
 
 
 def test_selection_visualization_renders_hard_position_rows_without_matrix(tmp_path):
@@ -105,6 +149,26 @@ def test_selection_visualization_rejects_gt_or_teacher_payloads(tmp_path):
             "valid_mask": [[1, 1]],
         },
         "metadata": {"gt_segments": [[0.1, 0.2]]},
+    }
+    input_jsonl.write_text(json.dumps(row, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="forbidden diagnostic input key"):
+        run_selection_visualization(
+            input_jsonl,
+            output_dir=tmp_path / "figures",
+            budget=1,
+        )
+
+
+def test_selection_visualization_rejects_true_forbidden_guard_flags(tmp_path):
+    input_jsonl = tmp_path / "bad_guard_rows.jsonl"
+    row = {
+        "sample_id": "bad_guard",
+        "uses_cache": True,
+        "reader_out": {
+            "acquisition_matrix": [[[0.0, 0.9], [0.8, 0.0]]],
+            "valid_mask": [[1, 1]],
+        },
     }
     input_jsonl.write_text(json.dumps(row, sort_keys=True) + "\n", encoding="utf-8")
 

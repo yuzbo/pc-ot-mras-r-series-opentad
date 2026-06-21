@@ -60,6 +60,17 @@ FORBIDDEN_KEY_TOKENS = (
     "annotation",
     "annotations",
 )
+ALLOWED_FALSE_GUARD_KEYS = {
+    "usesgt",
+    "usesteacher",
+    "usesoracle",
+    "usescache",
+    "usesrawprediction",
+    "metricclaimallowed",
+    "paperclaimallowed",
+    "runtimeflopsclaimallowed",
+    "deployclaimallowed",
+}
 
 
 def _to_plain(value: Any) -> Any:
@@ -76,13 +87,30 @@ def _normalized_key(key: Any) -> str:
     return "".join(ch for ch in str(key).lower() if ch.isalnum())
 
 
+def _is_forbidden_key(normalized: str) -> bool:
+    for token in FORBIDDEN_KEY_TOKENS:
+        if token == "gt":
+            if normalized == token or normalized.startswith(token) or normalized.endswith(token):
+                return True
+            continue
+        if token in normalized:
+            return True
+    return False
+
+
+def _is_false_guard_value(value: Any) -> bool:
+    data = _to_plain(value)
+    return data is False or data == 0 or data is None
+
+
 def _validate_no_forbidden_keys(value: Any, *, path: str = "row") -> None:
     data = _to_plain(value)
     if isinstance(data, Mapping):
         for key, item in data.items():
             normalized = _normalized_key(key)
-            if any(token in normalized for token in FORBIDDEN_KEY_TOKENS):
-                raise ValueError(f"{path}.{key}: forbidden diagnostic input key")
+            if _is_forbidden_key(normalized):
+                if normalized not in ALLOWED_FALSE_GUARD_KEYS or not _is_false_guard_value(item):
+                    raise ValueError(f"{path}.{key}: forbidden diagnostic input key")
             _validate_no_forbidden_keys(item, path=f"{path}.{key}")
     elif isinstance(data, list):
         for idx, item in enumerate(data):
@@ -325,14 +353,18 @@ def _resolve_hard_positions_for_reader(
     dense_len: int | None,
     valid_len: int | None,
 ) -> list[int]:
+    sample_reader_out = {
+        key: [_sample(value, batch_idx, batch_size)]
+        for key, value in reader_out.items()
+    }
     rows = resolve_pc_ot_mras_hard_positions(
-        reader_out,
+        sample_reader_out,
         budget=int(budget),
-        sample_ids=[f"{sample_id}|batch{idx}" for idx in range(batch_size)],
+        sample_ids=[sample_id],
         dense_len=dense_len,
         valid_len=valid_len,
     )
-    return [int(pos) for pos in rows[batch_idx]["selected_positions"]]
+    return [int(pos) for pos in rows[0]["selected_positions"]]
 
 
 def _explicit_positions(value: Any, *, name: str) -> list[int] | None:

@@ -252,6 +252,7 @@ def _model(
     pc_ot_mras_reader_aux_loss=None,
     pc_ot_mras_reader_soft_hard_loss=None,
     pc_ot_mras_reader_value_loss=None,
+    pc_ot_mras_reader_eval_override=None,
     enable_value_heads=False,
 ):
     return ActionFormer(
@@ -270,6 +271,7 @@ def _model(
         pc_ot_mras_reader_aux_loss=pc_ot_mras_reader_aux_loss,
         pc_ot_mras_reader_soft_hard_loss=pc_ot_mras_reader_soft_hard_loss,
         pc_ot_mras_reader_value_loss=pc_ot_mras_reader_value_loss,
+        pc_ot_mras_reader_eval_override=pc_ot_mras_reader_eval_override,
     )
 
 
@@ -420,6 +422,50 @@ def test_pc_ot_mras_reader_runs_inside_actionformer_after_projection_before_neck
     assert inputs.grad is not None
     assert torch.isfinite(inputs.grad).all()
     assert inputs.grad.abs().sum().item() > 0
+
+
+def test_actionformer_eval_override_bypasses_reader_and_emits_exact_uniform_payload():
+    model = _model(pc_ot_mras_reader_eval_override=dict(enabled=True, mode="exact_uniform", num_slots=3))
+    model.eval()
+    inputs = torch.randn(1, 4, 8)
+    masks = torch.tensor([[1, 1, 1, 1, 1, 0, 0, 0]], dtype=torch.bool)
+    metas = [{"sample_id": "reader_disabled_eval_override|0"}]
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("eval override must bypass the learned reader")
+
+    model.pc_ot_mras_reader.forward = fail_if_called
+    with torch.no_grad():
+        model.forward_test(inputs, masks, metas=metas)
+
+    test_metas = model.rpn_head.last_test_metas
+    assert READER_OUTPUTS_META_KEY in test_metas[0]
+    reader_outputs = test_metas[0][READER_OUTPUTS_META_KEY]
+    assert reader_outputs["schema_version"] == "pc_ot_mras_eval_override_reader_outputs_v0"
+    assert reader_outputs["override_mode"] == "exact_uniform"
+    assert torch.equal(reader_outputs["valid_mask"], masks)
+    assert reader_outputs["allocation"].shape == (1, 3, 8)
+    assert reader_outputs["selected_mask"].tolist() == [[True, True, True]]
+    assert torch.equal(reader_outputs["allocation"][0].argmax(dim=-1), torch.tensor([0, 2, 4]))
+    assert torch.allclose(reader_outputs["allocation"].sum(dim=-1), torch.ones(1, 3))
+    assert torch.all(reader_outputs["allocation"][0, :, 5:] == 0)
+    assert torch.allclose(reader_outputs["selected_times"][0], torch.tensor([0.0, 0.5, 1.0]))
+    assert test_metas[0]["pc_ot_mras_bridge"]["selected_tokens_source"] == "recomputed_from_acquisition_matrix"
+
+
+def test_actionformer_eval_override_uses_prefix_selected_mask_for_short_inputs():
+    model = _model(pc_ot_mras_reader_eval_override=dict(enabled=True, mode="exact_uniform", num_slots=6))
+    model.eval()
+    features = torch.randn(1, 4, 8)
+    masks = torch.tensor([[1, 1, 1, 0, 0, 0, 0, 0]], dtype=torch.bool)
+
+    reader_outputs = model._pc_ot_mras_eval_override_outputs(features, masks)
+
+    assert reader_outputs["selected_mask"].tolist() == [[True, True, True, False, False, False]]
+    assert torch.equal(reader_outputs["allocation"][0, :3].argmax(dim=-1), torch.tensor([0, 1, 2]))
+    assert torch.all(reader_outputs["allocation"][0, 3:] == 0)
+    assert torch.all(reader_outputs["centers"][0, 3:] == 0)
+    assert torch.all(reader_outputs["widths"][0, 3:] == 0)
 
 
 def test_pc_ot_mras_reader_aux_loss_is_train_only_opt_in_and_backprops_to_reader_heads():

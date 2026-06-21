@@ -4,6 +4,8 @@ import pytest
 from tools.bata.dump_pc_ot_mras_reader_snapshots import (
     READER_OUTPUT_KEYS,
     ReaderOutputHook,
+    _load_checkpoint_state,
+    _strip_module_prefix_from_state_dict,
     make_snapshot_row,
     sample_ids_from_metas,
     serialize_reader_outputs,
@@ -111,3 +113,30 @@ def test_reader_output_hook_rejects_non_mapping():
 
     with pytest.raises(ValueError, match="expected mapping output"):
         hook(None, None, torch.ones(1))
+
+
+def test_strip_module_prefix_from_state_dict_only_changes_prefixed_keys():
+    state_dict = {
+        "module.linear.weight": torch.ones(1, 2),
+        "linear.bias": torch.zeros(1),
+    }
+
+    stripped = _strip_module_prefix_from_state_dict(state_dict)
+
+    assert list(stripped.keys()) == ["linear.weight", "linear.bias"]
+    assert stripped["linear.weight"] is state_dict["module.linear.weight"]
+    assert stripped["linear.bias"] is state_dict["linear.bias"]
+
+
+def test_load_checkpoint_state_accepts_ddp_module_prefix(tmp_path):
+    source = torch.nn.Linear(2, 1)
+    target = torch.nn.Linear(2, 1)
+    checkpoint_path = tmp_path / "epoch_7.pth"
+    state_dict = {f"module.{key}": value.clone() for key, value in source.state_dict().items()}
+    torch.save({"state_dict": state_dict, "epoch": 7}, checkpoint_path)
+
+    epoch = _load_checkpoint_state(target, checkpoint_path, use_ema=False)
+
+    assert epoch == 7
+    for key, value in source.state_dict().items():
+        assert torch.equal(target.state_dict()[key], value)

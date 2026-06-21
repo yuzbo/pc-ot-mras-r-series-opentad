@@ -195,6 +195,17 @@ def _device_from_arg(device_text: str) -> torch.device:
     return torch.device(device_text)
 
 
+def _strip_module_prefix_from_state_dict(state_dict: Mapping[str, Any]) -> Mapping[str, Any]:
+    if not isinstance(state_dict, Mapping):
+        raise ValueError("checkpoint state_dict must be a mapping")
+    if not any(isinstance(key, str) and key.startswith("module.") for key in state_dict.keys()):
+        return state_dict
+    return {
+        key[7:] if isinstance(key, str) and key.startswith("module.") else key: value
+        for key, value in state_dict.items()
+    }
+
+
 def _load_checkpoint_state(model: torch.nn.Module, checkpoint_path: str | Path, *, use_ema: bool | None) -> int | None:
     checkpoint = torch.load(str(checkpoint_path), map_location="cpu")
     if not isinstance(checkpoint, Mapping):
@@ -207,7 +218,22 @@ def _load_checkpoint_state(model: torch.nn.Module, checkpoint_path: str | Path, 
         key = "state_dict_ema" if "state_dict_ema" in checkpoint else "state_dict"
     if key not in checkpoint:
         raise ValueError(f"checkpoint missing {key}")
-    model.load_state_dict(checkpoint[key])
+    state_dict = checkpoint[key]
+    if not isinstance(state_dict, Mapping):
+        raise ValueError(f"checkpoint {key} must be a mapping")
+    try:
+        model.load_state_dict(state_dict)
+    except RuntimeError:
+        stripped_state_dict = _strip_module_prefix_from_state_dict(state_dict)
+        if stripped_state_dict is state_dict:
+            raise
+        try:
+            model.load_state_dict(stripped_state_dict)
+        except RuntimeError as stripped_error:
+            raise RuntimeError(
+                f"failed to strictly load {key} from {checkpoint_path} with original "
+                "or module-prefix-stripped keys"
+            ) from stripped_error
     epoch = checkpoint.get("epoch")
     return None if epoch is None else int(epoch)
 

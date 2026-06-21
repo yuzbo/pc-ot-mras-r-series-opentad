@@ -32,6 +32,7 @@ class ActionFormer(SingleStageDetector):
         pc_ot_mras_reader_aux_loss=None,
         pc_ot_mras_reader_soft_hard_loss=None,
         pc_ot_mras_reader_value_loss=None,
+        pc_ot_mras_reader_eval_override=None,
         selector_train_only=False,
     ):
         super().__init__(
@@ -49,6 +50,9 @@ class ActionFormer(SingleStageDetector):
             pc_ot_mras_reader_soft_hard_loss
         )
         self.pc_ot_mras_reader_value_loss = self._normalize_pc_ot_mras_reader_value_loss(pc_ot_mras_reader_value_loss)
+        self.pc_ot_mras_reader_eval_override = self._normalize_pc_ot_mras_reader_eval_override(
+            pc_ot_mras_reader_eval_override
+        )
         if self.pc_ot_mras_reader_aux_loss is not None and self.pc_ot_mras_reader is None:
             raise ValueError("pc_ot_mras_reader_aux_loss requires pc_ot_mras_reader")
         if self.pc_ot_mras_reader_soft_hard_loss is not None and self.pc_ot_mras_reader is None:
@@ -377,7 +381,7 @@ class ActionFormer(SingleStageDetector):
             )
 
     def _inject_pc_ot_mras_reader_outputs(self, feat_list, mask_list, metas):
-        if self.pc_ot_mras_reader is None:
+        if self.pc_ot_mras_reader is None and self.pc_ot_mras_reader_eval_override is None:
             return metas
         features, masks = self._pc_ot_mras_reader_feature_and_mask(feat_list, mask_list)
         if features.shape[0] != masks.shape[0] or features.shape[-1] != masks.shape[-1]:
@@ -386,10 +390,77 @@ class ActionFormer(SingleStageDetector):
                 f"features={tuple(features.shape)}, masks={tuple(masks.shape)}"
             )
         output_metas = self._clone_pc_ot_mras_metas_for_writer(metas, batch_size=int(features.shape[0]))
-        reader_outputs = self.pc_ot_mras_reader(features.transpose(1, 2).contiguous(), masks)
+        if self.pc_ot_mras_reader_eval_override is not None and not self.training:
+            reader_outputs = self._pc_ot_mras_eval_override_outputs(features, masks)
+        elif self.pc_ot_mras_reader is None:
+            raise ValueError("pc_ot_mras_reader is required outside eval override mode")
+        else:
+            reader_outputs = self.pc_ot_mras_reader(features.transpose(1, 2).contiguous(), masks)
         for meta in output_metas:
             meta[_PC_OT_MRAS_READER_OUTPUTS_META_KEY] = reader_outputs
         return output_metas
+
+    def _pc_ot_mras_eval_override_outputs(self, features, masks):
+        config = self.pc_ot_mras_reader_eval_override
+        mode = config["mode"]
+        if mode != "exact_uniform":
+            raise ValueError(f"unsupported pc_ot_mras_reader_eval_override mode: {mode}")
+        num_slots = int(config["num_slots"])
+        batch, _, time = features.shape
+        valid = masks.bool()
+        valid_len = valid.long().sum(dim=1)
+        if bool((valid_len <= 0).any().item()):
+            raise ValueError("pc_ot_mras_reader_eval_override requires at least one valid token per sample")
+        allocation = features.new_zeros((batch, num_slots, time))
+        selected_mask = torch.zeros((batch, num_slots), dtype=torch.bool, device=features.device)
+        selected_times = features.new_zeros((batch, num_slots))
+        centers = features.new_zeros((batch, num_slots))
+        widths = features.new_zeros((batch, num_slots))
+        gates = features.new_zeros((batch, num_slots))
+        time_coords = self._pc_ot_mras_dense_time_coords(valid, dtype=features.dtype)
+
+        for batch_idx in range(batch):
+            count = min(num_slots, int(valid_len[batch_idx].item()))
+            positions = self._pc_ot_mras_exact_uniform_positions(valid_len[batch_idx], count)
+            slots = torch.arange(count, device=features.device)
+            allocation[batch_idx, slots, positions] = 1.0
+            selected_mask[batch_idx, :count] = True
+            selected_times[batch_idx, :count] = time_coords[batch_idx, positions]
+            centers[batch_idx, :count] = selected_times[batch_idx, :count]
+            widths[batch_idx, :count] = (1.0 / valid_len[batch_idx].to(dtype=features.dtype)).clamp_min(1.0e-6)
+            gates[batch_idx, :count] = 1.0
+
+        return {
+            "schema_version": "pc_ot_mras_eval_override_reader_outputs_v0",
+            "override_mode": mode,
+            "allocation": allocation,
+            "acquisition_matrix": allocation,
+            "valid_mask": valid,
+            "selected_mask": selected_mask,
+            "selected_times": selected_times,
+            "centers": centers,
+            "widths": widths,
+            "gates": gates,
+            "time_coords": time_coords,
+        }
+
+    @staticmethod
+    def _pc_ot_mras_dense_time_coords(valid_mask, *, dtype):
+        batch, time = valid_mask.shape
+        valid_len = valid_mask.long().sum(dim=1).clamp(min=1)
+        pos = torch.arange(time, device=valid_mask.device, dtype=dtype)[None, :].expand(batch, -1)
+        denom = (valid_len - 1).clamp(min=1).to(dtype=dtype)[:, None]
+        coords = pos / denom
+        return coords.masked_fill(~valid_mask, 0.0)
+
+    @staticmethod
+    def _pc_ot_mras_exact_uniform_positions(valid_len, count):
+        if count <= 0:
+            raise ValueError("count must be positive")
+        if count == 1:
+            return torch.zeros((1,), dtype=torch.long, device=valid_len.device)
+        stop = valid_len.to(dtype=torch.float32) - 1.0
+        return torch.linspace(0.0, float(stop.item()), steps=count, device=valid_len.device).round().long()
 
     def _pc_ot_mras_reader_feature_and_mask(self, feat_list, mask_list):
         if not isinstance(feat_list, (tuple, list)) or not isinstance(mask_list, (tuple, list)):
@@ -483,6 +554,32 @@ class ActionFormer(SingleStageDetector):
                 raise ValueError("pc_ot_mras_reader_value_loss.weights must be a mapping")
             config["weights"] = dict(weights)
         return config
+
+    def _normalize_pc_ot_mras_reader_eval_override(self, config):
+        if config is None:
+            return None
+        if not isinstance(config, Mapping):
+            raise ValueError("pc_ot_mras_reader_eval_override must be a mapping when provided")
+        config = dict(config)
+        enabled = bool(config.pop("enabled", False))
+        if not enabled:
+            return None
+        allowed = {"mode", "num_slots"}
+        unknown = sorted(set(config) - allowed)
+        if unknown:
+            raise ValueError(f"unknown pc_ot_mras_reader_eval_override keys: {unknown}")
+        mode = str(config.get("mode", "exact_uniform"))
+        if mode != "exact_uniform":
+            raise ValueError("pc_ot_mras_reader_eval_override.mode must be 'exact_uniform'")
+        num_slots = config.get("num_slots")
+        if num_slots is None:
+            if self.pc_ot_mras_reader is None or not hasattr(self.pc_ot_mras_reader, "cfg"):
+                raise ValueError("pc_ot_mras_reader_eval_override.num_slots is required when reader cfg is unavailable")
+            num_slots = self.pc_ot_mras_reader.cfg.num_slots
+        num_slots = int(num_slots)
+        if num_slots <= 0:
+            raise ValueError("pc_ot_mras_reader_eval_override.num_slots must be positive")
+        return {"mode": mode, "num_slots": num_slots}
 
     @staticmethod
     def _normalize_pc_ot_mras_reader_soft_hard_loss(config):
