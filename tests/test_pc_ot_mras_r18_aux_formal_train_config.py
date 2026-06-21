@@ -121,5 +121,6 @@ def test_r18_aux_formal_launcher_is_fail_closed_by_default():
     assert "tools/test.py" in text
     assert 'tools/test.py "$CONFIG"' not in text
     assert 'tools/train.py "$CONFIG"' in text
+    assert "model.projection.pretrained" not in text
     assert "result_detection.json" in text
     assert "R18_AUX_FORMAL_PRECHECK_ONLY_PASS_NO_TRAIN" in text
