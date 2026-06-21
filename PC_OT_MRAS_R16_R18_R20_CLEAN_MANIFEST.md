@@ -1350,3 +1350,71 @@ This allows only remote sync of the clean repo and a fresh R16A/R17/R18
 dependency-wave requeue. It does not authorize detector mAP, runtime/FLOPs,
 deployment, dynamic-budget validation, spatial-redundancy validation, metric
 claims, or paper claims.
+
+## R16A Smoke Output Audit Narrowing And R31 Contract Regressions
+
+Remote R16A GPU smoke job `1111913 pcot_r16smk` ran the latest
+`b162d4a` code, reached `tools/train.py`, built the model/datasets, completed
+the bounded train-entry smoke, printed finite epoch-0 loss, hit
+`max_train_iters=2`, and printed `Training Over`. It then failed only in the
+launcher post-run stdout audit:
+
+```text
+ERROR train stdout contains forbidden testing/mAP/result marker
+```
+
+The failure was a launcher audit false positive, not the previous AMP
+Float/Half or pair-entropy NaN failures. The R16A config text printed in the
+training stdout contains phrases such as "detector mAP is not approved"; the
+old post-run guard searched for bare `mAP` anywhere in stdout, so it rejected a
+valid no-test smoke. The launcher now checks only real detector-evaluation
+markers: `Testing Starts`, `Average-mAP`, `mAP at tIoU`, and
+`result_detection`.
+
+This update also adds two R23-R31 contract regressions before moving R23+
+toward remote precheck:
+
+1. A production `VisionTransformerAdapter.forward()` opt-in test with
+   `depth=3` verifies that packed route execution is mutually exclusive with
+   the dense block loop. It asserts packed block calls equal depth, dense block
+   calls are zero, packed attention/MLP counts equal depth, and adapter count
+   remains one.
+2. A dynamic selected-position to temporal-tubelet contract test verifies that
+   selected dense positions map to valid temporal tubelet ids, expand only to
+   complete spatial groups, preserve stable pack/scatter order, and fail closed
+   on ragged batch selected-token counts until padding/grouping is explicitly
+   implemented.
+
+Changed files:
+
+```text
+scripts/run_ctf_bdi_pc_ot_mras_r16a_gpu_smoke_n16r4.sbatch
+tests/test_pc_ot_mras_r16a_gpu_smoke_launcher.py
+tests/test_pc_ot_mras_packed_tubelet_forward_route.py
+PC_OT_MRAS_R16_R18_R20_CLEAN_MANIFEST.md
+```
+
+Verification in the local Windows `torch_1` environment:
+
+```text
+focused R16A/R31 pytest:
+  5 passed, 1 skipped in 0.97s
+
+R22-R31 focused regression set:
+  16 passed, 7 skipped in 8.94s
+
+R16A sbatch bash -n:
+  pass
+
+git diff --check:
+  pass, with LF/CRLF warnings only
+```
+
+Boundary: this is launcher audit hardening and local/remote-precheck test
+coverage for R23-R31 contracts. It does not change model training semantics,
+input sampling, dynamic-budget policy, detector head semantics, loss targets,
+assignment, post-processing, GT/teacher/raw-prediction boundaries, detector
+mAP, runtime/FLOPs, deployment evidence, metric claims, spatial-redundancy
+claims, dynamic-budget validation claims, or paper claims. R23-R31 remain
+precheck/review evidence only until a valid execution gate explicitly unlocks
+the next stage.

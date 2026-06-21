@@ -72,6 +72,8 @@ def test_r16a_gpu_smoke_launcher_audits_config_and_train_bounds():
     assert "opentad/models/dense_heads/native_irregular_area_head_p2.py" in text
     assert "grep -q \"max_train_iters=2 reached\"" in text
     assert "grep -q \"Training Over\"" in text
+    assert "Testing Starts|Average-mAP|mAP at tIoU|result_detection" in text
+    assert "Testing Starts|mAP|result_detection" not in text
     assert "active_sha256_manifest_sha256=$ACTIVE_MANIFEST_SHA256" in text
 
 

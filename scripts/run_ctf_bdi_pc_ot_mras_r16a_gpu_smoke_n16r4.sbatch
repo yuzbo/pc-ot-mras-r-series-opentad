@@ -463,7 +463,7 @@ if find "$WORK_DIR" -maxdepth 3 -type f \( -name 'result_detection.json' -o -nam
 fi
 grep -q "max_train_iters=2 reached" "$TRAIN_STDOUT" || fail "train stdout does not show max_train_iters early stop"
 grep -q "Training Over" "$TRAIN_STDOUT" || fail "train stdout does not show clean Training Over"
-if grep -Eq "Testing Starts|mAP|result_detection" "$TRAIN_STDOUT"; then
+if grep -Eq "Testing Starts|Average-mAP|mAP at tIoU|result_detection" "$TRAIN_STDOUT"; then
   fail "train stdout contains forbidden testing/mAP/result marker"
 fi
 

@@ -272,6 +272,124 @@ def test_vit_adapter_forward_optin_returns_dense_feature_map_and_summary():
     assert summary["runtime_flops_claim_allowed"] is False
 
 
+def test_vit_adapter_forward_optin_depth_gt1_does_not_run_dense_block_loop():
+    torch.manual_seed(20260621)
+    model = VisionTransformerAdapter(
+        img_size=8,
+        patch_size=4,
+        in_channels=3,
+        embed_dims=8,
+        depth=3,
+        num_heads=2,
+        mlp_ratio=2.0,
+        qkv_bias=True,
+        drop_rate=0.0,
+        attn_drop_rate=0.0,
+        drop_path_rate=0.0,
+        num_frames=4,
+        tubelet_size=2,
+        use_mean_pooling=False,
+        return_feat_map=True,
+        with_cp=False,
+        adapter_index=[1],
+        total_frames=4,
+        tubelet_packed_runtime_route=dict(
+            enabled=True,
+            mode="deterministic_tubelet_cap",
+            keep_ratio=0.5,
+            local_forward_only=True,
+            require_no_adapter_blocks=False,
+            allow_training_mode=False,
+            scatter_unselected="identity",
+        ),
+        init_cfg=None,
+    )
+    model.eval()
+    counts = {"packed": 0, "dense": 0}
+    for block in model.blocks:
+        original_forward = block.forward
+
+        def wrapped_forward(x, h, w, *args, _original_forward=original_forward, **kwargs):
+            if kwargs.get("packed_dense_mask", None) is None:
+                counts["dense"] += 1
+            else:
+                counts["packed"] += 1
+            return _original_forward(x, h, w, *args, **kwargs)
+
+        block.forward = wrapped_forward
+
+    x = torch.randn(2, 3, 4, 8, 12)
+    with torch.no_grad():
+        y = model(x)
+
+    summary = model.latest_tubelet_packed_runtime_summary
+    assert y.shape == (2, 8, 2, 2, 3)
+    assert counts["packed"] == 3
+    assert counts["dense"] == 0
+    assert summary["packed_attention_forward_count"] == 3
+    assert summary["packed_mlp_forward_count"] == 3
+    assert summary["adapter_block_count"] == 1
+    assert summary["adapter_forward_count"] == 1
+    assert summary["dense_output_shape"] == [2, 12, 8]
+    assert summary["selected_dense_tokens"] == 6
+
+
+def test_dynamic_selected_positions_map_to_full_tubelet_groups_without_spatial_crop():
+    selected_positions = torch.tensor(
+        [
+            [0, 1, 4, 5],
+            [2, 3, 6, 7],
+        ],
+        dtype=torch.long,
+    )
+    dense_valid_len = 8
+    temporal_tubelets = 4
+    spatial_tokens = 3
+    tubelet_ids = torch.div(
+        selected_positions * temporal_tubelets,
+        dense_valid_len,
+        rounding_mode="floor",
+    ).clamp_(0, temporal_tubelets - 1)
+    tubelet_mask = torch.zeros((2, temporal_tubelets), dtype=torch.bool)
+    tubelet_mask.scatter_(1, tubelet_ids, True)
+    dense_mask = PackedTubeletRuntimeRoute._expand_tubelet_mask(tubelet_mask, spatial_tokens)
+
+    assert tubelet_ids.min().item() >= 0
+    assert tubelet_ids.max().item() < temporal_tubelets
+    assert torch.equal(tubelet_mask[0], torch.tensor([True, False, True, False]))
+    assert torch.equal(tubelet_mask[1], torch.tensor([False, True, False, True]))
+    assert dense_mask.shape == (2, temporal_tubelets * spatial_tokens)
+    for batch_idx in range(dense_mask.shape[0]):
+        for tubelet_idx in range(temporal_tubelets):
+            group = dense_mask[batch_idx, tubelet_idx * spatial_tokens : (tubelet_idx + 1) * spatial_tokens]
+            assert bool(group.all().item()) == bool(tubelet_mask[batch_idx, tubelet_idx].item())
+
+    values = torch.arange(2 * temporal_tubelets * spatial_tokens, dtype=torch.float32).reshape(
+        2, temporal_tubelets * spatial_tokens, 1
+    )
+    packed = PackedTubeletRuntimeRoute._pack_tokens(values, dense_mask)
+    assert torch.equal(packed[0, :, 0], values[0, dense_mask[0], 0])
+    assert torch.equal(packed[1, :, 0], values[1, dense_mask[1], 0])
+
+    route = PackedTubeletRuntimeRoute(enabled=True, scatter_unselected="zero")
+    restored = route._scatter_tokens(values, packed, dense_mask)
+    assert torch.equal(restored[dense_mask], values[dense_mask])
+    assert torch.equal(restored[~dense_mask], torch.zeros_like(restored[~dense_mask]))
+
+
+def test_dynamic_tubelet_pack_rejects_ragged_batch_without_padding():
+    values = torch.randn(2, 12, 2)
+    ragged_mask = torch.tensor(
+        [
+            [True, True, True, False, False, False, True, True, True, False, False, False],
+            [True, True, True, False, False, False, False, False, False, False, False, False],
+        ],
+        dtype=torch.bool,
+    )
+    with pytest.raises(ValueError, match="equal selected-token count"):
+        PackedTubeletRuntimeRoute._pack_tokens(values, ragged_mask)
+
+
 def test_vit_adapter_forward_default_path_has_no_packed_summary():
     model = VisionTransformerAdapter(
         img_size=8,
