@@ -58,6 +58,7 @@ fa216a9 Add PC-OT-MRAS R29 tubelet packed profile audit
 a5e2507847f0ea1ef32b6903323ed087751e2934 Add PC-OT-MRAS R31 packed forward opt-in
 b83897048434c51688cb10dd012c92195cab330c Refine PC-OT-MRAS R31 adapter packed forward
 7d590c305519ccef4c594ee8f16c5c8942ff8990 Fix PC-OT-MRAS pair softmax AMP dtype
+990aef96ea1a363d9f751045bb80548f1893f9ff Fix PC-OT-MRAS pair entropy AMP finite
 ```
 
 ## Objective
@@ -1284,3 +1285,56 @@ GT/teacher/raw-prediction boundaries, detector mAP, runtime/FLOPs, deployment
 evidence, metric claims, or paper claims. R17/R18 dependency jobs from the
 failed `1106493` wave are dependency-dead and must be cancelled/requeued after
 the fixed head is synced and checked.
+
+## R16A AMP-Safe Probability Entropy Fix
+
+Remote R16A GPU smoke job `1107077 pcot_r16smk` reached epoch 0 and failed
+before any detector mAP with:
+
+```text
+ValueError: pc_ot_mras_reader_outputs.regularizers.pair_entropy_loss must be finite
+```
+
+The dependent jobs `1107078 pcot_r17tr` and `1107079 pcot_r18aux` became
+`DependencyNeverSatisfied` and were cancelled before preparing a fresh wave.
+
+Commit `990aef96ea1a363d9f751045bb80548f1893f9ff` fixes the entropy
+calculation in `opentad/models/selectors/pc_ot_mras_reader.py`. The failure
+was an AMP half-precision zero-probability issue: the old formula clamped
+probabilities with `1.0e-8`, but that value underflows to zero in `float16`;
+`0 * log(0)` then becomes NaN and the detector bridge correctly rejects the
+reader output tree as non-finite. The fix adds `_prob_entropy(...)`, casts the
+probability tensor to float32 before clamp/log, and uses it for both allocation
+entropy and pair entropy. The detector bridge finite gate is not weakened.
+
+Changed files:
+
+```text
+opentad/models/selectors/pc_ot_mras_reader.py
+tests/test_pc_ot_mras_reader_pair_distribution.py
+PC_OT_MRAS_R16_R18_R20_CLEAN_MANIFEST.md
+```
+
+Verification in the local Windows `torch_1` environment:
+
+```text
+py_compile changed reader/test files:
+  pass
+
+focused reader pair-distribution pytest:
+  5 passed in 20.17s
+
+full PC-OT-MRAS pytest plus train-engine max-train-iter test:
+  301 passed in 74.30s
+
+git diff --check:
+  pass, with LF/CRLF warnings only
+```
+
+Boundary: this is a numerical finite-value repair for reader regularizer
+reporting under AMP. It does not change input sampling, dynamic-budget policy,
+Adapter/backbone packed-token routing, detector head semantics, loss targets,
+assignment, post-processing, GT/teacher/raw-prediction boundaries, detector
+mAP, runtime/FLOPs, deployment evidence, metric claims, or paper claims. A
+Gemini CLI read-only review is required before any remote sync/requeue from
+this fix.
