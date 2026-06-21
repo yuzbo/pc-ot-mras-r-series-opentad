@@ -58,7 +58,7 @@ fa216a9 Add PC-OT-MRAS R29 tubelet packed profile audit
 a5e2507847f0ea1ef32b6903323ed087751e2934 Add PC-OT-MRAS R31 packed forward opt-in
 b83897048434c51688cb10dd012c92195cab330c Refine PC-OT-MRAS R31 adapter packed forward
 7d590c305519ccef4c594ee8f16c5c8942ff8990 Fix PC-OT-MRAS pair softmax AMP dtype
-990aef96ea1a363d9f751045bb80548f1893f9ff Fix PC-OT-MRAS pair entropy AMP finite
+990aef92affc2a30e17273a847c68e519b79ab30 Fix PC-OT-MRAS pair entropy AMP finite
 ```
 
 ## Objective
@@ -1298,7 +1298,7 @@ ValueError: pc_ot_mras_reader_outputs.regularizers.pair_entropy_loss must be fin
 The dependent jobs `1107078 pcot_r17tr` and `1107079 pcot_r18aux` became
 `DependencyNeverSatisfied` and were cancelled before preparing a fresh wave.
 
-Commit `990aef96ea1a363d9f751045bb80548f1893f9ff` fixes the entropy
+Commit `990aef92affc2a30e17273a847c68e519b79ab30` fixes the entropy
 calculation in `opentad/models/selectors/pc_ot_mras_reader.py`. The failure
 was an AMP half-precision zero-probability issue: the old formula clamped
 probabilities with `1.0e-8`, but that value underflows to zero in `float16`;
@@ -1335,6 +1335,18 @@ Boundary: this is a numerical finite-value repair for reader regularizer
 reporting under AMP. It does not change input sampling, dynamic-budget policy,
 Adapter/backbone packed-token routing, detector head semantics, loss targets,
 assignment, post-processing, GT/teacher/raw-prediction boundaries, detector
-mAP, runtime/FLOPs, deployment evidence, metric claims, or paper claims. A
-Gemini CLI read-only review is required before any remote sync/requeue from
-this fix.
+mAP, runtime/FLOPs, deployment evidence, metric claims, or paper claims.
+
+Gemini CLI read-only review for this focused fix completed with exitcode `0`
+and verdict `PASS_ALLOW_REMOTE_SYNC_REQUEUE_ONLY`:
+
+```text
+stdout: logs/gemini3_pro_preview_ctf_bdi_pc_ot_mras_pair_entropy_finite_fix_20260621.txt
+stderr: logs/gemini3_pro_preview_ctf_bdi_pc_ot_mras_pair_entropy_finite_fix_20260621.err.txt
+process: logs/gemini3_pro_preview_ctf_bdi_pc_ot_mras_pair_entropy_finite_fix_20260621.process.json
+```
+
+This allows only remote sync of the clean repo and a fresh R16A/R17/R18
+dependency-wave requeue. It does not authorize detector mAP, runtime/FLOPs,
+deployment, dynamic-budget validation, spatial-redundancy validation, metric
+claims, or paper claims.
