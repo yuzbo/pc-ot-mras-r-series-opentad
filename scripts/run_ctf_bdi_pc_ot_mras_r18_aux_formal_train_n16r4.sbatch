@@ -442,7 +442,6 @@ torchrun --nproc_per_node=1 --master_port="$MASTER_PORT" \
   tools/train.py "$CONFIG" --id "$TRAIN_ID" --seed "$SEED" \
   --cfg-options \
   work_dir="$WORK_DIR" \
-  model.projection.pretrained="$PRETRAINED_PATH" \
   dataset.train.ann_file="$THUMOS14_ANNOTATION_PATH" \
   dataset.val.ann_file="$THUMOS14_ANNOTATION_PATH" \
   dataset.test.ann_file="$THUMOS14_ANNOTATION_PATH" \

@@ -124,5 +124,6 @@ def test_r17_formal_launcher_is_clean_repo_gate_bound_and_fail_closed():
     assert "tools/test.py" in text
     assert 'tools/test.py "$CONFIG"' not in text
     assert 'tools/train.py "$CONFIG"' in text
+    assert "model.projection.pretrained" not in text
     assert "R17_FORMAL_PRECHECK_ONLY_PASS_NO_TRAIN" in text
     assert "R17_FORMAL_TRAIN_PASS_NO_DIRECT_TEST_NO_CLAIMS" in text
