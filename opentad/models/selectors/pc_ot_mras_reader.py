@@ -87,6 +87,11 @@ def _masked_softmax(logits: torch.Tensor, mask: torch.Tensor, dim: int) -> torch
     return exp / denom
 
 
+def _prob_entropy(prob: torch.Tensor, dim) -> torch.Tensor:
+    prob_f = prob.float().clamp_min(1.0e-8)
+    return -(prob_f * prob_f.log()).sum(dim=dim)
+
+
 @SELECTORS.register_module()
 class PCOTMRASReader(nn.Module):
     """Differentiable ordered-transport reader for local PC-OT-MRAS gates."""
@@ -343,12 +348,12 @@ class PCOTMRASReader(nn.Module):
         eye = torch.eye(centers.shape[1], device=centers.device, dtype=torch.bool)[None, :, :]
         diversity_loss = torch.exp(-center_dist / widths.mean(dim=1, keepdim=True)[:, None].clamp_min(1.0e-6))
         diversity_loss = diversity_loss.masked_fill(eye, 0.0).mean()
-        entropy = -(allocation.clamp_min(1.0e-8) * allocation.clamp_min(1.0e-8).log()).sum(dim=-1).mean()
+        entropy = _prob_entropy(allocation, dim=-1).mean()
         column_mass = allocation.sum(dim=1)
         column_cap_loss = F.relu(column_mass - self.cfg.column_cap).square().mean()
         budget_loss = gates.mean()
         width_loss = widths.mean()
-        pair_entropy = -(pair_prob.clamp_min(1.0e-8) * pair_prob.clamp_min(1.0e-8).log()).sum(dim=(1, 2)).mean()
+        pair_entropy = _prob_entropy(pair_prob, dim=(1, 2)).mean()
         total = order_loss + 0.1 * diversity_loss + 0.01 * entropy + column_cap_loss + 0.01 * budget_loss + 0.01 * width_loss
         return {
             "order_loss": order_loss,

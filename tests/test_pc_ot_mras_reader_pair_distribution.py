@@ -84,6 +84,28 @@ def test_pc_ot_mras_pair_distribution_accepts_amp_softmax_dtype(monkeypatch):
     assert torch.allclose(pair_prob.sum(dim=(1, 2)), torch.ones(2), atol=1e-3)
 
 
+def test_pc_ot_mras_regularizers_keep_entropy_finite_for_half_zero_probs():
+    reader = PCOTMRASReader(in_dim=4, hidden_dim=12, num_slots=4, num_blocks=1)
+    allocation = torch.zeros(2, 4, 6, dtype=torch.float16)
+    allocation[:, :, 0] = 1.0
+    pair_prob = torch.zeros(2, 6, 6, dtype=torch.float16)
+    centers = torch.linspace(0.1, 0.9, 4, dtype=torch.float32)[None, :].expand(2, -1)
+    widths = torch.full((2, 4), 0.1, dtype=torch.float32)
+    gates = torch.full((2, 4), 0.5, dtype=torch.float32)
+
+    regularizers = reader._regularizers(
+        allocation=allocation,
+        centers=centers,
+        widths=widths,
+        gates=gates,
+        pair_prob=pair_prob,
+    )
+
+    assert torch.isfinite(regularizers["entropy_loss"]).all()
+    assert torch.isfinite(regularizers["pair_entropy_loss"]).all()
+    assert torch.isfinite(regularizers["total_regularizer"]).all()
+
+
 def test_process_boundary_logits_influence_allocation():
     torch.manual_seed(137)
     reader = PCOTMRASReader(in_dim=4, hidden_dim=10, num_slots=3, num_blocks=1)
