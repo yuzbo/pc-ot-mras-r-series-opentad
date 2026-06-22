@@ -255,6 +255,7 @@ class PCOTMRASDetectorBridge(nn.Module):
         allocation_key: str = "acquisition_matrix",
         no_gate_scale: bool = False,
         metadata_position_source: str = "centers",
+        metadata_position_repair: str = "fail",
         output_strides: Tuple[int, ...] = (1,),
         source_feature_level: Optional[int] = None,
     ) -> None:
@@ -269,6 +270,8 @@ class PCOTMRASDetectorBridge(nn.Module):
             raise ValueError("allocation_key must be 'allocation' or 'acquisition_matrix'")
         if metadata_position_source not in {"centers", "selected_times", "selected_positions"}:
             raise ValueError("metadata_position_source must be 'centers', 'selected_times', or 'selected_positions'")
+        if metadata_position_repair not in {"fail", "sort_jitter"}:
+            raise ValueError("metadata_position_repair must be 'fail' or 'sort_jitter'")
         self.in_channels = int(in_channels)
         self.out_channels = int(out_channels)
         self.add_time_features = bool(add_time_features)
@@ -276,6 +279,7 @@ class PCOTMRASDetectorBridge(nn.Module):
         self.allocation_key = "allocation" if bool(no_gate_scale) else str(allocation_key)
         self.no_gate_scale = bool(no_gate_scale)
         self.metadata_position_source = str(metadata_position_source)
+        self.metadata_position_repair = str(metadata_position_repair)
         self.output_strides = self._normalize_output_strides(output_strides)
         self.source_feature_level = self._normalize_source_feature_level(source_feature_level)
 
@@ -480,6 +484,19 @@ class PCOTMRASDetectorBridge(nn.Module):
             meta["pc_ot_mras_selected_dense_position_strict_violation_count"] = int(
                 strict_violation_count.detach().cpu().item()
             )
+        pre_repair_strict_violation_count = aux.get("selected_dense_position_pre_repair_strict_violation_count")
+        if torch.is_tensor(pre_repair_strict_violation_count) and pre_repair_strict_violation_count.ndim == 0:
+            meta["pc_ot_mras_selected_dense_position_pre_repair_strict_violation_count"] = int(
+                pre_repair_strict_violation_count.detach().cpu().item()
+            )
+        jitter_repair_count = aux.get("selected_dense_position_jitter_repair_count")
+        if torch.is_tensor(jitter_repair_count) and jitter_repair_count.ndim == 0:
+            meta["pc_ot_mras_selected_dense_position_jitter_repair_count"] = int(
+                jitter_repair_count.detach().cpu().item()
+            )
+        repair_mode = aux.get("metadata_position_repair_mode")
+        if isinstance(repair_mode, str):
+            meta["metadata_position_repair_mode"] = repair_mode
         return meta
 
     @staticmethod
@@ -700,6 +717,87 @@ class PCOTMRASDetectorBridge(nn.Module):
         )
         return torch.cat([base, pad], dim=-1)
 
+    @staticmethod
+    def _reorder_slot_aligned_tensor(value: torch.Tensor, order: torch.Tensor) -> torch.Tensor:
+        view_shape = (order.shape[0], order.shape[1]) + (1,) * (value.ndim - 2)
+        gather_index = order.reshape(view_shape).expand(-1, -1, *value.shape[2:])
+        return torch.gather(value, dim=1, index=gather_index)
+
+    def _repair_slot_order_for_temporal_metadata(
+        self,
+        reader_outputs: Mapping[str, object],
+        selected_tokens: torch.Tensor,
+        selected_mask: torch.Tensor,
+    ) -> tuple[Mapping[str, object], torch.Tensor, torch.Tensor]:
+        if self.metadata_position_repair != "sort_jitter":
+            return reader_outputs, selected_tokens, selected_mask
+        if self.metadata_position_source not in {"selected_times", "selected_positions"}:
+            return reader_outputs, selected_tokens, selected_mask
+
+        sort_source = reader_outputs.get(self.metadata_position_source)
+        if not torch.is_tensor(sort_source):
+            raise ValueError(f"{self.metadata_position_source} is required for PC-OT-MRAS temporal metadata repair")
+        if sort_source.shape != selected_mask.shape:
+            raise ValueError(f"{self.metadata_position_source} shape must match selected_mask for temporal metadata repair")
+        if sort_source.device != selected_tokens.device:
+            raise ValueError(f"{self.metadata_position_source} must be on the selected-token device")
+        if not bool(torch.isfinite(sort_source).all().item()):
+            raise ValueError(f"{self.metadata_position_source} must be finite for temporal metadata repair")
+
+        sort_key = sort_source.to(dtype=torch.float32)
+        invalid_sentinel = sort_key.new_full((), float("inf"))
+        sort_key = torch.where(selected_mask, sort_key, invalid_sentinel)
+        order = torch.argsort(sort_key, dim=1)
+
+        selected_tokens = self._reorder_slot_aligned_tensor(selected_tokens, order)
+        selected_mask = self._reorder_slot_aligned_tensor(selected_mask, order)
+        repaired_outputs: Dict[str, object] = dict(reader_outputs)
+        old_shape = tuple(order.shape)
+        for key, value in reader_outputs.items():
+            if torch.is_tensor(value) and value.ndim >= 2 and tuple(value.shape[:2]) == old_shape:
+                repaired_outputs[key] = self._reorder_slot_aligned_tensor(value, order)
+        repaired_outputs["metadata_position_repair_mode"] = "sort_jitter"
+        repaired_outputs["metadata_position_sort_order"] = order
+        return repaired_outputs, selected_tokens, selected_mask
+
+    @staticmethod
+    def _repair_dense_positions_with_jitter(
+        dense_positions: torch.Tensor,
+        selected_mask: torch.Tensor,
+        max_position: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        repaired = dense_positions.clone()
+        repair_counts = torch.zeros((dense_positions.shape[0],), dtype=torch.long, device=dense_positions.device)
+        for batch_idx in range(dense_positions.shape[0]):
+            valid_count = int(selected_mask[batch_idx].long().sum().item())
+            if valid_count <= 1:
+                continue
+            row = repaired[batch_idx, :valid_count].clone()
+            max_allowed = float(max_position[batch_idx, 0].detach().cpu().item())
+            eps = min(1.0e-3, max(max_allowed, 1.0) / max(float(valid_count) * 4.0, 1.0))
+            count = 0
+            for idx in range(1, valid_count):
+                min_next = row[idx - 1] + eps
+                if bool((row[idx] <= min_next).detach().cpu().item()):
+                    row[idx] = min_next
+                    count += 1
+            if bool((row[-1] > max_allowed).detach().cpu().item()):
+                shift = row[-1] - row.new_tensor(max_allowed)
+                row = row - shift
+                if bool((row[0] < 0.0).detach().cpu().item()):
+                    row = torch.linspace(
+                        0.0,
+                        max_allowed,
+                        steps=valid_count,
+                        device=row.device,
+                        dtype=row.dtype,
+                    )
+                    count = max(count, valid_count)
+            row = row.clamp(min=0.0, max=max_allowed)
+            repaired[batch_idx, :valid_count] = row
+            repair_counts[batch_idx] = int(count)
+        return repaired, repair_counts
+
     def _metadata(
         self,
         reader_outputs: Mapping[str, object],
@@ -791,9 +889,27 @@ class PCOTMRASDetectorBridge(nn.Module):
                 position_deltas = dense_positions[:, 1:] - dense_positions[:, :-1]
                 adjacent_valid = selected_mask[:, 1:] & selected_mask[:, :-1]
                 strict_violations = (position_deltas <= 0.0) & adjacent_valid
+                meta["selected_dense_position_pre_repair_strict_violation_count"] = strict_violations.long().sum(dim=1)
+                if (
+                    self.metadata_position_repair == "sort_jitter"
+                    and self.metadata_position_source in {"selected_times", "selected_positions"}
+                    and bool(strict_violations.any().item())
+                ):
+                    dense_positions, repair_counts = self._repair_dense_positions_with_jitter(
+                        dense_positions,
+                        selected_mask,
+                        max_position.to(dtype=torch.float32),
+                    )
+                    meta["selected_dense_position_repair_mode"] = "sort_jitter"
+                    meta["selected_dense_position_jitter_repair_count"] = repair_counts
+                    position_deltas = dense_positions[:, 1:] - dense_positions[:, :-1]
+                    strict_violations = (position_deltas <= 0.0) & adjacent_valid
                 meta["selected_dense_position_delta"] = position_deltas.masked_fill(~adjacent_valid, 0.0)
                 meta["selected_dense_position_strict_violation_count"] = strict_violations.long().sum(dim=1)
                 meta["selected_dense_positions_strictly_increasing"] = strict_violations.long().sum(dim=1) == 0
+            repair_mode = reader_outputs.get("metadata_position_repair_mode")
+            if isinstance(repair_mode, str):
+                meta["metadata_position_repair_mode"] = repair_mode
             meta["selected_dense_positions"] = dense_positions
             meta["dense_valid_len_tensor"] = dense_valid_len.to(dtype=torch.float32)
             meta["temporal_tensor_metadata_mode"] = temporal_mode
@@ -902,6 +1018,11 @@ class PCOTMRASDetectorBridge(nn.Module):
     ) -> Tuple[Tuple[torch.Tensor], Tuple[torch.Tensor]] | Tuple[Tuple[torch.Tensor], Tuple[torch.Tensor], Dict[str, object]]:
         selected_tokens, selected_tokens_source, selected_tokens_source_verified = self._continuous_tokens(source_tokens, reader_outputs)
         selected_mask = self._selected_mask(reader_outputs, selected_tokens)
+        reader_outputs, selected_tokens, selected_mask = self._repair_slot_order_for_temporal_metadata(
+            reader_outputs,
+            selected_tokens,
+            selected_mask,
+        )
         out = self.token_proj(selected_tokens)
         if self.time_proj is not None:
             out = out + self.time_proj(self._time_features(reader_outputs, selected_tokens))

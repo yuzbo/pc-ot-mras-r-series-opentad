@@ -311,6 +311,41 @@ def test_metadata_position_source_selected_times_fails_closed_when_nonmonotonic(
         selected_times_bridge((features,), (masks,), metas=_metas(reader_outputs))
 
 
+def test_metadata_position_source_selected_times_sort_jitter_repairs_nonmonotonic():
+    features, masks = _source_features()
+    reader_outputs = dict(_reader_outputs(features, masks))
+    reader_outputs["selected_times"] = reader_outputs["selected_times"].clone()
+    reader_outputs["selected_times"][0] = torch.tensor(
+        [0.60, 0.40, 0.40],
+        dtype=features.dtype,
+        device=features.device,
+    )
+    selected_times_bridge = PCOTMRASDetectorBridge(
+        in_channels=4,
+        out_channels=5,
+        metadata_position_source="selected_times",
+        metadata_position_repair="sort_jitter",
+    )
+
+    _selected_feats, selected_masks, selected_meta = selected_times_bridge(
+        (features,),
+        (masks,),
+        metas=_metas(reader_outputs),
+    )
+
+    assert torch.equal(selected_masks[0], reader_outputs["selected_mask"])
+    aux = selected_meta[0]["pc_ot_mras_bridge"]
+    positions = torch.tensor(selected_meta[0]["irregular_selected_positions"])
+    assert bool(((positions[1:] - positions[:-1]) > 0).all().item())
+    assert selected_meta[0]["pc_ot_mras_temporal_meta_mode"] == "selected_times_continuous"
+    assert selected_meta[0]["metadata_position_repair_mode"] == "sort_jitter"
+    assert aux["metadata_position_repair_mode"] == "sort_jitter"
+    assert int(aux["selected_dense_position_pre_repair_strict_violation_count"][0].item()) > 0
+    assert int(aux["selected_dense_position_jitter_repair_count"][0].item()) > 0
+    assert int(aux["selected_dense_position_strict_violation_count"][0].item()) == 0
+    assert selected_meta[0]["pc_ot_mras_selected_dense_position_strict_violation_count"] == 0
+
+
 def test_no_gate_scale_recomputes_tokens_from_allocation_without_changing_default():
     features, masks = _source_features()
     reader_outputs = _reader_outputs(features, masks)

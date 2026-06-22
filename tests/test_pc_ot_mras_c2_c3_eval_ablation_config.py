@@ -12,6 +12,7 @@ CASES = (
         config="ctf_bdi_pc_ot_mras_r17_c2_selected_times_eval_local_lowmem_candidate.py",
         parent="ctf_bdi_pc_ot_mras_r17_post_train_eval_local_lowmem_candidate.py",
         metadata_position_source="selected_times",
+        metadata_position_repair="sort_jitter",
         no_gate_scale=False,
     ),
     dict(
@@ -19,6 +20,7 @@ CASES = (
         config="ctf_bdi_pc_ot_mras_r18_c2_selected_times_eval_local_lowmem_candidate.py",
         parent="ctf_bdi_pc_ot_mras_r18_post_train_eval_local_lowmem_candidate.py",
         metadata_position_source="selected_times",
+        metadata_position_repair="sort_jitter",
         no_gate_scale=False,
     ),
     dict(
@@ -26,6 +28,7 @@ CASES = (
         config="ctf_bdi_pc_ot_mras_r17_c3_no_gate_scale_eval_local_lowmem_candidate.py",
         parent="ctf_bdi_pc_ot_mras_r17_post_train_eval_local_lowmem_candidate.py",
         metadata_position_source=None,
+        metadata_position_repair=None,
         no_gate_scale=True,
     ),
     dict(
@@ -33,6 +36,7 @@ CASES = (
         config="ctf_bdi_pc_ot_mras_r18_c3_no_gate_scale_eval_local_lowmem_candidate.py",
         parent="ctf_bdi_pc_ot_mras_r18_post_train_eval_local_lowmem_candidate.py",
         metadata_position_source=None,
+        metadata_position_repair=None,
         no_gate_scale=True,
     ),
 )
@@ -62,6 +66,11 @@ def test_c2_c3_eval_ablation_configs_are_local_lowmem_thin_entries(case):
         assert "metadata_position_source" not in cfg.model.neck
     else:
         assert cfg.model.neck.metadata_position_source == case["metadata_position_source"]
+
+    if case["metadata_position_repair"] is None:
+        assert "metadata_position_repair" not in cfg.model.neck
+    else:
+        assert cfg.model.neck.metadata_position_repair == case["metadata_position_repair"]
 
     if case["no_gate_scale"]:
         assert cfg.model.neck.no_gate_scale is True
