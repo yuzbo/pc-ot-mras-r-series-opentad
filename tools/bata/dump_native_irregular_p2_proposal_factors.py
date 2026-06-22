@@ -135,22 +135,19 @@ def _module(model: Any) -> Any:
 
 
 def _register_rpn_pre_hook(rpn_head: Any, capture: _RPNInputCapture):
-    try:
-        return rpn_head.register_forward_pre_hook(capture, with_kwargs=True)
-    except TypeError:
-        original = rpn_head.forward_test
+    original = rpn_head.forward_test
 
-        def wrapped_forward_test(*args, **kwargs):
-            capture(None, args, kwargs)
-            return original(*args, **kwargs)
+    def wrapped_forward_test(*args, **kwargs):
+        capture(None, args, kwargs)
+        return original(*args, **kwargs)
 
-        rpn_head.forward_test = wrapped_forward_test
+    rpn_head.forward_test = wrapped_forward_test
 
-        class _Handle:
-            def remove(self) -> None:
-                rpn_head.forward_test = original
+    class _Handle:
+        def remove(self) -> None:
+            rpn_head.forward_test = original
 
-        return _Handle()
+    return _Handle()
 
 
 def run_checkpoint_dump(
