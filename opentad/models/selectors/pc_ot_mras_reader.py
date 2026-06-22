@@ -28,6 +28,7 @@ class PCOTMRASReaderConfig:
     order_margin: float = 1.0e-3
     column_cap: float = 2.0
     enable_value_heads: bool = False
+    emit_pair_distribution: bool = True
 
 
 def _neg(dtype: torch.dtype) -> float:
@@ -112,6 +113,7 @@ class PCOTMRASReader(nn.Module):
         order_margin: float = 1.0e-3,
         column_cap: float = 2.0,
         enable_value_heads: bool = False,
+        emit_pair_distribution: bool = True,
     ) -> None:
         super().__init__()
         if int(in_dim) <= 0:
@@ -146,6 +148,7 @@ class PCOTMRASReader(nn.Module):
             order_margin=float(order_margin),
             column_cap=float(column_cap),
             enable_value_heads=bool(enable_value_heads),
+            emit_pair_distribution=bool(emit_pair_distribution),
         )
 
         self.input_proj = nn.Linear(self.cfg.in_dim, self.cfg.hidden_dim)
@@ -340,7 +343,7 @@ class PCOTMRASReader(nn.Module):
         centers: torch.Tensor,
         widths: torch.Tensor,
         gates: torch.Tensor,
-        pair_prob: torch.Tensor,
+        pair_prob: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         gap = centers[:, 1:] - centers[:, :-1]
         order_loss = F.relu(self.cfg.order_margin - gap).mean() if gap.numel() else centers.sum() * 0.0
@@ -353,7 +356,10 @@ class PCOTMRASReader(nn.Module):
         column_cap_loss = F.relu(column_mass - self.cfg.column_cap).square().mean()
         budget_loss = gates.mean()
         width_loss = widths.mean()
-        pair_entropy = _prob_entropy(pair_prob, dim=(1, 2)).mean()
+        if pair_prob is None:
+            pair_entropy = allocation.sum() * 0.0
+        else:
+            pair_entropy = _prob_entropy(pair_prob, dim=(1, 2)).mean()
         total = order_loss + 0.1 * diversity_loss + 0.01 * entropy + column_cap_loss + 0.01 * budget_loss + 0.01 * width_loss
         return {
             "order_loss": order_loss,
@@ -403,7 +409,12 @@ class PCOTMRASReader(nn.Module):
         values = self.value_proj(h)
         selected_tokens = torch.einsum("bkt,btd->bkd", acquisition_matrix, values)
         selected_times = torch.einsum("bkt,bt->bk", allocation, coords)
-        pair_logits, pair_prob, pair_valid_mask = self._pair_distribution(h, valid, coords, dense)
+        dense_positions = torch.arange(coords.shape[1], device=coords.device, dtype=coords.dtype)
+        acquisition_row_mass = acquisition_matrix.sum(dim=-1).clamp_min(torch.finfo(acquisition_matrix.dtype).eps)
+        selected_positions = torch.einsum("bkt,t->bk", acquisition_matrix, dense_positions) / acquisition_row_mass
+        pair_logits = pair_prob = pair_valid_mask = None
+        if self.cfg.emit_pair_distribution:
+            pair_logits, pair_prob, pair_valid_mask = self._pair_distribution(h, valid, coords, dense)
         regularizers = self._regularizers(allocation, centers, widths, gates, pair_prob)
         selected_mask = torch.ones(
             (lowcost_features.shape[0], self.cfg.num_slots),
@@ -422,6 +433,7 @@ class PCOTMRASReader(nn.Module):
             "acquisition_matrix": acquisition_matrix,
             "selected_tokens": selected_tokens,
             "selected_times": selected_times,
+            "selected_positions": selected_positions,
             "selected_mask": selected_mask,
             "centers": centers,
             "widths": widths,
@@ -431,11 +443,16 @@ class PCOTMRASReader(nn.Module):
             "role_probs": role_probs,
             "role_ids": role_ids,
             "round_ids": round_ids,
-            "pair_logits": pair_logits,
-            "pair_prob": pair_prob,
-            "pair_valid_mask": pair_valid_mask,
             "regularizers": regularizers,
         }
+        if pair_logits is not None and pair_prob is not None and pair_valid_mask is not None:
+            out.update(
+                {
+                    "pair_logits": pair_logits,
+                    "pair_prob": pair_prob,
+                    "pair_valid_mask": pair_valid_mask,
+                }
+            )
         out.update(dense)
         return out
 

@@ -46,6 +46,9 @@ r18_pc_ot_mras_aux_diag_gate = dict(
 )
 
 model = dict(
+    pc_ot_mras_reader=dict(
+        emit_pair_distribution=True,
+    ),
     pc_ot_mras_reader_aux_loss=dict(
         enabled=True,
         weights=dict(

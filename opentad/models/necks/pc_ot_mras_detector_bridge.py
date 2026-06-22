@@ -16,6 +16,7 @@ _SLOT_ALIGNED_AUX_KEYS = frozenset(
     {
         "selected_tokens",
         "selected_times",
+        "selected_positions",
         "centers",
         "widths",
         "gates",
@@ -252,6 +253,8 @@ class PCOTMRASDetectorBridge(nn.Module):
         time_feature_dim: int = 4,
         norm: bool = True,
         allocation_key: str = "acquisition_matrix",
+        no_gate_scale: bool = False,
+        metadata_position_source: str = "centers",
         output_strides: Tuple[int, ...] = (1,),
         source_feature_level: Optional[int] = None,
     ) -> None:
@@ -264,11 +267,15 @@ class PCOTMRASDetectorBridge(nn.Module):
             raise ValueError("time_feature_dim must be positive")
         if allocation_key not in {"allocation", "acquisition_matrix"}:
             raise ValueError("allocation_key must be 'allocation' or 'acquisition_matrix'")
+        if metadata_position_source not in {"centers", "selected_times", "selected_positions"}:
+            raise ValueError("metadata_position_source must be 'centers', 'selected_times', or 'selected_positions'")
         self.in_channels = int(in_channels)
         self.out_channels = int(out_channels)
         self.add_time_features = bool(add_time_features)
         self.time_feature_dim = int(time_feature_dim)
-        self.allocation_key = str(allocation_key)
+        self.allocation_key = "allocation" if bool(no_gate_scale) else str(allocation_key)
+        self.no_gate_scale = bool(no_gate_scale)
+        self.metadata_position_source = str(metadata_position_source)
         self.output_strides = self._normalize_output_strides(output_strides)
         self.source_feature_level = self._normalize_source_feature_level(source_feature_level)
 
@@ -434,12 +441,28 @@ class PCOTMRASDetectorBridge(nn.Module):
         dense_valid_len = int(valid_mask.long().sum().item())
         if dense_valid_len <= 0:
             raise ValueError("valid_mask must contain at least one valid dense position")
-        valid_centers = centers[:valid_count].to(dtype=torch.float32)
-        if not bool(torch.isfinite(valid_centers).all().item()):
-            raise ValueError("centers must be finite for PC-OT-MRAS temporal metadata")
-        positions = (valid_centers * float(dense_valid_len)).clamp(min=0.0, max=float(dense_valid_len) - 1.0e-4)
+        selected_dense_positions = aux.get("selected_dense_positions")
+        if torch.is_tensor(selected_dense_positions):
+            if selected_dense_positions.ndim != 1 or selected_dense_positions.shape[0] < valid_count:
+                raise ValueError("selected_dense_positions must cover selected_mask for PC-OT-MRAS temporal metadata")
+            positions = selected_dense_positions[:valid_count].to(dtype=torch.float32)
+        else:
+            valid_centers = centers[:valid_count].to(dtype=torch.float32)
+            if not bool(torch.isfinite(valid_centers).all().item()):
+                raise ValueError("centers must be finite for PC-OT-MRAS temporal metadata")
+            positions = valid_centers * float(dense_valid_len)
+        positions = positions.clamp(min=0.0, max=float(dense_valid_len) - 1.0e-4)
+        if not bool(torch.isfinite(positions).all().item()):
+            raise ValueError("PC-OT-MRAS temporal metadata positions must be finite")
         if valid_count > 1 and bool(((positions[1:] - positions[:-1]) <= 0).any().item()):
             raise ValueError("PC-OT-MRAS temporal metadata positions must be strictly increasing")
+        tensor_mode = aux.get("temporal_tensor_metadata_mode")
+        if tensor_mode == "selected_dense_positions_from_selected_times":
+            temporal_meta_mode = "selected_times_continuous"
+        elif tensor_mode == "selected_dense_positions_from_selected_positions":
+            temporal_meta_mode = "selected_positions_continuous"
+        else:
+            temporal_meta_mode = "ordered_slot_centers_continuous"
         return {
             "irregular_selected_positions": [float(item) for item in positions.detach().cpu().tolist()],
             "irregular_dense_valid_len": int(dense_valid_len),
@@ -447,7 +470,7 @@ class PCOTMRASDetectorBridge(nn.Module):
             "irregular_selected_valid_len_semantics": "carried_forward_dense_valid_len_alias",
             "irregular_selected_count": int(valid_count),
             "irregular_native_axis": True,
-            "pc_ot_mras_temporal_meta_mode": "ordered_slot_centers_continuous",
+            "pc_ot_mras_temporal_meta_mode": temporal_meta_mode,
         }
 
     @staticmethod
@@ -710,7 +733,44 @@ class PCOTMRASDetectorBridge(nn.Module):
             if bool((dense_valid_len <= 0).any().item()):
                 raise ValueError("valid_mask must contain at least one valid dense position")
             max_position = (dense_valid_len[:, None] - 1.0e-4).clamp_min(0.0)
-            raw_dense_positions = centers.to(dtype=torch.float32) * dense_valid_len[:, None].to(dtype=torch.float32)
+            if self.metadata_position_source == "selected_times":
+                selected_times = _require_tensor(reader_outputs, "selected_times")
+                if selected_times.shape != selected_mask.shape:
+                    raise ValueError("selected_times shape must match selected_mask for PC-OT-MRAS temporal metadata")
+                if selected_times.device != selected_tokens.device:
+                    raise ValueError("selected_times must be on the selected-token device")
+                raw_dense_positions = selected_times.to(dtype=torch.float32) * dense_valid_len[:, None].to(
+                    dtype=torch.float32
+                )
+                temporal_mode = "selected_dense_positions_from_selected_times"
+            elif self.metadata_position_source == "selected_positions":
+                selected_positions = reader_outputs.get("selected_positions")
+                if torch.is_tensor(selected_positions):
+                    if selected_positions.shape != selected_mask.shape:
+                        raise ValueError(
+                            "selected_positions shape must match selected_mask for PC-OT-MRAS temporal metadata"
+                        )
+                    if selected_positions.device != selected_tokens.device:
+                        raise ValueError("selected_positions must be on the selected-token device")
+                    raw_dense_positions = selected_positions.to(dtype=torch.float32)
+                else:
+                    acquisition = _require_tensor(reader_outputs, "acquisition_matrix")
+                    if acquisition.ndim != 3 or acquisition.shape[:2] != selected_mask.shape:
+                        raise ValueError(
+                            "acquisition_matrix shape must match selected_mask for PC-OT-MRAS temporal metadata"
+                        )
+                    if acquisition.device != selected_tokens.device:
+                        raise ValueError("acquisition_matrix must be on the selected-token device")
+                    dense_pos = torch.arange(acquisition.shape[-1], device=acquisition.device, dtype=torch.float32)
+                    acquisition_f = acquisition.to(dtype=torch.float32)
+                    row_mass = acquisition_f.sum(dim=-1).clamp_min(torch.finfo(torch.float32).eps)
+                    raw_dense_positions = torch.einsum("bkt,t->bk", acquisition_f, dense_pos) / row_mass
+                temporal_mode = "selected_dense_positions_from_selected_positions"
+            else:
+                raw_dense_positions = centers.to(dtype=torch.float32) * dense_valid_len[:, None].to(dtype=torch.float32)
+                temporal_mode = "selected_dense_positions_from_centers"
+            if not bool(torch.isfinite(raw_dense_positions).all().item()):
+                raise ValueError("PC-OT-MRAS temporal metadata positions must be finite")
             dense_positions = torch.minimum(
                 torch.maximum(raw_dense_positions, centers.new_zeros((), dtype=torch.float32)),
                 max_position.to(dtype=torch.float32),
@@ -718,9 +778,10 @@ class PCOTMRASDetectorBridge(nn.Module):
             dense_positions = dense_positions.masked_fill(~selected_mask, 0.0)
             meta["selected_dense_positions"] = dense_positions
             meta["dense_valid_len_tensor"] = dense_valid_len.to(dtype=torch.float32)
-            meta["temporal_tensor_metadata_mode"] = "selected_dense_positions_from_centers"
+            meta["temporal_tensor_metadata_mode"] = temporal_mode
         for key in (
             "selected_times",
+            "selected_positions",
             "centers",
             "widths",
             "gates",

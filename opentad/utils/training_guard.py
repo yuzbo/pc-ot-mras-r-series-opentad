@@ -384,10 +384,13 @@ def _entrypoint_gate_context_block_reason(gate):
             f"expected={expected_manifest} actual={active_manifest_sha256}"
         )
 
+    require_resolved_config_sha256 = _is_true(_get_value(context, "require_resolved_config_sha256", True))
     expected_resolved = gate_payload.get("resolved_config_sha256") or gate_payload.get(
         "expected_resolved_config_sha256"
     )
-    if resolved_config_sha256 and expected_resolved not in (None, resolved_config_sha256):
+    if require_resolved_config_sha256 and expected_resolved is None:
+        return "entrypoint gate JSON missing resolved_config_sha256"
+    if resolved_config_sha256 and expected_resolved != resolved_config_sha256:
         return (
             "entrypoint gate resolved config sha256 mismatch: "
             f"expected={expected_resolved} actual={resolved_config_sha256}"

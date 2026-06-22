@@ -109,6 +109,27 @@ def test_pc_ot_mras_reader_value_heads_are_explicit_opt_in():
     assert torch.allclose(out["allocation"].sum(dim=-1), torch.ones(2, 6), atol=1e-5)
 
 
+def test_pc_ot_mras_reader_can_skip_pair_distribution_for_reader_only_runs():
+    reader = PCOTMRASReader(
+        in_dim=5,
+        hidden_dim=16,
+        num_slots=6,
+        num_blocks=1,
+        num_roles=6,
+        emit_pair_distribution=False,
+    )
+    features, valid, coords = _inputs()
+
+    out = reader(features, valid, coords)
+
+    assert "pair_logits" not in out
+    assert "pair_prob" not in out
+    assert "pair_valid_mask" not in out
+    assert torch.is_tensor(out["regularizers"]["total_regularizer"])
+    assert torch.isfinite(out["regularizers"]["total_regularizer"])
+    assert out["regularizers"]["pair_entropy_loss"].item() == pytest.approx(0.0, abs=1e-7)
+
+
 def test_pc_ot_mras_dense_heads_mask_half_logits_with_output_dtype_sentinel():
     class HalfHead(torch.nn.Module):
         def __init__(self, out_dim):

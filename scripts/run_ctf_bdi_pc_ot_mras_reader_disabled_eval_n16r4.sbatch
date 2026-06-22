@@ -95,7 +95,8 @@ SHA_MANIFEST="$RUN_ROOT/active_sha256_manifest.txt"
 RESOLVED_CONFIG_DUMP="$RUN_ROOT/resolved_config.py"
 SUMMARY_JSON="$RUN_ROOT/${TARGET_LOWER}_reader_disabled_eval_summary.json"
 WORK_DIR_BASE="$RUN_ROOT/eval_workdir"
-WORK_DIR="$WORK_DIR_BASE/gpu1_id${EVAL_ID}"
+WORK_DIR="$WORK_DIR_BASE"
+FINAL_WORK_DIR="$WORK_DIR/gpu1_id${EVAL_ID}"
 
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
@@ -121,14 +122,14 @@ write_summary() {
   local status="$1"
   local decision="$2"
   local reason="$3"
-  python - "$SUMMARY_JSON" "$status" "$decision" "$reason" "$RUN_ROOT" "$CONFIG" "$WORK_DIR" "$EVAL_CHECKPOINT" "$TARGET_UPPER" <<'PY'
+  python - "$SUMMARY_JSON" "$status" "$decision" "$reason" "$RUN_ROOT" "$CONFIG" "$WORK_DIR" "$FINAL_WORK_DIR" "$EVAL_CHECKPOINT" "$TARGET_UPPER" <<'PY'
 import json
 import os
 import socket
 import sys
 from pathlib import Path
 
-summary_path, status, decision, reason, run_root, config, work_dir, checkpoint, target = sys.argv[1:10]
+summary_path, status, decision, reason, run_root, config, work_dir, final_work_dir, checkpoint, target = sys.argv[1:11]
 payload = {
     "status": status,
     "decision": decision,
@@ -140,6 +141,7 @@ payload = {
     "run_root": run_root,
     "config": config,
     "work_dir": work_dir,
+    "final_work_dir": final_work_dir,
     "checkpoint": checkpoint,
     "claim_boundaries": {
         "tools_test_only": True,
@@ -254,6 +256,7 @@ log "git_branch=$GIT_BRANCH git_head=$GIT_HEAD"
 log "config=$CONFIG"
 log "run_root=$RUN_ROOT"
 log "work_dir=$WORK_DIR"
+log "final_work_dir=$FINAL_WORK_DIR"
 log "scope=${TARGET_UPPER}_READER_DISABLED_EVAL tools_test=true tools_train=false detector_map_reporting=true same_head_control=true exact_uniform_reader_override=true no_claims=true"
 
 test -f "$CONFIG" || fail "missing reviewed config: $CONFIG"
@@ -334,7 +337,9 @@ sha256sum \
   opentad/cores/test_engine.py \
   opentad/utils/training_guard.py \
   opentad/models/detectors/actionformer.py \
+  opentad/models/selectors/pc_ot_mras_reader.py \
   opentad/models/necks/pc_ot_mras_detector_bridge.py \
+  opentad/models/dense_heads/native_irregular_area_head_p2.py \
   opentad/models/utils/pc_ot_mras_raw_prediction_guard.py \
   tests/test_pc_ot_mras_r17_r18_post_train_eval_gate.py \
   > "$SHA_MANIFEST"
@@ -403,6 +408,16 @@ torchrun --nproc_per_node=1 --master_port="$MASTER_PORT" \
   2>&1 | tee "$EVAL_STDOUT"
 
 grep -q "Testing Over" "$EVAL_STDOUT" || fail "${TARGET_UPPER} reader-disabled eval stdout does not show Testing Over"
-test -f "$WORK_DIR/result_detection.json" || fail "missing expected reader-disabled eval artifact: $WORK_DIR/result_detection.json"
-write_summary "PASS" "${TARGET_UPPER}_READER_DISABLED_EVAL_PASS_MAP_REPORTING_ONLY_NO_CLAIMS" "tools/test.py completed with exact-uniform reader-disabled payload and result_detection.json"
+if grep -Eiq "Average-mAP|mAP at tIoU|average_mAP|mAP@" "$EVAL_STDOUT"; then
+  log "eval_metric_stdout=FOUND"
+else
+  fail "${TARGET_UPPER} reader-disabled eval stdout does not contain evaluator mAP evidence"
+fi
+RESULT_DETECTION_JSON="$FINAL_WORK_DIR/result_detection.json"
+if [ -f "$RESULT_DETECTION_JSON" ]; then
+  log "result_detection_json=$RESULT_DETECTION_JSON"
+else
+  log "result_detection_json=ABSENT_EXPECTED_WHEN_post_processing.save_dict_FALSE; using evaluator stdout mAP as artifact"
+fi
+write_summary "PASS" "${TARGET_UPPER}_READER_DISABLED_EVAL_PASS_MAP_REPORTING_ONLY_NO_CLAIMS" "tools/test.py completed with exact-uniform reader-disabled payload; Testing Over and detector mAP were found in stdout/log with no paper/deploy claims"
 log "${TARGET_UPPER}_READER_DISABLED_EVAL_PASS_MAP_REPORTING_ONLY_NO_CLAIMS"

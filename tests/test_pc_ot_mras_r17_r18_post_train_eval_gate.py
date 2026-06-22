@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,43 @@ R18_LAUNCHER = ROOT / "scripts" / "run_ctf_bdi_pc_ot_mras_r18_post_train_eval_n1
 READER_DISABLED_LAUNCHER = (
     ROOT / "scripts" / "run_ctf_bdi_pc_ot_mras_reader_disabled_eval_n16r4.sbatch"
 )
+REQUIRED_EVAL_MANIFEST_PATHS = (
+    "tools/test.py",
+    "opentad/cores/test_engine.py",
+    "opentad/utils/training_guard.py",
+    "opentad/models/detectors/actionformer.py",
+    "opentad/models/selectors/pc_ot_mras_reader.py",
+    "opentad/models/necks/pc_ot_mras_detector_bridge.py",
+    "opentad/models/dense_heads/native_irregular_area_head_p2.py",
+    "opentad/models/utils/pc_ot_mras_raw_prediction_guard.py",
+    "tests/test_pc_ot_mras_r17_r18_post_train_eval_gate.py",
+)
+
+
+def _assert_uses_base_work_dir_and_optional_result_json(text):
+    assert 'WORK_DIR_BASE="$RUN_ROOT/eval_workdir"' in text
+    assert 'WORK_DIR="$WORK_DIR_BASE"' in text
+    assert 'FINAL_WORK_DIR="$WORK_DIR/gpu1_id${EVAL_ID}"' in text
+    assert 'final_work_dir=$FINAL_WORK_DIR' in text
+    assert 'work_dir="$WORK_DIR"' in text
+    assert 'work_dir="$FINAL_WORK_DIR"' not in text
+    assert 'WORK_DIR="$WORK_DIR_BASE/gpu1_id${EVAL_ID}"' not in text
+    assert 'RESULT_DETECTION_JSON="$FINAL_WORK_DIR/result_detection.json"' in text
+    assert 'if [ -f "$RESULT_DETECTION_JSON" ]; then' in text
+    assert 'test -f "$RESULT_DETECTION_JSON"' not in text
+    assert 'grep -q "Testing Over" "$EVAL_STDOUT"' in text
+    assert 'grep -Eiq "Average-mAP|mAP at tIoU|average_mAP|mAP@" "$EVAL_STDOUT"' in text
+    assert "result_detection_json=ABSENT_EXPECTED_WHEN_post_processing.save_dict_FALSE" in text
+
+
+def _assert_manifest_covers_execution_surface(text, launcher):
+    assert f"scripts/{launcher.name}" in text
+    for path in REQUIRED_EVAL_MANIFEST_PATHS:
+        assert path in text
+
+
+def _assert_no_tools_train_launcher_invocation(text):
+    assert re.search(r"(^|\s)(torchrun|srun|python(?:\s+-m)?)\b[^\n]*tools/train\.py", text) is None
 
 
 def _load_guard():
@@ -115,6 +153,32 @@ def test_post_train_eval_configs_are_tools_test_only_and_gate_bound(
     monkeypatch.setenv("OPENTAD_PCOTMRAS_ACTIVE_MANIFEST_SHA256", "manifest-sha")
     monkeypatch.setenv("OPENTAD_PCOTMRAS_RESOLVED_CONFIG_SHA256", "resolved-sha")
     assert training_guard.assert_detector_training_allowed(cfg, entrypoint="tools/test.py") is None
+
+
+def test_entrypoint_gate_requires_resolved_config_sha_when_context_requires_it(tmp_path, monkeypatch):
+    mmengine_config = pytest.importorskip("mmengine.config")
+    training_guard = _load_guard()
+    cfg = mmengine_config.Config.fromfile(str(R17_CONFIG))
+    gate_json = tmp_path / "missing_resolved.json"
+    gate_json.write_text(
+        json.dumps(
+            {
+                "decision": "ALLOW_R17_POST_TRAIN_EVAL",
+                "active_sha256_manifest_sha256": "manifest-sha",
+                "checkpoint_sha256": "checkpoint-sha",
+                "completed_training_evidence": True,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENTAD_PCOTMRAS_ENTRYPOINT_GATE_JSON", str(gate_json))
+    monkeypatch.setenv("OPENTAD_PCOTMRAS_ENTRYPOINT_GATE_SHA256", hashlib.sha256(gate_json.read_bytes()).hexdigest())
+    monkeypatch.setenv("OPENTAD_PCOTMRAS_ACTIVE_MANIFEST_SHA256", "manifest-sha")
+    monkeypatch.setenv("OPENTAD_PCOTMRAS_RESOLVED_CONFIG_SHA256", "resolved-sha")
+
+    with pytest.raises(RuntimeError, match="missing resolved_config_sha256"):
+        training_guard.assert_detector_training_allowed(cfg, entrypoint="tools/test.py")
 
 
 def test_r18_post_train_eval_keeps_auxiliary_model_surface():
@@ -231,7 +295,9 @@ def test_post_train_eval_launchers_are_fail_closed_and_checkpoint_bound(
     assert "tools/train.py is not part of this" in text
     assert 'tools/train.py "$CONFIG"' not in text
     assert 'tools/test.py "$CONFIG" --checkpoint' in text
-    assert "result_detection.json" in text
+    _assert_no_tools_train_launcher_invocation(text)
+    _assert_uses_base_work_dir_and_optional_result_json(text)
+    _assert_manifest_covers_execution_surface(text, launcher)
     assert summary_pass in text
 
 
@@ -280,6 +346,8 @@ def test_reader_disabled_eval_launcher_is_fail_closed_checkpoint_bound_and_targe
     assert "tools/train.py is not part of this reader-disabled eval launcher" in text
     assert 'tools/train.py "$CONFIG"' not in text
     assert 'tools/test.py "$CONFIG" --checkpoint' in text
-    assert "result_detection.json" in text
+    _assert_no_tools_train_launcher_invocation(text)
+    _assert_uses_base_work_dir_and_optional_result_json(text)
+    _assert_manifest_covers_execution_surface(text, READER_DISABLED_LAUNCHER)
     assert "OPENTAD_PCOTMRAS_ENTRYPOINT_GATE_JSON" in text
     assert "OPENTAD_PCOTMRAS_ACTIVE_MANIFEST_SHA256" in text

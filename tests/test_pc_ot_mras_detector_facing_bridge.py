@@ -252,6 +252,69 @@ def test_standard_neck_allocation_key_reports_matching_token_source():
     assert torch.allclose(aux_1["selected_tokens"], expected_masked[1], atol=1e-6)
 
 
+def test_metadata_position_source_selected_times_changes_temporal_positions_only_when_enabled():
+    features, masks = _source_features()
+    reader_outputs = _reader_outputs(features, masks)
+    default_bridge = PCOTMRASDetectorBridge(in_channels=4, out_channels=5)
+    selected_times_bridge = PCOTMRASDetectorBridge(
+        in_channels=4,
+        out_channels=5,
+        metadata_position_source="selected_times",
+    )
+
+    _default_feats, default_masks, default_meta = default_bridge((features,), (masks,), metas=_metas(reader_outputs))
+    _selected_feats, selected_masks, selected_meta = selected_times_bridge(
+        (features,),
+        (masks,),
+        metas=_metas(reader_outputs),
+    )
+
+    assert torch.equal(default_masks[0], selected_masks[0])
+    default_aux = default_meta[0]["pc_ot_mras_bridge"]
+    selected_aux = selected_meta[0]["pc_ot_mras_bridge"]
+    expected_centers = reader_outputs["centers"][0] * float(masks[0].sum().item())
+    expected_selected_times = reader_outputs["selected_times"][0] * float(masks[0].sum().item())
+
+    assert default_aux["temporal_tensor_metadata_mode"] == "selected_dense_positions_from_centers"
+    assert selected_aux["temporal_tensor_metadata_mode"] == "selected_dense_positions_from_selected_times"
+    assert torch.allclose(default_aux["selected_dense_positions"], expected_centers, atol=1e-6)
+    assert torch.allclose(selected_aux["selected_dense_positions"], expected_selected_times, atol=1e-6)
+    assert not torch.allclose(default_aux["selected_dense_positions"], selected_aux["selected_dense_positions"])
+    assert default_meta[0]["irregular_selected_positions"] == pytest.approx(
+        default_aux["selected_dense_positions"].detach().cpu().tolist()
+    )
+    assert selected_meta[0]["irregular_selected_positions"] == pytest.approx(
+        selected_aux["selected_dense_positions"].detach().cpu().tolist()
+    )
+    assert default_meta[0]["pc_ot_mras_temporal_meta_mode"] == "ordered_slot_centers_continuous"
+    assert selected_meta[0]["pc_ot_mras_temporal_meta_mode"] == "selected_times_continuous"
+
+
+def test_no_gate_scale_recomputes_tokens_from_allocation_without_changing_default():
+    features, masks = _source_features()
+    reader_outputs = _reader_outputs(features, masks)
+    default_bridge = PCOTMRASDetectorBridge(in_channels=4, out_channels=5)
+    no_gate_bridge = PCOTMRASDetectorBridge(in_channels=4, out_channels=5, no_gate_scale=True)
+
+    _default_feats, _default_masks, default_meta = default_bridge((features,), (masks,), metas=_metas(reader_outputs))
+    _no_gate_feats, _no_gate_masks, no_gate_meta = no_gate_bridge((features,), (masks,), metas=_metas(reader_outputs))
+
+    default_aux = default_meta[0]["pc_ot_mras_bridge"]
+    no_gate_aux = no_gate_meta[0]["pc_ot_mras_bridge"]
+    expected_default = torch.bmm(reader_outputs["acquisition_matrix"], features.transpose(1, 2).contiguous())
+    expected_no_gate = torch.bmm(reader_outputs["allocation"], features.transpose(1, 2).contiguous())
+
+    assert default_bridge.no_gate_scale is False
+    assert default_bridge.allocation_key == "acquisition_matrix"
+    assert no_gate_bridge.no_gate_scale is True
+    assert no_gate_bridge.allocation_key == "allocation"
+    assert default_aux["selected_tokens_source"] == "recomputed_from_acquisition_matrix"
+    assert no_gate_aux["selected_tokens_source"] == "recomputed_from_allocation"
+    assert torch.allclose(default_aux["selected_tokens"], expected_default[0], atol=1e-6)
+    assert torch.allclose(no_gate_aux["selected_tokens"], expected_no_gate[0], atol=1e-6)
+    assert not torch.allclose(default_aux["selected_tokens"], no_gate_aux["selected_tokens"])
+
+
 def test_legacy_selected_tokens_path_still_backprops_to_reader_selected_tokens():
     bridge = PCOTMRASDetectorBridge(in_channels=4, out_channels=5)
     features, masks = _source_features()

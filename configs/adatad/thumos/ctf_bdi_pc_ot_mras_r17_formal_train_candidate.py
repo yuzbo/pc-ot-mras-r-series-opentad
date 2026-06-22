@@ -75,6 +75,12 @@ solver = dict(
     test=dict(batch_size=2, num_workers=2),
 )
 
+model = dict(
+    pc_ot_mras_reader=dict(
+        emit_pair_distribution=False,
+    ),
+)
+
 inference = dict(load_from_raw_predictions=False, save_raw_prediction=False)
 
 work_dir = "exps/thumos/adatad/ctf_bdi_pc_ot_mras_r17_formal_train_candidate"
