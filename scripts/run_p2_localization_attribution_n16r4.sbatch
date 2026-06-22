@@ -9,9 +9,23 @@ set -euo pipefail
 REPO="${REPO:-$HOME/run/yuzibo/OpenTAD_PCOTMRAS_CPU_PRERUN_20260620_1418}"
 cd "$REPO"
 
-module load cuda/11.8
-module load miniforge3/24.11
-source activate "$HOME/run/yuzibo/conda_envs/opentad"
+if command -v module >/dev/null 2>&1; then
+  module load cuda/11.8
+  module load miniforge3/24.11
+else
+  echo "module command not available; using the configured conda env python directly"
+fi
+
+PYTHON="${PYTHON:-$HOME/run/yuzibo/conda_envs/opentad/bin/python}"
+if [ ! -x "$PYTHON" ]; then
+  if command -v conda >/dev/null 2>&1; then
+    source activate "$HOME/run/yuzibo/conda_envs/opentad"
+    PYTHON="python"
+  else
+    echo "No executable Python found at $PYTHON and conda is unavailable" >&2
+    exit 2
+  fi
+fi
 
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 
@@ -83,7 +97,7 @@ for index in "${!CASES[@]}"; do
   echo "checkpoint=$CKPT"
   test -f "$CONFIG"
   test -f "$CKPT"
-  python tools/bata/dump_native_irregular_p2_proposal_factors.py \
+  "$PYTHON" tools/bata/dump_native_irregular_p2_proposal_factors.py \
     --config "$CONFIG" \
     --checkpoint "$CKPT" \
     --output-jsonl "$CASE_DIR/proposal_factors.jsonl" \
@@ -94,7 +108,7 @@ for index in "${!CASES[@]}"; do
     --use-ema auto \
     --amp \
     --topk-per-sample "$TOPK_PER_SAMPLE"
-  python tools/bata/analyze_p2_proposal_localization.py \
+  "$PYTHON" tools/bata/analyze_p2_proposal_localization.py \
     --proposal-jsonl "$CASE_DIR/proposal_factors.jsonl" \
     --output-dir "$CASE_DIR/localization_attribution" \
     --config "$CONFIG" \
@@ -106,7 +120,7 @@ for index in "${!CASES[@]}"; do
     --group-by sample
 done
 
-python - "$OUT_ROOT" <<'PY'
+"$PYTHON" - "$OUT_ROOT" <<'PY'
 import json
 import pathlib
 import sys
