@@ -39,7 +39,7 @@ IOU_THRESHOLDS="${P2LOC_IOU_THRESHOLDS:-0.3,0.5,0.7}"
 SCORE_BINS="${P2LOC_SCORE_BINS:-10}"
 DEVICE="${P2LOC_DEVICE:-cuda}"
 
-R17_CKPT="${R17_CKPT:-$REPO/logs/ctf_bdi_pc_ot_mras_r17_formal_6d15388_gatefix_20260621_185815/train_workdir/gpu1_id0/gpu1_id0/checkpoint/epoch_59.pth}"
+R17_CKPT="${R17_CKPT:-$REPO/logs/ctf_bdi_pc_ot_mras_r17_formal_train_6d15388_gatefix_20260621_185815/train_workdir/gpu1_id0/gpu1_id0/checkpoint/epoch_59.pth}"
 R18_CKPT="${R18_CKPT:-$REPO/logs/ctf_bdi_pc_ot_mras_r18_aux_formal_6d15388_gatefix_20260621_185815/train_workdir/gpu1_id0/gpu1_id0/checkpoint/epoch_59.pth}"
 
 mkdir -p "$OUT_ROOT"
