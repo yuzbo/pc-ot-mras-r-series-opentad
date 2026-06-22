@@ -1,4 +1,5 @@
 import math
+from collections.abc import Mapping
 
 import torch
 import torch.nn as nn
@@ -881,6 +882,73 @@ class NativeIrregularAreaHeadP2(nn.Module):
         template = preds["area_logits"][0]
         return template.new_zeros((0, 2)), template.new_zeros((0, self.num_classes))
 
+    @staticmethod
+    def _proposal_factor_meta_scalar(meta, key):
+        if not isinstance(meta, Mapping):
+            return None
+        value = meta.get(key)
+        if hasattr(value, "detach") and hasattr(value, "cpu"):
+            value = value.detach().cpu()
+        if hasattr(value, "item"):
+            value = value.item()
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
+    @classmethod
+    def _proposal_factor_meta_context(cls, video_id, meta, batch_idx):
+        fps = cls._proposal_factor_meta_scalar(meta, "fps")
+        snippet_stride = cls._proposal_factor_meta_scalar(meta, "snippet_stride")
+        window_start_frame = cls._proposal_factor_meta_scalar(meta, "window_start_frame")
+        offset_frames = cls._proposal_factor_meta_scalar(meta, "offset_frames")
+        window_size = cls._proposal_factor_meta_scalar(meta, "window_size")
+        duration_seconds = cls._proposal_factor_meta_scalar(meta, "duration")
+        if offset_frames is None:
+            offset_frames = 0.0
+        sample_id_parts = [str(video_id), f"batch={int(batch_idx)}"]
+        if window_start_frame is not None:
+            sample_id_parts.append(f"window_start_frame={window_start_frame:.6f}")
+        context = {
+            "batch_sample_idx": int(batch_idx),
+            "sample_id": "|".join(sample_id_parts),
+        }
+        optional_scalars = {
+            "fps": fps,
+            "snippet_stride": snippet_stride,
+            "window_start_frame": window_start_frame,
+            "offset_frames": offset_frames,
+            "window_size": window_size,
+            "duration_seconds": duration_seconds,
+        }
+        for key, value in optional_scalars.items():
+            if value is not None:
+                context[key] = float(value)
+        if fps is not None and fps > 0.0 and window_start_frame is not None:
+            context["window_start_seconds"] = float((window_start_frame + offset_frames) / fps)
+            if snippet_stride is not None and window_size is not None:
+                context["window_end_seconds"] = float(
+                    (window_start_frame + offset_frames + window_size * snippet_stride) / fps
+                )
+        return context
+
+    @staticmethod
+    def _proposal_factor_segment_context(segment, meta_context):
+        out = {}
+        snippet_stride = meta_context.get("snippet_stride")
+        window_start_frame = meta_context.get("window_start_frame")
+        offset_frames = meta_context.get("offset_frames", 0.0)
+        fps = meta_context.get("fps")
+        if snippet_stride is None or window_start_frame is None:
+            return out
+        start_frame = window_start_frame + offset_frames + segment[0] * snippet_stride
+        end_frame = window_start_frame + offset_frames + segment[1] * snippet_stride
+        out["segment_frames"] = [float(start_frame), float(end_frame)]
+        if fps is not None and fps > 0.0:
+            out["segment_seconds"] = [float(start_frame / fps), float(end_frame / fps)]
+        return out
+
     def dump_proposal_factors(self, feat_list, mask_list, metas=None, label_names=None):
         validate_sampling_contract(
             metas,
@@ -893,7 +961,9 @@ class NativeIrregularAreaHeadP2(nn.Module):
         rows = []
         batch_size = preds["area_logits"][0].shape[0]
         for batch_idx in range(batch_size):
-            video_id = str(metas[batch_idx].get("video_name", batch_idx)) if metas else str(batch_idx)
+            meta = metas[batch_idx] if metas else {}
+            video_id = str(meta.get("video_name", batch_idx)) if isinstance(meta, Mapping) else str(batch_idx)
+            meta_context = self._proposal_factor_meta_context(video_id, meta, batch_idx)
             for level_idx, grid in enumerate(area_grids):
                 candidates = self._collect_area_level_pairs(preds, grid, level_idx, batch_idx)
                 if not candidates or candidates["pair_start"].numel() == 0:
@@ -902,15 +972,18 @@ class NativeIrregularAreaHeadP2(nn.Module):
                 for row_idx in range(candidates["pair_start"].numel()):
                     cls_idx = int(candidates["class_id"][row_idx].item())
                     label = str(label_names[cls_idx]) if label_names is not None and cls_idx < len(label_names) else str(cls_idx)
+                    segment = [
+                        float(candidates["pair_start"][row_idx].detach().cpu().item()),
+                        float(candidates["pair_end"][row_idx].detach().cpu().item()),
+                    ]
                     rows.append(
                         {
                             "video_id": video_id,
+                            **meta_context,
                             "class_id": cls_idx,
                             "label": label,
-                            "segment": [
-                                float(candidates["pair_start"][row_idx].detach().cpu().item()),
-                                float(candidates["pair_end"][row_idx].detach().cpu().item()),
-                            ],
+                            "segment": segment,
+                            **self._proposal_factor_segment_context(segment, meta_context),
                             "start_score": float(candidates["pair_start_score"][row_idx].detach().cpu().item()),
                             "end_score": float(candidates["pair_end_score"][row_idx].detach().cpu().item()),
                             "area_integral": float(candidates["area_integral"][row_idx].detach().cpu().item()),

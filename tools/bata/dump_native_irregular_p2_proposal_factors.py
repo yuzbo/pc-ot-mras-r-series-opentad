@@ -112,6 +112,42 @@ def _max_iou(segment: Sequence[float], gt_segments: Sequence[Sequence[float]]) -
     return float(best)
 
 
+def _class_map_path_from_cfg(cfg: Any, split: str) -> Path | None:
+    if not hasattr(cfg, "dataset") or split not in cfg.dataset:
+        return None
+    class_map = cfg.dataset[split].get("class_map", None)
+    if class_map is None:
+        return None
+    path = Path(str(class_map)).expanduser()
+    return path if path.is_absolute() else ROOT / path
+
+
+def _label_names_from_cfg(cfg: Any, split: str) -> list[str] | None:
+    path = _class_map_path_from_cfg(cfg, split)
+    if path is None or not path.exists():
+        return None
+    names: list[str] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            parts = stripped.split()
+            if len(parts) >= 2 and parts[0].lstrip("-").isdigit():
+                idx = int(parts[0])
+                label = " ".join(parts[1:])
+            elif len(parts) >= 2 and parts[-1].lstrip("-").isdigit():
+                idx = int(parts[-1])
+                label = " ".join(parts[:-1])
+            else:
+                idx = len(names)
+                label = stripped
+            while len(names) <= idx:
+                names.append("")
+            names[idx] = label
+    return names
+
+
 class _RPNInputCapture:
     def __init__(self) -> None:
         self.latest_inputs: tuple[Any, ...] | None = None
@@ -202,6 +238,7 @@ def run_checkpoint_dump(
     rpn_head = getattr(module, "rpn_head", None)
     if rpn_head is None or not hasattr(rpn_head, "dump_proposal_factors"):
         raise ValueError("model.rpn_head has no dump_proposal_factors method")
+    label_names = _label_names_from_cfg(cfg, split)
 
     out_path = Path(output_jsonl).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -234,7 +271,7 @@ def run_checkpoint_dump(
                     raise RuntimeError("captured RPN input does not contain feature and mask lists")
                 feat_list, mask_list = captured_inputs[0], captured_inputs[1]
                 head_metas = captured_kwargs.get("metas", metas)
-                rows = rpn_head.dump_proposal_factors(feat_list, mask_list, metas=head_metas)
+                rows = rpn_head.dump_proposal_factors(feat_list, mask_list, metas=head_metas, label_names=label_names)
                 gt_by_video: dict[str, list[list[float]]] = {}
                 if include_gt_iou:
                     for sample_idx, meta in enumerate(metas):
@@ -243,7 +280,7 @@ def run_checkpoint_dump(
                 if topk_per_sample is not None:
                     grouped: dict[str, list[Mapping[str, Any]]] = {}
                     for row in rows:
-                        grouped.setdefault(str(row.get("video_id", "unknown")), []).append(row)
+                        grouped.setdefault(str(row.get("sample_id", row.get("video_id", "unknown"))), []).append(row)
                     rows = []
                     for video_rows in grouped.values():
                         rows.extend(
@@ -281,7 +318,8 @@ def run_checkpoint_dump(
                     observed = _as_float(row.get("observed_fraction"))
                     if observed is not None:
                         observed_fractions.append(observed)
-                    rows_per_sample[video_id] = rows_per_sample.get(video_id, 0) + 1
+                    sample_key = str(row.get("sample_id", video_id))
+                    rows_per_sample[sample_key] = rows_per_sample.get(sample_key, 0) + 1
                     total_rows += 1
                     f.write(json.dumps(strict_json_value(out_row), sort_keys=True) + "\n")
                 total_samples += len(sample_ids)
@@ -300,6 +338,7 @@ def run_checkpoint_dump(
         "samples_seen": int(total_samples),
         "rows_written": int(total_rows),
         "rows_per_sample": rows_per_sample,
+        "label_names_loaded": bool(label_names),
         "final_score": _stats(final_scores),
         "observed_fraction": _stats(observed_fractions),
         "diagnostic_max_gt_iou": _stats(max_gt_ious),
