@@ -148,6 +148,9 @@ def test_r35_actionformer_head_launcher_is_clean_repo_gate_bound_and_fail_closed
     assert 'work_dir="$WORK_DIR"' in text
     assert "opentad/models/dense_heads/actionformer_head.py" in text
     assert "opentad/models/dense_heads/native_irregular_area_head_p2.py" not in text
+    assert "printf '%s  resolved_config.py\\n'" in text
+    assert 'sha256sum "$RESOLVED_CONFIG_DUMP"' in text
+    assert '  "$RESOLVED_CONFIG_DUMP" \\' not in text
     assert "tools/test.py" in text
     assert 'tools/test.py "$CONFIG"' not in text
     assert 'tools/train.py "$CONFIG"' in text

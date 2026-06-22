@@ -376,23 +376,24 @@ PY
 )
 log "resolved_config_dependency_count=${#CONFIG_DEP_FILES[@]}"
 log "writing active SHA256 manifest=$SHA_MANIFEST"
-sha256sum \
-  "${CONFIG_DEP_FILES[@]}" \
-  "$RESOLVED_CONFIG_DUMP" \
-  "$PRETRAINED_PATH" \
-  scripts/run_ctf_bdi_pc_ot_mras_r35_actionformer_head_formal_train_n16r4.sbatch \
-  tools/train.py \
-  tools/test.py \
-  opentad/cores/train_engine.py \
-  opentad/utils/training_guard.py \
-  opentad/models/detectors/actionformer.py \
-  opentad/models/dense_heads/__init__.py \
-  opentad/models/dense_heads/actionformer_head.py \
-  opentad/models/necks/pc_ot_mras_detector_bridge.py \
-  opentad/models/selectors/pc_ot_mras_reader.py \
-  opentad/models/utils/pc_ot_mras_raw_prediction_guard.py \
-  tests/test_pc_ot_mras_r35_actionformer_head_formal_train_config.py \
-  > "$SHA_MANIFEST"
+{
+  sha256sum "${CONFIG_DEP_FILES[@]}"
+  printf '%s  resolved_config.py\n' "$(sha256sum "$RESOLVED_CONFIG_DUMP" | awk '{print $1}')"
+  sha256sum \
+    "$PRETRAINED_PATH" \
+    scripts/run_ctf_bdi_pc_ot_mras_r35_actionformer_head_formal_train_n16r4.sbatch \
+    tools/train.py \
+    tools/test.py \
+    opentad/cores/train_engine.py \
+    opentad/utils/training_guard.py \
+    opentad/models/detectors/actionformer.py \
+    opentad/models/dense_heads/__init__.py \
+    opentad/models/dense_heads/actionformer_head.py \
+    opentad/models/necks/pc_ot_mras_detector_bridge.py \
+    opentad/models/selectors/pc_ot_mras_reader.py \
+    opentad/models/utils/pc_ot_mras_raw_prediction_guard.py \
+    tests/test_pc_ot_mras_r35_actionformer_head_formal_train_config.py
+} > "$SHA_MANIFEST"
 ACTIVE_MANIFEST_SHA256="$(sha256sum "$SHA_MANIFEST" | awk '{print $1}')"
 log "active_sha256_manifest_sha256=$ACTIVE_MANIFEST_SHA256"
 
