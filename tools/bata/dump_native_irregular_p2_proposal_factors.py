@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import math
 import sys
@@ -137,6 +138,7 @@ def _module(model: Any) -> Any:
 def _register_rpn_pre_hook(rpn_head: Any, capture: _RPNInputCapture):
     original = rpn_head.forward_test
 
+    @functools.wraps(original)
     def wrapped_forward_test(*args, **kwargs):
         capture(None, args, kwargs)
         return original(*args, **kwargs)
