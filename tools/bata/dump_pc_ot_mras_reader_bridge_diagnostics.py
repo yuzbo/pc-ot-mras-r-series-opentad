@@ -17,6 +17,7 @@ SCHEMA_VERSION = "pc_ot_mras_reader_bridge_diagnostic_dump_v0"
 SUMMARY_SCHEMA_VERSION = "pc_ot_mras_reader_bridge_diagnostic_summary_v0"
 READY = "PC_OT_MRAS_READER_BRIDGE_DIAGNOSTIC_READY"
 NO_GO = "PC_OT_MRAS_READER_BRIDGE_DIAGNOSTIC_NO_GO"
+AGGREGATE_VALUES_KEY = "_aggregate_values"
 MATRIX_PRIORITY = ("acquisition_matrix", "allocation", "transport_prob")
 SELECTED_TOKEN_KEYS = ("selected_tokens", "selected_token_features", "selected_features")
 BRIDGE_OUTPUT_KEYS = ("bridge_out", "bridge_output", "bridge_outputs", "bridge_features", "pc_ot_mras_bridge_output")
@@ -189,11 +190,23 @@ def _quantile(values: Sequence[float], q: float) -> float | None:
     return float(ordered[left] * (1.0 - frac) + ordered[right] * frac)
 
 
-def summarize_values(values: Sequence[float]) -> dict[str, Any]:
+def summarize_values(values: Sequence[float], *, keep_aggregate_values: bool = False) -> dict[str, Any]:
     finite = [float(item) for item in values if math.isfinite(float(item))]
     if not finite:
-        return {"count": 0, "min": None, "p05": None, "mean": None, "std": None, "p50": None, "p95": None, "max": None}
-    return {
+        summary: dict[str, Any] = {
+            "count": 0,
+            "min": None,
+            "p05": None,
+            "mean": None,
+            "std": None,
+            "p50": None,
+            "p95": None,
+            "max": None,
+        }
+        if keep_aggregate_values:
+            summary[AGGREGATE_VALUES_KEY] = []
+        return summary
+    summary = {
         "count": len(finite),
         "min": min(finite),
         "p05": _quantile(finite, 0.05),
@@ -203,12 +216,35 @@ def summarize_values(values: Sequence[float]) -> dict[str, Any]:
         "p95": _quantile(finite, 0.95),
         "max": max(finite),
     }
+    if keep_aggregate_values:
+        summary[AGGREGATE_VALUES_KEY] = finite
+    return summary
 
 
 def _summary_values(summary: Mapping[str, Any]) -> list[float]:
-    mean = summary.get("mean") if summary else None
-    count = int(summary.get("count") or 0) if summary else 0
-    return [] if mean is None or count <= 0 else [float(mean)] * count
+    if not summary:
+        return []
+    values = summary.get(AGGREGATE_VALUES_KEY)
+    if values is None:
+        raise ValueError(
+            "aggregate requires raw per-slot values; rerun diagnostics with "
+            f"{AGGREGATE_VALUES_KEY} support instead of aggregating mean-only summaries"
+        )
+    if not isinstance(values, list):
+        raise ValueError(f"{AGGREGATE_VALUES_KEY} must be a list")
+    return [float(item) for item in values if math.isfinite(float(item))]
+
+
+def _strip_aggregate_values(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _strip_aggregate_values(item)
+            for key, item in value.items()
+            if str(key) != AGGREGATE_VALUES_KEY
+        }
+    if isinstance(value, list):
+        return [_strip_aggregate_values(item) for item in value]
+    return value
 
 
 def _entropy(row: Sequence[float]) -> tuple[float | None, float | None]:
@@ -410,8 +446,8 @@ def diagnose_reader_out_sample(
         "valid_slot_count": int(len(valid_slots)),
         "centers_selected_times": {
             "available": bool(centers is not None and selected_times is not None),
-            "signed_offset": summarize_values(signed_offsets),
-            "abs_offset": summarize_values(abs_offsets),
+            "signed_offset": summarize_values(signed_offsets, keep_aggregate_values=True),
+            "abs_offset": summarize_values(abs_offsets, keep_aggregate_values=True),
             "preview": signed_offsets[:8],
         },
         "selected_times_monotonicity": {
@@ -420,23 +456,31 @@ def diagnose_reader_out_sample(
             "strictly_increasing": None if selected_times is None else strict_violations == 0,
             "violation_count": int(monotonic_violations),
             "strict_violation_count": int(strict_violations),
-            "delta": summarize_values(deltas),
+            "delta": summarize_values(deltas, keep_aggregate_values=True),
         },
         "gates": {
             "available": gates is not None,
-            "stats": summarize_values(gate_values),
+            "stats": summarize_values(gate_values, keep_aggregate_values=True),
             "histogram_0_0p25_0p5_0p75_1": _gate_histogram(gate_values),
         },
         "acquisition": {
-            "entropy": summarize_values(entropies),
-            "normalized_entropy": summarize_values(norm_entropies),
+            "entropy": summarize_values(entropies, keep_aggregate_values=True),
+            "normalized_entropy": summarize_values(norm_entropies, keep_aggregate_values=True),
             "top1_positions_preview": top1_positions[:16],
-            "top1_center_distance_dense": summarize_values(top1_center_dense),
-            "top1_center_distance_normalized": summarize_values(top1_center_norm),
+            "top1_center_distance_dense": summarize_values(top1_center_dense, keep_aggregate_values=True),
+            "top1_center_distance_normalized": summarize_values(top1_center_norm, keep_aggregate_values=True),
             "center_unit": center_unit,
         },
-        "selected_token_norm": {"available": bool(token_norms), "source_key": token_source, "stats": summarize_values(token_norms)},
-        "bridge_output_norm": {"available": bool(bridge_norms), "source_key": bridge_source, "stats": summarize_values(bridge_norms)},
+        "selected_token_norm": {
+            "available": bool(token_norms),
+            "source_key": token_source,
+            "stats": summarize_values(token_norms, keep_aggregate_values=True),
+        },
+        "bridge_output_norm": {
+            "available": bool(bridge_norms),
+            "source_key": bridge_source,
+            "stats": summarize_values(bridge_norms, keep_aggregate_values=True),
+        },
         "diagnostic_only": True,
         "uses_gt": False,
         "uses_teacher": False,
@@ -553,7 +597,7 @@ def build_summary(
         "snapshot_jsonl": None if snapshot_jsonl is None else str(snapshot_jsonl),
         "sample_count": len(per_sample),
         "matrix_keys": sorted({str(item["matrix_key"]) for item in per_sample if item.get("matrix_key")}),
-        "per_sample": list(per_sample),
+        "per_sample": _strip_aggregate_values(list(per_sample)),
         "aggregate": _aggregate(per_sample),
         "diagnostic_only": True,
         "uses_checkpoint": source == "checkpoint",

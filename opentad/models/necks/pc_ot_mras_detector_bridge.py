@@ -463,7 +463,7 @@ class PCOTMRASDetectorBridge(nn.Module):
             temporal_meta_mode = "selected_positions_continuous"
         else:
             temporal_meta_mode = "ordered_slot_centers_continuous"
-        return {
+        meta = {
             "irregular_selected_positions": [float(item) for item in positions.detach().cpu().tolist()],
             "irregular_dense_valid_len": int(dense_valid_len),
             "irregular_selected_valid_len": int(dense_valid_len),
@@ -472,6 +472,15 @@ class PCOTMRASDetectorBridge(nn.Module):
             "irregular_native_axis": True,
             "pc_ot_mras_temporal_meta_mode": temporal_meta_mode,
         }
+        scale = aux.get("selected_times_dense_position_scale")
+        if isinstance(scale, str):
+            meta["pc_ot_mras_selected_times_dense_position_scale"] = scale
+        strict_violation_count = aux.get("selected_dense_position_strict_violation_count")
+        if torch.is_tensor(strict_violation_count) and strict_violation_count.ndim == 0:
+            meta["pc_ot_mras_selected_dense_position_strict_violation_count"] = int(
+                strict_violation_count.detach().cpu().item()
+            )
+        return meta
 
     @staticmethod
     def _write_bridge_metadata(metas: object, aux: Dict[str, object]) -> object:
@@ -739,10 +748,12 @@ class PCOTMRASDetectorBridge(nn.Module):
                     raise ValueError("selected_times shape must match selected_mask for PC-OT-MRAS temporal metadata")
                 if selected_times.device != selected_tokens.device:
                     raise ValueError("selected_times must be on the selected-token device")
-                raw_dense_positions = selected_times.to(dtype=torch.float32) * dense_valid_len[:, None].to(
+                dense_position_scale = (dense_valid_len - 1.0).clamp_min(0.0).to(dtype=torch.float32)
+                raw_dense_positions = selected_times.to(dtype=torch.float32) * dense_position_scale[:, None].to(
                     dtype=torch.float32
                 )
                 temporal_mode = "selected_dense_positions_from_selected_times"
+                meta["selected_times_dense_position_scale"] = "valid_len_minus_one_token_index"
             elif self.metadata_position_source == "selected_positions":
                 selected_positions = reader_outputs.get("selected_positions")
                 if torch.is_tensor(selected_positions):
@@ -776,6 +787,13 @@ class PCOTMRASDetectorBridge(nn.Module):
                 max_position.to(dtype=torch.float32),
             )
             dense_positions = dense_positions.masked_fill(~selected_mask, 0.0)
+            if dense_positions.shape[1] > 1:
+                position_deltas = dense_positions[:, 1:] - dense_positions[:, :-1]
+                adjacent_valid = selected_mask[:, 1:] & selected_mask[:, :-1]
+                strict_violations = (position_deltas <= 0.0) & adjacent_valid
+                meta["selected_dense_position_delta"] = position_deltas.masked_fill(~adjacent_valid, 0.0)
+                meta["selected_dense_position_strict_violation_count"] = strict_violations.long().sum(dim=1)
+                meta["selected_dense_positions_strictly_increasing"] = strict_violations.long().sum(dim=1) == 0
             meta["selected_dense_positions"] = dense_positions
             meta["dense_valid_len_tensor"] = dense_valid_len.to(dtype=torch.float32)
             meta["temporal_tensor_metadata_mode"] = temporal_mode

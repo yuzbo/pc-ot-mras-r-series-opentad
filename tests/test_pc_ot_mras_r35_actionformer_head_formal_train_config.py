@@ -142,6 +142,10 @@ def test_r35_actionformer_head_launcher_is_clean_repo_gate_bound_and_fail_closed
     assert "OPENTAD_PCOTMRAS_RESOLVED_CONFIG_SHA256" in text
     assert "resolved_config_dependency_count" in text
     assert "RESOLVED_CONFIG_SHA256" in text
+    assert 'WORK_DIR="$WORK_DIR_BASE"' in text
+    assert 'FINAL_WORK_DIR="$WORK_DIR_BASE/gpu1_id${TRAIN_ID}"' in text
+    assert '"$SUMMARY_JSON" "$status" "$decision" "$reason" "$RUN_ROOT" "$CONFIG" "$FINAL_WORK_DIR"' in text
+    assert 'work_dir="$WORK_DIR"' in text
     assert "opentad/models/dense_heads/actionformer_head.py" in text
     assert "opentad/models/dense_heads/native_irregular_area_head_p2.py" not in text
     assert "tools/test.py" in text

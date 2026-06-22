@@ -82,7 +82,10 @@ def test_jsonl_diagnostic_reads_snapshot_rows_and_writes_summary(tmp_path):
     assert summary["source"] == "jsonl"
     assert summary["sample_count"] == 1
     assert summary["aggregate"]["selected_times_nondecreasing_failure_count"] == 1
+    assert summary["aggregate"]["gate"]["min"] == 0.2
+    assert summary["aggregate"]["gate"]["max"] == 0.8
     assert summary["aggregate"]["bridge_output_norm"]["mean"] == 3.0
+    assert "_aggregate_values" not in json.dumps(summary)
     assert output_json.is_file()
 
 
@@ -102,6 +105,8 @@ def test_synthetic_diagnostic_is_torch_free_and_contains_expected_sections(tmp_p
     assert summary["sample_count"] == 2
     assert summary["aggregate"]["acquisition_entropy"]["count"] == 6
     assert summary["aggregate"]["selected_token_norm"]["count"] == 6
+    assert summary["aggregate"]["gate"]["min"] == 0.35
+    assert summary["aggregate"]["gate"]["max"] == 0.65
     assert output_json.is_file()
 
 

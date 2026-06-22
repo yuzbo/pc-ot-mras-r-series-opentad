@@ -69,7 +69,8 @@ SUMMARY_JSON="$RUN_ROOT/r35_actionformer_head_formal_train_summary.json"
 PRETRAINED_PATH_REVIEWED="pretrained/vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth"
 PRETRAINED_PATH="${PRETRAINED_PATH:-$PRETRAINED_PATH_REVIEWED}"
 WORK_DIR_BASE="$RUN_ROOT/train_workdir"
-WORK_DIR="$WORK_DIR_BASE/gpu1_id${TRAIN_ID}"
+WORK_DIR="$WORK_DIR_BASE"
+FINAL_WORK_DIR="$WORK_DIR_BASE/gpu1_id${TRAIN_ID}"
 
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
@@ -96,7 +97,7 @@ write_summary() {
   local status="$1"
   local decision="$2"
   local reason="$3"
-  python - "$SUMMARY_JSON" "$status" "$decision" "$reason" "$RUN_ROOT" "$CONFIG" "$WORK_DIR" <<'PY'
+  python - "$SUMMARY_JSON" "$status" "$decision" "$reason" "$RUN_ROOT" "$CONFIG" "$FINAL_WORK_DIR" <<'PY'
 import json
 import os
 import socket
@@ -239,6 +240,7 @@ log "git_branch=$GIT_BRANCH git_head=$GIT_HEAD"
 log "config=$CONFIG"
 log "run_root=$RUN_ROOT"
 log "work_dir=$WORK_DIR"
+log "final_work_dir=$FINAL_WORK_DIR"
 log "seed=$SEED train_id=$TRAIN_ID master_port=$MASTER_PORT master_port_source=$MASTER_PORT_SOURCE default_master_port=$DEFAULT_MASTER_PORT"
 log "precheck_only=$PRECHECK_ONLY allow_r35_actionformer_head_formal_train=$ALLOW_R35_ACTIONFORMER_HEAD_FORMAL_TRAIN"
 log "scope=R35_ACTIONFORMER_HEAD tools_train=true train_validation_map=true direct_tools_test=false no_claims=true"

@@ -273,10 +273,11 @@ def test_metadata_position_source_selected_times_changes_temporal_positions_only
     default_aux = default_meta[0]["pc_ot_mras_bridge"]
     selected_aux = selected_meta[0]["pc_ot_mras_bridge"]
     expected_centers = reader_outputs["centers"][0] * float(masks[0].sum().item())
-    expected_selected_times = reader_outputs["selected_times"][0] * float(masks[0].sum().item())
+    expected_selected_times = reader_outputs["selected_times"][0] * float(masks[0].sum().item() - 1)
 
     assert default_aux["temporal_tensor_metadata_mode"] == "selected_dense_positions_from_centers"
     assert selected_aux["temporal_tensor_metadata_mode"] == "selected_dense_positions_from_selected_times"
+    assert selected_aux["selected_times_dense_position_scale"] == "valid_len_minus_one_token_index"
     assert torch.allclose(default_aux["selected_dense_positions"], expected_centers, atol=1e-6)
     assert torch.allclose(selected_aux["selected_dense_positions"], expected_selected_times, atol=1e-6)
     assert not torch.allclose(default_aux["selected_dense_positions"], selected_aux["selected_dense_positions"])
@@ -288,6 +289,26 @@ def test_metadata_position_source_selected_times_changes_temporal_positions_only
     )
     assert default_meta[0]["pc_ot_mras_temporal_meta_mode"] == "ordered_slot_centers_continuous"
     assert selected_meta[0]["pc_ot_mras_temporal_meta_mode"] == "selected_times_continuous"
+    assert selected_meta[0]["pc_ot_mras_selected_times_dense_position_scale"] == "valid_len_minus_one_token_index"
+
+
+def test_metadata_position_source_selected_times_fails_closed_when_nonmonotonic():
+    features, masks = _source_features()
+    reader_outputs = dict(_reader_outputs(features, masks))
+    reader_outputs["selected_times"] = reader_outputs["selected_times"].clone()
+    reader_outputs["selected_times"][0] = torch.tensor(
+        [0.60, 0.40, 0.90],
+        dtype=features.dtype,
+        device=features.device,
+    )
+    selected_times_bridge = PCOTMRASDetectorBridge(
+        in_channels=4,
+        out_channels=5,
+        metadata_position_source="selected_times",
+    )
+
+    with pytest.raises(ValueError, match="strictly increasing"):
+        selected_times_bridge((features,), (masks,), metas=_metas(reader_outputs))
 
 
 def test_no_gate_scale_recomputes_tokens_from_allocation_without_changing_default():
