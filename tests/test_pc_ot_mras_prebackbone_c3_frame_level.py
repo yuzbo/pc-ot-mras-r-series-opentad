@@ -85,6 +85,8 @@ def test_c3_config_loads_original_adatad_backend_and_forbids_shortcuts():
     assert cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate.allow_detector_map is False
     assert cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate.allow_long_training is False
     assert cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate.allowed_entrypoints == ()
-    assert cfg.dataset.train.window_size == 768
+    assert "window_size" not in cfg.dataset.train
+    train_loadframes = next(step for step in cfg.dataset.train.pipeline if step.type == "LoadFrames")
+    assert train_loadframes.trunc_len == 768
     assert cfg.dataset.val.window_size == 768
     assert cfg.dataset.test.window_size == 768

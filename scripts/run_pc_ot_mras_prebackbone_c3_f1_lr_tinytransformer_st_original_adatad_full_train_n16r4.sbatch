@@ -253,8 +253,16 @@ require(int(cfg.model.projection.max_seq_len) == 384, cfg.model.projection)
 require(int(cfg.workflow.end_epoch) == 60, cfg.workflow)
 require(int(cfg.workflow.val_start_epoch) == 40, cfg.workflow)
 require(int(cfg.workflow.val_eval_interval) == 2, cfg.workflow)
-for split in ("train", "val", "test"):
+require("window_size" not in cfg.dataset.train, cfg.dataset.train)
+train_loadframes = next(
+    (step for step in cfg.dataset.train.pipeline if step.get("type") == "LoadFrames"),
+    None,
+)
+require(train_loadframes is not None, cfg.dataset.train.pipeline)
+require(int(train_loadframes.trunc_len) == 768, train_loadframes)
+for split in ("val", "test"):
     require(int(cfg.dataset[split].window_size) == 768, cfg.dataset[split])
+for split in ("train", "val", "test"):
     text = repr(cfg.dataset[split].pipeline).lower()
     for forbidden in ("bata_value_transport_ledger_subsample", "hard_positions", "teacher", "oracle", "raw_prediction"):
         require(forbidden not in text, f"{split} pipeline contains forbidden token {forbidden}")

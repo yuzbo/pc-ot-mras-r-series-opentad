@@ -155,10 +155,13 @@ def test_prebackbone_e2e_config_uses_frame_selector_not_post_projection_bridge(t
     assert cfg.model.backbone.backbone.total_frames == 384
     assert cfg.model.projection.max_seq_len == 384
 
+    assert "window_size" not in cfg.dataset.train
+    train_loadframes = next(step for step in cfg.dataset.train.pipeline if step.type == "LoadFrames")
+    assert train_loadframes.trunc_len == 768
+    for split in ("val", "test"):
+        assert cfg.dataset[split].window_size == 768
     for split in ("train", "val", "test"):
-        dataset = cfg.dataset[split]
-        assert dataset.window_size == 768
-        pipeline_text = repr(dataset.pipeline).lower()
+        pipeline_text = repr(cfg.dataset[split].pipeline).lower()
         assert "bata_value_transport_ledger_subsample" not in pipeline_text
         assert "hard_positions" not in pipeline_text
         assert "teacher" not in pipeline_text

@@ -213,7 +213,6 @@ dataset = dict(
         ann_file=annotation_path,
         class_map=class_map,
         data_path=train_data_path,
-        window_size=dense_window_size,
         pipeline=[
             dict(type="PrepareVideoInfo", format="mp4"),
             dict(type="mmaction.DecordInit", num_threads=4),

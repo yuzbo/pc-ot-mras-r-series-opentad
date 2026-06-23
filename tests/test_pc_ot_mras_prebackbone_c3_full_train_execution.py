@@ -147,10 +147,13 @@ def test_c3_full_train_config_is_parseable_and_unlocks_only_tools_train(tmp_path
     assert cfg.inference.load_from_raw_predictions is False
     assert cfg.inference.save_raw_prediction is False
 
+    assert "window_size" not in cfg.dataset.train
+    train_loadframes = next(step for step in cfg.dataset.train.pipeline if step.type == "LoadFrames")
+    assert train_loadframes.trunc_len == 768
+    for split in ("val", "test"):
+        assert cfg.dataset[split].window_size == 768
     for split in ("train", "val", "test"):
-        dataset = cfg.dataset[split]
-        assert dataset.window_size == 768
-        pipeline_text = repr(dataset.pipeline).lower()
+        pipeline_text = repr(cfg.dataset[split].pipeline).lower()
         for forbidden in ("bata_value_transport_ledger_subsample", "hard_positions", "teacher", "oracle", "raw_prediction"):
             assert forbidden not in pipeline_text
 
