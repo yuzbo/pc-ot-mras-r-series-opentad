@@ -338,6 +338,7 @@ def run_checkpoint_dump(
         "samples_seen": int(total_samples),
         "rows_written": int(total_rows),
         "rows_per_sample": rows_per_sample,
+        "topk_per_sample": None if topk_per_sample is None else int(topk_per_sample),
         "label_names_loaded": bool(label_names),
         "final_score": _stats(final_scores),
         "observed_fraction": _stats(observed_fractions),

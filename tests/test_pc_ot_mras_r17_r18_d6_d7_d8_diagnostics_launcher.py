@@ -12,7 +12,10 @@ def test_d6_d7_d8_launcher_is_diagnostic_only_and_gated():
     assert "PRECHECK_ONLY" in text
     assert "tools/bata/analyze_p2_raw_row_oracle_rerank.py" in text
     assert "tools/bata/dump_pc_ot_mras_reader_bridge_diagnostics.py" in text
+    assert "tools/bata/audit_pc_ot_mras_bridge_feature_distribution.py" in text
     assert "--feature-jsonl" in text
+    assert "feature_distribution_audit_summary.json" in text
+    assert "PC_OT_MRAS_BRIDGE_FEATURE_DISTRIBUTION_AUDIT_READY" in text
     assert "tools/bata/replay_pc_ot_mras_training_assignment_geometry.py" in text
     assert "ctf_bdi_pc_ot_mras_r17_formal_train_candidate.py" in text
     assert "ctf_bdi_pc_ot_mras_r18_aux_formal_train_candidate.py" in text
@@ -31,6 +34,8 @@ def test_d6_d7_d8_launcher_defaults_to_reuse_existing_raw_rows():
     text = launcher.read_text(encoding="utf-8")
 
     assert 'D6_REGENERATE_RAW_ROWS="${D6_REGENERATE_RAW_ROWS:-0}"' in text
+    assert '"d6_topk_per_sample": $D6_TOPK_PER_SAMPLE' in text
+    assert '--proposal-source-topk-per-sample "$D6_TOPK_PER_SAMPLE"' in text
     assert "pcotmras_p2_localization_attribution_ef29cb6_20260622_225701" in text
     assert "joined_proposals.jsonl" in text
     assert "D6 joined rows missing" in text

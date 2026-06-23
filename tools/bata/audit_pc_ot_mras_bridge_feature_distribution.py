@@ -14,11 +14,12 @@ if str(ROOT) not in sys.path:
 
 
 from tools.bata.dump_pc_ot_mras_reader_bridge_diagnostics import (  # noqa: E402
-    BRIDGE_OUTPUT_KEYS,
+    FEATURE_ROW_SCHEMA_VERSION,
     SELECTED_TOKEN_KEYS,
     SUMMARY_SCHEMA_VERSION as READER_BRIDGE_SUMMARY_SCHEMA_VERSION,
     read_jsonl,
     run_jsonl_diagnostic,
+    summarize_bridge_feature_rows,
     strict_json_value,
     write_json,
 )
@@ -60,23 +61,39 @@ def _mean_ratio(numerator: Mapping[str, Any] | None, denominator: Mapping[str, A
     return float(num / den)
 
 
+def _stats(values: Sequence[Any]) -> dict[str, Any]:
+    finite = [float(item) for item in values if _finite_float(item) is not None]
+    if not finite:
+        return {"count": 0, "min": None, "mean": None, "max": None}
+    return {
+        "count": len(finite),
+        "min": min(finite),
+        "mean": sum(finite) / float(len(finite)),
+        "max": max(finite),
+    }
+
+
+def _read_json(path: str | Path) -> dict[str, Any]:
+    payload = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"JSON summary must contain an object: {path}")
+    return payload
+
+
 def _row_reader_out(row: Mapping[str, Any]) -> Mapping[str, Any]:
     reader_out = row.get("reader_out", row)
     return reader_out if isinstance(reader_out, Mapping) else {}
 
 
 def _row_has_selected_tokens(row: Mapping[str, Any]) -> bool:
+    if row.get("schema_version") == FEATURE_ROW_SCHEMA_VERSION and _finite_float(row.get("selected_token_norm")) is not None:
+        return True
     reader_out = _row_reader_out(row)
     return any(key in reader_out for key in SELECTED_TOKEN_KEYS)
 
 
 def _row_has_bridge_output(row: Mapping[str, Any]) -> bool:
-    if "bridge_output_norm_hook" in row:
-        return True
-    if any(key in row for key in BRIDGE_OUTPUT_KEYS):
-        return True
-    bridge_meta = row.get("pc_ot_mras_bridge")
-    if isinstance(bridge_meta, Mapping) and any(key in bridge_meta for key in ("output", "features", "selected_tokens")):
+    if row.get("schema_version") == FEATURE_ROW_SCHEMA_VERSION:
         return True
     return False
 
@@ -115,7 +132,7 @@ def _visible_key_manifest(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "rows_with_selected_token_values": int(selected_rows),
         "rows_with_bridge_output_values": int(bridge_rows),
         "selected_token_candidate_keys": list(SELECTED_TOKEN_KEYS),
-        "bridge_output_candidate_keys": list(BRIDGE_OUTPUT_KEYS),
+        "bridge_output_candidate_keys": ["bridge_features_jsonl", "bridge_feature_summary"],
     }
 
 
@@ -126,35 +143,138 @@ def _run_summary(input_jsonl: str | Path, *, limit: int | None = None) -> dict[s
     return summary
 
 
-def _audit_one(label: str, input_jsonl: str | Path, *, limit: int | None = None) -> dict[str, Any]:
-    rows = read_jsonl(input_jsonl)
-    if limit is not None:
-        rows = rows[: int(limit)]
-    summary = _run_summary(input_jsonl, limit=limit)
-    aggregate = summary.get("aggregate")
-    if not isinstance(aggregate, Mapping):
-        raise ValueError(f"{label}: reader/bridge diagnostic summary missing aggregate")
-    selected_stats = aggregate.get("selected_token_norm")
-    bridge_stats = aggregate.get("bridge_output_norm")
+def _feature_temporal_context(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    return {
+        "selected_time": _stats(row.get("selected_time") for row in rows),
+        "selected_center": _stats(row.get("selected_center") for row in rows),
+        "selected_gate": _stats(row.get("selected_gate") for row in rows),
+    }
+
+
+def _audit_feature_rows(label: str, input_jsonl: str | Path, rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    summary = summarize_bridge_feature_rows(rows)
+    selected_stats = summary.get("selected_token_norm")
+    bridge_stats = summary.get("bridge_feature_norm")
     selected_count = _stat_count(selected_stats)
     bridge_count = _stat_count(bridge_stats)
     missing_reasons = []
     if selected_count <= 0:
-        missing_reasons.append("selected_token_values_not_visible_in_jsonl")
+        missing_reasons.append("per_slot_selected_token_norm_missing")
     if bridge_count <= 0:
-        missing_reasons.append("bridge_output_values_not_visible_in_jsonl")
+        missing_reasons.append("per_slot_bridge_feature_norm_missing")
     return {
         "label": str(label),
         "input_jsonl": str(input_jsonl),
-        "reader_bridge_summary_schema_version": str(summary.get("schema_version")),
-        "sample_count": int(summary.get("sample_count", 0)),
-        "matrix_keys": list(summary.get("matrix_keys", [])),
+        "feature_evidence_source": "bridge_feature_jsonl",
+        "feature_row_schema_version": FEATURE_ROW_SCHEMA_VERSION,
+        "sample_count": len({str(row.get("sample_id")) for row in rows if row.get("sample_id") is not None}),
         "visible_key_manifest": _visible_key_manifest(rows),
         "feature_distribution_evidence_ready": bool(selected_count > 0 and bridge_count > 0),
         "missing_feature_evidence": missing_reasons,
         "selected_token_norm": selected_stats,
-        "bridge_output_norm": bridge_stats,
+        "bridge_feature_norm": bridge_stats,
+        "selected_bridge_cosine": summary.get("selected_bridge_cosine"),
         "bridge_to_selected_token_norm_mean_ratio": _mean_ratio(bridge_stats, selected_stats),
+        "reader_temporal_context": _feature_temporal_context(rows),
+        "legacy_bridge_output_norm_hook_allowed": False,
+        "diagnostic_only": True,
+        "uses_gt": False,
+        "uses_teacher": False,
+        "uses_oracle": False,
+        "uses_cache": False,
+        "uses_raw_prediction": False,
+        "metric_claim_allowed": False,
+        "paper_claim_allowed": False,
+        "runtime_flops_claim_allowed": False,
+        "deploy_claim_allowed": False,
+        "tools_train_allowed": False,
+        "tools_test_allowed": False,
+        "slurm_gpu_allowed": False,
+    }
+
+
+def _audit_summary_payload(label: str, input_json: str | Path, payload: Mapping[str, Any]) -> dict[str, Any]:
+    feature_summary = payload.get("bridge_feature_summary")
+    if not isinstance(feature_summary, Mapping):
+        raise ValueError(f"{label}: JSON summary does not contain bridge_feature_summary")
+    selected_stats = feature_summary.get("selected_token_norm")
+    bridge_stats = feature_summary.get("bridge_feature_norm")
+    selected_count = _stat_count(selected_stats)
+    bridge_count = _stat_count(bridge_stats)
+    missing_reasons = []
+    if selected_count <= 0:
+        missing_reasons.append("summary_selected_token_norm_missing")
+    if bridge_count <= 0:
+        missing_reasons.append("summary_bridge_feature_norm_missing")
+    return {
+        "label": str(label),
+        "input_json": str(input_json),
+        "feature_evidence_source": "checkpoint_summary_bridge_feature_summary",
+        "feature_row_schema_version": str(feature_summary.get("feature_row_schema_version")),
+        "sample_count": int(payload.get("sample_count", 0)),
+        "feature_distribution_evidence_ready": bool(selected_count > 0 and bridge_count > 0),
+        "missing_feature_evidence": missing_reasons,
+        "selected_token_norm": selected_stats,
+        "bridge_feature_norm": bridge_stats,
+        "selected_bridge_cosine": feature_summary.get("selected_bridge_cosine"),
+        "bridge_to_selected_token_norm_mean_ratio": _mean_ratio(bridge_stats, selected_stats),
+        "reader_temporal_context": {
+            "centers_selected_times_abs_offset": payload.get("aggregate", {}).get("centers_selected_times_abs_offset")
+            if isinstance(payload.get("aggregate"), Mapping)
+            else None,
+            "selected_time_delta": payload.get("aggregate", {}).get("selected_time_delta")
+            if isinstance(payload.get("aggregate"), Mapping)
+            else None,
+            "gate": payload.get("aggregate", {}).get("gate")
+            if isinstance(payload.get("aggregate"), Mapping)
+            else None,
+        },
+        "legacy_bridge_output_norm_hook_allowed": False,
+        "diagnostic_only": True,
+        "uses_gt": False,
+        "uses_teacher": False,
+        "uses_oracle": False,
+        "uses_cache": False,
+        "uses_raw_prediction": False,
+        "metric_claim_allowed": False,
+        "paper_claim_allowed": False,
+        "runtime_flops_claim_allowed": False,
+        "deploy_claim_allowed": False,
+        "tools_train_allowed": False,
+        "tools_test_allowed": False,
+        "slurm_gpu_allowed": False,
+    }
+
+
+def _audit_one(label: str, input_jsonl: str | Path, *, limit: int | None = None) -> dict[str, Any]:
+    path = Path(input_jsonl).expanduser()
+    if path.suffix.lower() == ".json":
+        return _audit_summary_payload(label, input_jsonl, _read_json(path))
+    rows = read_jsonl(input_jsonl)
+    if limit is not None:
+        rows = rows[: int(limit)]
+    if rows and all(row.get("schema_version") == FEATURE_ROW_SCHEMA_VERSION for row in rows):
+        return _audit_feature_rows(label, input_jsonl, rows)
+    summary = _run_summary(input_jsonl, limit=limit)
+    aggregate = summary.get("aggregate")
+    if not isinstance(aggregate, Mapping):
+        raise ValueError(f"{label}: reader/bridge diagnostic summary missing aggregate")
+    missing_reasons = ["per_slot_bridge_feature_jsonl_or_summary_required"]
+    return {
+        "label": str(label),
+        "input_jsonl": str(input_jsonl),
+        "feature_evidence_source": "legacy_snapshot_context_only",
+        "reader_bridge_summary_schema_version": str(summary.get("schema_version")),
+        "sample_count": int(summary.get("sample_count", 0)),
+        "matrix_keys": list(summary.get("matrix_keys", [])),
+        "visible_key_manifest": _visible_key_manifest(rows),
+        "feature_distribution_evidence_ready": False,
+        "missing_feature_evidence": missing_reasons,
+        "legacy_selected_token_norm": aggregate.get("selected_token_norm"),
+        "legacy_bridge_output_norm_hook": aggregate.get("bridge_output_norm"),
+        "selected_token_norm": {"count": 0, "min": None, "mean": None, "max": None},
+        "bridge_feature_norm": {"count": 0, "min": None, "mean": None, "max": None},
+        "bridge_to_selected_token_norm_mean_ratio": None,
         "reader_temporal_context": {
             "centers_selected_times_abs_offset": aggregate.get("centers_selected_times_abs_offset"),
             "selected_time_delta": aggregate.get("selected_time_delta"),
@@ -164,6 +284,7 @@ def _audit_one(label: str, input_jsonl: str | Path, *, limit: int | None = None)
             "acquisition_normalized_entropy": aggregate.get("acquisition_normalized_entropy"),
             "acquisition_top1_center_distance_dense": aggregate.get("acquisition_top1_center_distance_dense"),
         },
+        "legacy_bridge_output_norm_hook_allowed": False,
         "diagnostic_only": True,
         "uses_gt": False,
         "uses_teacher": False,
@@ -214,8 +335,8 @@ def build_audit(
             []
             if decision == READY
             else [
-                "one bounded diagnostic JSONL row set containing selected_tokens or selected_token_features",
-                "one bounded diagnostic JSONL row set containing bridge_output, bridge_features, or bridge_output_norm_hook",
+                "one bounded bridge_features.jsonl containing pc_ot_mras_bridge_feature_row_v0 rows",
+                "or one checkpoint summary JSON containing bridge_feature_summary",
             ]
         ),
         "diagnostic_only": True,

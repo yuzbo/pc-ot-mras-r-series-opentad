@@ -153,6 +153,7 @@ cat > "$OUT_ROOT/manifest.json" <<MANIFEST
   "r17_checkpoint": "$R17_CHECKPOINT",
   "r18_checkpoint": "$R18_CHECKPOINT",
   "d6_regenerate_raw_rows": "$D6_REGENERATE_RAW_ROWS",
+  "d6_topk_per_sample": $D6_TOPK_PER_SAMPLE,
   "d7_limit_batches": $D7_LIMIT_BATCHES,
   "d8_limit_batches": $D8_LIMIT_BATCHES
 }
@@ -212,7 +213,8 @@ R18_D6_ROWS="$(ensure_d6_rows R18_C0 "$R18_EVAL_CONFIG" "$R18_CHECKPOINT" "$D6_R
   --output-json "$OUT_ROOT/D6_raw_row_oracle/summary.json" \
   --topk "$D6_TOPK_LIST" \
   --iou-thresholds "$D6_IOU_THRESHOLDS" \
-  --group-by sample
+  --group-by sample \
+  --proposal-source-topk-per-sample "$D6_TOPK_PER_SAMPLE"
 
 run_d7() {
   local label="$1"
@@ -255,6 +257,19 @@ run_d8() {
 
 run_d7 R17_final "$R17_TRAIN_CONFIG" "$R17_CHECKPOINT"
 run_d7 R18_final "$R18_TRAIN_CONFIG" "$R18_CHECKPOINT"
+"$PYTHON" tools/bata/audit_pc_ot_mras_bridge_feature_distribution.py \
+  --input "R17_final=$OUT_ROOT/D7_bridge_features/R17_final/bridge_features.jsonl" \
+  --input "R18_final=$OUT_ROOT/D7_bridge_features/R18_final/bridge_features.jsonl" \
+  --output-json "$OUT_ROOT/D7_bridge_features/feature_distribution_audit_summary.json"
+"$PYTHON" - "$OUT_ROOT/D7_bridge_features/feature_distribution_audit_summary.json" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if payload.get("decision") != "PC_OT_MRAS_BRIDGE_FEATURE_DISTRIBUTION_AUDIT_READY":
+    raise SystemExit(f"D7 feature audit not ready: {payload.get('decision')}")
+PY
 run_d8 R17_final "$R17_TRAIN_CONFIG" "$R17_CHECKPOINT"
 run_d8 R18_final "$R18_TRAIN_CONFIG" "$R18_CHECKPOINT"
 
@@ -281,6 +296,7 @@ bundle = {
         for case in sorted((root / "D7_bridge_features").iterdir())
         if (case / "summary.json").exists()
     },
+    "D7_feature_distribution_audit": read(root / "D7_bridge_features" / "feature_distribution_audit_summary.json"),
     "D8_training_assignment": {
         case.name: read(case / "summary.json")
         for case in sorted((root / "D8_training_assignment").iterdir())

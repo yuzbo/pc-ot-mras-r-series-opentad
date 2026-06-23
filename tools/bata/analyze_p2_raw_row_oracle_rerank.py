@@ -217,6 +217,7 @@ def build_closeout(
     iou_thresholds: Sequence[float] = (0.3, 0.5, 0.7),
     group_by: str = "sample",
     limit_rows: int | None = None,
+    proposal_source_topk_per_sample: int | None = None,
 ) -> dict[str, Any]:
     if not inputs:
         raise ValueError("at least one input is required")
@@ -240,6 +241,9 @@ def build_closeout(
         "cases": cases,
         "aggregate_case_means": aggregate,
         "raw_joined_proposal_rows_available": True,
+        "proposal_source_topk_per_sample": None
+        if proposal_source_topk_per_sample is None
+        else int(proposal_source_topk_per_sample),
         "full_evaluator_facing_oracle_rerank_bound_available": False,
         "result_detection_geometry_close_out_available": False,
         "diagnostic_scope": "raw_joined_proposal_rows_only",
@@ -286,6 +290,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--iou-thresholds", default="0.3,0.5,0.7")
     parser.add_argument("--group-by", choices=("sample", "video"), default="sample")
     parser.add_argument("--limit-rows", type=int)
+    parser.add_argument("--proposal-source-topk-per-sample", type=int)
     args = parser.parse_args(argv)
     try:
         payload = build_closeout(
@@ -295,6 +300,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             iou_thresholds=_parse_number_list(args.iou_thresholds),
             group_by=args.group_by,
             limit_rows=args.limit_rows,
+            proposal_source_topk_per_sample=args.proposal_source_topk_per_sample,
         )
     except Exception as exc:  # pragma: no cover - CLI guard
         print(json.dumps(strict_json_value(error_payload(exc)), sort_keys=True))

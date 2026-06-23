@@ -47,12 +47,14 @@ def test_raw_row_oracle_rerank_closeout_reports_score_oracle_gap(tmp_path):
         output_json=output_json,
         topk=(1, 2),
         iou_thresholds=(0.7,),
+        proposal_source_topk_per_sample=1000,
     )
 
     case = payload["cases"][0]
     group = case["groups"][0]
     assert payload["decision"] == READY
     assert payload["raw_joined_proposal_rows_available"] is True
+    assert payload["proposal_source_topk_per_sample"] == 1000
     assert payload["full_evaluator_facing_oracle_rerank_bound_available"] is False
     assert group["any_top1_iou0p70_score_positive_count"] == 0
     assert group["any_top1_iou0p70_oracle_positive_count"] == 1
