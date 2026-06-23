@@ -67,11 +67,21 @@ def test_quality_targets_are_train_loss_only_and_class_aware():
     assert "F.binary_cross_entropy_with_logits" in quality_loss_src
     assert "self._quality_rank_loss(quality_logit, quality_target)" in quality_loss_src
 
+    sampler_src = _method_source(source, cls, "_sample_quality_training_rows")
+    assert 'hand_score = candidates["hand_score"].detach().to(dtype=quality_target.dtype)' in sampler_src
+
     boundary_src = _method_source(source, cls, "_pair_boundary_quality_target")
     assert "same_cls = cls_idx == label" in boundary_src
     assert 'candidates["pair_start"][same_cls]' in boundary_src
     assert 'candidates["pair_end"][same_cls]' in boundary_src
+    assert "quality = quality.to(dtype=target.dtype)" in boundary_src
     assert "target[same_cls] = torch.maximum(target[same_cls], quality)" in boundary_src
+
+    iou_src = _method_source(source, cls, "_pair_iou_quality_target")
+    assert "iou = iou.to(dtype=target.dtype)" in iou_src
+
+    pair_scorer_src = _method_source(source, cls, "_pair_scorer_loss")
+    assert 'hand_score = candidates["hand_score"].detach().to(dtype=target.dtype)' in pair_scorer_src
 
     logits_src = _method_source(source, cls, "_quality_calibration_logits")
     assert 'candidates["pair_features"]' in logits_src

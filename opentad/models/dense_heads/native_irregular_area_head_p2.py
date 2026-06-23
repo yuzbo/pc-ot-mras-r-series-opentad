@@ -544,7 +544,8 @@ class NativeIrregularAreaHeadP2(nn.Module):
                 logits = self.pair_scorer(candidates["pair_features"]).squeeze(-1)
                 if logits.numel() > self.max_pairs_per_class * self.num_classes:
                     take = min(logits.numel(), self.max_pairs_per_class * self.num_classes)
-                    priority = torch.maximum(target, candidates["hand_score"].detach())
+                    hand_score = candidates["hand_score"].detach().to(dtype=target.dtype)
+                    priority = torch.maximum(target, hand_score)
                     _, order = torch.topk(priority, k=take)
                     logits = logits[order]
                     target = target[order]
@@ -564,6 +565,7 @@ class NativeIrregularAreaHeadP2(nn.Module):
             if not same_cls.any().item():
                 continue
             iou = NativeIrregularAreaHeadP2._segment_iou_tensor(pair_segment[same_cls], gt_segment[gt_idx])
+            iou = iou.to(dtype=target.dtype)
             target[same_cls] = torch.maximum(target[same_cls], iou)
         return target.clamp(0.0, 1.0)
 
@@ -640,6 +642,7 @@ class NativeIrregularAreaHeadP2(nn.Module):
             end_error = (candidates["pair_end"][same_cls] - gt_end).abs()
             normalized_error = (start_error + end_error) / gt_duration
             quality = torch.exp(-normalized_error / max(float(tau), 1e-6))
+            quality = quality.to(dtype=target.dtype)
             target[same_cls] = torch.maximum(target[same_cls], quality)
         return target.clamp(0.0, 1.0)
 
@@ -651,7 +654,8 @@ class NativeIrregularAreaHeadP2(nn.Module):
         max_rows = self.max_pairs_per_class * self.num_classes
         if quality_logit.numel() <= max_rows:
             return quality_logit, boundary_logit, quality_target, boundary_target
-        priority = torch.maximum(quality_target, candidates["hand_score"].detach())
+        hand_score = candidates["hand_score"].detach().to(dtype=quality_target.dtype)
+        priority = torch.maximum(quality_target, hand_score)
         _, order = torch.topk(priority, k=max_rows)
         return quality_logit[order], boundary_logit[order], quality_target[order], boundary_target[order]
 
