@@ -7,6 +7,7 @@ from tools.bata.dump_pc_ot_mras_reader_bridge_diagnostics import (
     main,
     run_jsonl_diagnostic,
     run_synthetic_diagnostic,
+    summarize_bridge_feature_rows,
 )
 
 
@@ -108,6 +109,33 @@ def test_synthetic_diagnostic_is_torch_free_and_contains_expected_sections(tmp_p
     assert summary["aggregate"]["gate"]["min"] == 0.35
     assert summary["aggregate"]["gate"]["max"] == 0.65
     assert output_json.is_file()
+
+
+def test_bridge_feature_row_summary_requires_real_feature_rows():
+    summary = summarize_bridge_feature_rows(
+        [
+            {
+                "slot_valid": True,
+                "selected_token_norm": 5.0,
+                "bridge_feature_norm": 3.0,
+                "selected_bridge_cosine": 0.25,
+            },
+            {
+                "slot_valid": False,
+                "selected_token_norm": 2.0,
+                "bridge_feature_norm": 4.0,
+                "selected_bridge_cosine": None,
+            },
+        ]
+    )
+
+    assert summary["decision"] == "PC_OT_MRAS_BRIDGE_FEATURE_JSONL_READY"
+    assert summary["feature_row_schema_version"] == "pc_ot_mras_bridge_feature_row_v0"
+    assert summary["row_count"] == 2
+    assert summary["valid_row_count"] == 1
+    assert summary["selected_token_norm"]["mean"] == 3.5
+    assert summary["selected_bridge_cosine"]["count"] == 1
+    assert summary["metric_claim_allowed"] is False
 
 
 def test_cli_empty_jsonl_returns_structured_no_go_without_traceback(tmp_path, capsys):

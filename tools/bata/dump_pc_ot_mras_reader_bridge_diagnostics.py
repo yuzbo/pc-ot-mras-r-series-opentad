@@ -21,6 +21,7 @@ AGGREGATE_VALUES_KEY = "_aggregate_values"
 MATRIX_PRIORITY = ("acquisition_matrix", "allocation", "transport_prob")
 SELECTED_TOKEN_KEYS = ("selected_tokens", "selected_token_features", "selected_features")
 BRIDGE_OUTPUT_KEYS = ("bridge_out", "bridge_output", "bridge_outputs", "bridge_features", "pc_ot_mras_bridge_output")
+FEATURE_ROW_SCHEMA_VERSION = "pc_ot_mras_bridge_feature_row_v0"
 
 
 def strict_json_value(value: Any) -> Any:
@@ -110,6 +111,16 @@ def _finite_float(value: Any, *, name: str) -> float:
     if not math.isfinite(out):
         raise ValueError(f"{name} must be finite")
     return out
+
+
+def _optional_finite_float(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
 
 
 def _float_vector(value: Any, *, name: str) -> list[float]:
@@ -741,6 +752,151 @@ def _tensor_tree_norm_summary(value: Any) -> dict[str, Any]:
     return {"source": "forward_hook_tensor_tree", "tensor_count": len(norms), "norms": norms, "stats": summarize_values(norms)}
 
 
+def _first_bridge_level0_features(output: Any) -> Any | None:
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return None
+    if not isinstance(output, (list, tuple)) or not output:
+        return None
+    feats = output[0]
+    if not isinstance(feats, (list, tuple)) or not feats:
+        return None
+    level0 = feats[0]
+    if not torch.is_tensor(level0) or level0.ndim != 3:
+        return None
+    return level0.detach().float().cpu()
+
+
+def _tensor_slot_scalar(value: Any, *, batch_idx: int, slot_idx: int) -> float | None:
+    torch = sys.modules.get("torch")
+    if torch is None or not torch.is_tensor(value) or value.ndim < 2:
+        return None
+    if batch_idx >= int(value.shape[0]) or slot_idx >= int(value.shape[1]):
+        return None
+    item = value[batch_idx, slot_idx].detach().float().cpu()
+    return float(item.item()) if item.numel() == 1 and math.isfinite(float(item.item())) else None
+
+
+def _feature_preview(vector: Any, *, dims: int) -> list[float]:
+    torch = sys.modules.get("torch")
+    if torch is None or not torch.is_tensor(vector) or vector.numel() == 0:
+        return []
+    return [
+        float(item)
+        for item in vector.flatten()[: max(0, int(dims))].tolist()
+        if math.isfinite(float(item))
+    ]
+
+
+def _vector_norm(vector: Any) -> float | None:
+    torch = sys.modules.get("torch")
+    if torch is None or not torch.is_tensor(vector) or vector.numel() == 0:
+        return None
+    return float(torch.linalg.vector_norm(vector.float()).item())
+
+
+def _cosine(vector_a: Any, vector_b: Any) -> float | None:
+    torch = sys.modules.get("torch")
+    if torch is None or not torch.is_tensor(vector_a) or not torch.is_tensor(vector_b):
+        return None
+    if vector_a.numel() == 0 or vector_b.numel() == 0 or vector_a.numel() != vector_b.numel():
+        return None
+    denom = torch.linalg.vector_norm(vector_a.float()) * torch.linalg.vector_norm(vector_b.float())
+    if float(denom.item()) <= 1.0e-12:
+        return None
+    return float(torch.dot(vector_a.flatten().float(), vector_b.flatten().float()).div(denom).item())
+
+
+def _bridge_feature_rows(
+    *,
+    reader_outputs: Mapping[str, Any],
+    bridge_output: Any,
+    sample_ids: Sequence[str],
+    snapshot_id: str,
+    batch_index: int,
+    preview_dims: int,
+    max_slots_per_sample: int | None,
+) -> list[dict[str, Any]]:
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return []
+    selected_tokens = reader_outputs.get("selected_tokens")
+    bridge_level0 = _first_bridge_level0_features(bridge_output)
+    if not torch.is_tensor(selected_tokens) or selected_tokens.ndim != 3 or bridge_level0 is None:
+        return []
+    slot_count = min(int(selected_tokens.shape[1]), int(bridge_level0.shape[2]))
+    if max_slots_per_sample is not None:
+        slot_count = min(slot_count, max(0, int(max_slots_per_sample)))
+    selected_mask = reader_outputs.get("selected_mask")
+    rows: list[dict[str, Any]] = []
+    for batch_idx, sample_id in enumerate(sample_ids):
+        for slot_idx in range(slot_count):
+            is_valid = True
+            if torch.is_tensor(selected_mask) and selected_mask.ndim >= 2:
+                if batch_idx >= int(selected_mask.shape[0]) or slot_idx >= int(selected_mask.shape[1]):
+                    is_valid = False
+                else:
+                    is_valid = bool(selected_mask[batch_idx, slot_idx].detach().cpu().item())
+            selected_vec = selected_tokens[batch_idx, slot_idx].detach().float().cpu()
+            bridge_vec = bridge_level0[batch_idx, :, slot_idx].detach().float().cpu()
+            rows.append(
+                {
+                    "schema_version": FEATURE_ROW_SCHEMA_VERSION,
+                    "sample_id": str(sample_id),
+                    "snapshot_id": str(snapshot_id),
+                    "batch_index": int(batch_index),
+                    "slot_index": int(slot_idx),
+                    "slot_valid": bool(is_valid),
+                    "selected_time": _tensor_slot_scalar(reader_outputs.get("selected_times"), batch_idx=batch_idx, slot_idx=slot_idx),
+                    "selected_center": _tensor_slot_scalar(reader_outputs.get("centers"), batch_idx=batch_idx, slot_idx=slot_idx),
+                    "selected_gate": _tensor_slot_scalar(reader_outputs.get("gates"), batch_idx=batch_idx, slot_idx=slot_idx),
+                    "selected_token_dim": int(selected_vec.numel()),
+                    "bridge_feature_dim": int(bridge_vec.numel()),
+                    "selected_token_norm": _vector_norm(selected_vec),
+                    "bridge_feature_norm": _vector_norm(bridge_vec),
+                    "selected_bridge_cosine": _cosine(selected_vec, bridge_vec),
+                    "selected_token_preview": _feature_preview(selected_vec, dims=int(preview_dims)),
+                    "bridge_feature_preview": _feature_preview(bridge_vec, dims=int(preview_dims)),
+                    "diagnostic_only": True,
+                    "uses_gt": False,
+                    "uses_teacher": False,
+                    "uses_oracle": False,
+                    "uses_cache": False,
+                    "uses_raw_prediction": False,
+                    "metric_claim_allowed": False,
+                    "paper_claim_allowed": False,
+                }
+            )
+    return rows
+
+
+def summarize_bridge_feature_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    return {
+        "schema_version": "pc_ot_mras_bridge_feature_summary_v0",
+        "feature_row_schema_version": FEATURE_ROW_SCHEMA_VERSION,
+        "decision": "PC_OT_MRAS_BRIDGE_FEATURE_JSONL_READY" if rows else "PC_OT_MRAS_BRIDGE_FEATURE_JSONL_NO_ROWS",
+        "row_count": int(len(rows)),
+        "valid_row_count": int(sum(1 for row in rows if bool(row.get("slot_valid")))),
+        "selected_token_norm": summarize_values(
+            [float(value) for row in rows if (value := _optional_finite_float(row.get("selected_token_norm"))) is not None]
+        ),
+        "bridge_feature_norm": summarize_values(
+            [float(value) for row in rows if (value := _optional_finite_float(row.get("bridge_feature_norm"))) is not None]
+        ),
+        "selected_bridge_cosine": summarize_values(
+            [float(value) for row in rows if (value := _optional_finite_float(row.get("selected_bridge_cosine"))) is not None]
+        ),
+        "diagnostic_only": True,
+        "uses_gt": False,
+        "uses_teacher": False,
+        "uses_oracle": False,
+        "uses_cache": False,
+        "uses_raw_prediction": False,
+        "metric_claim_allowed": False,
+        "paper_claim_allowed": False,
+    }
+
+
 def _model_reader_module(model: Any) -> Any:
     module = model.module if hasattr(model, "module") else model
     reader = getattr(module, "pc_ot_mras_reader", None)
@@ -763,11 +919,14 @@ def run_checkpoint_diagnostic(
     checkpoint: str | Path,
     output_json: str | Path | None = None,
     snapshot_jsonl: str | Path | None = None,
+    feature_jsonl: str | Path | None = None,
     split: str = "val",
     limit_batches: int = 1,
     device: str = "auto",
     use_ema: bool | None = None,
     use_amp: bool = False,
+    feature_preview_dims: int = 8,
+    feature_max_slots_per_sample: int | None = 32,
 ) -> dict[str, Any]:
     try:
         import torch
@@ -806,12 +965,13 @@ def run_checkpoint_diagnostic(
     model.eval()
 
     reader_hook = _CaptureHook(keep_output=True)
-    bridge_hook = _CaptureHook(keep_output=False)
+    bridge_hook = _CaptureHook(keep_output=feature_jsonl is not None)
     reader_handle = _model_reader_module(model).register_forward_hook(reader_hook)
     bridge_module = _model_bridge_module(model)
     bridge_handle = bridge_module.register_forward_hook(bridge_hook) if bridge_module is not None else None
     per_sample: list[dict[str, Any]] = []
     snapshot_rows: list[dict[str, Any]] = []
+    feature_rows: list[dict[str, Any]] = []
     samples_seen = 0
     try:
         for batch_idx, data_dict in enumerate(loader):
@@ -826,15 +986,32 @@ def run_checkpoint_diagnostic(
                     model.forward_test(batch["inputs"], batch["masks"], metas=metas, infer_cfg=cfg.inference)
             reader_outputs = reader_hook.pop()
             bridge_norm = (None, [])
+            bridge_output = None
             if bridge_module is not None and bridge_hook.latest is not None:
                 bridge_summary = bridge_hook.pop()
+                if feature_jsonl is not None:
+                    bridge_output = bridge_summary
+                    bridge_summary = _tensor_tree_norm_summary(bridge_output)
                 bridge_norm = ("forward_hook_tensor_tree", bridge_summary.get("norms", []))
             sample_ids = sample_ids_from_metas(metas, seen_count=samples_seen)
+            snapshot_id = f"epoch_{epoch}" if epoch is not None else Path(checkpoint).stem
+            if feature_jsonl is not None and bridge_output is not None:
+                feature_rows.extend(
+                    _bridge_feature_rows(
+                        reader_outputs=reader_outputs,
+                        bridge_output=bridge_output,
+                        sample_ids=sample_ids,
+                        snapshot_id=snapshot_id,
+                        batch_index=batch_idx,
+                        preview_dims=int(feature_preview_dims),
+                        max_slots_per_sample=feature_max_slots_per_sample,
+                    )
+                )
             plain_reader = _to_plain(reader_outputs)
             row = {
                 "schema_version": SCHEMA_VERSION,
                 "sample_ids": sample_ids,
-                "snapshot_id": f"epoch_{epoch}" if epoch is not None else Path(checkpoint).stem,
+                "snapshot_id": snapshot_id,
                 "epoch": epoch,
                 "reader_out": plain_reader,
                 "bridge_output_norm_hook": bridge_norm[1],
@@ -864,7 +1041,19 @@ def run_checkpoint_diagnostic(
 
     if snapshot_jsonl is not None:
         write_jsonl(snapshot_jsonl, snapshot_rows)
-    return build_summary(per_sample, source="checkpoint", output_json=output_json, snapshot_jsonl=snapshot_jsonl)
+    if feature_jsonl is not None:
+        write_jsonl(feature_jsonl, feature_rows)
+    summary = build_summary(per_sample, source="checkpoint", snapshot_jsonl=snapshot_jsonl)
+    if feature_jsonl is not None:
+        summary["bridge_feature_jsonl"] = str(feature_jsonl)
+        summary["bridge_feature_summary"] = summarize_bridge_feature_rows(feature_rows)
+        summary["bridge_feature_preview_dims"] = int(feature_preview_dims)
+        summary["bridge_feature_max_slots_per_sample"] = (
+            None if feature_max_slots_per_sample is None else int(feature_max_slots_per_sample)
+        )
+    if output_json is not None:
+        write_json(output_json, summary)
+    return summary
 
 
 def _parse_use_ema(value: str) -> bool | None:
@@ -896,6 +1085,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--input-jsonl")
     parser.add_argument("--output-json")
     parser.add_argument("--snapshot-jsonl")
+    parser.add_argument("--feature-jsonl")
+    parser.add_argument("--feature-preview-dims", type=int, default=8)
+    parser.add_argument("--feature-max-slots-per-sample", type=int, default=32)
     parser.add_argument("--snapshot-label", default="snapshot")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--synthetic-batch-size", type=int, default=1)
@@ -937,11 +1129,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 checkpoint=args.checkpoint,
                 output_json=args.output_json,
                 snapshot_jsonl=args.snapshot_jsonl,
+                feature_jsonl=args.feature_jsonl,
                 split=args.split,
                 limit_batches=int(args.limit_batches),
                 device=args.device,
                 use_ema=args.use_ema,
                 use_amp=bool(args.amp),
+                feature_preview_dims=int(args.feature_preview_dims),
+                feature_max_slots_per_sample=int(args.feature_max_slots_per_sample)
+                if args.feature_max_slots_per_sample is not None
+                else None,
             )
     except Exception as exc:  # pragma: no cover - CLI guard
         print(json.dumps(strict_json_value(error_payload(exc)), sort_keys=True))
