@@ -228,6 +228,10 @@ def _install_actionformer_runtime():
         "opentad.models.selectors.pc_ot_mras_reader",
         ROOT / "opentad" / "models" / "selectors" / "pc_ot_mras_reader.py",
     )
+    _load_module(
+        "opentad.models.selectors.pc_ot_mras_prebackbone_frame_selector",
+        ROOT / "opentad" / "models" / "selectors" / "pc_ot_mras_prebackbone_frame_selector.py",
+    )
     bridge_module = _load_module(
         "opentad.models.necks.pc_ot_mras_detector_bridge",
         ROOT / "opentad" / "models" / "necks" / "pc_ot_mras_detector_bridge.py",
@@ -254,11 +258,13 @@ def _model(
     pc_ot_mras_reader_value_loss=None,
     pc_ot_mras_reader_eval_override=None,
     enable_value_heads=False,
+    frame_selector=None,
 ):
     return ActionFormer(
         projection=dict(type=projection_type, channels=4, max_seq_len=8),
         neck=dict(type="PCOTMRASDetectorBridge", in_channels=4, out_channels=4),
         rpn_head=dict(type="SyntheticRPNHead", in_channels=4, num_classes=3),
+        frame_selector=frame_selector,
         pc_ot_mras_reader=dict(
             type="PCOTMRASReader",
             in_dim=4,
@@ -851,4 +857,40 @@ def test_actionformer_pc_ot_mras_reader_parameters_are_in_optimizer_groups():
     }
 
     assert id(model.pc_ot_mras_reader.query_embed) in grouped_ids
+    assert {id(param) for param in trainable.values()} == grouped_ids
+
+
+def test_actionformer_prebackbone_tinytransformer_selector_parameters_are_in_optimizer_groups():
+    model = _model(
+        frame_selector=dict(
+            type="PCOTMRASPreBackboneFrameSelector",
+            target_len=4,
+            dense_window_size=8,
+            descriptor_dim=12,
+            scout_feature_source="handcrafted_descriptors",
+            protected_uniform_count=0,
+            coverage_guard_count=0,
+            reader=dict(
+                type="PCOTMRASTinyTransformerFrameScout",
+                in_dim=12,
+                hidden_dim=8,
+                num_slots=4,
+                num_layers=1,
+                num_heads=2,
+                dropout=0.0,
+            ),
+        )
+    )
+
+    groups = model.get_optim_groups({"weight_decay": 0.05, "lr": 1.0e-4})
+    grouped_ids = {id(param) for group in groups for param in group["params"]}
+    trainable = {
+        name: param
+        for name, param in model.named_parameters()
+        if param.requires_grad and not name.startswith("backbone")
+    }
+
+    assert id(model.frame_selector.reader.slot_queries) in grouped_ids
+    assert id(model.frame_selector.reader.encoder.layers[0].self_attn.in_proj_weight) in grouped_ids
+    assert id(model.frame_selector.reader.encoder.layers[0].self_attn.in_proj_bias) in grouped_ids
     assert {id(param) for param in trainable.values()} == grouped_ids

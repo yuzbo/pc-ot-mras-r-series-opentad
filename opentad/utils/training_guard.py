@@ -254,6 +254,15 @@ def _format_training_block_error(gate_name, gate, reason, entrypoint):
     )
 
 
+def _get_dotted_value(node, path, default=_MISSING):
+    cur = node
+    for part in str(path).split("."):
+        cur = _get_value(cur, part, _MISSING)
+        if cur is _MISSING:
+            return default
+    return cur
+
+
 def _has_pc_ot_mras_gate(cfg):
     return any(_is_pc_ot_mras_gate(gate) for _, gate in _iter_candidate_gates(cfg))
 
@@ -346,7 +355,44 @@ def _sha256_file(path):
     return digest.hexdigest()
 
 
-def _entrypoint_gate_context_block_reason(gate):
+def _entrypoint_sha256_binding_block_reason(cfg, context, gate_payload):
+    bindings = _get_value(context, "sha256_file_bindings", _MISSING)
+    if bindings in (_MISSING, None):
+        return None
+
+    for binding in bindings:
+        gate_key = str(_get_value(binding, "gate_key", ""))
+        if not gate_key:
+            return "entrypoint gate sha256 file binding is missing gate_key"
+        label = str(_get_value(binding, "label", gate_key))
+        expected_sha256 = gate_payload.get(gate_key)
+        if not expected_sha256:
+            return f"entrypoint gate JSON missing {gate_key} for {label}"
+
+        path = None
+        path_env = _get_value(binding, "path_env", _MISSING)
+        if path_env not in (_MISSING, None, ""):
+            path = os.environ.get(str(path_env))
+            if not path:
+                return f"missing required entrypoint gate sha256 path env {path_env} for {label}"
+
+        cfg_path = _get_value(binding, "cfg_path", _MISSING)
+        if path in (None, "") and cfg_path not in (_MISSING, None, ""):
+            path = _get_dotted_value(cfg, cfg_path, default=None)
+
+        if path in (None, ""):
+            return f"entrypoint gate sha256 file binding for {label} has no usable path"
+        path = Path(str(path))
+        if not path.is_file():
+            return f"entrypoint gate sha256 file for {label} does not exist: {path}"
+        actual_sha256 = _sha256_file(path)
+        if actual_sha256 != expected_sha256:
+            return f"entrypoint {label} sha256 mismatch: expected={expected_sha256} actual={actual_sha256}"
+
+    return None
+
+
+def _entrypoint_gate_context_block_reason(cfg, gate):
     context = _get_value(gate, "entrypoint_gate_context", _MISSING)
     if context in (_MISSING, None) or not _is_true(_get_value(context, "required", _MISSING)):
         return None
@@ -434,6 +480,12 @@ def _entrypoint_gate_context_block_reason(gate):
                 if gate_payload.get(str(key)) is not True:
                     return f"entrypoint gate must set {key}=true"
 
+        required_false = _get_value(context, "required_false_keys", _MISSING)
+        if required_false is not _MISSING:
+            for key in required_false:
+                if gate_payload.get(str(key)) is not False:
+                    return f"entrypoint gate must set {key}=false"
+
         if forbidden_true is not _MISSING:
             for key in forbidden_true:
                 if str(key) in gate_payload and gate_payload[str(key)] is not False:
@@ -453,12 +505,24 @@ def _entrypoint_gate_context_block_reason(gate):
                 allowed_keys.add(str(key))
             if required_true is not _MISSING:
                 allowed_keys.update(str(key) for key in required_true)
+            if required_false is not _MISSING:
+                allowed_keys.update(str(key) for key in required_false)
             if forbidden_true is not _MISSING:
                 allowed_keys.update(str(key) for key in forbidden_true)
+            bindings = _get_value(context, "sha256_file_bindings", _MISSING)
+            if bindings not in (_MISSING, None):
+                for binding in bindings:
+                    gate_key = _get_value(binding, "gate_key", _MISSING)
+                    if gate_key not in (_MISSING, None, ""):
+                        allowed_keys.add(str(gate_key))
             allowed_keys.update(str(key) for key in harmless)
             for key in gate_payload:
                 if str(key) not in allowed_keys:
                     return f"entrypoint gate contains unknown or unallowlisted key: {key}"
+
+    reason = _entrypoint_sha256_binding_block_reason(cfg, context, gate_payload)
+    if reason is not None:
+        return reason
 
     return None
 
@@ -549,7 +613,7 @@ def assert_detector_training_allowed(cfg, entrypoint="tools/train.py"):
         reason = _smoke_scope_block_reason(cfg, gate_name, gate, entrypoint)
         if reason is not None:
             raise RuntimeError(_format_training_block_error(gate_name, gate, reason, entrypoint))
-        reason = _entrypoint_gate_context_block_reason(gate)
+        reason = _entrypoint_gate_context_block_reason(cfg, gate)
         if reason is not None:
             raise RuntimeError(_format_training_block_error(gate_name, gate, reason, entrypoint))
 

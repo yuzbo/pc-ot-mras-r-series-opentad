@@ -53,6 +53,9 @@ class BaseDetector(torch.nn.Module):
         return results
 
     def _uses_pc_ot_mras_live_reader_path(self):
+        frame_selector = getattr(self, "frame_selector", None)
+        if frame_selector is not None and getattr(frame_selector, "forbid_raw_prediction_cache", False):
+            return True
         if getattr(self, "pc_ot_mras_reader", None) is not None:
             return True
         neck = getattr(self, "neck", None)

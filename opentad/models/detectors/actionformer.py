@@ -267,7 +267,7 @@ class ActionFormer(SingleStageDetector):
         # see https://github.com/karpathy/minGPT/blob/master/mingpt/model.py#L134
         decay = set()
         no_decay = set()
-        whitelist_weight_modules = (nn.Linear, nn.Conv1d)
+        whitelist_weight_modules = (nn.Linear, nn.Conv1d, nn.MultiheadAttention)
         blacklist_weight_modules = (nn.LayerNorm, nn.GroupNorm)
 
         # loop over all modules / params
@@ -296,7 +296,7 @@ class ActionFormer(SingleStageDetector):
                 elif pn.endswith("rel_pe"):
                     # corner case for relative position encoding
                     no_decay.add(fpn)
-                elif pn.endswith("query_embed"):
+                elif pn.endswith("query_embed") or pn.endswith("slot_queries"):
                     # learned slot/query embeddings should not receive weight decay
                     no_decay.add(fpn)
 
