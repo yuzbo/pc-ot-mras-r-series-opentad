@@ -21,6 +21,8 @@ CONFIG="${CONFIG:-configs/adatad/thumos/pc_ot_mras_frontend_hard_ledger_fixed50_
 PC_OT_MRAS_CONFIG="${PC_OT_MRAS_CONFIG:-configs/adatad/thumos/ctf_bdi_pc_ot_mras_r18_aux_diag_candidate.py}"
 PC_OT_MRAS_CHECKPOINT="${PC_OT_MRAS_CHECKPOINT:-}"
 ADATAD_CHECKPOINT="${ADATAD_CHECKPOINT:-}"
+PC_OT_MRAS_CHECKPOINT_SHA256="${PC_OT_MRAS_CHECKPOINT_SHA256:-}"
+ADATAD_CHECKPOINT_SHA256="${ADATAD_CHECKPOINT_SHA256:-}"
 SPLIT="${SPLIT:-test}"
 BUDGET="${BUDGET:-384}"
 REQUIRE_SELECTED_COUNT="${REQUIRE_SELECTED_COUNT:-$BUDGET}"
@@ -28,7 +30,8 @@ RUN_ID="${RUN_ID:-0}"
 SEED="${SEED:-20260623}"
 MASTER_PORT="${MASTER_PORT:-$((24000 + SLURM_JOB_ID % 20000))}"
 RUN_TAG="${RUN_TAG:-pc_ot_mras_frontend_eval_$(date '+%Y%m%d_%H%M%S')}"
-PRECHECK_ONLY="${PRECHECK_ONLY:-0}"
+PRECHECK_ONLY="${PRECHECK_ONLY:-1}"
+ALLOW_FRONTEND_ADATAD_EVAL="${ALLOW_FRONTEND_ADATAD_EVAL:-0}"
 DUMP_LIMIT_BATCHES="${DUMP_LIMIT_BATCHES:-999999}"
 DUMP_USE_AMP="${DUMP_USE_AMP:-1}"
 
@@ -64,6 +67,21 @@ fail() {
   exit 2
 }
 
+require_file_sha() {
+  local path="$1"
+  local expected="$2"
+  local label="$3"
+  if [ -z "$expected" ]; then
+    fail "${label} SHA256 must be provided explicitly before frontend AdaTAD evaluation"
+  fi
+  local actual
+  actual="$(sha256sum "$path" | awk '{print $1}')"
+  if [ "$actual" != "$expected" ]; then
+    fail "${label} SHA256 mismatch: expected=$expected actual=$actual"
+  fi
+  log "${label}_sha256=$actual"
+}
+
 if [ -z "$PC_OT_MRAS_CHECKPOINT" ]; then
   fail "PC_OT_MRAS_CHECKPOINT must be provided explicitly"
 fi
@@ -79,6 +97,7 @@ log "pc_ot_mras_checkpoint=$PC_OT_MRAS_CHECKPOINT"
 log "adatad_checkpoint=$ADATAD_CHECKPOINT"
 log "ledger=$PC_OT_MRAS_FRONTEND_LEDGER_PATH"
 log "split=$SPLIT budget=$BUDGET require_selected_count=$REQUIRE_SELECTED_COUNT"
+log "precheck_only=$PRECHECK_ONLY allow_frontend_adatad_eval=$ALLOW_FRONTEND_ADATAD_EVAL"
 log "run_root=$RUN_ROOT"
 log "work_dir=$WORK_DIR"
 log "seed=$SEED master_port=$MASTER_PORT"
@@ -147,6 +166,12 @@ if [ "$PRECHECK_ONLY" = "1" ]; then
   exit 0
 fi
 
+if [ "$ALLOW_FRONTEND_ADATAD_EVAL" != "1" ]; then
+  fail "ALLOW_FRONTEND_ADATAD_EVAL=1 is required before dump, ledger generation, and detector mAP"
+fi
+require_file_sha "$PC_OT_MRAS_CHECKPOINT" "$PC_OT_MRAS_CHECKPOINT_SHA256" "pc_ot_mras_checkpoint"
+require_file_sha "$ADATAD_CHECKPOINT" "$ADATAD_CHECKPOINT_SHA256" "adatad_checkpoint"
+
 log "dumping PC-OT-MRAS reader snapshots"
 DUMP_ARGS=(
   --config "$PC_OT_MRAS_CONFIG"
@@ -158,7 +183,7 @@ DUMP_ARGS=(
   --budget "$BUDGET"
 )
 if [ "$DUMP_USE_AMP" = "1" ]; then
-  DUMP_ARGS+=(--amp)
+  DUMP_ARGS+=(--use-amp)
 fi
 python tools/bata/dump_pc_ot_mras_reader_snapshots.py "${DUMP_ARGS[@]}"
 

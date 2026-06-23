@@ -49,10 +49,68 @@ def load_predictions(metas, infer_cfg):
         return load_single_prediction(metas, infer_cfg.folder)
 
 
+def _meta_float_tensor(meta, key, *, dtype, device):
+    if key not in meta:
+        return None
+    value = meta[key]
+    if isinstance(value, torch.Tensor):
+        return value.to(device=device, dtype=dtype).flatten()
+    return torch.as_tensor(value, dtype=dtype, device=device).flatten()
+
+
+def _flag_is_true(value):
+    if value is True:
+        return True
+    if isinstance(value, torch.Tensor):
+        return bool(value.detach().cpu().item()) if value.numel() == 1 else False
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes"}
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value)
+    return False
+
+
+def _selected_axis_segments_to_dense_axis(segments, meta):
+    if _flag_is_true(meta.get("irregular_native_axis", True)):
+        return segments
+    selected_positions = _meta_float_tensor(
+        meta,
+        "irregular_selected_positions",
+        dtype=segments.dtype,
+        device=segments.device,
+    )
+    if selected_positions is None:
+        return segments
+    if selected_positions.numel() == 0:
+        raise ValueError("irregular selected-axis post-processing requires non-empty irregular_selected_positions")
+    if selected_positions.numel() > 1 and torch.any(selected_positions[1:] < selected_positions[:-1]):
+        raise ValueError("irregular_selected_positions must be sorted for selected-axis post-processing")
+
+    valid_len = _meta_float_tensor(
+        meta,
+        "irregular_selected_valid_len",
+        dtype=segments.dtype,
+        device=segments.device,
+    )
+    if valid_len is None or valid_len.numel() == 0:
+        valid_value = selected_positions[-1] + 1.0
+    else:
+        valid_value = valid_len[0]
+    target_positions = torch.cat([selected_positions, valid_value.reshape(1)])
+    selected_count = int(selected_positions.numel())
+
+    coords = torch.clamp(segments, min=0.0, max=float(selected_count))
+    left = torch.floor(coords).to(dtype=torch.long).clamp(min=0, max=max(selected_count - 1, 0))
+    right = (left + 1).clamp(max=selected_count)
+    frac = coords - left.to(dtype=coords.dtype)
+    return target_positions[left] * (1.0 - frac) + target_positions[right] * frac
+
+
 def convert_to_seconds(segments, meta):
     if meta["fps"] == -1:  # resize setting, like in anet / hacs
         segments = segments / meta["resize_length"] * meta["duration"]
     else:  # sliding window / padding setting, like in thumos / ego4d
+        segments = _selected_axis_segments_to_dense_axis(segments, meta)
         snippet_stride = meta["snippet_stride"]
         offset_frames = meta["offset_frames"]
         window_start_frame = meta["window_start_frame"] if "window_start_frame" in meta.keys() else 0

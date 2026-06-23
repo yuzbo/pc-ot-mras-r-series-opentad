@@ -7,9 +7,11 @@ import numpy as np
 FORBIDDEN_VALUE_TRANSPORT_FLAGS = (
     "uses_gt",
     "uses_teacher",
+    "uses_oracle",
     "uses_cache",
     "uses_prediction_cache",
     "uses_raw_prediction",
+    "uses_checkpoint",
     "prediction_uses_gt",
 )
 

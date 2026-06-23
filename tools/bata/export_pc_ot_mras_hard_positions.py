@@ -42,12 +42,23 @@ FALSE_ONLY_DYNAMIC_PLAN_FLAGS = frozenset(
     {
         "uses_gt",
         "uses_teacher",
+        "uses_oracle",
         "uses_cache",
         "uses_raw_prediction",
+        "uses_prediction_cache",
         "uses_checkpoint",
         "dynamic_budget_validation",
         "metric_claim_allowed",
         "paper_claim_allowed",
+    }
+)
+FALSE_ONLY_HARD_EXPORT_FLAGS = frozenset(
+    {
+        *FALSE_ONLY_DYNAMIC_PLAN_FLAGS,
+        "deploy_claim_allowed",
+        "runtime_flops_claim_allowed",
+        "scanner_quality_claim_allowed",
+        "dynamic_budget_claim_allowed",
     }
 )
 DYNAMIC_PLAN_ALLOWED_KEYS = frozenset(
@@ -205,11 +216,28 @@ def _normalized_key(key: Any) -> str:
     return "".join(ch for ch in str(key).lower() if ch.isalnum())
 
 
+def _is_json_false(value: Any) -> bool:
+    data = _to_plain(value)
+    return data is False
+
+
+def _is_false_only_hard_export_key(key: Any) -> bool:
+    key_text = str(key or "")
+    normalized = _normalized_key(key_text)
+    return key_text in FALSE_ONLY_HARD_EXPORT_FLAGS or normalized in {
+        _normalized_key(flag) for flag in FALSE_ONLY_HARD_EXPORT_FLAGS
+    }
+
+
 def _validate_no_forbidden_jsonl_keys(value: Any, *, path: str = "row") -> None:
     data = _to_plain(value)
     if isinstance(data, Mapping):
         for key, item in data.items():
             normalized = _normalized_key(key)
+            if _is_false_only_hard_export_key(key):
+                if not _is_json_false(item):
+                    raise ValueError(f"{path}.{key} must be JSON false for deploy-visible hard export")
+                continue
             if any(token in normalized for token in FORBIDDEN_JSONL_KEY_TOKENS):
                 raise ValueError(f"{path}.{key}: forbidden deploy-invisible key in hard export input")
             _validate_no_forbidden_jsonl_keys(item, path=f"{path}.{key}")
@@ -290,6 +318,17 @@ def _row_budget(row: Mapping[str, Any], *, cli_budget: int, row_idx: int) -> int
         detail = ", ".join(f"{key}={value}" for key, value in mismatched)
         raise ValueError(f"row {row_idx}: row budget conflicts with CLI budget {int(cli_budget)} ({detail})")
     return int(cli_budget)
+
+
+def _row_sample_ids(row: Mapping[str, Any], *, row_idx: int) -> list[str]:
+    if "sample_ids" in row:
+        values = _to_plain(row.get("sample_ids"))
+        if not isinstance(values, list) or not values:
+            raise ValueError(f"row {row_idx}: sample_ids must be a non-empty list")
+        return [str(item) for item in values]
+    if "sample_id" in row:
+        return [str(row.get("sample_id"))]
+    return [f"row_{row_idx}"]
 
 
 def _argmax(values: Sequence[Any], *, name: str) -> int:
@@ -1011,13 +1050,13 @@ def run_jsonl_export(input_jsonl: str | Path, output_jsonl: str | Path, *, budge
     for idx, row in enumerate(source_rows):
         _validate_no_forbidden_jsonl_keys(row, path=f"row[{idx}]")
         reader_out = row.get("reader_out", row)
-        sample_id = str(row.get("sample_id", f"row_{idx}"))
+        sample_ids = _row_sample_ids(row, row_idx=idx)
         dense_len = row.get("dense_len")
         valid_len = row.get("valid_len")
         resolved = resolve_pc_ot_mras_hard_positions(
             reader_out,
             budget=_row_budget(row, cli_budget=int(budget), row_idx=idx),
-            sample_ids=[sample_id],
+            sample_ids=sample_ids,
             dense_len=int(dense_len) if dense_len is not None else None,
             valid_len=int(valid_len) if valid_len is not None else None,
         )

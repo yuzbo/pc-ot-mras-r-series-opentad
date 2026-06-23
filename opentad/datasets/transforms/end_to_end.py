@@ -489,9 +489,11 @@ class LoadFrames:
                     "prediction_uses_gt",
                     "uses_gt",
                     "uses_teacher",
+                    "uses_oracle",
                     "uses_cache",
                     "uses_prediction_cache",
                     "uses_raw_prediction",
+                    "uses_checkpoint",
                 }
             }
             results["bata_score_source"] = self.bata_value_transport_source

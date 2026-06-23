@@ -36,9 +36,11 @@ NO_GO = "PC_OT_MRAS_FRONTEND_LEDGER_NO_GO"
 FORBIDDEN_TRUE_FLAGS = (
     "uses_gt",
     "uses_teacher",
+    "uses_oracle",
     "uses_cache",
     "uses_prediction_cache",
     "uses_raw_prediction",
+    "uses_checkpoint",
     "prediction_uses_gt",
     "training_only",
     "diagnostic_uses_train_utility_for_audit",
@@ -186,9 +188,11 @@ def hard_row_to_value_transport_row(
         "diagnostic_uses_train_utility_for_audit": False,
         "uses_gt": False,
         "uses_teacher": False,
+        "uses_oracle": False,
         "uses_cache": False,
         "uses_prediction_cache": False,
         "uses_raw_prediction": False,
+        "uses_checkpoint": False,
         "prediction_uses_gt": False,
     }
     validate_value_transport_selection_row(
