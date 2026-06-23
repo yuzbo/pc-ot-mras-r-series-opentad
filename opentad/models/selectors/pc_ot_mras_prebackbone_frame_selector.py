@@ -911,9 +911,10 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         )
         valid = valid_mask.to(device=device).bool()
         if matrix is not None and self.aux_gt_acquisition_loss_weight > 0.0 and bool(valid.any().item()):
-            scores = matrix.sum(dim=1).clamp(min=1.0e-6, max=1.0 - 1.0e-6)
+            scores = matrix.sum(dim=1).float().clamp(min=1.0e-6, max=1.0 - 1.0e-6)
+            score_logits = torch.logit(scores)
             losses["selector_gt_acquisition_loss"] = (
-                F.binary_cross_entropy(scores[valid], action_target[valid])
+                F.binary_cross_entropy_with_logits(score_logits[valid], action_target.float()[valid])
                 * self.aux_gt_acquisition_loss_weight
             )
         if value_logits is not None and self.aux_value_loss_weight > 0.0 and bool(valid.any().item()):

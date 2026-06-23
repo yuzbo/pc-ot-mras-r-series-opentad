@@ -71,6 +71,12 @@ def _first_line(method_node, predicate, label):
     return lines[0]
 
 
+def test_selector_auxiliary_bce_losses_are_amp_safe():
+    text = _source(SELECTOR_PATH)
+    assert "F.binary_cross_entropy(" not in text
+    assert "binary_cross_entropy_with_logits" in text
+
+
 def test_config_main_chain_is_prebackbone_frame_selector_not_token_bridge():
     cfg = _load_cfg()
     model_text = repr(cfg.model)
