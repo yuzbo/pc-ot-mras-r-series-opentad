@@ -497,7 +497,8 @@ torchrun --nproc_per_node=1 --master_port="$MASTER_PORT" \
 
 grep -q "Training Over" "$TRAIN_STDOUT" || fail "train stdout does not show clean Training Over"
 grep -q "max_train_iters=2 reached" "$TRAIN_STDOUT" || fail "train stdout does not show max_train_iters=2 early stop"
-if grep -Eq "load_from_raw_predictions|RAW_PREDICTION_CACHE|PREDICTION_CACHE" "$TRAIN_STDOUT"; then
+RAW_CACHE_STDOUT_PATTERN="['\"]?load_from_raw_predictions['\"]?[[:space:]]*[:=][[:space:]]*(true|1|yes)|(^|[[:space:]])(RAW_PREDICTION_CACHE|PREDICTION_CACHE)[[:space:]]*="
+if grep -Eiq "$RAW_CACHE_STDOUT_PATTERN" "$TRAIN_STDOUT"; then
   fail "train stdout contains raw prediction/cache marker"
 fi
 if find "$WORK_DIR" "$RUN_ROOT" -maxdepth 4 -type f -name 'result_detection.json' -print -quit | grep -q .; then

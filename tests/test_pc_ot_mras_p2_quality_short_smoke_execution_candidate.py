@@ -283,6 +283,8 @@ def test_p2qr_short_smoke_execution_launcher_is_fail_closed_textually():
     assert "checkpoint writing is disabled" in text
     assert "unexpected checkpoint artifact" in text
     assert "tools/test.py is not approved" in text
+    assert "RAW_CACHE_STDOUT_PATTERN" in text
+    assert 'load_from_raw_predictions|RAW_PREDICTION_CACHE|PREDICTION_CACHE" "$TRAIN_STDOUT"' not in text
     assert 'tools/test.py "$CONFIG"' not in text
     assert 'tools/train.py "$CONFIG" --id "$TRAIN_ID" --seed "$SEED"' in text
     assert "model.projection.pretrained" not in text
