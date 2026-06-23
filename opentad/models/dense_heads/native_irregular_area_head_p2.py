@@ -663,10 +663,10 @@ class NativeIrregularAreaHeadP2(nn.Module):
         pos_logit = quality_logit[pos]
         neg_logit = quality_logit[neg]
         if pos_logit.numel() > self.quality_rank_sample_size:
-            _, pos_order = torch.topk(pos_logit.detach(), k=self.quality_rank_sample_size)
+            _, pos_order = torch.topk(-pos_logit.detach(), k=self.quality_rank_sample_size)
             pos_logit = pos_logit[pos_order]
         if neg_logit.numel() > self.quality_rank_sample_size:
-            _, neg_order = torch.topk(-neg_logit.detach(), k=self.quality_rank_sample_size)
+            _, neg_order = torch.topk(neg_logit.detach(), k=self.quality_rank_sample_size)
             neg_logit = neg_logit[neg_order]
         diff = pos_logit[:, None] - neg_logit[None, :]
         return F.relu(self.quality_rank_margin - diff).mean()

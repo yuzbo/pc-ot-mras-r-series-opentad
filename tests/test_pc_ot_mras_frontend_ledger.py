@@ -1,6 +1,7 @@
 import json
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -14,11 +15,66 @@ from tools.bata.export_pc_ot_mras_hard_positions import READY as HARD_READY, run
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "scripts" / "run_pc_ot_mras_frontend_ledger_eval_n16r4.sbatch"
 BOUNDARY_PATH = ROOT / "opentad" / "datasets" / "transforms" / "boundary_acquisition.py"
+END_TO_END_PATH = ROOT / "opentad" / "datasets" / "transforms" / "end_to_end.py"
+GUARD_PATH = ROOT / "opentad" / "utils" / "training_guard.py"
 BOUNDARY_SPEC = importlib.util.spec_from_file_location("pcot_frontend_test_boundary_acquisition", BOUNDARY_PATH)
 BOUNDARY_MODULE = importlib.util.module_from_spec(BOUNDARY_SPEC)
 sys.modules[BOUNDARY_SPEC.name] = BOUNDARY_MODULE
 BOUNDARY_SPEC.loader.exec_module(BOUNDARY_MODULE)
 validate_value_transport_selection_row = BOUNDARY_MODULE.validate_value_transport_selection_row
+
+
+class _Registry:
+    def register_module(self):
+        def _decorator(cls):
+            return cls
+
+        return _decorator
+
+
+def _load_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_loadframes_class():
+    stubs = {}
+    previous = {}
+    for name in ("opentad", "opentad.datasets", "opentad.datasets.transforms"):
+        module = types.ModuleType(name)
+        module.__path__ = []
+        stubs[name] = module
+    builder = types.ModuleType("opentad.datasets.builder")
+    builder.PIPELINES = _Registry()
+    stubs["opentad.datasets.builder"] = builder
+    stubs["opentad.datasets.transforms.boundary_acquisition"] = BOUNDARY_MODULE
+    torch_stub = types.ModuleType("torch")
+    torch_nn_stub = types.ModuleType("torch.nn")
+    torch_functional_stub = types.ModuleType("torch.nn.functional")
+    torch_nn_stub.functional = torch_functional_stub
+    torch_stub.nn = torch_nn_stub
+    stubs["torch"] = torch_stub
+    stubs["torch.nn"] = torch_nn_stub
+    stubs["torch.nn.functional"] = torch_functional_stub
+    module_name = "opentad.datasets.transforms.end_to_end_frontend_test"
+    try:
+        for name, module in stubs.items():
+            previous[name] = sys.modules.get(name)
+            sys.modules[name] = module
+        spec = importlib.util.spec_from_file_location(module_name, END_TO_END_PATH)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        return module.LoadFrames
+    finally:
+        sys.modules.pop(module_name, None)
+        for name, old in previous.items():
+            if old is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = old
 
 
 def test_reader_snapshot_sample_ids_match_value_transport_window_key():
@@ -233,6 +289,7 @@ def test_value_transport_ledger_validator_rejects_oracle_and_checkpoint_flags(fl
 
 def test_pc_ot_mras_frontend_eval_config_keeps_original_detector_stack_and_selected_axis_loader():
     cfg = Config.fromfile(str(ROOT / "configs" / "adatad" / "thumos" / "pc_ot_mras_frontend_hard_ledger_fixed50_adapter_n16r4.py"))
+    guard = _load_module("training_guard_for_frontend_eval_config_test", GUARD_PATH)
 
     assert int(cfg.window_size) == 384
     assert int(cfg.dense_window_size) == 768
@@ -244,8 +301,14 @@ def test_pc_ot_mras_frontend_eval_config_keeps_original_detector_stack_and_selec
     assert cfg.experiment_scope.changes_input_sampling is True
     assert cfg.experiment_scope.changes_detector_head is False
     assert cfg.experiment_scope.changes_post_processing is True
+    assert cfg.pc_ot_mras_frontend_hard_ledger_eval_gate.requires_launch_gate is True
+    assert cfg.pc_ot_mras_frontend_hard_ledger_eval_gate.launch_gate_passed is False
+    assert cfg.pc_ot_mras_frontend_hard_ledger_eval_gate.allow_tools_train is False
+    assert cfg.pc_ot_mras_frontend_hard_ledger_eval_gate.allow_tools_test is False
     assert cfg.inference.load_from_raw_predictions is False
     assert cfg.inference.save_raw_prediction is False
+    with pytest.raises(RuntimeError, match="requires_launch_gate=True"):
+        guard.assert_detector_training_allowed(cfg, entrypoint="tools/train.py")
 
     for split in ("val", "test"):
         loadframes = cfg.dataset[split].pipeline[2]
@@ -256,12 +319,62 @@ def test_pc_ot_mras_frontend_eval_config_keeps_original_detector_stack_and_selec
         assert loadframes.remap_gt_to_selected_axis is True
         assert loadframes.bata_value_transport_allow_missing_fallback is False
         assert loadframes.bata_value_transport_require_deployable is False
+        assert int(loadframes.bata_value_transport_require_selected_count) == 384
         assert loadframes.bata_value_transport_source == "pc_ot_mras_frontend_hard_positions"
+
+
+def test_value_transport_loader_rejects_short_ledger_when_exact_count_required(tmp_path):
+    LoadFrames = _load_loadframes_class()
+    ledger_path = tmp_path / "value_transport_ledger.jsonl"
+    ledger_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "pc_ot_mras_frontend_value_transport_ledger_v0",
+                "sample_id": "video_test_0001|0",
+                "selected_positions_unit": "local_dense_index",
+                "selected_positions": [0, 2],
+                "selected_count": 2,
+                "target_len": 3,
+                "valid_len": 4,
+                "dense_len": 4,
+                "deploy_selection_ledger": False,
+                "diagnostic_only": True,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    loader = LoadFrames(
+        num_clips=1,
+        scale_factor=1,
+        method="bata_value_transport_ledger_subsample",
+        method_base="sliding_window",
+        target_len=3,
+        bata_value_transport_ledger_path=str(ledger_path),
+        bata_value_transport_require_deployable=False,
+        bata_value_transport_require_selected_count=3,
+    )
+
+    with pytest.raises(ValueError, match="bata_value_transport_require_selected_count=3"):
+        loader(
+            {
+                "video_name": "video_test_0001",
+                "window_start_frame": 0,
+                "window_size": 4,
+                "feature_start_idx": 0,
+                "feature_end_idx": 3,
+                "total_frames": 16,
+                "avg_fps": 30,
+                "snippet_stride": 1,
+            }
+        )
 
 
 def test_frontend_launcher_defaults_to_review_safe_precheck_and_uses_supported_dump_cli():
     text = LAUNCHER.read_text(encoding="utf-8")
 
+    assert '[[ -z "$RUN_TAG"' in text
     assert 'PRECHECK_ONLY="${PRECHECK_ONLY:-1}"' in text
     assert 'ALLOW_FRONTEND_ADATAD_EVAL="${ALLOW_FRONTEND_ADATAD_EVAL:-0}"' in text
     assert 'fail "ALLOW_FRONTEND_ADATAD_EVAL=1 is required before dump, ledger generation, and detector mAP"' in text

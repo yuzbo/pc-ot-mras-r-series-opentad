@@ -65,6 +65,7 @@ def test_p2qr_short_smoke_config_is_parseable_and_fail_closed():
     assert cfg.workflow.val_loss_interval == -1
     assert cfg.inference.load_from_raw_predictions is False
     assert cfg.inference.save_raw_prediction is False
+    assert cfg.model.pc_ot_mras_reader_aux_loss is None
     assert cfg.model.rpn_head.area_head.quality_calibration.enable is True
 
 

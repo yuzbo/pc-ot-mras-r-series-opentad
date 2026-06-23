@@ -369,8 +369,12 @@ def _valid_positions(valid_mask: Any, *, dense_len: int | None, valid_len: int |
                 positions.append(int(idx))
         if not positions:
             raise ValueError("valid_mask must contain at least one valid position")
+        if positions != list(range(len(positions))):
+            raise ValueError("valid_mask must be prefix-contiguous")
         if dense_len is not None and len(mask) != int(dense_len):
             raise ValueError("valid_mask length must equal dense_len")
+        if valid_len is not None and len(positions) != int(valid_len):
+            raise ValueError("valid_mask true count must equal valid_len")
         return positions
 
     if valid_len is not None:

@@ -45,6 +45,48 @@ experiment_scope = dict(
     paper_claim_allowed=False,
 )
 
+pc_ot_mras_frontend_hard_ledger_eval_gate = dict(
+    route="pc_ot_mras_frontend_original_adatad",
+    stage="eval_only_hard_ledger_fixed50_locked_until_execution_gate",
+    default_off=True,
+    explicit_config_opt_in=True,
+    eval_only=True,
+    hard_frontend_ledger_required=True,
+    allow_detector_training=True,
+    requires_launch_gate=True,
+    launch_gate_passed=False,
+    allow_tools_train=False,
+    allow_tools_test=False,
+    allow_detector_map=False,
+    allow_remote_sync=False,
+    allow_precheck_only=False,
+    allow_slurm=False,
+    allow_gpu=False,
+    metric_claim_allowed=False,
+    paper_claim_allowed=False,
+    runtime_flops_claim_allowed=False,
+    deploy_claim_allowed=False,
+    allowed_entrypoints=("tools/test.py",),
+    allowed_checks=(
+        "local_config_parse",
+        "hard_ledger_schema_static_check",
+        "selected_axis_postprocess_static_check",
+        "subagent_readonly_review",
+    ),
+    forbidden_checks=(
+        "tools_train",
+        "direct_tools_test_without_execution_gate",
+        "remote_sync",
+        "slurm_or_gpu",
+        "detector_map",
+        "metric_claim",
+        "paper_claim",
+        "runtime_or_flops_claim",
+        "deploy_claim",
+        "raw_prediction_cache",
+    ),
+)
+
 pc_ot_mras_frontend_meta_keys = [
     "video_name",
     "data_path",
@@ -77,6 +119,7 @@ pc_ot_mras_frontend_loadframes = dict(
     bata_value_transport_ledger_path=pc_ot_mras_frontend_ledger_path,
     bata_value_transport_allow_missing_fallback=False,
     bata_value_transport_require_deployable=False,
+    bata_value_transport_require_selected_count=window_size,
     bata_value_transport_source="pc_ot_mras_frontend_hard_positions",
     bata_value_transport_config_hash="pc_ot_mras_frontend_hard_ledger_fixed50_n16r4_eval_only",
 )

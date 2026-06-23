@@ -35,6 +35,11 @@ ALLOW_FRONTEND_ADATAD_EVAL="${ALLOW_FRONTEND_ADATAD_EVAL:-0}"
 DUMP_LIMIT_BATCHES="${DUMP_LIMIT_BATCHES:-999999}"
 DUMP_USE_AMP="${DUMP_USE_AMP:-1}"
 
+if [[ -z "$RUN_TAG" || "$RUN_TAG" == *"/"* || "$RUN_TAG" == *"\\"* || "$RUN_TAG" == *".."* || ! "$RUN_TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "[pcot-frontend-eval] ERROR unsafe RUN_TAG=$RUN_TAG" >&2
+  exit 2
+fi
+
 LOG_DIR="$REPO/logs"
 RUN_ROOT="$LOG_DIR/$RUN_TAG"
 RUN_LOG="$RUN_ROOT/${RUN_TAG}.log"

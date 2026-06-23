@@ -195,6 +195,7 @@ class LoadFrames:
         bata_value_transport_ledger_path=None,
         bata_value_transport_allow_missing_fallback=False,
         bata_value_transport_require_deployable=True,
+        bata_value_transport_require_selected_count=None,
         bata_value_transport_source="pc_ot_mras_frontend_hard_positions",
         bata_value_transport_config_hash="",
     ):
@@ -212,6 +213,7 @@ class LoadFrames:
         self.bata_value_transport_ledger_path = bata_value_transport_ledger_path
         self.bata_value_transport_allow_missing_fallback = bool(bata_value_transport_allow_missing_fallback)
         self.bata_value_transport_require_deployable = bool(bata_value_transport_require_deployable)
+        self.bata_value_transport_require_selected_count = bata_value_transport_require_selected_count
         self.bata_value_transport_source = bata_value_transport_source
         self.bata_value_transport_config_hash = bata_value_transport_config_hash
         self._bata_value_transport_ledger = None
@@ -447,6 +449,19 @@ class LoadFrames:
                 raise ValueError(
                     f"value-transport ledger sample_id={sample_id} selects {keep_positions.size} positions "
                     f"but target_len={target_len} allows only {frame_num} frame indices"
+                )
+            required_count = self.bata_value_transport_require_selected_count
+            if required_count is True:
+                required_count = int(frame_num)
+            elif required_count in (False, None):
+                required_count = None
+            else:
+                required_count = int(required_count)
+            if required_count is not None and keep_positions.size != required_count:
+                sample_id = ledger_row.get("sample_id", self._value_transport_sample_id(results))
+                raise ValueError(
+                    f"value-transport ledger sample_id={sample_id} selects {keep_positions.size} positions "
+                    f"but bata_value_transport_require_selected_count={required_count}"
                 )
 
             frame_idxs = dense_window[keep_positions]

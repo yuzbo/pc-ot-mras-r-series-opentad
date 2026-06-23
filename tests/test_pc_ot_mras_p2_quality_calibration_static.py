@@ -108,6 +108,7 @@ def test_local_quality_rank_config_is_explicitly_non_launchable():
     assert "default_off=True" in config
     assert "explicit_config_opt_in=True" in config
     assert "local_synthetic_gate_only=True" in config
+    assert "pc_ot_mras_reader_aux_loss=None" in config
     for field in (
         "allow_detector_training",
         "allow_remote_sync",

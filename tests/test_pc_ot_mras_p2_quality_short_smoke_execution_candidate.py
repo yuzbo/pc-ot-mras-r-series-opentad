@@ -111,6 +111,7 @@ def test_p2qr_short_smoke_execution_config_is_gate_bound(tmp_path, monkeypatch):
     assert cfg.workflow.disable_checkpoint is True
     assert cfg.inference.load_from_raw_predictions is False
     assert cfg.inference.save_raw_prediction is False
+    assert cfg.model.pc_ot_mras_reader_aux_loss is None
     assert cfg.model.rpn_head.area_head.quality_calibration.enable is True
 
     with pytest.raises(RuntimeError, match="missing required entrypoint gate env"):

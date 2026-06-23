@@ -216,6 +216,23 @@ def test_quality_calibration_losses_no_candidates_runtime():
     assert all(value.item() == 0.0 for value in losses.values())
 
 
+def test_quality_rank_loss_samples_low_positive_and_high_negative_logits_runtime():
+    head = _bare_head(
+        quality_rank_positive_iou=0.7,
+        quality_rank_negative_iou=0.3,
+        quality_rank_margin=0.25,
+        quality_rank_sample_size=1,
+    )
+    quality_logit = torch.tensor([5.0, -2.0, -5.0, 2.0], dtype=torch.float32, requires_grad=True)
+    quality_target = torch.tensor([0.9, 0.95, 0.1, 0.05], dtype=torch.float32)
+
+    loss = head._quality_rank_loss(quality_logit, quality_target)
+
+    assert loss.item() == pytest.approx(4.25)
+    loss.backward()
+    assert quality_logit.grad.tolist() == [0.0, -1.0, 0.0, 1.0]
+
+
 def test_quality_eval_guard_runtime():
     cls = _load_head_class()
     cls._reject_quality_eval_gt_kwargs({})

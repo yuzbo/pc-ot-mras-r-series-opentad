@@ -300,6 +300,23 @@ def test_hard_export_jsonl_rejects_row_budget_conflict(tmp_path):
         run_jsonl_export(input_jsonl, output_jsonl, budget=2)
 
 
+def test_hard_export_rejects_non_prefix_valid_mask():
+    with pytest.raises(ValueError, match="valid_mask must be prefix-contiguous"):
+        resolve_pc_ot_mras_hard_positions(
+            {
+                "allocation": [
+                    [
+                        [0.0, 0.9, 0.0, 0.0],
+                        [0.0, 0.0, 0.8, 0.0],
+                    ]
+                ],
+                "valid_mask": [[1, 0, 1, 1]],
+            },
+            budget=2,
+            sample_ids=["non-prefix-mask|0"],
+        )
+
+
 def test_hard_export_jsonl_rejects_forbidden_deploy_invisible_keys(tmp_path):
     input_jsonl = tmp_path / "reader_rows.jsonl"
     output_jsonl = tmp_path / "hard_rows.jsonl"

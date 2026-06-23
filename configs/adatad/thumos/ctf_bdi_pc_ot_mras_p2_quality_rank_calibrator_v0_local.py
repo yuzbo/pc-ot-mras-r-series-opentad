@@ -50,6 +50,7 @@ p2_quality_rank_calibrator_v0_gate = dict(
 )
 
 model = dict(
+    pc_ot_mras_reader_aux_loss=None,
     rpn_head=dict(
         area_head=dict(
             quality_calibration=dict(
