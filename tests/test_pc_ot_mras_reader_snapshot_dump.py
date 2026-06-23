@@ -69,11 +69,13 @@ def test_make_snapshot_row_is_diagnostic_only_and_visualizer_compatible():
         reader_outputs=_reader_outputs(),
         snapshot_id="r17_epoch_012",
         epoch=12,
+        budget=2,
     )
 
     assert row["schema_version"] == "pc_ot_mras_reader_snapshot_dump_v0"
     assert row["snapshot_id"] == "r17_epoch_012"
     assert row["epoch"] == 12
+    assert row["budget"] == 2
     assert row["sample_ids"] == ["video_test_000001"]
     assert row["diagnostic_only"] is True
     assert row["uses_gt"] is False

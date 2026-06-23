@@ -1,3 +1,4 @@
+import hashlib
 import json
 import importlib.util
 import sys
@@ -10,10 +11,20 @@ from mmengine.config import Config
 from tools.bata.convert_pc_ot_mras_hard_positions_to_value_transport_ledger import READY as LEDGER_READY, run_conversion
 from tools.bata.dump_pc_ot_mras_reader_snapshots import sample_ids_from_metas
 from tools.bata.export_pc_ot_mras_hard_positions import READY as HARD_READY, run_jsonl_export
+from tools.bata.validate_pc_ot_mras_frontend_eval_gate import validate_gate_file
 
 
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "scripts" / "run_pc_ot_mras_frontend_ledger_eval_n16r4.sbatch"
+TEST_ENTRYPOINT = ROOT / "tools" / "test.py"
+BASE_CONFIG = ROOT / "configs" / "adatad" / "thumos" / "pc_ot_mras_frontend_hard_ledger_fixed50_adapter_n16r4.py"
+EXEC_CONFIG = (
+    ROOT
+    / "configs"
+    / "adatad"
+    / "thumos"
+    / "pc_ot_mras_frontend_hard_ledger_fixed50_adapter_eval_exec_candidate_n16r4.py"
+)
 BOUNDARY_PATH = ROOT / "opentad" / "datasets" / "transforms" / "boundary_acquisition.py"
 END_TO_END_PATH = ROOT / "opentad" / "datasets" / "transforms" / "end_to_end.py"
 GUARD_PATH = ROOT / "opentad" / "utils" / "training_guard.py"
@@ -22,6 +33,53 @@ BOUNDARY_MODULE = importlib.util.module_from_spec(BOUNDARY_SPEC)
 sys.modules[BOUNDARY_SPEC.name] = BOUNDARY_MODULE
 BOUNDARY_SPEC.loader.exec_module(BOUNDARY_MODULE)
 validate_value_transport_selection_row = BOUNDARY_MODULE.validate_value_transport_selection_row
+
+
+def _write_frontend_gate(tmp_path, **overrides):
+    payload = {
+        "decision": "PASS_ALLOW_PC_OT_MRAS_FRONTEND_ADATAD_EVAL_ONLY",
+        "route": "pc_ot_mras_frontend_original_adatad",
+        "active_sha256_manifest_sha256": "manifest-sha",
+        "resolved_config_sha256": "resolved-sha",
+        "pc_ot_mras_checkpoint_sha256": "pcot-ckpt-sha",
+        "adatad_checkpoint_sha256": "adatad-ckpt-sha",
+        "budget": 384,
+        "require_selected_count": 384,
+        "allow_slurm": True,
+        "allow_gpu": True,
+        "single_gpu": True,
+        "allow_detector_checkpoint_eval": True,
+        "allow_reader_dump": True,
+        "allow_checkpoint_access": True,
+        "allow_dataset_access": True,
+        "allow_hard_position_export": True,
+        "allow_value_transport_ledger": True,
+        "allow_tools_test": True,
+        "allow_detector_map": True,
+        "tools_train": False,
+        "direct_tools_train": False,
+        "allow_tools_train": False,
+        "long_training": False,
+        "allow_long_training": False,
+        "train_validation_map": False,
+        "allow_train_validation_map": False,
+        "raw_prediction_cache": False,
+        "prediction_cache": False,
+        "load_from_raw_predictions": False,
+        "save_raw_prediction": False,
+        "metric_claim": False,
+        "metric_claim_allowed": False,
+        "paper_claim": False,
+        "paper_claim_allowed": False,
+        "runtime_flops_claim": False,
+        "runtime_flops_claim_allowed": False,
+        "deploy_claim": False,
+        "deploy_claim_allowed": False,
+    }
+    payload.update(overrides)
+    gate_json = tmp_path / "pc_ot_mras_frontend_eval_gate.json"
+    gate_json.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    return gate_json, hashlib.sha256(gate_json.read_bytes()).hexdigest()
 
 
 class _Registry:
@@ -288,7 +346,7 @@ def test_value_transport_ledger_validator_rejects_oracle_and_checkpoint_flags(fl
 
 
 def test_pc_ot_mras_frontend_eval_config_keeps_original_detector_stack_and_selected_axis_loader():
-    cfg = Config.fromfile(str(ROOT / "configs" / "adatad" / "thumos" / "pc_ot_mras_frontend_hard_ledger_fixed50_adapter_n16r4.py"))
+    cfg = Config.fromfile(str(BASE_CONFIG))
     guard = _load_module("training_guard_for_frontend_eval_config_test", GUARD_PATH)
 
     assert int(cfg.window_size) == 384
@@ -303,12 +361,16 @@ def test_pc_ot_mras_frontend_eval_config_keeps_original_detector_stack_and_selec
     assert cfg.experiment_scope.changes_post_processing is True
     assert cfg.pc_ot_mras_frontend_hard_ledger_eval_gate.requires_launch_gate is True
     assert cfg.pc_ot_mras_frontend_hard_ledger_eval_gate.launch_gate_passed is False
+    assert cfg.pc_ot_mras_frontend_hard_ledger_eval_gate.allow_detector_training is False
+    assert cfg.pc_ot_mras_frontend_hard_ledger_eval_gate.allow_detector_checkpoint_eval is False
     assert cfg.pc_ot_mras_frontend_hard_ledger_eval_gate.allow_tools_train is False
     assert cfg.pc_ot_mras_frontend_hard_ledger_eval_gate.allow_tools_test is False
     assert cfg.inference.load_from_raw_predictions is False
     assert cfg.inference.save_raw_prediction is False
-    with pytest.raises(RuntimeError, match="requires_launch_gate=True"):
+    with pytest.raises(RuntimeError, match="allow_detector_training=False"):
         guard.assert_detector_training_allowed(cfg, entrypoint="tools/train.py")
+    with pytest.raises(RuntimeError, match="allow_detector_training=False"):
+        guard.assert_detector_training_allowed(cfg, entrypoint="tools/test.py")
 
     for split in ("val", "test"):
         loadframes = cfg.dataset[split].pipeline[2]
@@ -321,6 +383,119 @@ def test_pc_ot_mras_frontend_eval_config_keeps_original_detector_stack_and_selec
         assert loadframes.bata_value_transport_require_deployable is False
         assert int(loadframes.bata_value_transport_require_selected_count) == 384
         assert loadframes.bata_value_transport_source == "pc_ot_mras_frontend_hard_positions"
+
+
+def test_pc_ot_mras_frontend_eval_exec_child_config_requires_bound_entrypoint_gate(tmp_path, monkeypatch):
+    cfg = Config.fromfile(str(EXEC_CONFIG))
+    guard = _load_module("training_guard_for_frontend_eval_exec_config_test", GUARD_PATH)
+
+    assert cfg.pc_ot_mras_frontend_hard_ledger_eval_gate is None
+    gate = cfg.pc_ot_mras_frontend_hard_ledger_execution_gate
+    assert gate.stage == "eval_exec_candidate_hard_ledger_fixed50_tools_test_only"
+    assert gate.allow_detector_training is False
+    assert gate.allow_detector_checkpoint_eval is True
+    assert gate.allow_tools_train is False
+    assert gate.allow_tools_test is True
+    assert gate.allow_detector_map is True
+    assert gate.allow_reader_dump is True
+    assert gate.allow_slurm is True
+    assert gate.allow_gpu is True
+    assert tuple(gate.allowed_entrypoints) == ("tools/test.py",)
+    assert tuple(gate.entrypoint_gate_context.allowed_decisions) == (
+        "PASS_ALLOW_PC_OT_MRAS_FRONTEND_ADATAD_EVAL_ONLY",
+    )
+    assert gate.entrypoint_gate_context.required_exact_values.budget == 384
+    assert gate.entrypoint_gate_context.required_exact_values.require_selected_count == 384
+    assert gate.entrypoint_gate_context.checkpoint_sha256_gate_key == "adatad_checkpoint_sha256"
+    assert gate.entrypoint_gate_context.checkpoint_sha256_label == "AdaTAD detector checkpoint"
+    assert "allow_detector_checkpoint_eval" in tuple(gate.entrypoint_gate_context.required_true_keys)
+
+    with pytest.raises(RuntimeError, match="allow_detector_training=False"):
+        guard.assert_detector_training_allowed(cfg, entrypoint="tools/train.py")
+    with pytest.raises(RuntimeError, match="missing required entrypoint gate env"):
+        guard.assert_detector_training_allowed(cfg, entrypoint="tools/test.py")
+
+    launch_locked_cfg = Config.fromfile(str(EXEC_CONFIG))
+    launch_locked_cfg.pc_ot_mras_frontend_hard_ledger_execution_gate.launch_gate_passed = False
+    with pytest.raises(RuntimeError, match="requires_launch_gate=True"):
+        guard.assert_detector_training_allowed(launch_locked_cfg, entrypoint="tools/test.py")
+
+    gate_json, gate_sha = _write_frontend_gate(tmp_path)
+    validate_gate_file(
+        gate_json=gate_json,
+        gate_sha256=gate_sha,
+        active_manifest_sha256="manifest-sha",
+        resolved_config_sha256="resolved-sha",
+        pc_ot_mras_checkpoint_sha256="pcot-ckpt-sha",
+        adatad_checkpoint_sha256="adatad-ckpt-sha",
+        budget=384,
+        require_selected_count=384,
+    )
+    monkeypatch.setenv("OPENTAD_PCOTMRAS_FRONTEND_EVAL_GATE_JSON", str(gate_json))
+    monkeypatch.setenv("OPENTAD_PCOTMRAS_FRONTEND_EVAL_GATE_SHA256", gate_sha)
+    monkeypatch.setenv("OPENTAD_PCOTMRAS_FRONTEND_ACTIVE_MANIFEST_SHA256", "manifest-sha")
+    monkeypatch.setenv("OPENTAD_PCOTMRAS_FRONTEND_RESOLVED_CONFIG_SHA256", "resolved-sha")
+    assert guard.assert_detector_training_allowed(cfg, entrypoint="tools/test.py") is None
+
+
+def test_pc_ot_mras_frontend_tools_test_binds_detector_checkpoint_sha(tmp_path, monkeypatch):
+    cfg = Config.fromfile(str(EXEC_CONFIG))
+    guard = _load_module("training_guard_for_frontend_checkpoint_bind_test", GUARD_PATH)
+    detector_checkpoint = tmp_path / "adatad_detector.pth"
+    detector_checkpoint.write_bytes(b"detector checkpoint bytes")
+    detector_sha = hashlib.sha256(detector_checkpoint.read_bytes()).hexdigest()
+    gate_json, gate_sha = _write_frontend_gate(tmp_path, adatad_checkpoint_sha256=detector_sha)
+
+    monkeypatch.setenv("OPENTAD_PCOTMRAS_FRONTEND_EVAL_GATE_JSON", str(gate_json))
+    monkeypatch.setenv("OPENTAD_PCOTMRAS_FRONTEND_EVAL_GATE_SHA256", gate_sha)
+    monkeypatch.setenv("OPENTAD_PCOTMRAS_FRONTEND_ACTIVE_MANIFEST_SHA256", "manifest-sha")
+    monkeypatch.setenv("OPENTAD_PCOTMRAS_FRONTEND_RESOLVED_CONFIG_SHA256", "resolved-sha")
+
+    assert guard.assert_detector_training_allowed(cfg, entrypoint="tools/test.py") is None
+    assert (
+        guard.assert_entrypoint_checkpoint_sha256_matches_gate(
+            cfg, str(detector_checkpoint), entrypoint="tools/test.py"
+        )
+        is None
+    )
+
+    with pytest.raises(RuntimeError, match="requires an explicit AdaTAD detector checkpoint path"):
+        guard.assert_entrypoint_checkpoint_sha256_matches_gate(cfg, "none", entrypoint="tools/test.py")
+
+    wrong_checkpoint = tmp_path / "wrong_detector.pth"
+    wrong_checkpoint.write_bytes(b"wrong detector checkpoint bytes")
+    with pytest.raises(RuntimeError, match="AdaTAD detector checkpoint sha256 mismatch"):
+        guard.assert_entrypoint_checkpoint_sha256_matches_gate(
+            cfg, str(wrong_checkpoint), entrypoint="tools/test.py"
+        )
+
+
+def test_pc_ot_mras_frontend_eval_gate_rejects_checkpoint_and_claim_mismatch(tmp_path):
+    gate_json, gate_sha = _write_frontend_gate(tmp_path, metric_claim=True)
+    with pytest.raises(ValueError, match="metric_claim"):
+        validate_gate_file(
+            gate_json=gate_json,
+            gate_sha256=gate_sha,
+            active_manifest_sha256="manifest-sha",
+            resolved_config_sha256="resolved-sha",
+            pc_ot_mras_checkpoint_sha256="pcot-ckpt-sha",
+            adatad_checkpoint_sha256="adatad-ckpt-sha",
+            budget=384,
+            require_selected_count=384,
+        )
+
+    gate_json, gate_sha = _write_frontend_gate(tmp_path)
+    with pytest.raises(ValueError, match="checkpoint sha256 mismatch"):
+        validate_gate_file(
+            gate_json=gate_json,
+            gate_sha256=gate_sha,
+            active_manifest_sha256="manifest-sha",
+            resolved_config_sha256="resolved-sha",
+            pc_ot_mras_checkpoint_sha256="wrong",
+            adatad_checkpoint_sha256="adatad-ckpt-sha",
+            budget=384,
+            require_selected_count=384,
+        )
 
 
 def test_value_transport_loader_rejects_short_ledger_when_exact_count_required(tmp_path):
@@ -373,13 +548,28 @@ def test_value_transport_loader_rejects_short_ledger_when_exact_count_required(t
 
 def test_frontend_launcher_defaults_to_review_safe_precheck_and_uses_supported_dump_cli():
     text = LAUNCHER.read_text(encoding="utf-8")
+    test_entrypoint_text = TEST_ENTRYPOINT.read_text(encoding="utf-8")
 
+    assert "pc_ot_mras_frontend_hard_ledger_fixed50_adapter_eval_exec_candidate_n16r4.py" in text
     assert '[[ -z "$RUN_TAG"' in text
     assert 'PRECHECK_ONLY="${PRECHECK_ONLY:-1}"' in text
     assert 'ALLOW_FRONTEND_ADATAD_EVAL="${ALLOW_FRONTEND_ADATAD_EVAL:-0}"' in text
+    assert "FRONTEND_EVAL_GATE_JSON" in text
+    assert "validate_pc_ot_mras_frontend_eval_gate.py" in text
     assert 'fail "ALLOW_FRONTEND_ADATAD_EVAL=1 is required before dump, ledger generation, and detector mAP"' in text
     assert 'require_file_sha "$PC_OT_MRAS_CHECKPOINT" "$PC_OT_MRAS_CHECKPOINT_SHA256" "pc_ot_mras_checkpoint"' in text
     assert 'require_file_sha "$ADATAD_CHECKPOINT" "$ADATAD_CHECKPOINT_SHA256" "adatad_checkpoint"' in text
+    precheck_block = text.split('if [ "$PRECHECK_ONLY" = "1" ]', 1)[0]
+    assert 'test -f "$PC_OT_MRAS_CHECKPOINT"' not in precheck_block
+    assert 'test -f "$ADATAD_CHECKPOINT"' not in precheck_block
+    assert 'test -f "$THUMOS14_ANNOTATION_PATH"' not in precheck_block
+    assert "--reader-dump-gate-json" in text
+    assert "--reader-dump-gate-sha256" in text
+    assert "--active-manifest-sha256" in text
+    assert "--resolved-config-sha256" in text
+    assert '--checkpoint "$ADATAD_CHECKPOINT"' in text
     assert "DUMP_ARGS+=(--use-amp)" in text
     assert "DUMP_ARGS+=(--amp)" not in text
     assert "tests/test_bata_post_processing_selected_axis.py" in text
+    assert "assert_entrypoint_checkpoint_sha256_matches_gate" in test_entrypoint_text
+    assert "assert_entrypoint_checkpoint_sha256_matches_gate(cfg, args.checkpoint" in test_entrypoint_text

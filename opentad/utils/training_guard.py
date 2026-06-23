@@ -117,9 +117,13 @@ def _is_smoke_gate(gate_name, gate):
     return "smoke" in _lower_text(gate_name) or "smoke" in stage
 
 
-def _training_block_reason(gate):
+def _training_block_reason(gate, entrypoint="tools/train.py"):
     if _is_false(_get_value(gate, "allow_detector_training", _MISSING)):
-        return "allow_detector_training=False"
+        allow_checkpoint_eval = str(entrypoint) == "tools/test.py" and _is_true(
+            _get_value(gate, "allow_detector_checkpoint_eval", _MISSING)
+        )
+        if not allow_checkpoint_eval:
+            return "allow_detector_training=False"
     if _is_true(_get_value(gate, "requires_launch_gate", _MISSING)) and not _is_true(
         _get_value(gate, "launch_gate_passed", _MISSING)
     ):
@@ -459,6 +463,70 @@ def _entrypoint_gate_context_block_reason(gate):
     return None
 
 
+def _load_entrypoint_gate_payload_for_context(context):
+    gate_json_env = str(_get_value(context, "gate_json_env", "OPENTAD_PCOTMRAS_ENTRYPOINT_GATE_JSON"))
+    gate_sha_env = str(_get_value(context, "gate_sha256_env", "OPENTAD_PCOTMRAS_ENTRYPOINT_GATE_SHA256"))
+
+    gate_json_path = os.environ.get(gate_json_env)
+    gate_sha256 = os.environ.get(gate_sha_env)
+    if not gate_json_path:
+        return None, f"missing required entrypoint gate env {gate_json_env}"
+    if not gate_sha256:
+        return None, f"missing required entrypoint gate env {gate_sha_env}"
+
+    gate_path = Path(gate_json_path)
+    if not gate_path.is_file():
+        return None, f"entrypoint gate JSON does not exist: {gate_json_path}"
+    actual_sha256 = _sha256_file(gate_path)
+    if actual_sha256 != gate_sha256:
+        return None, f"entrypoint gate JSON sha256 mismatch: expected={gate_sha256} actual={actual_sha256}"
+
+    try:
+        gate_payload = json.loads(gate_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return None, f"entrypoint gate JSON is not valid JSON: {exc}"
+    return gate_payload, None
+
+
+def _entrypoint_checkpoint_sha256_block_reason(gate, checkpoint_path, entrypoint):
+    context = _get_value(gate, "entrypoint_gate_context", _MISSING)
+    if context in (_MISSING, None) or not _is_true(_get_value(context, "required", _MISSING)):
+        return None
+
+    checkpoint_key = _get_value(context, "checkpoint_sha256_gate_key", _MISSING)
+    if checkpoint_key in (_MISSING, None, ""):
+        return None
+
+    if str(entrypoint) != "tools/test.py":
+        return None
+
+    checkpoint_label = str(_get_value(context, "checkpoint_sha256_label", "checkpoint"))
+    if checkpoint_path in (None, "", "none"):
+        return f"{entrypoint} requires an explicit {checkpoint_label} path bound by entrypoint gate"
+
+    checkpoint_file = Path(str(checkpoint_path))
+    if not checkpoint_file.is_file():
+        return f"{entrypoint} {checkpoint_label} path does not exist: {checkpoint_path}"
+
+    gate_payload, reason = _load_entrypoint_gate_payload_for_context(context)
+    if reason is not None:
+        return reason
+
+    key = str(checkpoint_key)
+    expected_sha256 = gate_payload.get(key)
+    if not expected_sha256:
+        return f"entrypoint gate JSON missing {key} for {checkpoint_label}"
+
+    actual_sha256 = _sha256_file(checkpoint_file)
+    if actual_sha256 != expected_sha256:
+        return (
+            f"entrypoint {checkpoint_label} sha256 mismatch: "
+            f"expected={expected_sha256} actual={actual_sha256}"
+        )
+
+    return None
+
+
 def _iter_candidate_gates(cfg):
     direct = _get_value(cfg, "allow_detector_training", _MISSING)
     if direct is not _MISSING:
@@ -472,7 +540,7 @@ def _iter_candidate_gates(cfg):
 def assert_detector_training_allowed(cfg, entrypoint="tools/train.py"):
     """Fail closed when a config explicitly marks detector training as locked."""
     for gate_name, gate in _iter_candidate_gates(cfg):
-        reason = _training_block_reason(gate)
+        reason = _training_block_reason(gate, entrypoint=entrypoint)
         if reason is not None:
             raise RuntimeError(_format_training_block_error(gate_name, gate, reason, entrypoint))
         reason = _entrypoint_scope_block_reason(gate, entrypoint)
@@ -482,5 +550,13 @@ def assert_detector_training_allowed(cfg, entrypoint="tools/train.py"):
         if reason is not None:
             raise RuntimeError(_format_training_block_error(gate_name, gate, reason, entrypoint))
         reason = _entrypoint_gate_context_block_reason(gate)
+        if reason is not None:
+            raise RuntimeError(_format_training_block_error(gate_name, gate, reason, entrypoint))
+
+
+def assert_entrypoint_checkpoint_sha256_matches_gate(cfg, checkpoint_path, entrypoint="tools/test.py"):
+    """Fail closed when a gated test entrypoint binds its checkpoint SHA256."""
+    for gate_name, gate in _iter_candidate_gates(cfg):
+        reason = _entrypoint_checkpoint_sha256_block_reason(gate, checkpoint_path, entrypoint)
         if reason is not None:
             raise RuntimeError(_format_training_block_error(gate_name, gate, reason, entrypoint))

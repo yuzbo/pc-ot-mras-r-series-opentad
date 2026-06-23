@@ -17,6 +17,7 @@ from opentad.datasets import build_dataset, build_dataloader
 from opentad.cores import eval_one_epoch
 from opentad.utils import update_workdir, set_seed, create_folder, setup_logger
 from opentad.utils.training_guard import (
+    assert_entrypoint_checkpoint_sha256_matches_gate,
     assert_detector_training_allowed,
     assert_safe_cfg_options_for_gated_config,
 )
@@ -43,6 +44,7 @@ def main():
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
     assert_detector_training_allowed(cfg, entrypoint="tools/test.py")
+    assert_entrypoint_checkpoint_sha256_matches_gate(cfg, args.checkpoint, entrypoint="tools/test.py")
     assert_no_raw_prediction_shortcut_for_pc_ot_mras(cfg)
 
     # DDP init

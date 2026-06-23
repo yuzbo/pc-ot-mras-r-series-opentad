@@ -17,7 +17,7 @@ source activate "$YUZIBO_ROOT/conda_envs/opentad"
 REPO="${OPENTAD_PCOTMRAS_CLEAN_ROOT:-$YUZIBO_ROOT/OpenTAD_PCOTMRAS_R16_R18_R20_Clean_20260619_1730}"
 cd "$REPO"
 
-CONFIG="${CONFIG:-configs/adatad/thumos/pc_ot_mras_frontend_hard_ledger_fixed50_adapter_n16r4.py}"
+CONFIG="${CONFIG:-configs/adatad/thumos/pc_ot_mras_frontend_hard_ledger_fixed50_adapter_eval_exec_candidate_n16r4.py}"
 PC_OT_MRAS_CONFIG="${PC_OT_MRAS_CONFIG:-configs/adatad/thumos/ctf_bdi_pc_ot_mras_r18_aux_diag_candidate.py}"
 PC_OT_MRAS_CHECKPOINT="${PC_OT_MRAS_CHECKPOINT:-}"
 ADATAD_CHECKPOINT="${ADATAD_CHECKPOINT:-}"
@@ -28,10 +28,13 @@ BUDGET="${BUDGET:-384}"
 REQUIRE_SELECTED_COUNT="${REQUIRE_SELECTED_COUNT:-$BUDGET}"
 RUN_ID="${RUN_ID:-0}"
 SEED="${SEED:-20260623}"
-MASTER_PORT="${MASTER_PORT:-$((24000 + SLURM_JOB_ID % 20000))}"
+DEFAULT_MASTER_PORT="$((24000 + ${SLURM_JOB_ID:-0} % 20000))"
+MASTER_PORT="${MASTER_PORT:-$DEFAULT_MASTER_PORT}"
 RUN_TAG="${RUN_TAG:-pc_ot_mras_frontend_eval_$(date '+%Y%m%d_%H%M%S')}"
 PRECHECK_ONLY="${PRECHECK_ONLY:-1}"
 ALLOW_FRONTEND_ADATAD_EVAL="${ALLOW_FRONTEND_ADATAD_EVAL:-0}"
+FRONTEND_EVAL_GATE_JSON="${FRONTEND_EVAL_GATE_JSON:-${OPENTAD_PCOTMRAS_FRONTEND_EVAL_GATE_JSON:-}}"
+FRONTEND_EVAL_GATE_SHA256="${FRONTEND_EVAL_GATE_SHA256:-${OPENTAD_PCOTMRAS_FRONTEND_EVAL_GATE_SHA256:-}}"
 DUMP_LIMIT_BATCHES="${DUMP_LIMIT_BATCHES:-999999}"
 DUMP_USE_AMP="${DUMP_USE_AMP:-1}"
 
@@ -50,6 +53,8 @@ HARD_JSONL="$RUN_ROOT/pc_ot_mras_hard_positions.jsonl"
 HARD_SUMMARY="$RUN_ROOT/pc_ot_mras_hard_positions.summary.json"
 LEDGER_JSONL="$RUN_ROOT/pc_ot_mras_frontend_value_transport_ledger.jsonl"
 LEDGER_SUMMARY="$RUN_ROOT/pc_ot_mras_frontend_value_transport_ledger.summary.json"
+RESOLVED_CONFIG_DUMP="$RUN_ROOT/resolved_config.py"
+SHA_MANIFEST="$RUN_ROOT/active_sha256_manifest.txt"
 
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
@@ -87,13 +92,6 @@ require_file_sha() {
   log "${label}_sha256=$actual"
 }
 
-if [ -z "$PC_OT_MRAS_CHECKPOINT" ]; then
-  fail "PC_OT_MRAS_CHECKPOINT must be provided explicitly"
-fi
-if [ -z "$ADATAD_CHECKPOINT" ]; then
-  fail "ADATAD_CHECKPOINT must be provided explicitly"
-fi
-
 log "host=$(hostname) job=${SLURM_JOB_ID:-none}"
 log "repo=$REPO"
 log "config=$CONFIG"
@@ -109,27 +107,24 @@ log "seed=$SEED master_port=$MASTER_PORT"
 log "python=$(python -c 'import sys; print(sys.executable)')"
 log "git_head=$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 
+case "$PRECHECK_ONLY" in
+  0|1) ;;
+  *) fail "PRECHECK_ONLY must be exactly 0 or 1; got $PRECHECK_ONLY" ;;
+esac
+case "$DUMP_USE_AMP" in
+  0|1) ;;
+  *) fail "DUMP_USE_AMP must be exactly 0 or 1; got $DUMP_USE_AMP" ;;
+esac
+
 test -f "$CONFIG" || fail "missing config: $CONFIG"
 test -f "$PC_OT_MRAS_CONFIG" || fail "missing PC-OT-MRAS config: $PC_OT_MRAS_CONFIG"
-test -f "$PC_OT_MRAS_CHECKPOINT" || fail "missing PC-OT-MRAS checkpoint: $PC_OT_MRAS_CHECKPOINT"
-test -f "$ADATAD_CHECKPOINT" || fail "missing AdaTAD checkpoint: $ADATAD_CHECKPOINT"
-test -f "$THUMOS14_ANNOTATION_PATH" || fail "missing annotation: $THUMOS14_ANNOTATION_PATH"
-test -f "$THUMOS14_CLASS_MAP" || fail "missing class map: $THUMOS14_CLASS_MAP"
-test -d "$THUMOS14_TEST_DATA_PATH" || fail "missing test data dir: $THUMOS14_TEST_DATA_PATH"
-
-if command -v ss >/dev/null 2>&1; then
-  if ss -ltn | awk '{print $4}' | grep -Eq "[:.]${MASTER_PORT}$"; then
-    fail "MASTER_PORT=$MASTER_PORT is already in use"
-  fi
-else
-  log "WARN ss not available; skipping master port preflight"
-fi
 
 log "static py_compile"
 python -m py_compile \
   tools/bata/dump_pc_ot_mras_reader_snapshots.py \
   tools/bata/export_pc_ot_mras_hard_positions.py \
   tools/bata/convert_pc_ot_mras_hard_positions_to_value_transport_ledger.py \
+  tools/bata/validate_pc_ot_mras_frontend_eval_gate.py \
   opentad/datasets/transforms/boundary_acquisition.py \
   opentad/datasets/transforms/end_to_end.py \
   opentad/models/utils/post_processing/utils.py \
@@ -143,11 +138,15 @@ python -m pytest \
   -q
 
 log "config contract preflight"
-python - "$CONFIG" <<'PY'
+python - "$CONFIG" "$RESOLVED_CONFIG_DUMP" <<'PY'
+import os
 import sys
+from pathlib import Path
 from mmengine.config import Config
+from opentad.utils.training_guard import assert_detector_training_allowed
 
 cfg = Config.fromfile(sys.argv[1])
+Path(sys.argv[2]).write_text(cfg.pretty_text + "\n", encoding="utf-8")
 assert int(cfg.window_size) == 384
 assert int(cfg.dense_window_size) == 768
 assert int(cfg.model.backbone.backbone.total_frames) == 384
@@ -155,6 +154,36 @@ assert int(cfg.model.projection.max_seq_len) == 384
 assert "pc_ot_mras_reader" not in cfg.model
 assert bool(cfg.inference.load_from_raw_predictions) is False
 assert bool(cfg.inference.save_raw_prediction) is False
+assert cfg.pc_ot_mras_frontend_hard_ledger_eval_gate is None
+gate = cfg.pc_ot_mras_frontend_hard_ledger_execution_gate
+assert gate.launch_gate_passed is True, gate
+assert gate.allow_detector_training is False, gate
+assert gate.allow_detector_checkpoint_eval is True, gate
+assert gate.allow_tools_train is False, gate
+assert gate.allow_tools_test is True, gate
+assert gate.allow_detector_map is True, gate
+assert gate.allow_reader_dump is True, gate
+assert tuple(gate.allowed_entrypoints) == ("tools/test.py",), gate
+try:
+    assert_detector_training_allowed(cfg, entrypoint="tools/train.py")
+except RuntimeError:
+    pass
+else:
+    raise SystemExit("frontend eval execution config must reject tools/train.py")
+for key in (
+    "OPENTAD_PCOTMRAS_FRONTEND_EVAL_GATE_JSON",
+    "OPENTAD_PCOTMRAS_FRONTEND_EVAL_GATE_SHA256",
+    "OPENTAD_PCOTMRAS_FRONTEND_ACTIVE_MANIFEST_SHA256",
+    "OPENTAD_PCOTMRAS_FRONTEND_RESOLVED_CONFIG_SHA256",
+):
+    os.environ.pop(key, None)
+try:
+    assert_detector_training_allowed(cfg, entrypoint="tools/test.py")
+except RuntimeError as exc:
+    if "missing required entrypoint gate env" not in str(exc):
+        raise
+else:
+    raise SystemExit("frontend eval execution config must require entrypoint gate envs")
 for split in ("val", "test"):
     lf = cfg.dataset[split].pipeline[2]
     assert lf.method == "bata_value_transport_ledger_subsample"
@@ -165,17 +194,100 @@ for split in ("val", "test"):
     assert lf.bata_value_transport_source == "pc_ot_mras_frontend_hard_positions"
 print("pc_ot_mras_frontend_eval_config_preflight=PASS")
 PY
+RESOLVED_CONFIG_SHA256="$(sha256sum "$RESOLVED_CONFIG_DUMP" | awk '{print $1}')"
+log "resolved_config_sha256=$RESOLVED_CONFIG_SHA256"
+
+mapfile -t CONFIG_DEP_FILES < <(python - "$CONFIG" <<'PY'
+import ast
+import sys
+from pathlib import Path
+
+seen = []
+def visit(path):
+    path = Path(path).resolve()
+    if path in seen:
+        return
+    seen.append(path)
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "_base_" for t in node.targets):
+            value = ast.literal_eval(node.value)
+            for base in ([value] if isinstance(value, str) else list(value)):
+                visit(path.parent / base)
+visit(Path(sys.argv[1]))
+for path in seen:
+    print(path.relative_to(Path.cwd()).as_posix())
+PY
+)
+{
+  sha256sum "${CONFIG_DEP_FILES[@]}"
+  printf '%s  resolved_config.py\n' "$RESOLVED_CONFIG_SHA256"
+  sha256sum \
+    scripts/run_pc_ot_mras_frontend_ledger_eval_n16r4.sbatch \
+    tools/bata/dump_pc_ot_mras_reader_snapshots.py \
+    tools/bata/export_pc_ot_mras_hard_positions.py \
+    tools/bata/convert_pc_ot_mras_hard_positions_to_value_transport_ledger.py \
+    tools/bata/validate_pc_ot_mras_frontend_eval_gate.py \
+    tools/test.py \
+    opentad/datasets/transforms/boundary_acquisition.py \
+    opentad/datasets/transforms/end_to_end.py \
+    opentad/models/utils/post_processing/utils.py \
+    opentad/utils/training_guard.py \
+    tests/test_pc_ot_mras_frontend_ledger.py \
+    tests/test_pc_ot_mras_hard_export_consistency.py \
+    tests/test_bata_post_processing_selected_axis.py
+} > "$SHA_MANIFEST"
+ACTIVE_MANIFEST_SHA256="$(sha256sum "$SHA_MANIFEST" | awk '{print $1}')"
+log "active_sha256_manifest_sha256=$ACTIVE_MANIFEST_SHA256"
 
 if [ "$PRECHECK_ONLY" = "1" ]; then
-  log "PRECHECK_ONLY=1; stopping before reader dump, ledger generation, and detector mAP"
+  log "PRECHECK_ONLY=1; stopping before checkpoint/data access, reader dump, ledger generation, and detector mAP"
   exit 0
 fi
 
 if [ "$ALLOW_FRONTEND_ADATAD_EVAL" != "1" ]; then
   fail "ALLOW_FRONTEND_ADATAD_EVAL=1 is required before dump, ledger generation, and detector mAP"
 fi
+if [ -z "${SLURM_JOB_ID:-}" ]; then
+  fail "PRECHECK_ONLY=0 requires a Slurm allocation"
+fi
+if [ -z "$FRONTEND_EVAL_GATE_JSON" ] || [ -z "$FRONTEND_EVAL_GATE_SHA256" ]; then
+  fail "PRECHECK_ONLY=0 requires FRONTEND_EVAL_GATE_JSON and FRONTEND_EVAL_GATE_SHA256"
+fi
+if [ -z "$PC_OT_MRAS_CHECKPOINT" ]; then
+  fail "PC_OT_MRAS_CHECKPOINT must be provided explicitly"
+fi
+if [ -z "$ADATAD_CHECKPOINT" ]; then
+  fail "ADATAD_CHECKPOINT must be provided explicitly"
+fi
+test -f "$FRONTEND_EVAL_GATE_JSON" || fail "missing frontend eval gate JSON: $FRONTEND_EVAL_GATE_JSON"
+test -f "$PC_OT_MRAS_CHECKPOINT" || fail "missing PC-OT-MRAS checkpoint: $PC_OT_MRAS_CHECKPOINT"
+test -f "$ADATAD_CHECKPOINT" || fail "missing AdaTAD checkpoint: $ADATAD_CHECKPOINT"
+test -f "$THUMOS14_ANNOTATION_PATH" || fail "missing annotation: $THUMOS14_ANNOTATION_PATH"
+test -f "$THUMOS14_CLASS_MAP" || fail "missing class map: $THUMOS14_CLASS_MAP"
+test -d "$THUMOS14_TEST_DATA_PATH" || fail "missing test data dir: $THUMOS14_TEST_DATA_PATH"
+if command -v ss >/dev/null 2>&1; then
+  if ss -ltn | awk '{print $4}' | grep -Eq "[:.]${MASTER_PORT}$"; then
+    fail "MASTER_PORT=$MASTER_PORT is already in use"
+  fi
+else
+  log "WARN ss not available; skipping master port preflight"
+fi
 require_file_sha "$PC_OT_MRAS_CHECKPOINT" "$PC_OT_MRAS_CHECKPOINT_SHA256" "pc_ot_mras_checkpoint"
 require_file_sha "$ADATAD_CHECKPOINT" "$ADATAD_CHECKPOINT_SHA256" "adatad_checkpoint"
+python tools/bata/validate_pc_ot_mras_frontend_eval_gate.py \
+  --gate-json "$FRONTEND_EVAL_GATE_JSON" \
+  --gate-sha256 "$FRONTEND_EVAL_GATE_SHA256" \
+  --active-manifest-sha256 "$ACTIVE_MANIFEST_SHA256" \
+  --resolved-config-sha256 "$RESOLVED_CONFIG_SHA256" \
+  --pc-ot-mras-checkpoint-sha256 "$PC_OT_MRAS_CHECKPOINT_SHA256" \
+  --adatad-checkpoint-sha256 "$ADATAD_CHECKPOINT_SHA256" \
+  --budget "$BUDGET" \
+  --require-selected-count "$REQUIRE_SELECTED_COUNT"
+export OPENTAD_PCOTMRAS_FRONTEND_EVAL_GATE_JSON="$FRONTEND_EVAL_GATE_JSON"
+export OPENTAD_PCOTMRAS_FRONTEND_EVAL_GATE_SHA256="$FRONTEND_EVAL_GATE_SHA256"
+export OPENTAD_PCOTMRAS_FRONTEND_ACTIVE_MANIFEST_SHA256="$ACTIVE_MANIFEST_SHA256"
+export OPENTAD_PCOTMRAS_FRONTEND_RESOLVED_CONFIG_SHA256="$RESOLVED_CONFIG_SHA256"
 
 log "dumping PC-OT-MRAS reader snapshots"
 DUMP_ARGS=(
@@ -186,6 +298,13 @@ DUMP_ARGS=(
   --split "$SPLIT"
   --limit-batches "$DUMP_LIMIT_BATCHES"
   --budget "$BUDGET"
+  --reader-dump-gate-json "$FRONTEND_EVAL_GATE_JSON"
+  --reader-dump-gate-sha256 "$FRONTEND_EVAL_GATE_SHA256"
+  --active-manifest-sha256 "$ACTIVE_MANIFEST_SHA256"
+  --resolved-config-sha256 "$RESOLVED_CONFIG_SHA256"
+  --pc-ot-mras-checkpoint-sha256 "$PC_OT_MRAS_CHECKPOINT_SHA256"
+  --adatad-checkpoint-sha256 "$ADATAD_CHECKPOINT_SHA256"
+  --require-selected-count "$REQUIRE_SELECTED_COUNT"
 )
 if [ "$DUMP_USE_AMP" = "1" ]; then
   DUMP_ARGS+=(--use-amp)

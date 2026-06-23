@@ -179,6 +179,9 @@ def _batch_size_from(reader_out: Mapping[str, Any]) -> int:
         value = reader_out.get(key)
         if value is not None and _depth(value) >= 2:
             return len(_to_plain(value))
+    value = reader_out.get("valid_lengths")
+    if value is not None and _depth(value) >= 1:
+        return len(_to_plain(value))
     return 1
 
 
@@ -246,7 +249,9 @@ def _validate_no_forbidden_jsonl_keys(value: Any, *, path: str = "row") -> None:
             normalized = _normalized_key(key)
             if _is_false_only_hard_export_key(key):
                 if not _is_json_false(item):
-                    raise ValueError(f"{path}.{key} must be JSON false for deploy-visible hard export")
+                    raise ValueError(
+                        f"{path}.{key} must be JSON false for deploy-visible hard export; {key} must be false"
+                    )
                 continue
             if not _is_allowed_hard_export_metadata_key(key) and any(
                 token in normalized for token in FORBIDDEN_JSONL_KEY_TOKENS
@@ -386,6 +391,26 @@ def _valid_positions(valid_mask: Any, *, dense_len: int | None, valid_len: int |
             raise ValueError("dense_len must be positive")
         return list(range(int(dense_len)))
     raise ValueError("one of valid_mask, valid_len, or dense_len is required")
+
+
+def _sample_reader_valid_len(
+    reader_out: Mapping[str, Any],
+    *,
+    batch_idx: int,
+    batch_size: int,
+    explicit_valid_len: int | None,
+) -> int | None:
+    if "valid_lengths" not in reader_out:
+        return explicit_valid_len
+    value = _sample(reader_out["valid_lengths"], batch_idx, batch_size)
+    if isinstance(value, list):
+        if len(value) != 1:
+            raise ValueError(f"valid_lengths[{batch_idx}] must be a scalar")
+        value = value[0]
+    sampled_valid_len = _strict_int_scalar(value, name=f"valid_lengths[{batch_idx}]")
+    if explicit_valid_len is not None and sampled_valid_len != int(explicit_valid_len):
+        raise ValueError("valid_lengths sample must equal valid_len")
+    return sampled_valid_len
 
 
 def _expected_matrix_width(valid_mask: Any, *, dense_len: int | None, valid_len: int | None, valid: Sequence[int]) -> int:
@@ -566,10 +591,16 @@ def _resolve_sample(
     sample_valid_mask = None
     if "valid_mask" in reader_out:
         sample_valid_mask = _sample(reader_out["valid_mask"], batch_idx, batch_size)
-    valid = _valid_positions(sample_valid_mask, dense_len=dense_len, valid_len=valid_len)
+    sample_valid_len = _sample_reader_valid_len(
+        reader_out,
+        batch_idx=batch_idx,
+        batch_size=batch_size,
+        explicit_valid_len=valid_len,
+    )
+    valid = _valid_positions(sample_valid_mask, dense_len=dense_len, valid_len=sample_valid_len)
     if int(budget) > len(valid):
         raise ValueError(f"{sample_id}: budget exceeds valid positions")
-    expected_width = _expected_matrix_width(sample_valid_mask, dense_len=dense_len, valid_len=valid_len, valid=valid)
+    expected_width = _expected_matrix_width(sample_valid_mask, dense_len=dense_len, valid_len=sample_valid_len, valid=valid)
 
     valid_set = set(valid)
     scores = _score_vector(reader_out, batch_idx, batch_size, valid, expected_width=expected_width)

@@ -70,8 +70,23 @@ def _flag_is_true(value):
     return False
 
 
+_IRREGULAR_SELECTED_AXIS_META_KEYS = (
+    "irregular_selected_positions",
+    "irregular_selected_valid_len",
+    "irregular_selected_count",
+    "bata_selected_dense_indices",
+    "bata_value_transport_selection_row",
+)
+
+
 def _selected_axis_segments_to_dense_axis(segments, meta):
-    if _flag_is_true(meta.get("irregular_native_axis", True)):
+    if "irregular_native_axis" not in meta:
+        if any(key in meta for key in _IRREGULAR_SELECTED_AXIS_META_KEYS):
+            raise ValueError(
+                "irregular selected-axis post-processing requires explicit irregular_native_axis metadata"
+            )
+        return segments
+    if _flag_is_true(meta.get("irregular_native_axis")):
         return segments
     selected_positions = _meta_float_tensor(
         meta,
@@ -80,7 +95,10 @@ def _selected_axis_segments_to_dense_axis(segments, meta):
         device=segments.device,
     )
     if selected_positions is None:
-        return segments
+        raise ValueError(
+            "irregular selected-axis post-processing requires irregular_selected_positions when "
+            "irregular_native_axis=False"
+        )
     if selected_positions.numel() == 0:
         raise ValueError("irregular selected-axis post-processing requires non-empty irregular_selected_positions")
     if selected_positions.numel() > 1 and torch.any(selected_positions[1:] < selected_positions[:-1]):
