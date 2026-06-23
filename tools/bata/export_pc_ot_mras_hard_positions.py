@@ -38,6 +38,12 @@ FORBIDDEN_JSONL_KEY_TOKENS = (
     "checkpoint",
     "ckpt",
 )
+HARD_EXPORT_ALLOWED_METADATA_KEYS = frozenset(
+    {
+        "validlength",
+        "validlengths",
+    }
+)
 FALSE_ONLY_DYNAMIC_PLAN_FLAGS = frozenset(
     {
         "uses_gt",
@@ -229,6 +235,10 @@ def _is_false_only_hard_export_key(key: Any) -> bool:
     }
 
 
+def _is_allowed_hard_export_metadata_key(key: Any) -> bool:
+    return _normalized_key(key) in HARD_EXPORT_ALLOWED_METADATA_KEYS
+
+
 def _validate_no_forbidden_jsonl_keys(value: Any, *, path: str = "row") -> None:
     data = _to_plain(value)
     if isinstance(data, Mapping):
@@ -238,7 +248,9 @@ def _validate_no_forbidden_jsonl_keys(value: Any, *, path: str = "row") -> None:
                 if not _is_json_false(item):
                     raise ValueError(f"{path}.{key} must be JSON false for deploy-visible hard export")
                 continue
-            if any(token in normalized for token in FORBIDDEN_JSONL_KEY_TOKENS):
+            if not _is_allowed_hard_export_metadata_key(key) and any(
+                token in normalized for token in FORBIDDEN_JSONL_KEY_TOKENS
+            ):
                 raise ValueError(f"{path}.{key}: forbidden deploy-invisible key in hard export input")
             _validate_no_forbidden_jsonl_keys(item, path=f"{path}.{key}")
     elif isinstance(data, list):

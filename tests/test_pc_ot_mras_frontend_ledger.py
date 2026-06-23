@@ -59,6 +59,7 @@ def test_reader_snapshot_row_exports_to_ledger_with_original_window_sample_id(tm
             ],
             "soft_selection": [[0.1, 0.8, 0.2, 0.9, 0.3, 0.7]],
             "valid_mask": [[1, 1, 1, 1, 1, 1]],
+            "valid_lengths": [6],
         },
     }
     snapshot_jsonl.write_text(json.dumps(snapshot_row, sort_keys=True) + "\n", encoding="utf-8")
@@ -107,6 +108,36 @@ def test_reader_snapshot_hard_export_rejects_true_or_payload_forbidden_sources(t
 
     payload_row = dict(base_row, gt_segments=[[0.0, 1.0]])
     input_jsonl.write_text(json.dumps(payload_row, sort_keys=True) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="forbidden deploy-invisible key"):
+        run_jsonl_export(input_jsonl, output_jsonl, budget=1)
+
+
+@pytest.mark.parametrize(
+    ("forbidden_key", "forbidden_value"),
+    [
+        ("ground_truth", [0.0, 1.0]),
+        ("teacher_logits", [0.1, 0.9]),
+        ("oracle_scores", [1.0, 0.0]),
+        ("prediction_cache_path", "cache/preds.json"),
+        ("checkpoint_path", "checkpoint/best.pth"),
+    ],
+)
+def test_reader_snapshot_hard_export_rejects_forbidden_payload_keys(tmp_path, forbidden_key, forbidden_value):
+    input_jsonl = tmp_path / "reader_snapshots.jsonl"
+    output_jsonl = tmp_path / "hard_positions.jsonl"
+    row = {
+        "sample_ids": ["video_test_0001|0"],
+        "budget": 1,
+        "dense_len": 2,
+        "reader_out": {
+            "allocation": [[[0.0, 0.9]]],
+            "valid_mask": [[1, 1]],
+            "valid_lengths": [2],
+            forbidden_key: forbidden_value,
+        },
+    }
+    input_jsonl.write_text(json.dumps(row, sort_keys=True) + "\n", encoding="utf-8")
+
     with pytest.raises(ValueError, match="forbidden deploy-invisible key"):
         run_jsonl_export(input_jsonl, output_jsonl, budget=1)
 
