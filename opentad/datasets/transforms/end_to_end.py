@@ -9,6 +9,7 @@ import numpy as np
 
 from ..builder import PIPELINES
 from torch.nn import functional as F
+from .boundary_acquisition import load_value_transport_selection_ledger
 
 
 @PIPELINES.register_module()
@@ -187,14 +188,33 @@ class LoadFrames:
         trunc_len=None,
         trunc_thresh=None,
         crop_ratio=None,
+        keep_ratio=0.5,
+        method_base=None,
+        target_len=None,
+        remap_gt_to_selected_axis=True,
+        bata_value_transport_ledger_path=None,
+        bata_value_transport_allow_missing_fallback=False,
+        bata_value_transport_require_deployable=True,
+        bata_value_transport_source="pc_ot_mras_frontend_hard_positions",
+        bata_value_transport_config_hash="",
     ):
         self.num_clips = num_clips
         self.scale_factor = scale_factor  # multiply by the frame number, if backbone has downsampling
-        self.method = method  # resize or padding or random_trunc or sliding_window
+        self.method = method  # resize or padding or random_trunc or sliding_window or value-transport ledger
         # random_trunc settings
         self.trunc_len = trunc_len
         self.trunc_thresh = trunc_thresh
         self.crop_ratio = crop_ratio
+        self.keep_ratio = keep_ratio
+        self.method_base = method_base
+        self.target_len = target_len
+        self.remap_gt_to_selected_axis = bool(remap_gt_to_selected_axis)
+        self.bata_value_transport_ledger_path = bata_value_transport_ledger_path
+        self.bata_value_transport_allow_missing_fallback = bool(bata_value_transport_allow_missing_fallback)
+        self.bata_value_transport_require_deployable = bool(bata_value_transport_require_deployable)
+        self.bata_value_transport_source = bata_value_transport_source
+        self.bata_value_transport_config_hash = bata_value_transport_config_hash
+        self._bata_value_transport_ledger = None
 
     def random_trunc(self, feats, trunc_len, gt_segments, gt_labels, offset=0, max_num_trials=200):
         feat_len = feats.shape[0]
@@ -240,6 +260,85 @@ class LoadFrames:
         gt_segments = gt_segments - st  # shift the time stamps due to truncation
         gt_labels = gt_labels[seg_idx]  # [N]
         return feats, gt_segments, gt_labels
+
+    def _map_coord_to_selected_axis(self, coord, kept_positions, valid_len):
+        if kept_positions.size == 0:
+            return 0.0
+        xp = np.concatenate([kept_positions.astype(np.float32), np.array([float(valid_len)], dtype=np.float32)])
+        fp = np.concatenate(
+            [np.arange(kept_positions.size, dtype=np.float32), np.array([float(kept_positions.size)], dtype=np.float32)]
+        )
+        coord = float(np.clip(coord, 0.0, float(valid_len)))
+        return float(np.interp(coord, xp, fp))
+
+    def _remap_gt_to_selected_axis(self, gt_segments, gt_labels, kept_positions, valid_len):
+        if gt_segments is None or gt_labels is None or len(gt_segments) == 0 or kept_positions.size == 0:
+            return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int32)
+
+        remapped_segments = []
+        remapped_labels = []
+        max_coord = float(kept_positions.size)
+        for idx, seg in enumerate(gt_segments):
+            start = self._map_coord_to_selected_axis(seg[0], kept_positions, valid_len)
+            end = self._map_coord_to_selected_axis(seg[1], kept_positions, valid_len)
+            start = float(np.clip(start, 0.0, max_coord))
+            end = float(np.clip(end, 0.0, max_coord))
+            if end <= start:
+                end = min(max_coord, start + 1e-3)
+            if end > start:
+                remapped_segments.append([start, end])
+                remapped_labels.append(int(gt_labels[idx]))
+
+        if len(remapped_segments) == 0:
+            return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int32)
+        return np.asarray(remapped_segments, dtype=np.float32), np.asarray(remapped_labels, dtype=np.int32)
+
+    def _set_irregular_axis_meta(self, results, kept_positions, valid_len):
+        scale = float(max(self.scale_factor, 1))
+        results["irregular_selected_positions"] = np.asarray(kept_positions, dtype=np.float32) / scale
+        results["irregular_selected_valid_len"] = float(valid_len) / scale
+        results["irregular_native_axis"] = bool(not self.remap_gt_to_selected_axis)
+
+    def _exact_uniform_dense_positions(self, valid_len, dense_frame_num, frame_num):
+        valid_len = int(valid_len)
+        dense_frame_num = int(dense_frame_num)
+        frame_num = int(frame_num)
+        if valid_len <= 0 or dense_frame_num <= 0 or frame_num <= 0:
+            return np.zeros((0,), dtype=np.int64)
+        selected_valid_len = int(np.ceil(float(valid_len) * float(frame_num) / float(dense_frame_num)))
+        selected_valid_len = max(1, min(selected_valid_len, frame_num))
+        step = float(dense_frame_num) / float(frame_num)
+        positions = [int(round(float(idx) * step)) for idx in range(selected_valid_len)]
+        positions = [int(np.clip(pos, 0, valid_len - 1)) for pos in positions]
+        return np.asarray(sorted(dict.fromkeys(positions)), dtype=np.int64)
+
+    def _value_transport_ledger(self):
+        if self._bata_value_transport_ledger is None:
+            self._bata_value_transport_ledger = load_value_transport_selection_ledger(
+                self.bata_value_transport_ledger_path,
+                require_deployable=self.bata_value_transport_require_deployable,
+            )
+        return self._bata_value_transport_ledger
+
+    def _value_transport_sample_id(self, results):
+        if "window_start_frame" not in results:
+            raise ValueError("value_transport_ledger_subsample requires window_start_frame in results")
+        return f"{results.get('video_name', 'unknown')}|{int(results['window_start_frame'])}"
+
+    def _lookup_value_transport_positions(self, results, valid_len, dense_frame_num, frame_num):
+        sample_id = self._value_transport_sample_id(results)
+        row = self._value_transport_ledger().get(sample_id)
+        if row is None:
+            if not self.bata_value_transport_allow_missing_fallback:
+                raise KeyError(f"value-transport ledger missing sample_id={sample_id}")
+            positions = self._exact_uniform_dense_positions(valid_len, dense_frame_num, frame_num)
+            return positions, dict(sample_id=sample_id, fallback_missing_ledger=True)
+        positions = row["selected_positions"].astype(np.int64, copy=False).reshape(-1)
+        if positions.size == 0:
+            raise ValueError(f"value-transport ledger sample_id={sample_id} selected no positions")
+        if positions[0] < 0 or positions[-1] >= int(valid_len):
+            raise ValueError(f"value-transport ledger sample_id={sample_id} positions exceed valid dense window")
+        return positions, row
 
     def __call__(self, results):
         assert "total_frames" in results.keys(), "should have total_frames as a key"
@@ -313,6 +412,102 @@ class LoadFrames:
                 masks = torch.cat([torch.ones(valid_len), torch.zeros(window_size - valid_len)]).bool()
             else:
                 masks = torch.ones(window_size).bool()
+
+        elif self.method == "bata_value_transport_ledger_subsample":
+            assert results["snippet_stride"] >= self.scale_factor, "snippet_stride should be larger than scale_factor"
+            assert (
+                results["snippet_stride"] % self.scale_factor == 0
+            ), "snippet_stride should be divisible by scale_factor"
+            if self.method_base != "sliding_window":
+                raise ValueError("bata_value_transport_ledger_subsample currently supports method_base='sliding_window'")
+            if "window_size" not in results:
+                raise ValueError("bata_value_transport_ledger_subsample requires window_size in results")
+
+            dense_window_len = int(results["window_size"])
+            target_len = int(self.target_len) if self.target_len is not None else int(round(dense_window_len * float(self.keep_ratio)))
+            frame_num = target_len * self.scale_factor
+            dense_frame_num = dense_window_len * self.scale_factor
+            frame_stride = results["snippet_stride"] // self.scale_factor
+            dense_frame_idxs = np.arange(0, total_frames, frame_stride)
+            start_idx = min(results["feature_start_idx"] * self.scale_factor, len(dense_frame_idxs))
+            end_idx = min((results["feature_end_idx"] + 1) * self.scale_factor, len(dense_frame_idxs))
+            dense_window = dense_frame_idxs[start_idx:end_idx]
+            valid_len = int(len(dense_window))
+            if valid_len <= 0:
+                raise RuntimeError("bata_value_transport_ledger_subsample received an empty dense window")
+
+            keep_positions, ledger_row = self._lookup_value_transport_positions(
+                results,
+                valid_len=valid_len,
+                dense_frame_num=dense_frame_num,
+                frame_num=frame_num,
+            )
+            if keep_positions.size > int(frame_num):
+                sample_id = ledger_row.get("sample_id", self._value_transport_sample_id(results))
+                raise ValueError(
+                    f"value-transport ledger sample_id={sample_id} selects {keep_positions.size} positions "
+                    f"but target_len={target_len} allows only {frame_num} frame indices"
+                )
+
+            frame_idxs = dense_window[keep_positions]
+            self._set_irregular_axis_meta(results, keep_positions, valid_len)
+
+            gt_segments = results["gt_segments"] * self.scale_factor if "gt_segments" in results else None
+            gt_labels = results["gt_labels"] if "gt_labels" in results else None
+            if gt_segments is not None and gt_labels is not None:
+                if self.remap_gt_to_selected_axis:
+                    gt_segments, gt_labels = self._remap_gt_to_selected_axis(
+                        gt_segments=gt_segments,
+                        gt_labels=gt_labels,
+                        kept_positions=keep_positions,
+                        valid_len=valid_len,
+                    )
+                results["gt_segments"] = gt_segments / self.scale_factor
+                results["gt_labels"] = gt_labels
+
+            results["bata_selected_dense_indices"] = keep_positions.astype(np.int64)
+            results["bata_value_transport_selection_row"] = {
+                key: value
+                for key, value in dict(ledger_row).items()
+                if key
+                in {
+                    "sample_id",
+                    "schema_version",
+                    "route",
+                    "route_variant",
+                    "policy",
+                    "valid_len",
+                    "dense_len",
+                    "target_len",
+                    "selected_count",
+                    "selected_positions_unit",
+                    "diagnostics",
+                    "diagnostic_only",
+                    "training_only",
+                    "diagnostic_uses_train_utility_for_audit",
+                    "deploy_selection_ledger",
+                    "prediction_uses_gt",
+                    "uses_gt",
+                    "uses_teacher",
+                    "uses_cache",
+                    "uses_prediction_cache",
+                    "uses_raw_prediction",
+                }
+            }
+            results["bata_score_source"] = self.bata_value_transport_source
+            results["bata_value_transport_config_hash"] = self.bata_value_transport_config_hash
+            results["bata_diagnostic_only"] = bool(ledger_row.get("diagnostic_only", False))
+
+            if len(frame_idxs) < frame_num:
+                valid_mask_len = min(
+                    int(np.ceil(keep_positions.size / max(self.scale_factor, 1))),
+                    int(np.ceil(frame_num / max(self.scale_factor, 1))),
+                )
+                target_mask_len = int(np.ceil(frame_num / self.scale_factor))
+                frame_idxs = np.pad(frame_idxs, (0, frame_num - len(frame_idxs)), mode="edge")
+                masks = torch.cat([torch.ones(valid_mask_len), torch.zeros(target_mask_len - valid_mask_len)]).bool()
+            else:
+                masks = torch.ones(int(np.ceil(frame_num / self.scale_factor))).bool()
 
         elif self.method == "padding":
             raise NotImplementedError

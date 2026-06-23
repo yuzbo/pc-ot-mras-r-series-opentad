@@ -28,6 +28,7 @@ from opentad.utils import (
 )
 from opentad.utils.training_guard import (
     assert_detector_training_allowed,
+    assert_safe_entrypoint_args_for_gated_config,
     assert_safe_cfg_options_for_gated_config,
 )
 
@@ -53,6 +54,7 @@ def main():
     assert_safe_cfg_options_for_gated_config(cfg, args.cfg_options, entrypoint="tools/train.py")
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
+    assert_safe_entrypoint_args_for_gated_config(cfg, args, entrypoint="tools/train.py")
     assert_detector_training_allowed(cfg, entrypoint="tools/train.py")
 
     # DDP init
@@ -172,6 +174,7 @@ def main():
     logger.info("Training Starts...\n")
     val_loss_best = 1e6
     val_start_epoch = cfg.workflow.get("val_start_epoch", 0)
+    disable_checkpoint = cfg.workflow.get("disable_checkpoint", False)
     for epoch in range(resume_epoch + 1, max_epoch):
         train_loader.sampler.set_epoch(epoch)
 
@@ -191,7 +194,9 @@ def main():
         )
 
         # save checkpoint
-        if (epoch == max_epoch - 1) or ((epoch + 1) % cfg.workflow.checkpoint_interval == 0):
+        if not disable_checkpoint and (
+            (epoch == max_epoch - 1) or ((epoch + 1) % cfg.workflow.checkpoint_interval == 0)
+        ):
             if args.rank == 0:
                 save_checkpoint(model, model_ema, optimizer, scheduler, epoch, work_dir=cfg.work_dir)
 
@@ -212,7 +217,7 @@ def main():
                 if val_loss < val_loss_best:
                     logger.info(f"New best epoch {epoch}")
                     val_loss_best = val_loss
-                    if args.rank == 0:
+                    if not disable_checkpoint and args.rank == 0:
                         save_best_checkpoint(model, model_ema, epoch, work_dir=cfg.work_dir)
 
         # eval for one epoch

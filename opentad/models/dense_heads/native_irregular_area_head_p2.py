@@ -91,6 +91,25 @@ class NativeIrregularAreaHeadP2(nn.Module):
         self.pair_scorer_loss_weight = float(cfg.get("pair_scorer_loss_weight", 0.5))
         self.pair_scorer_iou_positive = float(cfg.get("pair_scorer_iou_positive", 0.5))
         self.pair_scorer_sample_topk = int(cfg.get("pair_scorer_sample_topk", 16))
+        quality_cfg = cfg.get("quality_calibration", {})
+        if quality_cfg is None:
+            quality_cfg = {}
+        if not isinstance(quality_cfg, Mapping):
+            raise TypeError("area_head.quality_calibration must be a mapping when provided.")
+        self.enable_quality_calibration = bool(quality_cfg.get("enable", False))
+        self.quality_calibration_hidden = int(quality_cfg.get("hidden_dim", self.pair_scorer_hidden))
+        self.quality_calibration_loss_weight = float(quality_cfg.get("quality_loss_weight", 0.5))
+        self.quality_boundary_loss_weight = float(quality_cfg.get("boundary_loss_weight", 0.25))
+        self.quality_rank_loss_weight = float(quality_cfg.get("rank_loss_weight", 0.0))
+        self.quality_boundary_tau = float(quality_cfg.get("boundary_tau", 1.0))
+        self.quality_rank_positive_iou = float(quality_cfg.get("rank_positive_iou", 0.7))
+        self.quality_rank_negative_iou = float(quality_cfg.get("rank_negative_iou", 0.3))
+        self.quality_rank_margin = float(quality_cfg.get("rank_margin", 0.25))
+        self.quality_rank_sample_size = int(quality_cfg.get("rank_sample_size", 64))
+        self.quality_score_beta = float(quality_cfg.get("score_beta", 1.0))
+        self.quality_boundary_gamma = float(quality_cfg.get("boundary_gamma", 1.0))
+        self.quality_base_delta = float(quality_cfg.get("base_delta", 1.0))
+        self.quality_score_eps = float(quality_cfg.get("score_eps", 1e-6))
         self.enable_center_distance_hybrid = bool(cfg.get("enable_center_distance_hybrid", False))
         self.center_distance_loss_weight = float(cfg.get("center_distance_loss_weight", 1.0))
         self.center_distance_max_proposals_per_level = int(
@@ -126,6 +145,32 @@ class NativeIrregularAreaHeadP2(nn.Module):
             raise ValueError("area_head.pair_scorer_loss_weight must be non-negative.")
         if self.pair_scorer_sample_topk <= 0:
             raise ValueError("area_head.pair_scorer_sample_topk must be positive.")
+        if self.quality_calibration_hidden <= 0:
+            raise ValueError("area_head.quality_calibration.hidden_dim must be positive.")
+        for key, value in (
+            ("quality_loss_weight", self.quality_calibration_loss_weight),
+            ("boundary_loss_weight", self.quality_boundary_loss_weight),
+            ("rank_loss_weight", self.quality_rank_loss_weight),
+        ):
+            if value < 0:
+                raise ValueError(f"area_head.quality_calibration.{key} must be non-negative.")
+        if self.quality_boundary_tau <= 0:
+            raise ValueError("area_head.quality_calibration.boundary_tau must be positive.")
+        if self.quality_rank_sample_size <= 0:
+            raise ValueError("area_head.quality_calibration.rank_sample_size must be positive.")
+        if self.quality_rank_negative_iou > self.quality_rank_positive_iou:
+            raise ValueError("quality rank negative IoU threshold must not exceed positive threshold.")
+        if self.quality_rank_margin < 0:
+            raise ValueError("area_head.quality_calibration.rank_margin must be non-negative.")
+        if self.quality_score_eps <= 0:
+            raise ValueError("area_head.quality_calibration.score_eps must be positive.")
+        for key, value in (
+            ("score_beta", self.quality_score_beta),
+            ("boundary_gamma", self.quality_boundary_gamma),
+            ("base_delta", self.quality_base_delta),
+        ):
+            if value < 0:
+                raise ValueError(f"area_head.quality_calibration.{key} must be non-negative.")
         if self.center_distance_loss_weight < 0:
             raise ValueError("area_head.center_distance_loss_weight must be non-negative.")
         if self.center_distance_max_proposals_per_level <= 0:
@@ -160,6 +205,14 @@ class NativeIrregularAreaHeadP2(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Linear(self.pair_scorer_hidden, 1),
             )
+        if self.enable_quality_calibration:
+            self.quality_calibrator = nn.Sequential(
+                nn.Linear(self.pair_scorer_input_dim, self.quality_calibration_hidden),
+                nn.ReLU(inplace=True),
+                nn.Linear(self.quality_calibration_hidden, self.quality_calibration_hidden),
+                nn.ReLU(inplace=True),
+                nn.Linear(self.quality_calibration_hidden, 2),
+            )
         if self.enable_center_distance_hybrid:
             self.center_cls_head = nn.Conv1d(head_channels, self.num_classes, kernel_size=3, padding=1)
             self.center_reg_head = nn.Conv1d(head_channels, 2, kernel_size=3, padding=1)
@@ -192,6 +245,8 @@ class NativeIrregularAreaHeadP2(nn.Module):
         return self.losses(preds, area_grids, gt_segments, gt_labels)
 
     def forward_test(self, feat_list, mask_list, metas=None, **kwargs):
+        if self.enable_quality_calibration:
+            self._reject_quality_eval_gt_kwargs(kwargs)
         validate_sampling_contract(
             metas,
             mask_list[0],
@@ -394,6 +449,8 @@ class NativeIrregularAreaHeadP2(nn.Module):
                 self._pair_scorer_loss(preds, area_grids, gt_segments, gt_labels, normalizer)
                 * self.pair_scorer_loss_weight
             )
+        if self.enable_quality_calibration:
+            losses.update(self._quality_calibration_losses(preds, area_grids, gt_segments, gt_labels, normalizer))
         if self.enable_center_distance_hybrid and self.center_distance_loss_weight > 0:
             center_losses = self._center_distance_losses(preds, area_grids, gt_segments, gt_labels, normalizer)
             for key, value in center_losses.items():
@@ -509,6 +566,110 @@ class NativeIrregularAreaHeadP2(nn.Module):
             iou = NativeIrregularAreaHeadP2._segment_iou_tensor(pair_segment[same_cls], gt_segment[gt_idx])
             target[same_cls] = torch.maximum(target[same_cls], iou)
         return target.clamp(0.0, 1.0)
+
+    def _quality_calibration_losses(self, preds, area_grids, gt_segments, gt_labels, normalizer):
+        quality_losses = []
+        boundary_losses = []
+        rank_losses = []
+        for level_idx, grid in enumerate(area_grids):
+            for batch_idx in range(preds["area_logits"][level_idx].shape[0]):
+                candidates = self._collect_area_level_pairs(preds, grid, level_idx, batch_idx)
+                if not candidates or candidates["pair_start"].numel() == 0:
+                    continue
+                gt_segment = gt_segments[batch_idx].to(
+                    device=candidates["pair_start"].device,
+                    dtype=candidates["pair_start"].dtype,
+                )
+                gt_label = gt_labels[batch_idx].to(device=candidates["pair_start"].device).long()
+                if gt_segment.numel() == 0:
+                    quality_target = candidates["pair_start"].new_zeros(candidates["pair_start"].shape)
+                    boundary_target = quality_target
+                else:
+                    with torch.no_grad():
+                        quality_target = self._pair_iou_quality_target(candidates, gt_segment, gt_label)
+                        boundary_target = self._pair_boundary_quality_target(
+                            candidates,
+                            gt_segment,
+                            gt_label,
+                            tau=self.quality_boundary_tau,
+                        )
+                quality_logit, boundary_logit = self._quality_calibration_logits(candidates)
+                quality_logit, boundary_logit, quality_target, boundary_target = self._sample_quality_training_rows(
+                    quality_logit,
+                    boundary_logit,
+                    quality_target,
+                    boundary_target,
+                    candidates,
+                )
+                if self.quality_calibration_loss_weight > 0:
+                    quality_losses.append(
+                        F.binary_cross_entropy_with_logits(quality_logit, quality_target, reduction="sum")
+                    )
+                if self.quality_boundary_loss_weight > 0:
+                    boundary_losses.append(
+                        F.binary_cross_entropy_with_logits(boundary_logit, boundary_target, reduction="sum")
+                    )
+                if self.quality_rank_loss_weight > 0:
+                    rank_losses.append(self._quality_rank_loss(quality_logit, quality_target))
+        template = preds["area_logits"][0]
+        losses = {}
+        quality_loss = torch.stack(quality_losses).sum() / normalizer if quality_losses else template.sum() * 0.0
+        boundary_loss = torch.stack(boundary_losses).sum() / normalizer if boundary_losses else template.sum() * 0.0
+        rank_loss = torch.stack(rank_losses).mean() if rank_losses else template.sum() * 0.0
+        if self.quality_calibration_loss_weight > 0:
+            losses["quality_calibration_loss"] = quality_loss * self.quality_calibration_loss_weight
+        if self.quality_boundary_loss_weight > 0:
+            losses["quality_boundary_loss"] = boundary_loss * self.quality_boundary_loss_weight
+        if self.quality_rank_loss_weight > 0:
+            losses["quality_rank_loss"] = rank_loss * self.quality_rank_loss_weight
+        return losses
+
+    @staticmethod
+    def _pair_boundary_quality_target(candidates, gt_segment, gt_label, tau=1.0):
+        cls_idx = candidates["class_id"].long()
+        target = candidates["pair_start"].new_zeros(candidates["pair_start"].shape)
+        for gt_idx in range(gt_segment.shape[0]):
+            label = int(gt_label[gt_idx].item())
+            same_cls = cls_idx == label
+            if not same_cls.any().item():
+                continue
+            gt_start = gt_segment[gt_idx, 0]
+            gt_end = gt_segment[gt_idx, 1]
+            gt_duration = (gt_end - gt_start).clamp_min(1e-4)
+            start_error = (candidates["pair_start"][same_cls] - gt_start).abs()
+            end_error = (candidates["pair_end"][same_cls] - gt_end).abs()
+            normalized_error = (start_error + end_error) / gt_duration
+            quality = torch.exp(-normalized_error / max(float(tau), 1e-6))
+            target[same_cls] = torch.maximum(target[same_cls], quality)
+        return target.clamp(0.0, 1.0)
+
+    def _quality_calibration_logits(self, candidates):
+        logits = self.quality_calibrator(candidates["pair_features"])
+        return logits[:, 0], logits[:, 1]
+
+    def _sample_quality_training_rows(self, quality_logit, boundary_logit, quality_target, boundary_target, candidates):
+        max_rows = self.max_pairs_per_class * self.num_classes
+        if quality_logit.numel() <= max_rows:
+            return quality_logit, boundary_logit, quality_target, boundary_target
+        priority = torch.maximum(quality_target, candidates["hand_score"].detach())
+        _, order = torch.topk(priority, k=max_rows)
+        return quality_logit[order], boundary_logit[order], quality_target[order], boundary_target[order]
+
+    def _quality_rank_loss(self, quality_logit, quality_target):
+        pos = quality_target >= self.quality_rank_positive_iou
+        neg = quality_target <= self.quality_rank_negative_iou
+        if not pos.any().item() or not neg.any().item():
+            return quality_logit.sum() * 0.0
+        pos_logit = quality_logit[pos]
+        neg_logit = quality_logit[neg]
+        if pos_logit.numel() > self.quality_rank_sample_size:
+            _, pos_order = torch.topk(pos_logit.detach(), k=self.quality_rank_sample_size)
+            pos_logit = pos_logit[pos_order]
+        if neg_logit.numel() > self.quality_rank_sample_size:
+            _, neg_order = torch.topk(-neg_logit.detach(), k=self.quality_rank_sample_size)
+            neg_logit = neg_logit[neg_order]
+        diff = pos_logit[:, None] - neg_logit[None, :]
+        return F.relu(self.quality_rank_margin - diff).mean()
 
     def _center_distance_losses(self, preds, area_grids, gt_segments, gt_labels, normalizer):
         cls_chunks = []
@@ -825,18 +986,51 @@ class NativeIrregularAreaHeadP2(nn.Module):
     def _score_pair_candidates(self, candidates):
         hand_score = candidates["hand_score"]
         if self.score_fusion_mode == "hand_geometric" or not self.enable_pair_scorer:
-            return hand_score
-        learned = torch.sigmoid(self.pair_scorer(candidates["pair_features"]).squeeze(-1))
-        if self.score_fusion_mode == "learned_pair":
-            base = (
-                candidates["pair_start_score"].clamp_min(1e-6)
-                * candidates["pair_end_score"].clamp_min(1e-6)
-                * candidates["area_integral"].clamp_min(1e-6)
-            ).pow(1.0 / 3.0)
-            return (base * learned).clamp(0.0, 1.0)
-        if self.score_fusion_mode == "hybrid_sum":
-            return (0.5 * hand_score + 0.5 * learned).clamp(0.0, 1.0)
-        return hand_score
+            base_score = hand_score
+        else:
+            learned = torch.sigmoid(self.pair_scorer(candidates["pair_features"]).squeeze(-1))
+            if self.score_fusion_mode == "learned_pair":
+                base = (
+                    candidates["pair_start_score"].clamp_min(1e-6)
+                    * candidates["pair_end_score"].clamp_min(1e-6)
+                    * candidates["area_integral"].clamp_min(1e-6)
+                ).pow(1.0 / 3.0)
+                base_score = (base * learned).clamp(0.0, 1.0)
+            elif self.score_fusion_mode == "hybrid_sum":
+                base_score = (0.5 * hand_score + 0.5 * learned).clamp(0.0, 1.0)
+            else:
+                base_score = hand_score
+        if not self.enable_quality_calibration:
+            return base_score
+        quality_logit, boundary_logit = self._quality_calibration_logits(candidates)
+        quality = torch.sigmoid(quality_logit)
+        boundary_quality = torch.sigmoid(boundary_logit)
+        calibrated = base_score.clamp_min(self.quality_score_eps).pow(self.quality_base_delta)
+        if self.quality_score_beta > 0:
+            calibrated = calibrated * quality.clamp_min(self.quality_score_eps).pow(self.quality_score_beta)
+        if self.quality_boundary_gamma > 0:
+            calibrated = calibrated * boundary_quality.clamp_min(self.quality_score_eps).pow(
+                self.quality_boundary_gamma
+            )
+        return calibrated.clamp(0.0, 1.0)
+
+    @staticmethod
+    def _reject_quality_eval_gt_kwargs(kwargs):
+        forbidden = {
+            "gt_segments",
+            "gt_labels",
+            "gt_bboxes",
+            "gt_masks",
+            "targets",
+            "quality_targets",
+            "oracle_targets",
+        }
+        present = sorted(key for key in forbidden if kwargs.get(key) is not None)
+        if present:
+            raise ValueError(
+                "quality_calibration eval/test forward must not receive GT or oracle target kwargs: "
+                + ", ".join(present)
+            )
 
     @staticmethod
     def _interval_pool_features(pair_start, pair_end, cell_start, cell_end, cell_features, eps=1e-4):

@@ -182,6 +182,10 @@ def _smoke_scope_block_reason(cfg, gate_name, gate, entrypoint):
         return "smoke_only=True requires workflow.val_eval_interval<=0"
     if _as_int(_get_value(workflow, "val_loss_interval", _MISSING), default=-1) > 0:
         return "smoke_only=True requires workflow.val_loss_interval<=0"
+    if _is_true(_get_value(gate, "disable_checkpoint", _MISSING)) and not _is_true(
+        _get_value(workflow, "disable_checkpoint", _MISSING)
+    ):
+        return "smoke_only=True requires workflow.disable_checkpoint=True when gate.disable_checkpoint=True"
 
     inference = _get_value(cfg, "inference", {})
     if _is_true(_get_value(inference, "load_from_raw_predictions", _MISSING)):
@@ -318,6 +322,18 @@ def assert_safe_cfg_options_for_gated_config(cfg, cfg_options, entrypoint="tools
         )
 
 
+def assert_safe_entrypoint_args_for_gated_config(cfg, args, entrypoint="tools/train.py"):
+    """Reject CLI entrypoint arguments that bypass gated-config launchers."""
+    if not _has_pc_ot_mras_gate(cfg):
+        return
+
+    if getattr(args, "resume", None) is not None:
+        raise RuntimeError(
+            f"{entrypoint} rejected --resume for PC-OT-MRAS gated config before DDP, dataset, "
+            "model, or checkpoint access. Use a separately reviewed launcher/gate for any resume path."
+        )
+
+
 def _sha256_file(path):
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -401,6 +417,44 @@ def _entrypoint_gate_context_block_reason(gate):
         for key in forbidden_true:
             if gate_payload.get(str(key)) is True:
                 return f"entrypoint gate must not set {key}=true"
+
+    if _is_true(_get_value(context, "strict_payload_validation", _MISSING)):
+        exact_values = _get_value(context, "required_exact_values", {})
+        for key, expected in _iter_items(exact_values):
+            if gate_payload.get(str(key)) != expected:
+                return f"entrypoint gate must set {key}={expected!r}"
+
+        required_true = _get_value(context, "required_true_keys", _MISSING)
+        if required_true is not _MISSING:
+            for key in required_true:
+                if gate_payload.get(str(key)) is not True:
+                    return f"entrypoint gate must set {key}=true"
+
+        if forbidden_true is not _MISSING:
+            for key in forbidden_true:
+                if str(key) in gate_payload and gate_payload[str(key)] is not False:
+                    return f"entrypoint gate must keep {key}=false/absent; got {gate_payload[str(key)]!r}"
+
+        if _get_value(context, "unknown_key_policy", _MISSING) == "reject_unknown_except_explicit_harmless_metadata":
+            harmless = _get_value(context, "harmless_metadata_keys", ())
+            allowed_keys = {
+                "decision",
+                "route",
+                "active_sha256_manifest_sha256",
+                "expected_active_sha256_manifest_sha256",
+                "resolved_config_sha256",
+                "expected_resolved_config_sha256",
+            }
+            for key, _ in _iter_items(exact_values):
+                allowed_keys.add(str(key))
+            if required_true is not _MISSING:
+                allowed_keys.update(str(key) for key in required_true)
+            if forbidden_true is not _MISSING:
+                allowed_keys.update(str(key) for key in forbidden_true)
+            allowed_keys.update(str(key) for key in harmless)
+            for key in gate_payload:
+                if str(key) not in allowed_keys:
+                    return f"entrypoint gate contains unknown or unallowlisted key: {key}"
 
     return None
 
