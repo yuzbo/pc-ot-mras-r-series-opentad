@@ -2,6 +2,7 @@ from pathlib import Path
 
 from tools.bata.diagnose_pc_ot_mras_r17_r18_mechanisms import (
     classify_summary_verdict,
+    diagnostic_metas_from_head_kwargs,
     geometry_contract_audit,
     proposal_survival_audit,
     reader_selection_utility,
@@ -9,6 +10,23 @@ from tools.bata.diagnose_pc_ot_mras_r17_r18_mechanisms import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_diagnostic_prefers_head_received_metas_after_neck_metadata_write():
+    original = [{"video_name": "v_test"}]
+    head = [
+        {
+            "video_name": "v_test",
+            "irregular_native_axis": True,
+            "irregular_selected_positions": [0.0, 2.0, 5.0],
+        }
+    ]
+
+    metas = diagnostic_metas_from_head_kwargs({"metas": head}, original, batch_size=1)
+
+    assert metas == head
+    assert metas[0]["irregular_native_axis"] is True
+    assert metas[0]["irregular_selected_positions"] == [0.0, 2.0, 5.0]
 
 
 def test_reader_selection_utility_uses_high_score_unique_positions():

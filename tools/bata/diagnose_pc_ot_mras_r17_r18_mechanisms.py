@@ -472,6 +472,19 @@ def _metas_to_list(metas: Any, *, batch_size: int) -> list[Mapping[str, Any]]:
     return base_metas_to_list(metas, batch_size=batch_size)
 
 
+def diagnostic_metas_from_head_kwargs(
+    captured_kwargs: Mapping[str, Any],
+    original_metas: Sequence[Mapping[str, Any]],
+    *,
+    batch_size: int,
+) -> list[Mapping[str, Any]]:
+    """Prefer head-received metas because neck metadata is written after the original dataloader metas."""
+    head_metas = captured_kwargs.get("metas")
+    if head_metas is None:
+        return list(original_metas)
+    return _metas_to_list(head_metas, batch_size=batch_size)
+
+
 def _sample_gt_segments(data_dict: Mapping[str, Any], sample_idx: int, batch_size: int) -> list[list[float]]:
     if "gt_segments" not in data_dict:
         return []
@@ -602,10 +615,14 @@ def run_case(
             if len(captured_inputs) < 2:
                 raise RuntimeError("captured RPN input does not contain feature and mask lists")
             feat_list, mask_list = captured_inputs[0], captured_inputs[1]
-            head_metas = captured_kwargs.get("metas", metas)
-            proposal_rows = rpn_head.dump_proposal_factors(feat_list, mask_list, metas=head_metas, label_names=label_names)
+            diagnostic_metas = diagnostic_metas_from_head_kwargs(
+                captured_kwargs,
+                metas,
+                batch_size=batch_size,
+            )
+            proposal_rows = rpn_head.dump_proposal_factors(feat_list, mask_list, metas=diagnostic_metas, label_names=label_names)
             grouped_proposals = _rows_by_sample(proposal_rows)
-            for sample_idx, meta in enumerate(metas):
+            for sample_idx, meta in enumerate(diagnostic_metas):
                 sample_id = _short_sample_id(meta, f"sample_{total_samples + sample_idx}")
                 gt_segments = _sample_gt_segments_from_meta_or_batch(meta, data_dict, sample_idx, batch_size)
                 d1 = reader_selection_utility(
