@@ -37,11 +37,14 @@ class _TailBiasedFakeReader(nn.Module):
             matrix[:, slot, pos] = 1.0
         logits = lowcost_features.new_zeros((batch, time))
         logits[:, 3:7] = 3.0
+        role_logits = lowcost_features.new_zeros((batch, time, 6))
+        role_logits[:, 3:7, 1] = 2.0
+        role_logits[:, 10:16, 2] = 2.0
         return {
             "acquisition_matrix": matrix,
             "value_logits": logits,
             "risk_logits": -logits,
-            "role_logits": lowcost_features.new_zeros((batch, slots, 6)),
+            "role_logits": role_logits,
             "regularizers": {"total_regularizer": matrix.sum() * 0.0},
         }
 
@@ -207,6 +210,7 @@ def test_compressed_pixel_scout_features_are_direct_downsampled_frame_pixels():
         descriptor_dim=12,
         scout_feature_source="compressed_pixels",
         scout_spatial_size=2,
+        scout_pixel_normalize=False,
         protected_uniform_count=0,
         coverage_guard_count=0,
     )
@@ -266,7 +270,7 @@ def test_forward_keeps_uniform_anchors_and_remaps_gt_with_padded_descriptor():
         assert torch.all(segments[:, 1] > segments[:, 0])
     assert "selector_value_aux_loss" in outputs["losses"]
     assert "selector_risk_aux_loss" in outputs["losses"]
-    assert "selector_role_entropy_loss" in outputs["losses"]
+    assert "selector_role_aux_loss" in outputs["losses"]
 
 
 def test_train_forward_uses_hard_top1_frames_not_topk_mixed_frames():
