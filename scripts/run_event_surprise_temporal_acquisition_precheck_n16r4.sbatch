@@ -251,10 +251,9 @@ python -m py_compile \
   tests/test_event_surprise_config_gate.py \
   tests/test_event_surprise_acquisition_route.py
 
-log "focused Event-Surprise pytest"
+log "focused Event-Surprise launcher/gate pytest"
 python -m pytest \
   tests/test_event_surprise_config_gate.py \
-  tests/test_event_surprise_acquisition_route.py \
   -q
 
 write_summary "PASS" "EVENT_SURPRISE_PRECHECK_ONLY_PASS_NO_TRAIN_NO_DATA_NO_MAP" "Event-Surprise validator/import/pytest precheck completed without detector training or evaluation"

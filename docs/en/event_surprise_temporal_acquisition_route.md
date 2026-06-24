@@ -66,8 +66,8 @@ also pass an explicit action check:
 
 The N16R4 deployment-precheck launcher is
 `scripts/run_event_surprise_temporal_acquisition_precheck_n16r4.sbatch`. It
-defaults to `PRECHECK_ONLY=1` and runs validator/import/compile/focused-test
-checks only. Setting `PRECHECK_ONLY=0` is fail-closed unless an external
+defaults to `PRECHECK_ONLY=1` and runs validator/import/compile/focused
+launcher-gate checks only. Setting `PRECHECK_ONLY=0` is fail-closed unless an external
 Event-Surprise full-train gate JSON, matching SHA256, and coordinator override
 are all supplied. This launcher does not run `tools/train.py` or `tools/test.py`
 in the deployment-precheck owner stage.

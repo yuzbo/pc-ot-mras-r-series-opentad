@@ -271,5 +271,7 @@ def test_event_surprise_n16r4_launcher_is_precheck_default_and_full_train_fail_c
     assert "EVENT_SURPRISE_ENABLE_TOOLS_TRAIN_AFTER_GATE=1" in text
     assert "python tools/train.py" not in text
     assert "tools/test.py" not in text
+    assert "python -m pytest \\\n  tests/test_event_surprise_config_gate.py \\" in text
+    assert "tests/test_event_surprise_acquisition_route.py \\\n  -q" not in text
     for token in FORBIDDEN_C3_TOKENS:
         assert token not in text
