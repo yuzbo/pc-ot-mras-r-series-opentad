@@ -291,6 +291,9 @@ class ActionFormer(SingleStageDetector):
                 elif pn.endswith("weight") and isinstance(m, blacklist_weight_modules):
                     # weights of blacklist modules will NOT be weight decayed
                     no_decay.add(fpn)
+                elif p.ndim <= 1 and pn.endswith(("scale", "scales", "gate", "gates")):
+                    # learned scalar/vector scales and gates should not receive weight decay
+                    no_decay.add(fpn)
                 elif pn.endswith("scale") and isinstance(m, (Scale, AffineDropPath)):
                     # corner case of our scale layer
                     no_decay.add(fpn)

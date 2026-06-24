@@ -299,6 +299,23 @@ def test_bh_sdc_actionformer_compacts_before_temporal_mixing_backbone_and_preser
     assert captured["bh_sdc_detector_metadata"]["route_label"] == BH_SDC_ROUTE_LABEL
 
 
+def test_bh_sdc_refine_scale_is_in_optimizer_no_decay_group_once():
+    model = _bh_sdc_model()
+    model.token_compressor.refine = torch.nn.Conv1d(1, 1, kernel_size=1)
+    model.token_compressor.refine_scale = torch.nn.Parameter(torch.zeros(()))
+
+    optim_groups = model.get_optim_groups({"weight_decay": 0.05, "lr": 1e-4})
+
+    refine_scale = model.token_compressor.refine_scale
+    memberships = [
+        group
+        for group in optim_groups
+        if any(param is refine_scale for param in group["params"])
+    ]
+    assert len(memberships) == 1
+    assert memberships[0]["weight_decay"] == 0.0
+
+
 def test_non_bh_sdc_actionformer_keeps_existing_backbone_call_contract():
     model = ActionFormer(
         backbone=dict(type="TailSensitiveTemporalMixingBackbone", channels=1),
