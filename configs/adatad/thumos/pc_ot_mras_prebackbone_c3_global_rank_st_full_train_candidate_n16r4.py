@@ -7,6 +7,7 @@ stage_id = "c3_global_rank_st_full_train_candidate_n16r4"
 
 experiment_scope = dict(
     variant_id=variant_id,
+    route_family="C3_ORIGINAL_OPTIMIZATION_ROUTE",
     route=route_id,
     stage=stage_id,
     detector_stack="original_adatad_actionformer_adapter",
@@ -16,8 +17,14 @@ experiment_scope = dict(
     acquisition_unit="frame",
     budget_protocol="fixed384_over_dense768_frame_score_first_global_rank_st",
     selector_reader="PCOTMRASBoundaryDifficultyTemporalFrameScout",
-    selection_strategy="frame_score_topk",
-    rank_transport_surrogate="global_softmax",
+    selection_strategy="frame_score_global_rank_st",
+    selector_gradient="hard_real_frames_with_global_differentiable_rank_topk_st",
+    rank_transport_surrogate="global_rank_topk",
+    rank_transport_note=(
+        "Frame logits choose hard real frames. Training-only ST transport uses "
+        "global soft ranks plus a top-k membership surrogate; slot logits are not "
+        "the hard selection source."
+    ),
     uses_p2=False,
     uses_offline_ledger=False,
     uses_teacher=False,
@@ -51,7 +58,7 @@ pc_ot_mras_prebackbone_e2e_acquisition_gate = dict(
     allow_detector_training=False,
     requires_launch_gate=True,
     launch_gate_passed=False,
-    allow_remote_sync=True,
+    allow_remote_sync=False,
     allow_precheck_only=True,
     allow_slurm=False,
     allow_gpu=False,
@@ -159,8 +166,11 @@ pc_ot_mras_prebackbone_e2e_acquisition_gate = dict(
 
 model = dict(
     frame_selector=dict(
-        selection_strategy="frame_score_topk",
-        frame_score_st_surrogate="global_softmax",
+        selection_strategy="frame_score_global_rank_st",
+        frame_score_st_surrogate="global_rank_topk",
+        global_rank_st_temperature=2.0,
+        global_rank_st_topk=384,
+        global_rank_st_rank_width=1.5,
         max_dense_gap=0,
         max_gap_guard_count=0,
     )

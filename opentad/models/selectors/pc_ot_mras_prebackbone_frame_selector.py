@@ -886,6 +886,9 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         frame_score_st_logit_clamp: float = 0.0,
         frame_score_st_gradient_scale: float = 1.0,
         frame_score_aux_logit_clamp: float = 0.0,
+        global_rank_st_temperature: float | None = None,
+        global_rank_st_topk: int | None = None,
+        global_rank_st_rank_width: float = 1.0,
         interval_boundary_budget_ratio: float = 0.5,
         interval_candidate_topk: int = 16,
         dynamic_budget: Mapping[str, Any] | None = None,
@@ -982,9 +985,15 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             raise ValueError("max_dense_gap must be non-negative")
         if int(max_gap_guard_count) < 0:
             raise ValueError("max_gap_guard_count must be non-negative")
-        if str(selection_strategy) not in ("slot_transport", "frame_score_topk", "interval_boundary_packet"):
+        if str(selection_strategy) not in (
+            "slot_transport",
+            "frame_score_topk",
+            "frame_score_global_rank_st",
+            "interval_boundary_packet",
+        ):
             raise ValueError(
-                "selection_strategy must be 'slot_transport', 'frame_score_topk', or 'interval_boundary_packet'"
+                "selection_strategy must be 'slot_transport', 'frame_score_topk', "
+                "'frame_score_global_rank_st', or 'interval_boundary_packet'"
             )
         if float(frame_score_st_temperature) <= 0.0:
             raise ValueError("frame_score_st_temperature must be positive")
@@ -992,14 +1001,30 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             raise ValueError("frame_score_st_local_width must be positive")
         if float(frame_score_st_local_bias_weight) < 0.0:
             raise ValueError("frame_score_st_local_bias_weight must be non-negative")
-        if str(frame_score_st_surrogate) not in ("local_softmax", "global_softmax"):
-            raise ValueError("frame_score_st_surrogate must be 'local_softmax' or 'global_softmax'")
+        if str(frame_score_st_surrogate) not in ("local_softmax", "global_softmax", "global_rank_topk"):
+            raise ValueError(
+                "frame_score_st_surrogate must be 'local_softmax', 'global_softmax', or 'global_rank_topk'"
+            )
+        if str(selection_strategy) == "frame_score_global_rank_st" and str(frame_score_st_surrogate) != "global_rank_topk":
+            raise ValueError("frame_score_global_rank_st requires frame_score_st_surrogate='global_rank_topk'")
         if float(frame_score_st_logit_clamp) < 0.0:
             raise ValueError("frame_score_st_logit_clamp must be non-negative")
         if not 0.0 <= float(frame_score_st_gradient_scale) <= 1.0:
             raise ValueError("frame_score_st_gradient_scale must be in [0, 1]")
         if float(frame_score_aux_logit_clamp) < 0.0:
             raise ValueError("frame_score_aux_logit_clamp must be non-negative")
+        if global_rank_st_temperature is None:
+            global_rank_st_temperature = float(frame_score_st_temperature)
+        if float(global_rank_st_temperature) <= 0.0:
+            raise ValueError("global_rank_st_temperature must be positive")
+        if global_rank_st_topk is None:
+            global_rank_st_topk = int(target_len)
+        if int(global_rank_st_topk) <= 0:
+            raise ValueError("global_rank_st_topk must be positive")
+        if int(global_rank_st_topk) > int(target_len):
+            raise ValueError("global_rank_st_topk must not exceed target_len")
+        if float(global_rank_st_rank_width) <= 0.0:
+            raise ValueError("global_rank_st_rank_width must be positive")
         if not 0.0 <= float(interval_boundary_budget_ratio) <= 1.0:
             raise ValueError("interval_boundary_budget_ratio must be in [0, 1]")
         if int(interval_candidate_topk) <= 0:
@@ -1017,6 +1042,9 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         self.frame_score_st_logit_clamp = float(frame_score_st_logit_clamp)
         self.frame_score_st_gradient_scale = float(frame_score_st_gradient_scale)
         self.frame_score_aux_logit_clamp = float(frame_score_aux_logit_clamp)
+        self.global_rank_st_temperature = float(global_rank_st_temperature)
+        self.global_rank_st_topk = int(global_rank_st_topk)
+        self.global_rank_st_rank_width = float(global_rank_st_rank_width)
         self.interval_boundary_budget_ratio = float(interval_boundary_budget_ratio)
         self.interval_candidate_topk = int(interval_candidate_topk)
         self.dynamic_budget = self._normalize_dynamic_budget_config(dynamic_budget)
@@ -1304,7 +1332,10 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         candidate_dense_indices: torch.Tensor,
         training: bool,
     ) -> dict[str, torch.Tensor]:
-        if getattr(self, "selection_strategy", "slot_transport") == "frame_score_topk":
+        if getattr(self, "selection_strategy", "slot_transport") in (
+            "frame_score_topk",
+            "frame_score_global_rank_st",
+        ):
             return self._frame_score_transport_plan(
                 reader_outputs=reader_outputs,
                 valid=valid,
@@ -1554,6 +1585,8 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         candidate_valid: torch.Tensor,
         candidate_dense_indices: torch.Tensor,
         candidate_idx: int | None,
+        hard_rank_position: int | None = None,
+        topk_budget: int | None = None,
         name: str,
     ) -> torch.Tensor:
         if scores.ndim != 1 or candidate_valid.ndim != 1 or candidate_dense_indices.ndim != 1:
@@ -1575,6 +1608,33 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             logits = logits + (-0.5 * (distances / local_width).square() * local_bias_weight)
         elif surrogate == "global_softmax":
             pass
+        elif surrogate == "global_rank_topk":
+            if hard_rank_position is None:
+                raise ValueError("global_rank_topk rank transport requires a hard rank position")
+            rank_temperature = float(getattr(self, "global_rank_st_temperature", temperature))
+            rank_width = float(getattr(self, "global_rank_st_rank_width", 1.0))
+            valid_bool = candidate_valid.bool()
+            valid_count = int(valid_bool.long().sum().item())
+            if valid_count <= 0:
+                raise ValueError("global_rank_topk rank transport requires at least one valid candidate")
+            topk_limit = int(topk_budget) if topk_budget is not None else int(getattr(self, "global_rank_st_topk", self.target_len))
+            topk_limit = max(1, min(topk_limit, valid_count))
+            rank_scores = _smooth_clamp_logits(
+                scores.float(),
+                float(getattr(self, "frame_score_st_logit_clamp", 0.0)),
+                f"{name} global rank scores",
+            )
+            rank_scores = rank_scores / rank_temperature
+            score_diffs = rank_scores[None, :] - rank_scores[:, None]
+            pair_valid = valid_bool[:, None] & valid_bool[None, :]
+            eye = torch.eye(scores.shape[0], dtype=torch.bool, device=scores.device)
+            higher_prob = torch.sigmoid(score_diffs).masked_fill(~pair_valid | eye, 0.0)
+            soft_rank = 1.0 + higher_prob.sum(dim=1)
+            _require_finite(soft_rank, f"{name} global soft ranks")
+            rank_center = float(int(hard_rank_position) + 1)
+            rank_logits = -0.5 * ((soft_rank - rank_center) / rank_width).square()
+            membership = torch.sigmoid((float(topk_limit) + 0.5 - soft_rank) / rank_width)
+            logits = rank_logits + torch.log(membership.clamp_min(torch.finfo(torch.float32).eps))
         else:
             raise ValueError(f"unknown frame_score_st_surrogate={surrogate}")
         logits = _smooth_clamp_logits(
@@ -2003,19 +2063,21 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         candidate_dense_indices: torch.Tensor,
         training: bool,
     ) -> dict[str, torch.Tensor]:
+        strategy_name = getattr(self, "selection_strategy", "frame_score_topk")
+        plan_name = "frame_score_global_rank_st" if strategy_name == "frame_score_global_rank_st" else "frame_score_topk"
         frame_scores = reader_outputs.get("frame_selection_logits")
         if frame_scores is None:
             frame_scores = reader_outputs.get("actionness_logits", reader_outputs.get("action_logits"))
         if frame_scores is None:
-            raise ValueError("frame_score_topk selection requires frame_selection_logits or actionness/action logits")
+            raise ValueError(f"{plan_name} selection requires frame_selection_logits or actionness/action logits")
         if not torch.is_tensor(frame_scores):
-            raise TypeError("frame_score_topk frame scores must be a tensor")
-        _require_finite(frame_scores, "frame_score_topk frame scores", error_type=ValueError)
+            raise TypeError(f"{plan_name} frame scores must be a tensor")
+        _require_finite(frame_scores, f"{plan_name} frame scores", error_type=ValueError)
         if tuple(candidate_dense_indices.shape) != tuple(candidate_valid.shape):
             raise ValueError("candidate_dense_indices must match candidate_valid")
         if tuple(frame_scores.shape) != tuple(candidate_valid.shape):
             raise ValueError(
-                "frame_score_topk frame scores must match candidate axis; "
+                f"{plan_name} frame scores must match candidate axis; "
                 f"got scores={tuple(frame_scores.shape)}, candidate_valid={tuple(candidate_valid.shape)}"
             )
 
@@ -2025,7 +2087,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         candidate_dense_indices = candidate_dense_indices.to(device=device)
         valid = valid.to(device=device).bool()
         if bool((candidate_valid.long().sum(dim=1) <= 0).any().item()):
-            raise ValueError("each sample must contain at least one valid frame_score_topk candidate")
+            raise ValueError(f"each sample must contain at least one valid {plan_name} candidate")
 
         batch, candidate_len = frame_scores.shape
         dense_len = int(valid.shape[1])
@@ -2045,7 +2107,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
 
         min_score = torch.finfo(torch.float32).min
         masked_scores = frame_scores.masked_fill(~candidate_valid, min_score)
-        _require_finite(masked_scores, "frame_score_topk masked scores")
+        _require_finite(masked_scores, f"{plan_name} masked scores")
         dynamic_budget_plan = self._dynamic_budget_plan(
             reader_outputs=reader_outputs,
             frame_scores=frame_scores,
@@ -2062,12 +2124,16 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             output_valid_len = min(int(valid_candidate_indices.numel()), configured_budget, self.target_len)
             selected_output_valid_lengths[batch_idx] = output_valid_len
             if output_valid_len <= 0:
-                raise ValueError("frame_score_topk found no valid candidates for a sample")
+                raise ValueError(f"{plan_name} found no valid candidates for a sample")
 
             ranked_candidate_indices = torch.argsort(masked_scores[batch_idx], descending=True, stable=True)
             ranked_candidate_indices = ranked_candidate_indices[
                 candidate_valid[batch_idx].gather(0, ranked_candidate_indices)
             ]
+            rank_position_by_candidate = {
+                int(candidate.item()): rank
+                for rank, candidate in enumerate(ranked_candidate_indices[:output_valid_len])
+            }
             raw_topk_positions = [
                 int(pos)
                 for pos in candidate_dense_indices[batch_idx]
@@ -2108,7 +2174,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                     if pos in used or not bool(valid[batch_idx, pos].item()):
                         continue
                     used.add(pos)
-                    rows.append((pos, candidate_idx, "frame_score_topk"))
+                    rows.append((pos, candidate_idx, plan_name))
                     if len(rows) >= output_valid_len:
                         break
 
@@ -2161,7 +2227,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 if (
                     self.straight_through_detector_loss
                     and training
-                    and role == "frame_score_topk"
+                    and role in ("frame_score_topk", "frame_score_global_rank_st")
                     and candidate_idx is not None
                 ):
                     soft_candidate = self._rank_transport_candidate_distribution(
@@ -2169,7 +2235,9 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                         candidate_valid=candidate_valid[batch_idx],
                         candidate_dense_indices=candidate_dense_indices[batch_idx],
                         candidate_idx=int(candidate_idx),
-                        name="frame_score_topk",
+                        hard_rank_position=rank_position_by_candidate.get(int(candidate_idx)),
+                        topk_budget=output_valid_len,
+                        name=plan_name,
                     )
                     soft_dense = self._scatter_candidate_distribution_to_dense(
                         candidate_distribution=soft_candidate,
@@ -2184,14 +2252,18 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             selected_roles.append(batch_roles)
             reader_fill_counts.append(0)
             st_active_row_counts.append(
-                sum(1 for _pos, candidate_idx, role in rows if training and role == "frame_score_topk" and candidate_idx is not None)
+                sum(
+                    1
+                    for _pos, candidate_idx, role in rows
+                    if training and role in ("frame_score_topk", "frame_score_global_rank_st") and candidate_idx is not None
+                )
                 if self.straight_through_detector_loss
                 else 0
             )
 
-        _require_finite(fixed_weights, "frame_score_topk fixed weights")
-        _require_finite(fixed_positions, "frame_score_topk selected positions")
-        _require_finite(transport_weights, "frame_score_topk sparse transport weights")
+        _require_finite(fixed_weights, f"{plan_name} fixed weights")
+        _require_finite(fixed_positions, f"{plan_name} selected positions")
+        _require_finite(transport_weights, f"{plan_name} sparse transport weights")
         return {
             "indices": fixed_indices,
             "weights": fixed_weights,
@@ -2584,6 +2656,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             meta["pc_ot_mras_prebackbone_selection_strategy"] = selection_strategy
             hard_source_by_strategy = {
                 "frame_score_topk": "frame_selection_logits",
+                "frame_score_global_rank_st": "frame_selection_logits",
                 "interval_boundary_packet": "interval_boundary_packet",
             }
             meta["pc_ot_mras_prebackbone_hard_selection_source"] = hard_source_by_strategy.get(
@@ -2604,6 +2677,15 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             )
             meta["pc_ot_mras_prebackbone_frame_score_aux_logit_clamp"] = float(
                 getattr(self, "frame_score_aux_logit_clamp", 0.0)
+            )
+            meta["pc_ot_mras_prebackbone_global_rank_st_temperature"] = float(
+                getattr(self, "global_rank_st_temperature", getattr(self, "frame_score_st_temperature", 1.0))
+            )
+            meta["pc_ot_mras_prebackbone_global_rank_st_topk"] = int(
+                getattr(self, "global_rank_st_topk", self.target_len)
+            )
+            meta["pc_ot_mras_prebackbone_global_rank_st_rank_width"] = float(
+                getattr(self, "global_rank_st_rank_width", 1.0)
             )
             meta["pc_ot_mras_prebackbone_selected_roles"] = roles
             meta["pc_ot_mras_prebackbone_raw_slot_dense_indices"] = (
@@ -2939,7 +3021,10 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         slot_prob = None
         column_mass = None
         if (
-            getattr(self, "selection_strategy", "slot_transport") == "frame_score_topk"
+            getattr(self, "selection_strategy", "slot_transport") in (
+                "frame_score_topk",
+                "frame_score_global_rank_st",
+            )
             and frame_selection_logits is not None
             and self.aux_gt_acquisition_loss_weight > 0.0
             and bool(valid.any().item())
