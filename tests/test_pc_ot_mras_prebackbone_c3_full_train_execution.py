@@ -50,6 +50,7 @@ def _good_gate_payload(manifest="manifest-sha", resolved="resolved-sha", pretrai
         "scout_feature_source": "compressed_pixels",
         "scout_spatial_size": 32,
         "max_epochs": 60,
+        "checkpoint_interval": 60,
         "val_start_epoch": 40,
         "val_eval_interval": 2,
         "allow_remote_sync": True,
@@ -110,6 +111,7 @@ def test_c3_full_train_config_is_parseable_and_unlocks_only_tools_train(tmp_path
 
     assert cfg.variant_id == "C3-F1-LR-TinyTransformer-ST-OriginalAdaTAD"
     assert cfg.workflow.end_epoch == 60
+    assert cfg.workflow.checkpoint_interval == 60
     assert cfg.workflow.val_start_epoch == 40
     assert cfg.workflow.val_eval_interval == 2
     assert cfg.experiment_scope.route == "pc_ot_mras_prebackbone_c3_f1_lr_tinytransformer_st_original_adatad"
@@ -177,6 +179,7 @@ def test_c3_full_train_config_is_parseable_and_unlocks_only_tools_train(tmp_path
         "ALLOW_PC_OT_MRAS_PREBACKBONE_C3_FULL_TRAIN_FIXED50",
     )
     assert gate.entrypoint_gate_context.required_exact_values.max_epochs == 60
+    assert gate.entrypoint_gate_context.required_exact_values.checkpoint_interval == 60
     assert gate.entrypoint_gate_context.required_exact_values.val_start_epoch == 40
     assert gate.entrypoint_gate_context.required_exact_values.val_eval_interval == 2
     assert gate.entrypoint_gate_context.sha256_file_bindings[0].gate_key == "pretrained_sha256"

@@ -113,6 +113,7 @@ CONTROL_KEYS = (
     "budget",
     "dense_window_size",
     "max_epochs",
+    "checkpoint_interval",
     "val_start_epoch",
     "val_eval_interval",
     *REQUIRED_EXACT.keys(),
@@ -200,6 +201,7 @@ def validate_gate_payload(
     _require_exact(payload, "budget", int(budget))
     _require_exact(payload, "dense_window_size", int(dense_window_size))
     _require_exact(payload, "max_epochs", 60)
+    _require_exact(payload, "checkpoint_interval", 60)
     _require_exact(payload, "val_start_epoch", 40)
     _require_exact(payload, "val_eval_interval", 2)
     for key, value in REQUIRED_EXACT.items():

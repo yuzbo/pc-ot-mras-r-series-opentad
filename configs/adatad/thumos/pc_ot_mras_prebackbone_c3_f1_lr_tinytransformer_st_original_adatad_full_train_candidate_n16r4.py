@@ -126,6 +126,7 @@ pc_ot_mras_prebackbone_e2e_acquisition_gate = dict(
             scout_feature_source="compressed_pixels",
             scout_spatial_size=scout_spatial_size,
             max_epochs=60,
+            checkpoint_interval=60,
             val_start_epoch=40,
             val_eval_interval=2,
         ),
@@ -264,7 +265,7 @@ model = dict(
 
 workflow = dict(
     logging_interval=50,
-    checkpoint_interval=2,
+    checkpoint_interval=60,
     val_loss_interval=-1,
     val_eval_interval=2,
     val_start_epoch=40,
