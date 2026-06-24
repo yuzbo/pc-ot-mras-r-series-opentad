@@ -1587,6 +1587,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         candidate_idx: int | None,
         hard_rank_position: int | None = None,
         topk_budget: int | None = None,
+        global_rank_cache: Mapping[str, torch.Tensor] | None = None,
         name: str,
     ) -> torch.Tensor:
         if scores.ndim != 1 or candidate_valid.ndim != 1 or candidate_dense_indices.ndim != 1:
@@ -1611,30 +1612,20 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         elif surrogate == "global_rank_topk":
             if hard_rank_position is None:
                 raise ValueError("global_rank_topk rank transport requires a hard rank position")
-            rank_temperature = float(getattr(self, "global_rank_st_temperature", temperature))
             rank_width = float(getattr(self, "global_rank_st_rank_width", 1.0))
-            valid_bool = candidate_valid.bool()
-            valid_count = int(valid_bool.long().sum().item())
-            if valid_count <= 0:
-                raise ValueError("global_rank_topk rank transport requires at least one valid candidate")
-            topk_limit = int(topk_budget) if topk_budget is not None else int(getattr(self, "global_rank_st_topk", self.target_len))
-            topk_limit = max(1, min(topk_limit, valid_count))
-            rank_scores = _smooth_clamp_logits(
-                scores.float(),
-                float(getattr(self, "frame_score_st_logit_clamp", 0.0)),
-                f"{name} global rank scores",
-            )
-            rank_scores = rank_scores / rank_temperature
-            score_diffs = rank_scores[None, :] - rank_scores[:, None]
-            pair_valid = valid_bool[:, None] & valid_bool[None, :]
-            eye = torch.eye(scores.shape[0], dtype=torch.bool, device=scores.device)
-            higher_prob = torch.sigmoid(score_diffs).masked_fill(~pair_valid | eye, 0.0)
-            soft_rank = 1.0 + higher_prob.sum(dim=1)
+            if global_rank_cache is None:
+                global_rank_cache = self._global_rank_topk_cache(
+                    scores=scores,
+                    candidate_valid=candidate_valid,
+                    topk_budget=topk_budget,
+                    name=name,
+                )
+            soft_rank = global_rank_cache["soft_rank"]
+            log_membership = global_rank_cache["log_membership"]
             _require_finite(soft_rank, f"{name} global soft ranks")
             rank_center = float(int(hard_rank_position) + 1)
             rank_logits = -0.5 * ((soft_rank - rank_center) / rank_width).square()
-            membership = torch.sigmoid((float(topk_limit) + 0.5 - soft_rank) / rank_width)
-            logits = rank_logits + torch.log(membership.clamp_min(torch.finfo(torch.float32).eps))
+            logits = rank_logits + log_membership
         else:
             raise ValueError(f"unknown frame_score_st_surrogate={surrogate}")
         logits = _smooth_clamp_logits(
@@ -1648,6 +1639,44 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         soft_candidate = soft_candidate / soft_candidate.sum().clamp_min(torch.finfo(torch.float32).eps)
         _require_finite(soft_candidate, f"{name} rank transport distribution")
         return soft_candidate
+
+    def _global_rank_topk_cache(
+        self,
+        *,
+        scores: torch.Tensor,
+        candidate_valid: torch.Tensor,
+        topk_budget: int | None,
+        name: str,
+    ) -> dict[str, torch.Tensor]:
+        if scores.ndim != 1 or candidate_valid.ndim != 1 or tuple(scores.shape) != tuple(candidate_valid.shape):
+            raise ValueError("global_rank_topk cache expects matching one-dimensional score and valid tensors")
+        _require_finite(scores, f"{name} global rank cache scores", error_type=ValueError)
+        valid_bool = candidate_valid.bool()
+        valid_count = int(valid_bool.long().sum().item())
+        if valid_count <= 0:
+            raise ValueError("global_rank_topk rank transport requires at least one valid candidate")
+        topk_limit = int(topk_budget) if topk_budget is not None else int(getattr(self, "global_rank_st_topk", self.target_len))
+        topk_limit = max(1, min(topk_limit, valid_count))
+        rank_temperature = float(getattr(self, "global_rank_st_temperature", getattr(self, "frame_score_st_temperature", 1.0)))
+        rank_width = float(getattr(self, "global_rank_st_rank_width", 1.0))
+        rank_scores = _smooth_clamp_logits(
+            scores.float(),
+            float(getattr(self, "frame_score_st_logit_clamp", 0.0)),
+            f"{name} global rank scores",
+        )
+        rank_scores = rank_scores / rank_temperature
+        score_diffs = rank_scores[None, :] - rank_scores[:, None]
+        pair_valid = valid_bool[:, None] & valid_bool[None, :]
+        eye = torch.eye(scores.shape[0], dtype=torch.bool, device=scores.device)
+        higher_prob = torch.sigmoid(score_diffs).masked_fill(~pair_valid | eye, 0.0)
+        soft_rank = 1.0 + higher_prob.sum(dim=1)
+        membership = torch.sigmoid((float(topk_limit) + 0.5 - soft_rank) / rank_width)
+        log_membership = torch.log(membership.clamp_min(torch.finfo(torch.float32).eps))
+        soft_rank = soft_rank.masked_fill(~valid_bool, 0.0)
+        log_membership = log_membership.masked_fill(~valid_bool, 0.0)
+        _require_finite(soft_rank, f"{name} global rank cache soft ranks")
+        _require_finite(log_membership, f"{name} global rank cache membership")
+        return {"soft_rank": soft_rank, "log_membership": log_membership}
 
     def _scatter_candidate_distribution_to_dense(
         self,
@@ -2066,6 +2095,8 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         strategy_name = getattr(self, "selection_strategy", "frame_score_topk")
         plan_name = "frame_score_global_rank_st" if strategy_name == "frame_score_global_rank_st" else "frame_score_topk"
         frame_scores = reader_outputs.get("frame_selection_logits")
+        if frame_scores is None and plan_name == "frame_score_global_rank_st":
+            raise ValueError("frame_score_global_rank_st selection requires frame_selection_logits")
         if frame_scores is None:
             frame_scores = reader_outputs.get("actionness_logits", reader_outputs.get("action_logits"))
         if frame_scores is None:
@@ -2209,6 +2240,18 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             )
 
             batch_roles: list[str] = []
+            global_rank_cache = None
+            if (
+                self.straight_through_detector_loss
+                and training
+                and getattr(self, "frame_score_st_surrogate", "local_softmax") == "global_rank_topk"
+            ):
+                global_rank_cache = self._global_rank_topk_cache(
+                    scores=frame_scores[batch_idx],
+                    candidate_valid=candidate_valid[batch_idx],
+                    topk_budget=output_valid_len,
+                    name=plan_name,
+                )
             for out_idx in range(self.target_len):
                 if out_idx < output_valid_len:
                     pos, candidate_idx, role = rows[out_idx]
@@ -2237,6 +2280,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                         candidate_idx=int(candidate_idx),
                         hard_rank_position=rank_position_by_candidate.get(int(candidate_idx)),
                         topk_budget=output_valid_len,
+                        global_rank_cache=global_rank_cache,
                         name=plan_name,
                     )
                     soft_dense = self._scatter_candidate_distribution_to_dense(

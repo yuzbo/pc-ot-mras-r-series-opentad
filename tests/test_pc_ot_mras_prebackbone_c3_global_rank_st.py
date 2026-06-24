@@ -110,19 +110,41 @@ class _FrameScoreFirstReader:
         }
 
 
-def _make_time_index_inputs(torch, *, dense_len: int = 8):
+class _ActionOnlyReader:
+    def __init__(self, torch, action_logits):
+        self.action_logits = torch.nn.Parameter(torch.tensor(action_logits, dtype=torch.float32))
+
+    def __call__(self, lowcost_features, valid_mask, time_coords=None):
+        batch, time, _dim = lowcost_features.shape
+        device = lowcost_features.device
+        scores = self.action_logits[:time].to(device=device).unsqueeze(0).expand(batch, -1)
+        zeros = lowcost_features.new_zeros((batch, time))
+        slot_logits = lowcost_features.new_zeros((batch, 4, time))
+        return {
+            "slot_logits": slot_logits,
+            "acquisition_matrix": slot_logits.softmax(dim=-1),
+            "actionness_logits": scores,
+            "action_logits": scores,
+            "start_logits": zeros,
+            "end_logits": zeros,
+            "uncertainty_logits": zeros,
+            "redundancy_logits": zeros,
+        }
+
+
+def _make_time_index_inputs(torch, *, batch: int = 1, dense_len: int = 8):
     values = torch.arange(dense_len, dtype=torch.float32).view(1, 1, dense_len, 1, 1)
-    inputs = values.expand(1, 3, dense_len, 2, 2).contiguous()
-    masks = torch.ones((1, dense_len), dtype=torch.bool)
-    metas = [{"sample_id": "c3-global-rank-st"}]
+    inputs = values.expand(batch, 3, dense_len, 2, 2).contiguous()
+    masks = torch.ones((batch, dense_len), dtype=torch.bool)
+    metas = [{"sample_id": f"c3-global-rank-st-{idx}"} for idx in range(batch)]
     return inputs, masks, metas
 
 
-def _global_rank_selector(module):
+def _global_rank_selector(module, *, target_len: int = 4, dense_window_size: int = 8, global_rank_topk: int = 4):
     return module.PCOTMRASPreBackboneFrameSelector(
         reader={"type": "FrameScoreFirstReader"},
-        target_len=4,
-        dense_window_size=8,
+        target_len=target_len,
+        dense_window_size=dense_window_size,
         descriptor_dim=12,
         selection_strategy="frame_score_global_rank_st",
         frame_score_st_surrogate="global_rank_topk",
@@ -130,7 +152,7 @@ def _global_rank_selector(module):
         frame_score_st_logit_clamp=12.0,
         frame_score_st_gradient_scale=0.25,
         global_rank_st_temperature=0.75,
-        global_rank_st_topk=4,
+        global_rank_st_topk=global_rank_topk,
         global_rank_st_rank_width=1.25,
         protected_uniform_count=0,
         coverage_guard_count=0,
@@ -139,6 +161,23 @@ def _global_rank_selector(module):
         aux_gt_acquisition_loss_weight=0.0,
         reader_regularizer_loss_weight=0.0,
     )
+
+
+def test_c3_global_rank_st_fails_closed_without_frame_selection_logits():
+    torch = _import_torch_or_skip()
+    reader = _ActionOnlyReader(torch, [0.0, 10.0, 2.0, 8.0, 7.0, 1.0, 9.0, -5.0])
+    module = _load_prebackbone_selector_module(reader)
+    selector = _global_rank_selector(module)
+    inputs, masks, metas = _make_time_index_inputs(torch)
+
+    with pytest.raises(ValueError, match="frame_score_global_rank_st selection requires frame_selection_logits"):
+        selector.forward_train(
+            inputs,
+            masks,
+            metas,
+            gt_segments=[torch.tensor([[0.0, 4.0]], dtype=torch.float32)],
+            gt_labels=[torch.tensor([0], dtype=torch.long)],
+        )
 
 
 def test_c3_global_rank_st_uses_frame_scores_for_hard_real_frame_selection_in_train_and_test():
@@ -190,6 +229,45 @@ def test_c3_global_rank_st_surrogate_backpropagates_finite_gradient_to_frame_log
     )
     outputs["inputs"].square().mean().backward()
 
+    assert reader.frame_logits.grad is not None
+    assert torch.isfinite(reader.frame_logits.grad).all()
+    assert reader.frame_logits.grad.abs().sum().item() > 0.0
+    assert inputs.grad is not None
+    assert torch.isfinite(inputs.grad).all()
+
+
+def test_c3_global_rank_st_dense_768_384_smoke_forward_backward():
+    torch = _import_torch_or_skip()
+    dense_len = 768
+    target_len = 384
+    logits = torch.linspace(-1.0, 1.0, dense_len)
+    logits[::7] += 2.0
+    reader = _FrameScoreFirstReader(torch, logits.tolist())
+    module = _load_prebackbone_selector_module(reader)
+    selector = _global_rank_selector(
+        module,
+        target_len=target_len,
+        dense_window_size=dense_len,
+        global_rank_topk=target_len,
+    )
+    inputs, masks, metas = _make_time_index_inputs(torch, batch=1, dense_len=dense_len)
+    inputs = inputs.requires_grad_(True)
+
+    outputs = selector.forward_train(
+        inputs,
+        masks,
+        metas,
+        gt_segments=[torch.tensor([[64.0, 196.0], [320.0, 500.0]], dtype=torch.float32)],
+        gt_labels=[torch.tensor([0, 1], dtype=torch.long)],
+    )
+    detector_like_loss = outputs["inputs"].square().mean()
+    detector_like_loss.backward()
+
+    selected = outputs["metas"][0]["pc_ot_mras_prebackbone_selected_dense_indices"]
+    st_active = outputs["metas"][0]["pc_ot_mras_prebackbone_st_active_row_count"]
+    assert len(selected) == target_len
+    assert len(set(selected)) == target_len
+    assert st_active == target_len
     assert reader.frame_logits.grad is not None
     assert torch.isfinite(reader.frame_logits.grad).all()
     assert reader.frame_logits.grad.abs().sum().item() > 0.0
