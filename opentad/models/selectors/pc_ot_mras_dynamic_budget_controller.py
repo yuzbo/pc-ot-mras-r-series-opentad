@@ -322,9 +322,11 @@ class PCOTMRASDynamicBudgetController(nn.Module):
         )
         transport = _transport_signal(reader_outputs, valid)
 
+        # risk_logits is a positive difficulty/boundary-risk signal: harder
+        # windows should receive more budget, while redundancy remains a cost.
         utility = (
             self.cfg.value_weight * value
-            - self.cfg.risk_weight * risk
+            + self.cfg.risk_weight * risk
             - self.cfg.redundancy_weight * redundancy
             + self.cfg.transport_weight * transport
         ).clamp_min(0.0).masked_fill(~valid, 0.0)

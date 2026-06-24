@@ -33,6 +33,8 @@ def _reader_outputs():
             dtype=torch.float32,
         ),
         "valid_mask": torch.tensor([[1, 1, 1]], dtype=torch.bool),
+        "selected_positions": torch.tensor([[1.0, 2.0]], dtype=torch.float32),
+        "hard_selected_positions": torch.tensor([[1, 2]], dtype=torch.long),
         "gates": torch.tensor([[0.75, 0.25]], dtype=torch.float32),
         "centers": torch.tensor([[0.2, 0.7]], dtype=torch.float32),
         "role_ids": torch.tensor([[1, 2]], dtype=torch.long),
@@ -47,11 +49,15 @@ def test_serialize_reader_outputs_keeps_whitelist_and_jsonable_values():
 
     assert "acquisition_matrix" in serialized
     assert "allocation" in serialized
+    assert "selected_positions" in serialized
+    assert "hard_selected_positions" in serialized
     assert "valid_mask" in serialized
     assert "regularizers" not in serialized
     assert "slot_state" not in serialized
     assert set(serialized).issubset(set(READER_OUTPUT_KEYS))
     assert serialized["acquisition_matrix"][0][0] == [0.0, 0.9, 0.0]
+    assert serialized["selected_positions"] == [[1.0, 2.0]]
+    assert serialized["hard_selected_positions"] == [[1, 2]]
     assert serialized["valid_mask"] == [[True, True, True]]
 
 

@@ -18,6 +18,7 @@ TEMPORAL_METADATA_GENERATION_SOURCE = "pc_ot_mras_hard_rows_to_temporal_metadata
 READY = "PC_OT_MRAS_HARD_EXPORT_READY"
 NO_GO = "PC_OT_MRAS_HARD_EXPORT_NO_GO"
 MATRIX_PRIORITY = ("acquisition_matrix", "allocation", "transport_prob")
+POSITION_PRIORITY = ("hard_selected_positions", "selected_positions")
 FORBIDDEN_JSONL_KEY_TOKENS = (
     "gt",
     "groundtruth",
@@ -165,7 +166,7 @@ def _sample(value: Any, batch_idx: int, batch_size: int) -> Any:
     data = _to_plain(value)
     if isinstance(data, list) and batch_size > 1:
         return data[batch_idx]
-    if isinstance(data, list) and batch_size == 1 and _depth(data) > 1:
+    if isinstance(data, list) and batch_size == 1 and len(data) == 1 and _depth(data) > 1:
         return data[batch_idx]
     return data
 
@@ -175,7 +176,7 @@ def _batch_size_from(reader_out: Mapping[str, Any]) -> int:
         value = reader_out.get(key)
         if value is not None and _depth(value) >= 3:
             return len(_to_plain(value))
-    for key in ("selection_logits", "selection_prob", "soft_selection", "valid_mask"):
+    for key in (*POSITION_PRIORITY, "selection_logits", "selection_prob", "soft_selection", "valid_mask"):
         value = reader_out.get(key)
         if value is not None and _depth(value) >= 2:
             return len(_to_plain(value))
@@ -209,6 +210,19 @@ def _as_int_list(value: Any, *, name: str) -> list[int]:
             out.append(_strict_int_scalar(item, name=f"{name}[{idx}]"))
         except ValueError:
             raise ValueError(f"{name}[{idx}] must be an integer position") from None
+    return out
+
+
+def _as_position_list(value: Any, *, name: str) -> list[int]:
+    data = _to_plain(value)
+    if data is None:
+        return []
+    if not isinstance(data, list):
+        raise ValueError(f"{name} must be a list")
+    out: list[int] = []
+    for idx, item in enumerate(data):
+        position = _finite_float(item, name=f"{name}[{idx}]")
+        out.append(int(math.floor(position + 0.5)))
     return out
 
 
@@ -494,8 +508,19 @@ def _candidate_positions(
     batch_size: int,
     valid: Sequence[int],
     expected_width: int,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], str]:
     valid_set = set(int(pos) for pos in valid)
+    if "hard_selected_positions" in reader_out:
+        positions = _as_position_list(
+            _sample(reader_out["hard_selected_positions"], batch_idx, batch_size),
+            name="hard_selected_positions",
+        )
+        return [{"pos": pos, "slot": idx, "score": None} for idx, pos in enumerate(positions) if pos >= 0], "hard_selected_positions"
+
+    if "selected_positions" in reader_out:
+        positions = _as_position_list(_sample(reader_out["selected_positions"], batch_idx, batch_size), name="selected_positions")
+        return [{"pos": pos, "slot": idx, "score": None} for idx, pos in enumerate(positions) if pos >= 0], "selected_positions"
+
     for matrix_key in MATRIX_PRIORITY:
         if matrix_key not in reader_out:
             continue
@@ -516,25 +541,14 @@ def _candidate_positions(
         return sorted(
             candidates,
             key=lambda item: (-float(item["score"]), int(item["pos"]), int(item["slot"])),
-        )
-
-    if "hard_selected_positions" in reader_out:
-        positions = _as_int_list(
-            _sample(reader_out["hard_selected_positions"], batch_idx, batch_size),
-            name="hard_selected_positions",
-        )
-        return [{"pos": pos, "slot": idx, "score": None} for idx, pos in enumerate(positions) if pos >= 0]
-
-    if "selected_positions" in reader_out:
-        positions = _as_int_list(_sample(reader_out["selected_positions"], batch_idx, batch_size), name="selected_positions")
-        return [{"pos": pos, "slot": idx, "score": None} for idx, pos in enumerate(positions) if pos >= 0]
+        ), matrix_key
 
     scores = _score_vector(reader_out, batch_idx, batch_size, valid, expected_width=expected_width)
     ranked = sorted(
         ({"pos": int(pos), "slot": idx, "score": scores[pos] if pos < len(scores) else 0.0} for idx, pos in enumerate(valid)),
         key=lambda item: (-float(item["score"]), int(item["pos"])),
     )
-    return ranked
+    return ranked, "score_vector"
 
 
 def _slot_metadata(reader_out: Mapping[str, Any], key: str, logits_key: str, batch_idx: int, batch_size: int, slot: int) -> int:
@@ -604,7 +618,7 @@ def _resolve_sample(
 
     valid_set = set(valid)
     scores = _score_vector(reader_out, batch_idx, batch_size, valid, expected_width=expected_width)
-    candidates = _candidate_positions(
+    candidates, selected_position_source = _candidate_positions(
         reader_out,
         batch_idx=batch_idx,
         batch_size=batch_size,
@@ -677,6 +691,7 @@ def _resolve_sample(
         "role_round_metadata": [{"position": pos, "role_id": role, "round_id": rnd} for pos, role, rnd in zip(selected, role_ids, round_ids)],
         "resolver_generation": {
             "source": GENERATION_SOURCE,
+            "selected_position_source": selected_position_source,
             "diagnostic_or_deploy_only": True,
             "training_backprop_allowed": False,
             "detached_reader_tensors": True,

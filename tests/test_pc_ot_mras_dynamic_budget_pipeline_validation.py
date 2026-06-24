@@ -21,7 +21,9 @@ if torch_probe.returncode != 0:
 import torch
 
 from pc_ot_mras_test_utils import load_pc_ot_mras_classes
+from tools.bata import validate_pc_ot_mras_dynamic_budget_pipeline as pipeline_module
 from tools.bata.validate_pc_ot_mras_dynamic_budget_pipeline import (
+    NO_GO,
     READY,
     run_json_validation,
     validate_pc_ot_mras_dynamic_budget_pipeline,
@@ -132,6 +134,61 @@ def test_dynamic_budget_pipeline_validation_json_roundtrip(tmp_path):
     assert loaded["budgets"] == summary["budgets"] == [8, 6, 4]
     assert loaded["exact_budget_violations"] == 0
     assert loaded["center_matches_rows"] is True
+
+
+def test_dynamic_budget_pipeline_validation_marks_center_mismatch_no_go(monkeypatch):
+    real_loader = pipeline_module._load_repo_function
+
+    def fake_loader(rel_path, function_name):
+        if function_name == "temporal_grid_from_metas":
+            def fake_temporal_grid_from_metas(_metas, selected_mask, *, required=True, strict=True):
+                return {
+                    "center": torch.zeros_like(selected_mask, dtype=torch.float32),
+                    "valid_mask": selected_mask.clone(),
+                }
+
+            return fake_temporal_grid_from_metas
+        return real_loader(rel_path, function_name)
+
+    monkeypatch.setattr(pipeline_module, "_load_repo_function", fake_loader)
+
+    summary = pipeline_module.validate_pc_ot_mras_dynamic_budget_pipeline(
+        _dynamic_plan(),
+        sample_ids=["high|0", "mid|1", "low|2"],
+    )
+
+    assert summary["decision"] == NO_GO
+    assert summary["exact_budget_violations"] == 0
+    assert summary["center_matches_rows"] is False
+
+
+def test_dynamic_budget_pipeline_validation_marks_budget_count_violation_no_go(monkeypatch):
+    real_loader = pipeline_module._load_repo_function
+
+    def fake_loader(rel_path, function_name):
+        if function_name == "temporal_grid_from_metas":
+            def fake_temporal_grid_from_metas(metas, selected_mask, *, required=True, strict=True):
+                center = torch.zeros_like(selected_mask, dtype=torch.float32)
+                for batch_idx, meta in enumerate(metas):
+                    positions = torch.tensor(meta["irregular_selected_positions"], dtype=torch.float32)
+                    center[batch_idx, : positions.numel()] = positions
+                valid_mask = selected_mask.clone()
+                valid_mask[0, 0] = False
+                return {"center": center, "valid_mask": valid_mask}
+
+            return fake_temporal_grid_from_metas
+        return real_loader(rel_path, function_name)
+
+    monkeypatch.setattr(pipeline_module, "_load_repo_function", fake_loader)
+
+    summary = pipeline_module.validate_pc_ot_mras_dynamic_budget_pipeline(
+        _dynamic_plan(),
+        sample_ids=["high|0", "mid|1", "low|2"],
+    )
+
+    assert summary["decision"] == NO_GO
+    assert summary["exact_budget_violations"] == 1
+    assert summary["center_matches_rows"] is True
 
 
 def test_dynamic_budget_pipeline_validation_rejects_forbidden_plan_values():

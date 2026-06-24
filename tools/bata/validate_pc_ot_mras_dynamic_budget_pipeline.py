@@ -131,10 +131,11 @@ def validate_pc_ot_mras_dynamic_budget_pipeline(
         for budget, selected_count, grid_count in zip(budgets, selected_counts, grid_counts)
         if int(budget) != int(selected_count) or int(budget) != int(grid_count)
     )
+    passed = bool(center_matches_rows and exact_budget_violations == 0)
 
     return {
         "schema_version": SCHEMA_VERSION,
-        "decision": READY,
+        "decision": READY if passed else NO_GO,
         "row_count": len(rows),
         "sample_ids": [str(row["sample_id"]) for row in rows],
         "budgets": budgets,

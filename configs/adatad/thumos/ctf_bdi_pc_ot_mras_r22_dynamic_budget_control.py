@@ -1,9 +1,10 @@
 _base_ = ["ctf_bdi_pc_ot_mras_r20_value_only_control.py"]
 
 # R22 local-only value-to-budget controller candidate.
-# This is a deploy-time protocol layer that converts PC-OT-MRAS value/risk/
-# redundancy reader logits into a variable-budget dense-position plan. It is
-# not dynamic-budget validation, detector mAP evidence, or deployment proof.
+# This is a deploy-time protocol layer that converts PC-OT-MRAS value,
+# positive difficulty/boundary-risk, and redundancy reader logits into a
+# variable-budget dense-position plan. It is not dynamic-budget validation,
+# detector mAP evidence, or deployment proof.
 
 r20_pc_ot_mras_value_only_control_gate = None
 

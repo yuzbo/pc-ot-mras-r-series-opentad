@@ -40,6 +40,8 @@ READER_OUTPUT_KEYS = (
     "valid_lengths",
     "time_coords",
     "selected_times",
+    "selected_positions",
+    "hard_selected_positions",
     "selected_mask",
     "centers",
     "widths",
@@ -391,41 +393,73 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--float-digits", type=int, default=6)
     parser.add_argument("--use-amp", action="store_true")
     parser.add_argument("--budget", type=int, default=384)
+    parser.add_argument("--dense-window-size", type=int, default=768)
+    parser.add_argument(
+        "--reader-dump-gate-mode",
+        choices=("frontend_eval", "frontend_retrain_predump"),
+        default="frontend_eval",
+    )
     parser.add_argument("--reader-dump-gate-json")
     parser.add_argument("--reader-dump-gate-sha256")
     parser.add_argument("--active-manifest-sha256")
     parser.add_argument("--resolved-config-sha256")
     parser.add_argument("--pc-ot-mras-checkpoint-sha256")
     parser.add_argument("--adatad-checkpoint-sha256")
+    parser.add_argument("--pretrained-sha256")
     parser.add_argument("--require-selected-count", type=int)
     args = parser.parse_args(argv)
 
     use_ema = None if args.use_ema == "auto" else args.use_ema == "true"
     try:
-        gate_values = (
-            args.reader_dump_gate_json,
-            args.reader_dump_gate_sha256,
-            args.active_manifest_sha256,
-            args.resolved_config_sha256,
-            args.pc_ot_mras_checkpoint_sha256,
-            args.adatad_checkpoint_sha256,
-            args.require_selected_count,
-        )
+        if args.reader_dump_gate_mode == "frontend_retrain_predump":
+            gate_values = (
+                args.reader_dump_gate_json,
+                args.reader_dump_gate_sha256,
+                args.active_manifest_sha256,
+                args.resolved_config_sha256,
+                args.pc_ot_mras_checkpoint_sha256,
+                args.pretrained_sha256,
+                args.require_selected_count,
+            )
+        else:
+            gate_values = (
+                args.reader_dump_gate_json,
+                args.reader_dump_gate_sha256,
+                args.active_manifest_sha256,
+                args.resolved_config_sha256,
+                args.pc_ot_mras_checkpoint_sha256,
+                args.adatad_checkpoint_sha256,
+                args.require_selected_count,
+            )
         if any(value is not None for value in gate_values):
             if not all(value is not None for value in gate_values):
                 raise ValueError("reader dump execution gate arguments must be provided as a complete set")
-            from tools.bata.validate_pc_ot_mras_frontend_eval_gate import validate_gate_file
+            if args.reader_dump_gate_mode == "frontend_retrain_predump":
+                from tools.bata.validate_pc_ot_mras_frontend_retrain_gate import validate_predump_gate_file
 
-            validate_gate_file(
-                gate_json=args.reader_dump_gate_json,
-                gate_sha256=args.reader_dump_gate_sha256,
-                active_manifest_sha256=args.active_manifest_sha256,
-                resolved_config_sha256=args.resolved_config_sha256,
-                pc_ot_mras_checkpoint_sha256=args.pc_ot_mras_checkpoint_sha256,
-                adatad_checkpoint_sha256=args.adatad_checkpoint_sha256,
-                budget=int(args.budget),
-                require_selected_count=int(args.require_selected_count),
-            )
+                validate_predump_gate_file(
+                    gate_json=args.reader_dump_gate_json,
+                    gate_sha256=args.reader_dump_gate_sha256,
+                    active_manifest_sha256=args.active_manifest_sha256,
+                    resolved_config_sha256=args.resolved_config_sha256,
+                    pc_ot_mras_checkpoint_sha256=args.pc_ot_mras_checkpoint_sha256,
+                    pretrained_sha256=args.pretrained_sha256,
+                    budget=int(args.budget),
+                    dense_window_size=int(args.dense_window_size),
+                )
+            else:
+                from tools.bata.validate_pc_ot_mras_frontend_eval_gate import validate_gate_file
+
+                validate_gate_file(
+                    gate_json=args.reader_dump_gate_json,
+                    gate_sha256=args.reader_dump_gate_sha256,
+                    active_manifest_sha256=args.active_manifest_sha256,
+                    resolved_config_sha256=args.resolved_config_sha256,
+                    pc_ot_mras_checkpoint_sha256=args.pc_ot_mras_checkpoint_sha256,
+                    adatad_checkpoint_sha256=args.adatad_checkpoint_sha256,
+                    budget=int(args.budget),
+                    require_selected_count=int(args.require_selected_count),
+                )
         summary = dump_reader_snapshots(
             config=args.config,
             checkpoint=args.checkpoint,

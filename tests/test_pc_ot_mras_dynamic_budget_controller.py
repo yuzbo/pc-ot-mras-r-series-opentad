@@ -98,6 +98,34 @@ def test_dynamic_budget_controller_maps_value_signal_to_exact_variable_budget_pl
         assert int(positions.max().item()) < int(plan["dense_valid_len"][batch_idx].item())
 
 
+def test_dynamic_budget_controller_treats_risk_as_positive_budget_signal():
+    controller = PCOTMRASDynamicBudgetController(
+        budget_values=(4, 6, 8),
+        budget_thresholds=(0.25, 0.75),
+        value_weight=0.0,
+        risk_weight=1.0,
+        redundancy_weight=0.0,
+        transport_weight=0.0,
+        coverage_share=0.25,
+        max_coverage_share=0.50,
+    )
+    valid = torch.ones(2, 12, dtype=torch.bool)
+    risk_logits = torch.full((2, 12), -6.0)
+    risk_logits[0, :12] = 6.0
+
+    plan = controller(
+        dict(
+            valid_mask=valid,
+            value_logits=torch.zeros(2, 12),
+            risk_logits=risk_logits,
+            redundancy_logits=torch.full((2, 12), -6.0),
+        )
+    )
+
+    assert plan["budgets"].tolist() == [8, 4]
+    assert float(plan["budget_scores"][0].item()) > float(plan["budget_scores"][1].item())
+
+
 def test_dynamic_budget_controller_rejects_train_only_or_shortcut_payloads():
     controller = PCOTMRASDynamicBudgetController(budget_values=(4, 6), budget_thresholds=(0.5,))
     reader_outputs = _reader_outputs()

@@ -153,7 +153,7 @@ def test_hard_export_ranks_global_matrix_candidates_when_slots_exceed_budget():
     assert rows[0]["selected_positions"] == [4, 5]
 
 
-def test_hard_export_prefers_acquisition_matrix_over_conflicting_selected_positions():
+def test_hard_export_prefers_explicit_selected_positions_over_conflicting_acquisition_matrix():
     rows = resolve_pc_ot_mras_hard_positions(
         {
             "acquisition_matrix": [
@@ -169,10 +169,11 @@ def test_hard_export_prefers_acquisition_matrix_over_conflicting_selected_positi
         sample_ids=["acq-vs-selected|0"],
     )
 
-    assert rows[0]["selected_positions"] == [3, 4]
+    assert rows[0]["selected_positions"] == [0, 1]
+    assert rows[0]["resolver_generation"]["selected_position_source"] == "selected_positions"
 
 
-def test_hard_export_prefers_acquisition_matrix_over_conflicting_hard_positions():
+def test_hard_export_prefers_explicit_hard_positions_over_conflicting_acquisition_matrix():
     rows = resolve_pc_ot_mras_hard_positions(
         {
             "acquisition_matrix": [
@@ -188,7 +189,8 @@ def test_hard_export_prefers_acquisition_matrix_over_conflicting_hard_positions(
         sample_ids=["acq-vs-hard|0"],
     )
 
-    assert rows[0]["selected_positions"] == [3, 4]
+    assert rows[0]["selected_positions"] == [0, 1]
+    assert rows[0]["resolver_generation"]["selected_position_source"] == "hard_selected_positions"
 
 
 def test_hard_export_jsonl_cli_path_writes_rows_and_summary(tmp_path):
@@ -254,7 +256,7 @@ def test_default_score_fallback_remains_usable_without_score_fields():
     assert len(set(rows[0]["selected_positions"])) == 2
 
 
-def test_hard_export_jsonl_reader_out_prefers_acquisition_matrix_over_legacy_hard_fields(tmp_path):
+def test_hard_export_jsonl_reader_out_prefers_explicit_hard_fields_over_matrix(tmp_path):
     input_jsonl = tmp_path / "reader_rows.jsonl"
     output_jsonl = tmp_path / "hard_rows.jsonl"
     row = {
@@ -279,7 +281,8 @@ def test_hard_export_jsonl_reader_out_prefers_acquisition_matrix_over_legacy_har
 
     assert summary["decision"] == READY
     written = [json.loads(line) for line in output_jsonl.read_text(encoding="utf-8").splitlines()]
-    assert written[0]["selected_positions"] == [3, 4]
+    assert written[0]["selected_positions"] == [0, 1]
+    assert written[0]["resolver_generation"]["selected_position_source"] == "hard_selected_positions"
 
 
 def test_hard_export_jsonl_rejects_row_budget_conflict(tmp_path):
