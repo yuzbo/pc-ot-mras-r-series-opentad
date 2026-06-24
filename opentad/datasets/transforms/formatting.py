@@ -43,6 +43,15 @@ class Collect:
             "resize_length",
             "window_size",
             "offset_frames",
+            "irregular_selected_positions",
+            "irregular_selected_valid_len",
+            "irregular_native_axis",
+            "selected_dense_indices",
+            "selected_valid_len",
+            "irregular_dense_valid_len",
+            "remap_gt_to_selected_axis",
+            "gt_remapped_to_selected_axis",
+            "pc_ot_mras_prebackbone_remap_gt_to_selected_axis",
         ],
     ):
         self.inputs = inputs

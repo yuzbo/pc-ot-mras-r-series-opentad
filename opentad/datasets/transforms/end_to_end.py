@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import os
 import pickle
 import random
@@ -10,6 +11,15 @@ import numpy as np
 from ..builder import PIPELINES
 from torch.nn import functional as F
 from .boundary_acquisition import load_value_transport_selection_ledger
+
+
+def _stable_string_seed(value):
+    if value is None:
+        value = "unknown"
+    if not isinstance(value, str):
+        value = str(value)
+    digest = hashlib.sha1(value.encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], byteorder="little", signed=False)
 
 
 @PIPELINES.register_module()
@@ -191,6 +201,7 @@ class LoadFrames:
         keep_ratio=0.5,
         method_base=None,
         target_len=None,
+        source_len=None,
         remap_gt_to_selected_axis=True,
         bata_value_transport_ledger_path=None,
         bata_value_transport_allow_missing_fallback=False,
@@ -209,6 +220,7 @@ class LoadFrames:
         self.keep_ratio = keep_ratio
         self.method_base = method_base
         self.target_len = target_len
+        self.source_len = source_len
         self.remap_gt_to_selected_axis = bool(remap_gt_to_selected_axis)
         self.bata_value_transport_ledger_path = bata_value_transport_ledger_path
         self.bata_value_transport_allow_missing_fallback = bool(bata_value_transport_allow_missing_fallback)
@@ -297,9 +309,25 @@ class LoadFrames:
 
     def _set_irregular_axis_meta(self, results, kept_positions, valid_len):
         scale = float(max(self.scale_factor, 1))
-        results["irregular_selected_positions"] = np.asarray(kept_positions, dtype=np.float32) / scale
+        selected_positions = np.asarray(kept_positions, dtype=np.float32) / scale
+        results["irregular_selected_positions"] = selected_positions
+        results["selected_dense_indices"] = selected_positions
+        results["selected_valid_len"] = int(len(kept_positions))
         results["irregular_selected_valid_len"] = float(valid_len) / scale
+        results["irregular_dense_valid_len"] = float(valid_len) / scale
+        results["remap_gt_to_selected_axis"] = bool(self.remap_gt_to_selected_axis)
+        results["gt_remapped_to_selected_axis"] = bool(self.remap_gt_to_selected_axis)
         results["irregular_native_axis"] = bool(not self.remap_gt_to_selected_axis)
+
+    def _select_random_fixed_positions(self, valid_len, target_frame_num, sample_key):
+        valid_len = int(valid_len)
+        target_frame_num = int(target_frame_num)
+        if valid_len <= 0 or target_frame_num <= 0:
+            return np.zeros((0,), dtype=np.int64)
+        if target_frame_num >= valid_len:
+            return np.arange(valid_len, dtype=np.int64)
+        rng = np.random.RandomState(_stable_string_seed(sample_key))
+        return np.sort(rng.choice(valid_len, size=target_frame_num, replace=False)).astype(np.int64)
 
     def _exact_uniform_dense_positions(self, valid_len, dense_frame_num, frame_num):
         valid_len = int(valid_len)
@@ -414,6 +442,85 @@ class LoadFrames:
                 masks = torch.cat([torch.ones(valid_len), torch.zeros(window_size - valid_len)]).bool()
             else:
                 masks = torch.ones(window_size).bool()
+
+        elif self.method == "random_fixed_subsample":
+            assert results["snippet_stride"] >= self.scale_factor, "snippet_stride should be larger than scale_factor"
+            assert (
+                results["snippet_stride"] % self.scale_factor == 0
+            ), "snippet_stride should be divisible by scale_factor"
+
+            keep_ratio = float(self.keep_ratio)
+            frame_stride = results["snippet_stride"] // self.scale_factor
+            dense_frame_idxs = np.arange(0, total_frames, frame_stride)
+            gt_segments = results["gt_segments"] * self.scale_factor if "gt_segments" in results else None
+            gt_labels = results["gt_labels"] if "gt_labels" in results else None
+
+            if self.method_base == "random_trunc":
+                if gt_segments is None or gt_labels is None:
+                    raise ValueError("random_fixed_subsample with random_trunc requires gt_segments and gt_labels")
+                if self.trunc_len is None and self.target_len is None:
+                    raise ValueError(
+                        "random_fixed_subsample requires trunc_len or target_len when method_base='random_trunc'"
+                    )
+                target_len = int(self.target_len) if self.target_len is not None else int(self.trunc_len)
+                source_len = int(self.source_len) if self.source_len is not None else int(round(target_len / max(keep_ratio, 1e-6)))
+                frame_num = target_len * self.scale_factor
+                dense_frame_num = source_len * self.scale_factor
+                dense_window, gt_segments, gt_labels = self.random_trunc(
+                    dense_frame_idxs,
+                    trunc_len=dense_frame_num,
+                    gt_segments=gt_segments,
+                    gt_labels=gt_labels,
+                )
+            elif self.method_base == "sliding_window":
+                if "window_size" not in results:
+                    raise ValueError("random_fixed_subsample with sliding_window requires window_size in results")
+                dense_window_len = int(results["window_size"])
+                target_len = int(self.target_len) if self.target_len is not None else int(round(dense_window_len * keep_ratio))
+                frame_num = target_len * self.scale_factor
+                dense_frame_num = dense_window_len * self.scale_factor
+                start_idx = min(results["feature_start_idx"] * self.scale_factor, len(dense_frame_idxs))
+                end_idx = min((results["feature_end_idx"] + 1) * self.scale_factor, len(dense_frame_idxs))
+                dense_window = dense_frame_idxs[start_idx:end_idx]
+            else:
+                raise ValueError("random_fixed_subsample requires method_base='random_trunc' or 'sliding_window'")
+
+            valid_len = int(len(dense_window))
+            if valid_len <= 0:
+                raise RuntimeError("random_fixed_subsample received an empty dense window")
+
+            sample_key = (
+                f"{results.get('video_name', 'unknown')}|random_fixed|"
+                f"{int(dense_window[0])}|{int(dense_window[-1])}|{valid_len}|{frame_num}"
+            )
+            keep_positions = self._select_random_fixed_positions(valid_len, frame_num, sample_key)
+            if keep_positions.size == 0:
+                keep_positions = np.array([0], dtype=np.int64)
+
+            frame_idxs = dense_window[keep_positions]
+            self._set_irregular_axis_meta(results, keep_positions, valid_len)
+
+            if gt_segments is not None and gt_labels is not None:
+                if self.remap_gt_to_selected_axis:
+                    gt_segments, gt_labels = self._remap_gt_to_selected_axis(
+                        gt_segments=gt_segments,
+                        gt_labels=gt_labels,
+                        kept_positions=keep_positions,
+                        valid_len=valid_len,
+                    )
+                results["gt_segments"] = gt_segments / self.scale_factor
+                results["gt_labels"] = gt_labels
+
+            if len(frame_idxs) < frame_num:
+                valid_mask_len = min(
+                    int(np.ceil(keep_positions.size / max(self.scale_factor, 1))),
+                    int(np.ceil(frame_num / max(self.scale_factor, 1))),
+                )
+                target_mask_len = int(np.ceil(frame_num / self.scale_factor))
+                frame_idxs = np.pad(frame_idxs, (0, frame_num - len(frame_idxs)), mode="edge")
+                masks = torch.cat([torch.ones(valid_mask_len), torch.zeros(target_mask_len - valid_mask_len)]).bool()
+            else:
+                masks = torch.ones(int(np.ceil(frame_num / self.scale_factor))).bool()
 
         elif self.method == "bata_value_transport_ledger_subsample":
             assert results["snippet_stride"] >= self.scale_factor, "snippet_stride should be larger than scale_factor"

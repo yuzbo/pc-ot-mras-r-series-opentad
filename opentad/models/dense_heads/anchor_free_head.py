@@ -25,6 +25,8 @@ class AnchorFreeHead(nn.Module):
         cls_prior_prob=0.01,
         loss_weight=1.0,
         filter_similar_gt=True,
+        assignment_debug=None,
+        physical_grid_actionformer=None,
     ):
         super(AnchorFreeHead, self).__init__()
 
@@ -35,6 +37,14 @@ class AnchorFreeHead(nn.Module):
         self.cls_prior_prob = cls_prior_prob
         self.label_smoothing = label_smoothing
         self.filter_similar_gt = filter_similar_gt
+        self.assignment_debug = assignment_debug or {}
+        self.assignment_debug_enabled = bool(self.assignment_debug.get("enabled", False))
+        self.physical_grid_cfg = {} if physical_grid_actionformer is None else dict(physical_grid_actionformer)
+        self.physical_grid_enabled = bool(self.physical_grid_cfg.get("enabled", False))
+        self.physical_grid_required = bool(self.physical_grid_cfg.get("required", self.physical_grid_enabled))
+        self.physical_grid_strict = bool(self.physical_grid_cfg.get("strict", True))
+        self.physical_grid_eps = float(self.physical_grid_cfg.get("eps", 1.0e-6))
+        self._physical_grid_debug = {}
 
         self.loss_weight = loss_weight
         self.center_sample = center_sample
@@ -49,6 +59,146 @@ class AnchorFreeHead(nn.Module):
 
         self.cls_loss = build_loss(loss.cls_loss)
         self.reg_loss = build_loss(loss.reg_loss)
+
+    def _physical_grid_forbidden_gt_remap(self, meta):
+        forbidden_keys = (
+            "remap_gt_to_selected_axis",
+            "pc_ot_mras_prebackbone_remap_gt_to_selected_axis",
+            "gt_remapped_to_selected_axis",
+        )
+        return any(bool(meta.get(key, False)) for key in forbidden_keys)
+
+    def _validate_physical_grid_train_gt_axis(self, meta):
+        if meta.get("irregular_native_axis", None) is not True:
+            raise ValueError(
+                "physical-grid ActionFormer requires dense-axis GT; "
+                "irregular_native_axis must be explicitly True for training."
+            )
+        if self._physical_grid_forbidden_gt_remap(meta):
+            raise ValueError("physical-grid ActionFormer requires dense-axis GT; selected-axis GT remap is forbidden.")
+
+    def _physical_positions_from_meta(self, meta, device, dtype):
+        positions = meta.get("irregular_selected_positions", None)
+        if positions is None:
+            positions = meta.get("selected_dense_indices", None)
+        if positions is None:
+            if self.physical_grid_required:
+                raise ValueError("physical-grid ActionFormer requires irregular_selected_positions or selected_dense_indices.")
+            return None, None
+
+        positions = torch.as_tensor(positions, device=device, dtype=dtype).reshape(-1)
+        valid_count = meta.get("selected_valid_len", meta.get("irregular_selected_count", positions.numel()))
+        valid_count = max(min(int(round(float(valid_count))), int(positions.numel())), 0)
+        positions = positions[:valid_count]
+        if positions.numel() == 0:
+            if self.physical_grid_required:
+                raise ValueError("physical-grid ActionFormer requires at least one selected physical position.")
+            return None, None
+
+        dense_valid_len = meta.get("irregular_dense_valid_len", meta.get("irregular_selected_valid_len", None))
+        if dense_valid_len is None:
+            dense_valid_len = float(positions[-1].item()) + 1.0
+        dense_valid_len = max(float(dense_valid_len), float(positions[-1].item()) + 1.0)
+        return positions, dense_valid_len
+
+    def _selected_axis_to_physical_axis(self, coords, positions, dense_valid_len):
+        xp = torch.arange(positions.numel(), dtype=coords.dtype, device=coords.device)
+        xp = torch.cat([xp, xp.new_tensor([float(positions.numel())])], dim=0)
+        fp = torch.cat([positions, positions.new_tensor([float(dense_valid_len)])], dim=0)
+        flat = coords.reshape(-1).clamp(min=0.0, max=float(positions.numel()))
+        right_idx = torch.searchsorted(xp, flat, right=True).clamp(min=1, max=xp.numel() - 1)
+        left_idx = right_idx - 1
+        x0 = xp[left_idx]
+        x1 = xp[right_idx]
+        y0 = fp[left_idx]
+        y1 = fp[right_idx]
+        weight = (flat - x0) / (x1 - x0).clamp(min=self.physical_grid_eps)
+        return (y0 + weight * (y1 - y0)).reshape(coords.shape)
+
+    def _build_physical_points_and_masks(self, points, mask_list, metas=None, train_mode=False):
+        if not self.physical_grid_enabled:
+            return points, mask_list
+        if metas is None:
+            if self.physical_grid_required:
+                raise ValueError("physical-grid ActionFormer requires metas.")
+            return points, mask_list
+
+        batch_size = mask_list[0].shape[0]
+        if len(metas) != batch_size:
+            raise ValueError(
+                f"physical-grid ActionFormer metas batch mismatch: metas={len(metas)}, batch={batch_size}."
+            )
+
+        physical_points = [[] for _ in points]
+        physical_masks = [mask.clone().bool() for mask in mask_list]
+        debug_centers = []
+        debug_axis_delta = []
+        valid_points_total = 0
+
+        for batch_idx, meta in enumerate(metas):
+            if train_mode:
+                self._validate_physical_grid_train_gt_axis(meta)
+
+            base_device = points[0].device
+            base_dtype = points[0].dtype
+            positions, dense_valid_len = self._physical_positions_from_meta(meta, base_device, base_dtype)
+            if positions is None:
+                return points, mask_list
+
+            selected_count = int(positions.numel())
+            meta["irregular_native_axis"] = True
+            meta["physical_grid_actionformer"] = True
+            meta["physical_grid_dense_valid_len"] = float(dense_valid_len)
+
+            for level_idx, base_point in enumerate(points):
+                point = base_point.clone()
+                selected_center = point[:, 0].to(dtype=base_dtype, device=base_device)
+                nominal_stride = point[:, 3].to(dtype=base_dtype, device=base_device).clamp(min=self.physical_grid_eps)
+                physical_center = self._selected_axis_to_physical_axis(selected_center, positions, dense_valid_len)
+                physical_prev = self._selected_axis_to_physical_axis(
+                    (selected_center - nominal_stride).clamp(min=0.0), positions, dense_valid_len
+                )
+                physical_next = self._selected_axis_to_physical_axis(
+                    selected_center + nominal_stride, positions, dense_valid_len
+                )
+                physical_stride = ((physical_next - physical_prev) * 0.5).clamp(min=self.physical_grid_eps)
+                range_scale = physical_stride / nominal_stride
+                point[:, 0] = physical_center
+                point[:, 1] = point[:, 1] * range_scale
+                point[:, 2] = point[:, 2] * range_scale
+                point[:, 3] = physical_stride
+                physical_points[level_idx].append(point)
+
+                level_valid = selected_center < float(selected_count)
+                physical_masks[level_idx][batch_idx] = physical_masks[level_idx][batch_idx] & level_valid
+                kept = physical_masks[level_idx][batch_idx]
+                if kept.any():
+                    kept_centers = physical_center[kept]
+                    debug_centers.append(kept_centers.detach())
+                    debug_axis_delta.append((kept_centers - selected_center[kept]).abs().detach())
+                    valid_points_total += int(kept.sum().item())
+
+        physical_points = [torch.stack(level_points, dim=0) for level_points in physical_points]
+        if debug_centers:
+            centers = torch.cat(debug_centers)
+            axis_delta = torch.cat(debug_axis_delta)
+            self._physical_grid_debug = {
+                "physical_grid_actionformer_enabled": True,
+                "physical_grid_actionformer_valid_points": int(valid_points_total),
+                "physical_grid_actionformer_center_min": float(centers.min().item()),
+                "physical_grid_actionformer_center_max": float(centers.max().item()),
+                "physical_grid_actionformer_axis_delta_mean": float(axis_delta.mean().item()),
+                "physical_grid_actionformer_axis_delta_max": float(axis_delta.max().item()),
+            }
+        else:
+            self._physical_grid_debug = {
+                "physical_grid_actionformer_enabled": True,
+                "physical_grid_actionformer_valid_points": 0,
+            }
+        return physical_points, physical_masks
+
+    def collect_debug_state(self):
+        return dict(self._physical_grid_debug)
 
     def _init_layers(self):
         """Initialize layers of the head."""
@@ -100,7 +250,7 @@ class AnchorFreeHead(nn.Module):
             bias_value = -(math.log((1 - self.cls_prior_prob) / self.cls_prior_prob))
             nn.init.constant_(self.cls_head.bias, bias_value)
 
-    def forward_train(self, feat_list, mask_list, gt_segments, gt_labels, **kwargs):
+    def forward_train(self, feat_list, mask_list, gt_segments, gt_labels, metas=None, **kwargs):
         cls_pred = []
         reg_pred = []
 
@@ -116,11 +266,14 @@ class AnchorFreeHead(nn.Module):
             reg_pred.append(F.relu(self.scale[l](self.reg_head(reg_feat))))
 
         points = self.prior_generator(feat_list)
+        points, mask_list = self._build_physical_points_and_masks(
+            points, mask_list, metas=metas, train_mode=True
+        )
 
         losses = self.losses(cls_pred, reg_pred, mask_list, points, gt_segments, gt_labels)
         return losses
 
-    def forward_test(self, feat_list, mask_list, **kwargs):
+    def forward_test(self, feat_list, mask_list, metas=None, **kwargs):
         cls_pred = []
         reg_pred = []
 
@@ -136,17 +289,26 @@ class AnchorFreeHead(nn.Module):
             reg_pred.append(F.relu(self.scale[l](self.reg_head(reg_feat))))
 
         points = self.prior_generator(feat_list)
+        points, mask_list = self._build_physical_points_and_masks(
+            points, mask_list, metas=metas, train_mode=False
+        )
 
         # get refined proposals and scores
         proposals, scores = self.get_valid_proposals_scores(points, reg_pred, cls_pred, mask_list)  # list [T,2]
         return proposals, scores
 
     def get_refined_proposals(self, points, reg_pred):
-        points = torch.cat(points, dim=0)  # [T,4]
+        points = torch.cat(points, dim=1) if points[0].dim() == 3 else torch.cat(points, dim=0)  # [B,T,4] or [T,4]
         reg_pred = torch.cat(reg_pred, dim=-1).permute(0, 2, 1)  # [B,T,2]
 
-        start = points[:, 0][None] - reg_pred[:, :, 0] * points[:, 3][None]
-        end = points[:, 0][None] + reg_pred[:, :, 1] * points[:, 3][None]
+        if points.dim() == 3:
+            center = points[:, :, 0]
+            stride = points[:, :, 3]
+        else:
+            center = points[:, 0][None]
+            stride = points[:, 3][None]
+        start = center - reg_pred[:, :, 0] * stride
+        end = center + reg_pred[:, :, 1] * stride
         proposals = torch.stack((start, end), dim=-1)  # [B,T,2]
         return proposals
 
@@ -216,11 +378,13 @@ class AnchorFreeHead(nn.Module):
 
     @torch.no_grad()
     def prepare_targets(self, points, gt_segments, gt_labels):
-        concat_points = torch.cat(points, dim=0)
-        num_pts = concat_points.shape[0]
+        concat_points = torch.cat(points, dim=1) if points[0].dim() == 3 else torch.cat(points, dim=0)
+        batched_points = concat_points.dim() == 3
         gt_cls, gt_reg = [], []
 
-        for gt_segment, gt_label in zip(gt_segments, gt_labels):
+        for batch_idx, (gt_segment, gt_label) in enumerate(zip(gt_segments, gt_labels)):
+            point = concat_points[batch_idx] if batched_points else concat_points
+            num_pts = point.shape[0]
             num_gts = gt_segment.shape[0]
 
             # corner case where current sample does not have actions
@@ -236,8 +400,8 @@ class AnchorFreeHead(nn.Module):
             # compute the distance of every point to each segment boundary
             # auto broadcasting for all reg target-> F T x N x2
             gt_segs = gt_segment[None].expand(num_pts, num_gts, 2)
-            left = concat_points[:, 0, None] - gt_segs[:, :, 0]
-            right = gt_segs[:, :, 1] - concat_points[:, 0, None]
+            left = point[:, 0, None] - gt_segs[:, :, 0]
+            right = gt_segs[:, :, 1] - point[:, 0, None]
             reg_targets = torch.stack((left, right), dim=-1)
 
             if self.center_sample == "radius":
@@ -245,15 +409,15 @@ class AnchorFreeHead(nn.Module):
                 center_pts = 0.5 * (gt_segs[:, :, 0] + gt_segs[:, :, 1])
                 # center sampling based on stride radius
                 # compute the new boundaries:
-                # concat_points[:, 3] stores the stride
-                t_mins = center_pts - concat_points[:, 3, None] * self.center_sample_radius
-                t_maxs = center_pts + concat_points[:, 3, None] * self.center_sample_radius
+                # point[:, 3] stores the stride
+                t_mins = center_pts - point[:, 3, None] * self.center_sample_radius
+                t_maxs = center_pts + point[:, 3, None] * self.center_sample_radius
                 # prevent t_mins / maxs from over-running the action boundary
                 # left: torch.maximum(t_mins, gt_segs[:, :, 0])
                 # right: torch.minimum(t_maxs, gt_segs[:, :, 1])
                 # F T x N (distance to the new boundary)
-                cb_dist_left = concat_points[:, 0, None] - torch.maximum(t_mins, gt_segs[:, :, 0])
-                cb_dist_right = torch.minimum(t_maxs, gt_segs[:, :, 1]) - concat_points[:, 0, None]
+                cb_dist_left = point[:, 0, None] - torch.maximum(t_mins, gt_segs[:, :, 0])
+                cb_dist_right = torch.minimum(t_maxs, gt_segs[:, :, 1]) - point[:, 0, None]
                 # F T x N x 2
                 center_seg = torch.stack((cb_dist_left, cb_dist_right), -1)
                 # F T x N
@@ -266,7 +430,7 @@ class AnchorFreeHead(nn.Module):
             max_regress_distance = reg_targets.max(-1)[0]
             # F T x N
             inside_regress_range = torch.logical_and(
-                (max_regress_distance >= concat_points[:, 1, None]), (max_regress_distance <= concat_points[:, 2, None])
+                (max_regress_distance >= point[:, 1, None]), (max_regress_distance <= point[:, 2, None])
             )
 
             # if there are still more than one actions for one moment
@@ -291,7 +455,7 @@ class AnchorFreeHead(nn.Module):
             # OK to use min_len_inds
             reg_targets = reg_targets[range(num_pts), min_len_inds]
             # normalization based on stride
-            reg_targets /= concat_points[:, 3, None]
+            reg_targets /= point[:, 3, None]
 
             gt_cls.append(cls_targets)
             gt_reg.append(reg_targets)
