@@ -198,6 +198,15 @@ def test_dynamic_budget_controller_maps_neutral_risk_to_declared_target_budget()
     assert budget.tolist() == [384, 384]
 
 
+def test_dynamic_budget_controller_requires_strict_budget_order():
+    module, _builder = _load_bh_sdc_module()
+
+    with pytest.raises(ValueError, match="min_budget < target_budget < max_budget"):
+        module.BoundaryHazardDynamicBudgetController(min_budget=4, target_budget=4, max_budget=8)
+    with pytest.raises(ValueError, match="min_budget < target_budget < max_budget"):
+        module.BoundaryHazardDynamicBudgetController(min_budget=4, target_budget=8, max_budget=8)
+
+
 def test_acquisition_policy_keeps_boundary_peaks_coverage_and_sorted_unique_indices():
     module, _builder = _load_bh_sdc_module()
     policy = module.BoundaryHazardAcquisitionPolicy(
@@ -242,6 +251,76 @@ def test_acquisition_policy_keeps_boundary_peaks_coverage_and_sorted_unique_indi
     assert not any(idx == 7 for idx in selected[:4])
     assert plan.roles["boundary_hazard"].shape == plan.selected_mask.shape
     _assert_prefix_mask(plan.selected_mask)
+
+
+def test_selector_probe_only_scout_ignores_non_probe_dense_values_and_records_probe_mask():
+    module, _builder = _load_bh_sdc_module()
+    selector = module.PCOTMRASBoundaryHazardSparseDenseFrameSelector(
+        input_channels=1,
+        dense_window_size=12,
+        min_budget=3,
+        target_budget=4,
+        max_budget=6,
+        budget_step=1,
+        scout_hidden_dim=4,
+        scout_num_layers=1,
+        probe_stride=3,
+        coverage_ratio=0.25,
+        boundary_ratio=0.50,
+        max_dense_gap=4,
+        aux_hazard_loss_weight=0.0,
+        aux_budget_entropy_loss_weight=0.0,
+    )
+
+    class ValueScout(nn.Module):
+        def forward(self, features, valid_mask, metas=None):
+            logits = features[:, 0, :].clone()
+            logits = logits.masked_fill(~valid_mask, -10000.0)
+            return {
+                "actionness_logits": logits,
+                "start_hazard_logits": logits,
+                "end_hazard_logits": logits,
+                "boundary_logits": logits,
+                "difficulty_logits": logits,
+                "uncertainty_logits": logits,
+                "redundancy_logits": -logits,
+                "frame_selection_logits": logits,
+                "valid_mask": valid_mask,
+                "protocol": module._deploy_protocol_flags(),
+            }
+
+    class FixedBudget(nn.Module):
+        def forward(self, scout_out, valid_mask):
+            return torch.full((valid_mask.shape[0],), 5, dtype=torch.long), {
+                "min_budget": 3,
+                "max_budget": 6,
+                "protocol": "unit_fixed_budget",
+                "uses_gt": False,
+                "uses_teacher": False,
+                "uses_raw_prediction_cache": False,
+            }
+
+    selector.scout = ValueScout()
+    selector.budget_controller = FixedBudget()
+
+    masks = torch.ones(1, 12, dtype=torch.bool)
+    metas = [{"sample_id": "probe-only"}]
+    base = torch.zeros(1, 1, 12)
+    base[0, 0, [0, 3, 6, 9, 11]] = torch.tensor([1.0, 2.0, 5.0, 3.0, 4.0])
+    changed_non_probe = base.clone()
+    changed_non_probe[0, 0, [1, 2, 4, 5, 7, 8, 10]] = 1000.0
+
+    first = selector.forward_test(base, masks, metas=[dict(metas[0])])
+    second = selector.forward_test(changed_non_probe, masks, metas=[dict(metas[0])])
+
+    first_plan = first["metas"][0]["bh_sdc_acquisition_plan"]
+    second_plan = second["metas"][0]["bh_sdc_acquisition_plan"]
+    assert first_plan["selected_dense_indices"] == second_plan["selected_dense_indices"]
+    assert first_plan["probe_only_scout"] is True
+    assert first_plan["scout_input_scope"] == "explicit_probe_visible_only"
+    assert first_plan["probe_dense_indices"] == [0, 3, 6, 9, 11]
+    assert first_plan["probe_mask"] == [True, False, False, True, False, False, True, False, False, True, False, True]
+    assert first_plan["dense_input_non_probe_values_used_for_scores"] is False
 
 
 def test_forward_test_rejects_gt_teacher_or_raw_prediction_meta_payloads():

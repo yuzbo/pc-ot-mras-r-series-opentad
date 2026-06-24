@@ -1,6 +1,7 @@
 import inspect
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from collections.abc import Mapping
 
 from ..builder import DETECTORS, build_selector, build_token_compressor
@@ -143,7 +144,7 @@ class ActionFormer(SingleStageDetector):
                 inputs = inputs.detach()
 
         if self.with_backbone:
-            x = self.backbone(inputs)
+            x, masks = self._call_backbone_forward(inputs, masks, metas)
         else:
             x = inputs
 
@@ -226,7 +227,7 @@ class ActionFormer(SingleStageDetector):
             self._reject_pc_ot_mras_value_targets_in_forward_test(metas)
 
         if self.with_backbone:
-            x = self.backbone(inputs)
+            x, masks = self._call_backbone_forward(inputs, masks, metas)
         else:
             x = inputs
 
@@ -379,6 +380,80 @@ class ActionFormer(SingleStageDetector):
                 f"feature/mask temporal length mismatch {stage}: "
                 f"features={features.shape[-1]}, masks={masks.shape[-1]}"
             )
+
+    def _call_backbone_forward(self, inputs, masks, metas):
+        if self._uses_bh_sdc_compact_backbone_path():
+            return self._call_bh_sdc_compact_backbone(inputs, masks)
+        return self.backbone(inputs), masks
+
+    def _uses_bh_sdc_compact_backbone_path(self):
+        selector = getattr(self, "frame_selector", None)
+        return bool(getattr(selector, "bh_sdc_requires_compact_backbone", False))
+
+    def _call_bh_sdc_compact_backbone(self, inputs, masks):
+        valid = self._prefix_binary_mask(masks, name="BH-SDC sparse backbone masks")
+        counts = valid.long().sum(dim=1)
+        features = []
+        for batch_idx, count_tensor in enumerate(counts):
+            count = int(count_tensor.item())
+            sample_inputs = self._slice_temporal_sample(inputs, batch_idx, count)
+            sample_mask = torch.ones((1, count), dtype=torch.bool, device=masks.device)
+            sample_features = self._call_backbone_single_sample(sample_inputs, sample_mask)
+            if sample_features.ndim != 3:
+                raise RuntimeError(
+                    "BH-SDC compact backbone expects [B,C,T] features; "
+                    f"got {tuple(sample_features.shape)}"
+                )
+            if sample_features.shape[-1] != count:
+                sample_features = F.interpolate(
+                    sample_features,
+                    size=count,
+                    mode="linear",
+                    align_corners=False,
+                )
+            features.append(sample_features)
+        max_count = int(counts.max().item())
+        channels = int(features[0].shape[1])
+        output = features[0].new_zeros((len(features), channels, max_count))
+        output_mask = torch.zeros((len(features), max_count), dtype=torch.bool, device=masks.device)
+        for batch_idx, sample_features in enumerate(features):
+            count = int(counts[batch_idx].item())
+            output[batch_idx, :, :count] = sample_features[0, :, :count]
+            output_mask[batch_idx, :count] = True
+        return output, output_mask
+
+    def _call_backbone_single_sample(self, sample_inputs, sample_mask):
+        if self._callable_accepts_metas(self.backbone.forward):
+            raise RuntimeError("BH-SDC compact backbone does not support backbone.forward(metas=...)")
+        signature = inspect.signature(self.backbone.forward)
+        if "masks" in signature.parameters:
+            return self.backbone(sample_inputs, masks=sample_mask)
+        if len(signature.parameters) >= 2:
+            return self.backbone(sample_inputs, sample_mask)
+        return self.backbone(sample_inputs)
+
+    @staticmethod
+    def _slice_temporal_sample(inputs, batch_idx, count):
+        if inputs.ndim == 3:
+            return inputs[batch_idx : batch_idx + 1, :, :count]
+        if inputs.ndim == 5:
+            return inputs[batch_idx : batch_idx + 1, :, :count, :, :]
+        if inputs.ndim == 6:
+            return inputs[batch_idx : batch_idx + 1, :, :, :count, :, :]
+        raise ValueError(f"BH-SDC compact backbone unsupported input shape {tuple(inputs.shape)}")
+
+    @staticmethod
+    def _prefix_binary_mask(mask, *, name):
+        if not torch.is_tensor(mask) or mask.ndim != 2:
+            raise ValueError(f"{name} must be a [B,T] tensor")
+        valid = mask.bool()
+        counts = valid.long().sum(dim=1)
+        if bool((counts <= 0).any().item()):
+            raise ValueError(f"{name} must contain at least one valid position per sample")
+        expected = torch.arange(valid.shape[1], device=valid.device)[None, :] < counts[:, None]
+        if not torch.equal(valid, expected):
+            raise ValueError(f"{name} must be a contiguous valid prefix")
+        return valid
 
     def _inject_pc_ot_mras_reader_outputs(self, feat_list, mask_list, metas):
         if self.pc_ot_mras_reader is None and self.pc_ot_mras_reader_eval_override is None:

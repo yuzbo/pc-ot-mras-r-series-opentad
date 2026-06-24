@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import argparse
+import ast
 import json
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,24 @@ ROUTE = "bh_sdc_boundary_hazard_sparse_dense"
 ROUTE_LABEL = "DIVERGENT_INNOVATION_BH_SDC_DO_NOT_MERGE_WITH_C3"
 SELECTOR_TYPE = "PCOTMRASBoundaryHazardSparseDenseFrameSelector"
 COMPLETION_TYPE = "PCOTMRASBoundaryHazardSparseToDenseBridge"
+
+FORBIDDEN_ROUTE_TOKENS = (
+    "c3",
+    "c3_pro",
+    "c3-pro",
+    "cnn_lite",
+    "cnn-lite",
+    "motion_tcn",
+    "motion-tcn",
+    "hybrid",
+    "interval_packet",
+    "global_rank",
+    "global-rank",
+    "physical_grid",
+    "physical-grid",
+    "dynamic_budget_guard",
+    "dynamic-budget-guard",
+)
 
 FORBIDDEN_TRUE_KEYS = (
     "allow_remote_sync",
@@ -65,6 +84,60 @@ def load_config_namespace(path: Path) -> dict[str, Any]:
     return cfg._cfg_dict.to_dict()
 
 
+def _base_entries_from_source(path: Path) -> list[str]:
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return []
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == "_base_" for target in node.targets):
+            continue
+        value = ast.literal_eval(node.value)
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (list, tuple)):
+            return [str(item) for item in value]
+    return []
+
+
+def config_base_chain(path: Path) -> list[Path]:
+    seen: set[Path] = set()
+    chain: list[Path] = []
+
+    def visit(item: Path) -> None:
+        resolved = item.resolve()
+        if resolved in seen or not resolved.exists():
+            return
+        seen.add(resolved)
+        chain.append(resolved)
+        for entry in _base_entries_from_source(resolved):
+            base_path = Path(entry)
+            if not base_path.is_absolute():
+                base_path = resolved.parent / base_path
+            visit(base_path)
+
+    visit(path)
+    return chain
+
+
+def _normalized_token_text(path: Path) -> str:
+    return str(path).replace("\\", "/").lower()
+
+
+def forbidden_base_chain_hits(path: Path) -> list[str]:
+    hits: list[str] = []
+    for item in config_base_chain(path):
+        if item.resolve() == path.resolve():
+            continue
+        text = _normalized_token_text(item)
+        for token in FORBIDDEN_ROUTE_TOKENS:
+            if token in text:
+                hits.append(f"{item.name}:{token}")
+    return hits
+
+
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
@@ -80,6 +153,11 @@ def _get_nested(mapping: dict[str, Any], *keys: str) -> Any:
 
 
 def validate_locked_config(path: Path) -> dict[str, Any]:
+    base_forbidden_hits = forbidden_base_chain_hits(path)
+    _require(
+        not base_forbidden_hits,
+        f"resolved _base_ chain contains forbidden route/base token(s): {base_forbidden_hits}",
+    )
     cfg = load_config_namespace(path)
     scope = cfg.get("experiment_scope")
     gate = cfg.get("bh_sdc_gate")
@@ -96,6 +174,8 @@ def validate_locked_config(path: Path) -> dict[str, Any]:
     _require(gate.get("requires_launch_gate") is True, "BH-SDC gate must require a launch gate")
     _require(gate.get("launch_gate_passed") is False, "BH-SDC gate must remain locked by default")
     _require(gate.get("allow_precheck_only") is True, "BH-SDC gate should allow precheck-only validation")
+    allowed_entrypoints = list(gate.get("allowed_entrypoints", ()))
+    _require(allowed_entrypoints == [], "BH-SDC allowed_entrypoints must remain empty before Pro/subagent approval")
 
     for key in FORBIDDEN_TRUE_KEYS:
         _require(gate.get(key) is not True, f"BH-SDC gate must keep {key}=false/absent before approval")
@@ -112,7 +192,15 @@ def validate_locked_config(path: Path) -> dict[str, Any]:
     max_budget = int(frame_selector.get("max_budget"))
     min_budget = int(frame_selector.get("min_budget"))
     target_budget = int(frame_selector.get("target_budget"))
-    _require(0 < min_budget <= target_budget <= max_budget < dense_window_size, "dynamic budget bounds are invalid")
+    _require(
+        0 < min_budget < target_budget < max_budget <= dense_window_size,
+        "must satisfy min_budget < target_budget < max_budget <= dense_window_size",
+    )
+    _require(int(frame_selector.get("probe_stride", 0)) > 0, "frame_selector.probe_stride must be positive")
+    _require(
+        float(frame_selector.get("probe_interpolation_temperature", 0.0)) > 0.0,
+        "frame_selector.probe_interpolation_temperature must be positive",
+    )
     _require(int(token_compressor.get("dense_window_size")) == dense_window_size, "bridge dense_window_size mismatch")
     _require(int(token_compressor.get("target_len")) == dense_window_size, "bridge target_len mismatch")
     _require(int(_get_nested(model, "backbone", "backbone", "total_frames")) == max_budget, "backbone total_frames must equal max_budget")
@@ -150,6 +238,10 @@ def validate_locked_config(path: Path) -> dict[str, Any]:
         "min_budget": min_budget,
         "target_budget": target_budget,
         "max_budget": max_budget,
+        "probe_stride": int(frame_selector.get("probe_stride")),
+        "allowed_entrypoints": allowed_entrypoints,
+        "base_chain": [str(item) for item in config_base_chain(path)],
+        "base_chain_forbidden_tokens": base_forbidden_hits,
         "launch_gate_passed": gate.get("launch_gate_passed"),
         "allow_long_training": gate.get("allow_long_training"),
     }

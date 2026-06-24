@@ -1,4 +1,4 @@
-_base_ = ["./pc_ot_mras_prebackbone_c3_hybrid_reader_candidate_n16r4.py"]
+_base_ = ["./e2e_thumos_videomae_s_768x1_160_adapter.py"]
 
 
 variant_id = "BH-SDC-BoundaryHazard-SparseDense-LocalPrecheck"
@@ -13,6 +13,9 @@ min_budget = 256
 target_budget = 384
 max_budget = 448
 budget_step = 32
+probe_stride = 16
+probe_interpolation_temperature = 4.0
+sparse_chunk_frames = 16
 
 experiment_scope = dict(
     _delete_=True,
@@ -45,6 +48,9 @@ experiment_scope = dict(
     scout="BoundaryHazardTemporalScout",
     policy="BoundaryHazardAcquisitionPolicy",
     completion_bridge="PCOTMRASBoundaryHazardSparseToDenseBridge",
+    scout_visibility="explicit_probe_visible_only",
+    probe_stride=probe_stride,
+    backbone_interface="bh_sdc_per_sample_compact_prefix_before_temporal_mixing",
     attribution_boundary=(
         "This is BH-SDC divergent innovation, not C3/C3-Pro optimization. "
         "BH-SDC evidence must not be used to explain C3 failures, and C3 diagnostics "
@@ -135,7 +141,6 @@ pc_ot_mras_prebackbone_e2e_acquisition_gate = dict(
 
 model = dict(
     frame_selector=dict(
-        _delete_=True,
         type="PCOTMRASBoundaryHazardSparseDenseFrameSelector",
         input_channels=3,
         dense_window_size=dense_window_size,
@@ -154,6 +159,8 @@ model = dict(
         max_dense_gap=64,
         aux_hazard_loss_weight=0.05,
         aux_budget_entropy_loss_weight=0.001,
+        probe_stride=probe_stride,
+        probe_interpolation_temperature=probe_interpolation_temperature,
     ),
     token_compressor=dict(
         type="PCOTMRASBoundaryHazardSparseToDenseBridge",
@@ -166,7 +173,19 @@ model = dict(
     ),
     backbone=dict(
         backbone=dict(total_frames=max_budget),
-        custom=dict(pretrain=None),
+        custom=dict(
+            _delete_=True,
+            pretrain=None,
+            pre_processing_pipeline=[
+                dict(type="Rearrange", keys=["frames"], ops="b n c (t1 t) h w -> (b t1) n c t h w", t=sparse_chunk_frames),
+            ],
+            post_processing_pipeline=[
+                dict(type="Reduce", keys=["feats"], ops="b n c t h w -> b c t", reduction="mean"),
+                dict(type="Rearrange", keys=["feats"], ops="(b t1) c t -> b c (t1 t)", b=1),
+            ],
+            norm_eval=False,
+            freeze_backbone=False,
+        ),
     ),
     projection=dict(max_seq_len=dense_window_size),
 )

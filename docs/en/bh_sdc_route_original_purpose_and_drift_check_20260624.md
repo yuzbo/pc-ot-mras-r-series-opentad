@@ -57,6 +57,60 @@ This implementation is a full candidate model for the route, but the launch gate
 - `scripts/run_bh_sdc_full_train_n16r4.sbatch`
 - `tests/test_bh_sdc_core.py`
 - `tests/test_bh_sdc_config_gate.py`
+- `tests/test_bh_sdc_actionformer_integration.py`
+- `tests/test_bh_sdc_metadata_contract.py`
+- `tests/test_bh_sdc_launcher_gate.py`
+
+## Owner-Fix Pro Blocking Repairs
+
+This owner-fix commit addresses the GitHub Pro review verdict
+`FIX_BEFORE_SUBAGENT_REVIEW`. It remains a local/static candidate only; it does
+not approve remote sync, Slurm, full training, detector evaluation, runtime
+claims, mAP claims, deployment claims, or paper claims.
+
+Implemented repairs:
+
+1. **BH-SDC-only compact backbone interface.** ActionFormer now detects the
+   BH-SDC selector contract and runs the temporal backbone per sample on the
+   valid selected prefix before padding features back. Normal non-BH-SDC
+   ActionFormer behavior still calls `self.backbone(inputs)` unchanged. The
+   synthetic temporal-mixing test proves invalid padded tails cannot contaminate
+   valid BH-SDC sparse features before the sparse-to-dense bridge.
+2. **Probe-visible scout semantics.** The selector uses an explicit probe mask
+   (`probe_stride`) and feeds only probe-visible evidence into the scout. Dense
+   acquisition scores are interpolated from probe logits, and metadata records
+   `probe_dense_indices`, `probe_mask`, `scout_visible_mask`,
+   `scout_input_scope=explicit_probe_visible_only`, and
+   `dense_input_non_probe_values_used_for_scores=False`.
+3. **Observed/synthetic detector metadata.** The sparse-to-dense bridge exposes
+   `observed_mask`, `synthetic_mask`, `completion_confidence`, `gap_distance`,
+   `physical_time_axis`, and observed physical times under
+   `bh_sdc_completion` and `bh_sdc_detector_metadata`. It preserves observed
+   feature overwrite and keeps `irregular_selected_positions` as observed
+   positions instead of rewriting them to the full dense range.
+4. **Route-base drift guard.** The local precheck config now inherits the
+   neutral AdaTAD Adapter base instead of the C3-Hybrid candidate base. The
+   validator scans the full `_base_` chain and rejects C3/C3-Pro/CNN-Lite/
+   Motion-TCN/Hybrid/interval/global-rank/physical-grid/dynamic-budget-guard
+   route tokens unless a future reviewed combo path replaces this locked
+   no-combo candidate.
+5. **Strict budget and launch gate.** The selector and validator enforce
+   `min_budget < target_budget < max_budget <= dense_window_size`. The launcher
+   is a static precheck script only, requests no GPU by default, ignores no
+   environment-variable unlock path, and keeps `allowed_entrypoints` empty.
+
+Remaining locked actions:
+
+- no remote sync;
+- no Slurm training;
+- no GPU full train;
+- no `tools/train.py`;
+- no `tools/test.py`;
+- no detector mAP/runtime/FLOPs/deploy/paper claim.
+
+The next required gate is a second GPT-5 Pro / GPT-5.5 Pro implementation
+review using this branch/commit, followed by the repository-required final
+read-only subagent review only if Pro returns a substantive no-blocker verdict.
 
 ## Accepted Pro R1 Findings And Fixes
 
@@ -69,6 +123,19 @@ The first Pro review returned `FIX_BEFORE_SUBAGENT_REVIEW`. The accepted blocker
 5. Tests did not cover real registry build paths or observed-frame preservation. The test suite now covers config buildability and exact preservation at observed dense positions.
 
 ## Local Verification Evidence
+
+Owner-fix verification:
+
+```powershell
+conda run -n torch_1 python -m pytest tests/test_bh_sdc_core.py tests/test_bh_sdc_config_gate.py tests/test_bh_sdc_actionformer_integration.py tests/test_bh_sdc_metadata_contract.py tests/test_bh_sdc_launcher_gate.py -q
+```
+
+Result: `18 passed`.
+
+The validator and compile checks must be rerun on the exact final commit before
+second Pro review handoff.
+
+Historical pre-owner-fix evidence:
 
 The following checks passed before preparing the GitHub review handoff:
 

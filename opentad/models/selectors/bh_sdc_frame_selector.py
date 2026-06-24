@@ -42,6 +42,46 @@ _FORBIDDEN_TEST_META_PHRASES = frozenset(
         "pc_ot_mras_value_targets",
     }
 )
+_SAFE_FALSE_PROTOCOL_KEYS = frozenset(
+    {
+        "uses_gt",
+        "uses_teacher",
+        "uses_oracle",
+        "uses_cache",
+        "uses_raw_prediction_cache",
+    }
+)
+_SAFE_TEST_META_KEYS = frozenset(
+    {
+        "target_budget",
+        "min_budget",
+        "max_budget",
+        "budget",
+        "budget_protocol",
+        "dense_valid_len",
+        "dense_window_size",
+        "selected_count",
+        "selected_dense_indices",
+        "observed_count",
+        "observed_dense_indices",
+        "observed_mask",
+        "synthetic_mask",
+        "completion_confidence",
+        "gap_distance",
+        "physical_times",
+        "physical_time_axis",
+        "observed_physical_times",
+        "probe_dense_indices",
+        "probe_mask",
+        "probe_only_scout",
+        "probe_stride",
+        "scout_visible_mask",
+        "scout_input_scope",
+        "dense_input_non_probe_values_used_for_scores",
+        "max_dense_gap",
+        "roles",
+    }
+)
 
 
 @dataclass
@@ -75,6 +115,19 @@ def _prefix_mask(mask: torch.Tensor, *, expected_shape: tuple[int, int], name: s
     prefix = torch.arange(valid.shape[1], device=valid.device)[None, :] < counts[:, None]
     if not torch.equal(valid, prefix):
         raise ValueError(f"{name} must be a contiguous valid prefix")
+    return valid
+
+
+def _binary_temporal_mask(mask: torch.Tensor, *, expected_shape: tuple[int, int], name: str = "mask") -> torch.Tensor:
+    if not torch.is_tensor(mask):
+        raise TypeError(f"{name} must be a tensor")
+    if mask.shape != expected_shape:
+        raise ValueError(f"{name} must have shape {expected_shape}, got {tuple(mask.shape)}")
+    if mask.dtype != torch.bool and not bool(((mask == 0) | (mask == 1)).all().item()):
+        raise ValueError(f"{name} must be boolean or binary")
+    valid = mask.bool()
+    if bool((valid.long().sum(dim=1) <= 0).any().item()):
+        raise ValueError(f"{name} must contain at least one valid temporal position per sample")
     return valid
 
 
@@ -129,6 +182,13 @@ def _forbidden_test_meta_key(value: object) -> bool:
 def _reject_forbidden_test_meta(value: object, *, location: str) -> None:
     if isinstance(value, Mapping):
         for key, item in value.items():
+            key_text = str(key)
+            if key_text in _SAFE_FALSE_PROTOCOL_KEYS:
+                if item is not False:
+                    raise ValueError(f"{location}.{key} contains forbidden deploy/test-time payload")
+                continue
+            if key_text in _SAFE_TEST_META_KEYS:
+                continue
             if _forbidden_test_meta_key(key):
                 raise ValueError(f"{location}.{key} contains forbidden deploy/test-time payload")
             _reject_forbidden_test_meta(item, location=f"{location}.{key}")
@@ -156,6 +216,136 @@ def _feature_sequence_for_scout(inputs: torch.Tensor) -> torch.Tensor:
     if inputs.ndim == 6:
         return inputs.float().mean(dim=(1, -1, -2))
     raise ValueError(f"unsupported input shape {tuple(inputs.shape)}")
+
+
+def _validate_strict_budget_bounds(min_budget: int, target_budget: int, max_budget: int) -> None:
+    if not int(min_budget) < int(target_budget) < int(max_budget):
+        raise ValueError("must satisfy min_budget < target_budget < max_budget")
+
+
+def _probe_visible_mask(valid: torch.Tensor, probe_stride: int) -> torch.Tensor:
+    if int(probe_stride) <= 0:
+        raise ValueError("probe_stride must be positive")
+    probe = torch.zeros_like(valid, dtype=torch.bool)
+    for batch_idx in range(valid.shape[0]):
+        valid_len = int(valid[batch_idx].long().sum().item())
+        if valid_len <= 0:
+            continue
+        positions = list(range(0, valid_len, int(probe_stride)))
+        if positions[-1] != valid_len - 1:
+            positions.append(valid_len - 1)
+        probe[batch_idx, positions] = True
+    return probe & valid
+
+
+def _dense_probe_logits(
+    probe_logits: torch.Tensor,
+    probe_mask: torch.Tensor,
+    valid: torch.Tensor,
+    *,
+    temperature: float,
+    invalid_fill: float,
+) -> torch.Tensor:
+    if temperature <= 0.0:
+        raise ValueError("probe_interpolation_temperature must be positive")
+    dense = torch.full_like(probe_logits, float(invalid_fill))
+    time_axis = torch.arange(probe_logits.shape[1], device=probe_logits.device, dtype=probe_logits.dtype)
+    for batch_idx in range(probe_logits.shape[0]):
+        probe_positions = torch.nonzero(probe_mask[batch_idx], as_tuple=False).flatten()
+        valid_len = int(valid[batch_idx].long().sum().item())
+        if valid_len <= 0 or probe_positions.numel() == 0:
+            continue
+        probe_values = probe_logits[batch_idx, probe_positions]
+        distance = (time_axis[:valid_len, None] - probe_positions.to(dtype=probe_logits.dtype)[None, :]).abs()
+        weights = torch.softmax(-distance / float(temperature), dim=1)
+        dense[batch_idx, :valid_len] = probe_values @ weights.transpose(0, 1)
+    return dense.masked_fill(~valid, float(invalid_fill))
+
+
+def _densify_probe_scout_outputs(
+    probe_out: Mapping[str, torch.Tensor],
+    probe_mask: torch.Tensor,
+    valid: torch.Tensor,
+    *,
+    temperature: float,
+) -> dict[str, Any]:
+    outputs: dict[str, Any] = {}
+    for key in (
+        "actionness_logits",
+        "start_hazard_logits",
+        "end_hazard_logits",
+        "boundary_logits",
+        "difficulty_logits",
+        "uncertainty_logits",
+    ):
+        outputs[key] = _dense_probe_logits(
+            probe_out[key],
+            probe_mask,
+            valid,
+            temperature=temperature,
+            invalid_fill=_MASKED_LOW_LOGIT,
+        )
+    outputs["redundancy_logits"] = _dense_probe_logits(
+        probe_out["redundancy_logits"],
+        probe_mask,
+        valid,
+        temperature=temperature,
+        invalid_fill=-_MASKED_LOW_LOGIT,
+    )
+    outputs["frame_selection_logits"] = (
+        outputs["actionness_logits"]
+        + 0.5 * outputs["boundary_logits"]
+        + 0.25 * outputs["difficulty_logits"]
+        + 0.25 * outputs["uncertainty_logits"]
+        - 0.25 * outputs["redundancy_logits"]
+    ).masked_fill(~valid, _MASKED_LOW_LOGIT)
+    outputs["valid_mask"] = valid
+    outputs["probe_visible_mask"] = probe_mask
+    outputs["protocol"] = dict(_deploy_protocol_flags(), scout_input_scope="explicit_probe_visible_only")
+    return outputs
+
+
+def _physical_time_axis_from_metas(
+    metas,
+    valid: torch.Tensor,
+    dense_len: int,
+    *,
+    device: torch.device,
+) -> torch.Tensor:
+    default_axis = torch.arange(dense_len, device=device, dtype=torch.float32)
+    if metas is None:
+        return default_axis[None, :].expand(valid.shape[0], -1).clone()
+    axis = torch.zeros(valid.shape[0], dense_len, device=device, dtype=torch.float32)
+    for batch_idx, meta in enumerate(metas):
+        valid_len = int(valid[batch_idx].long().sum().item())
+        if isinstance(meta, Mapping) and "physical_time_axis" in meta:
+            values = torch.as_tensor(meta["physical_time_axis"], device=device, dtype=torch.float32).flatten()
+            if values.numel() < valid_len:
+                raise ValueError(f"metas[{batch_idx}].physical_time_axis is shorter than dense valid length")
+            axis[batch_idx, :valid_len] = values[:valid_len]
+        else:
+            fps = None
+            if isinstance(meta, Mapping):
+                fps = meta.get("fps", meta.get("avg_fps"))
+            stride = float(meta.get("snippet_stride", 1.0)) if isinstance(meta, Mapping) else 1.0
+            start = float(
+                meta.get("window_start_frame", meta.get("offset_frames", 0.0)) if isinstance(meta, Mapping) else 0.0
+            )
+            frame_axis = start + torch.arange(valid_len, device=device, dtype=torch.float32) * float(stride)
+            if fps not in (None, 0, 0.0, ""):
+                frame_axis = frame_axis / float(fps)
+            axis[batch_idx, :valid_len] = frame_axis
+        if valid_len < dense_len:
+            axis[batch_idx, valid_len:] = axis[batch_idx, valid_len - 1]
+    return axis
+
+
+def _bool_list(tensor: torch.Tensor) -> list[bool]:
+    return [bool(item) for item in tensor.detach().cpu().tolist()]
+
+
+def _float_list(tensor: torch.Tensor) -> list[float]:
+    return [float(item) for item in tensor.detach().cpu().tolist()]
 
 
 def _gather_temporal(inputs: torch.Tensor, indices: torch.Tensor, selected_mask: torch.Tensor) -> torch.Tensor:
@@ -254,7 +444,9 @@ class BoundaryHazardTemporalScout(nn.Module):
         if features.ndim != 3:
             raise ValueError(f"features must be [B,C,T], got {tuple(features.shape)}")
         batch, _channels, time = features.shape
-        valid = _prefix_mask(valid_mask, expected_shape=(batch, time), name="valid_mask").to(device=features.device)
+        valid = _binary_temporal_mask(valid_mask, expected_shape=(batch, time), name="valid_mask").to(
+            device=features.device
+        )
         x = features.float().masked_fill(~valid[:, None, :], 0.0)
         _require_finite(x, "scout features")
         logits = self.head(self.encoder(x))
@@ -310,8 +502,7 @@ class BoundaryHazardDynamicBudgetController(nn.Module):
         self.budget_step = int(budget_step)
         if self.min_budget <= 0 or self.target_budget <= 0 or self.max_budget <= 0:
             raise ValueError("budgets must be positive")
-        if not self.min_budget <= self.target_budget <= self.max_budget:
-            raise ValueError("must satisfy min_budget <= target_budget <= max_budget")
+        _validate_strict_budget_bounds(self.min_budget, self.target_budget, self.max_budget)
         if self.budget_step <= 0:
             raise ValueError("budget_step must be positive")
         self.hazard_weight = float(hazard_weight)
@@ -430,6 +621,7 @@ class BoundaryHazardAcquisitionPolicy(nn.Module):
         max_out = min(self.max_budget, time)
         selected = torch.zeros(batch, max_out, dtype=torch.long, device=valid.device)
         selected_mask = torch.zeros(batch, max_out, dtype=torch.bool, device=valid.device)
+        physical_times = torch.zeros(batch, max_out, dtype=torch.float32, device=valid.device)
         boundary_role = torch.zeros_like(selected_mask)
         coverage_role = torch.zeros_like(selected_mask)
         difficulty_role = torch.zeros_like(selected_mask)
@@ -524,8 +716,10 @@ class BoundaryHazardAcquisitionPolicy(nn.Module):
                 raise RuntimeError("failed to build BH-SDC acquisition plan")
             out = torch.as_tensor(chosen, dtype=torch.long, device=valid.device)
             selected[batch_idx, :budget] = out
+            physical_times[batch_idx, :budget] = dense_axis[batch_idx, out].to(dtype=torch.float32)
             if budget < max_out:
                 selected[batch_idx, budget:] = out[-1]
+                physical_times[batch_idx, budget:] = dense_axis[batch_idx, out[-1]].to(dtype=torch.float32)
             selected_mask[batch_idx, :budget] = True
             for col, idx in enumerate(chosen):
                 role = role_by_idx.get(idx, "score")
@@ -539,7 +733,6 @@ class BoundaryHazardAcquisitionPolicy(nn.Module):
                 max_gap = max(right - left for left, right in zip(chosen, chosen[1:]))
             max_gap_rows.append(float(max_gap))
 
-        physical_times = selected.to(dtype=torch.float32)
         diagnostics = {
             "combined_score_mean": combined.masked_fill(~valid, 0.0).sum(dim=1)
             / valid.to(dtype=combined.dtype).sum(dim=1).clamp_min(1.0),
@@ -589,6 +782,8 @@ class PCOTMRASBoundaryHazardSparseDenseFrameSelector(nn.Module):
         max_dense_gap: int = 0,
         aux_hazard_loss_weight: float = 0.05,
         aux_budget_entropy_loss_weight: float = 0.001,
+        probe_stride: int = 16,
+        probe_interpolation_temperature: float = 4.0,
         meta_key: str = "bh_sdc_acquisition_plan",
     ) -> None:
         super().__init__()
@@ -596,9 +791,21 @@ class PCOTMRASBoundaryHazardSparseDenseFrameSelector(nn.Module):
         self.min_budget = int(min_budget)
         self.target_budget = int(target_budget)
         self.max_budget = int(max_budget)
+        _validate_strict_budget_bounds(self.min_budget, self.target_budget, self.max_budget)
         self.meta_key = str(meta_key)
         self.aux_hazard_loss_weight = float(aux_hazard_loss_weight)
         self.aux_budget_entropy_loss_weight = float(aux_budget_entropy_loss_weight)
+        self.probe_stride = int(probe_stride)
+        self.probe_interpolation_temperature = float(probe_interpolation_temperature)
+        if self.max_budget > self.dense_window_size:
+            raise ValueError("max_budget must not exceed dense_window_size")
+        if self.probe_stride <= 0:
+            raise ValueError("probe_stride must be positive")
+        if self.probe_interpolation_temperature <= 0.0:
+            raise ValueError("probe_interpolation_temperature must be positive")
+        self.bh_sdc_route_label = BH_SDC_ROUTE_LABEL
+        self.bh_sdc_requires_compact_backbone = True
+        self.bh_sdc_probe_only_scout = True
         self.scout = BoundaryHazardTemporalScout(
             in_channels=int(input_channels),
             hidden_dim=int(scout_hidden_dim),
@@ -651,18 +858,26 @@ class PCOTMRASBoundaryHazardSparseDenseFrameSelector(nn.Module):
             raise ValueError(f"expected dense_window_size={self.dense_window_size}, got {dense_len}")
         valid = _prefix_mask(masks, expected_shape=(batch, dense_len), name="masks").to(device=inputs.device)
         sequence = _feature_sequence_for_scout(inputs)
-        scout_out = self.scout(sequence, valid, metas=metas)
+        probe_mask = _probe_visible_mask(valid, self.probe_stride)
+        probe_sequence = sequence.masked_fill(~probe_mask[:, None, :], 0.0)
+        probe_out = self.scout(probe_sequence, probe_mask, metas=metas)
+        scout_out = _densify_probe_scout_outputs(
+            probe_out,
+            probe_mask,
+            valid,
+            temperature=self.probe_interpolation_temperature,
+        )
         budget, budget_meta = self.budget_controller(scout_out, valid)
-        dense_axis = torch.arange(dense_len, device=inputs.device, dtype=torch.long)[None, :].expand(batch, -1)
+        physical_axis = _physical_time_axis_from_metas(metas, valid, dense_len, device=inputs.device)
         plan = self.policy(
-            dense_axis=dense_axis,
+            dense_axis=physical_axis,
             scout_out=scout_out,
             budget_per_sample=budget,
             valid_mask=valid,
             metas=metas,
         )
         selected_inputs = _gather_temporal(inputs, plan.selected_dense_indices, plan.selected_mask)
-        new_metas = self._write_plan_meta(metas, plan, valid, budget_meta)
+        new_metas = self._write_plan_meta(metas, plan, valid, budget_meta, probe_mask, physical_axis)
         return {
             "inputs": selected_inputs,
             "masks": plan.selected_mask,
@@ -678,6 +893,8 @@ class PCOTMRASBoundaryHazardSparseDenseFrameSelector(nn.Module):
         plan: AcquisitionPlan,
         valid: torch.Tensor,
         budget_meta: Mapping[str, Any],
+        probe_mask: torch.Tensor,
+        physical_axis: torch.Tensor,
     ) -> list[dict[str, Any]]:
         if metas is None:
             metas = [{} for _ in range(plan.selected_dense_indices.shape[0])]
@@ -689,6 +906,8 @@ class PCOTMRASBoundaryHazardSparseDenseFrameSelector(nn.Module):
             selected_count = int(plan.selected_mask[batch_idx].long().sum().item())
             selected = plan.selected_dense_indices[batch_idx, :selected_count].detach().cpu().tolist()
             dense_valid_len = int(valid[batch_idx].long().sum().item())
+            sample_probe_mask = probe_mask[batch_idx, :dense_valid_len]
+            probe_indices = torch.nonzero(sample_probe_mask, as_tuple=False).flatten().detach().cpu().tolist()
             role_payload = {
                 key: value[batch_idx, :selected_count].detach().cpu().to(torch.long).tolist()
                 for key, value in plan.roles.items()
@@ -702,6 +921,15 @@ class PCOTMRASBoundaryHazardSparseDenseFrameSelector(nn.Module):
                 "dense_window_size": self.dense_window_size,
                 "budget": int(plan.budget[batch_idx].item()),
                 "roles": role_payload,
+                "probe_only_scout": True,
+                "probe_stride": self.probe_stride,
+                "probe_dense_indices": [int(idx) for idx in probe_indices],
+                "probe_mask": _bool_list(probe_mask[batch_idx, :dense_valid_len]),
+                "scout_visible_mask": _bool_list(probe_mask[batch_idx, :dense_valid_len]),
+                "scout_input_scope": "explicit_probe_visible_only",
+                "dense_input_non_probe_values_used_for_scores": False,
+                "physical_times": _float_list(plan.physical_times[batch_idx, :selected_count]),
+                "physical_time_axis": _float_list(physical_axis[batch_idx, :dense_valid_len]),
                 "max_dense_gap": float(plan.diagnostics["max_dense_gap"][batch_idx].item()),
                 "budget_protocol": "bh_sdc_dynamic_budget_v1",
                 "uses_gt": False,
@@ -892,16 +1120,29 @@ class PCOTMRASBoundaryHazardSparseToDenseBridge(nn.Module):
                 raise ValueError(f"meta[{batch_idx}] selected_dense_indices must be strictly increasing")
             if int(selected.min().item()) < 0 or int(selected.max().item()) >= dense_valid_len:
                 raise ValueError(f"meta[{batch_idx}] selected_dense_indices must lie inside dense valid length")
+            physical_time_axis = plan.get("physical_time_axis")
+            if physical_time_axis is None:
+                physical_time_axis = [float(idx) for idx in range(dense_valid_len)]
+            if len(physical_time_axis) < dense_valid_len:
+                raise ValueError(f"meta[{batch_idx}] physical_time_axis is shorter than dense valid length")
 
             sparse = features[batch_idx, :, :selected_count]
             distance = (dense_axis[:, None] - selected.to(dtype=features.dtype)[None, :]).abs()
             weights = torch.softmax(-distance / self.interpolation_temperature, dim=1)
+            gap_distance = distance.min(dim=1).values
+            completion_confidence = weights.max(dim=1).values
             completed = sparse @ weights.transpose(0, 1)
             completed[:, selected] = sparse
             completed[:, dense_valid_len:] = 0.0
             dense[batch_idx] = completed
             dense_mask[batch_idx, :dense_valid_len] = True
             observed_mask[batch_idx, selected] = True
+            completion_confidence[selected] = 1.0
+            completion_confidence[dense_valid_len:] = 0.0
+            gap_distance[dense_valid_len:] = 0.0
+            synthetic_mask = dense_mask[batch_idx] & ~observed_mask[batch_idx]
+            physical_axis_valid = [float(value) for value in physical_time_axis[:dense_valid_len]]
+            observed_physical_times = [physical_axis_valid[int(idx)] for idx in selected.detach().cpu().tolist()]
 
             item = dict(meta)
             item["bh_sdc_completion"] = {
@@ -911,14 +1152,32 @@ class PCOTMRASBoundaryHazardSparseToDenseBridge(nn.Module):
                 "dense_valid_len": dense_valid_len,
                 "observed_dense_indices": selected.detach().cpu().tolist(),
                 "observed_count": selected_count,
+                "observed_mask": _bool_list(observed_mask[batch_idx, :dense_valid_len]),
+                "synthetic_mask": _bool_list(synthetic_mask[:dense_valid_len]),
+                "completion_confidence": _float_list(completion_confidence[:dense_valid_len]),
+                "gap_distance": _float_list(gap_distance[:dense_valid_len]),
+                "physical_time_axis": physical_axis_valid,
+                "observed_physical_times": observed_physical_times,
                 "interpolation_temperature": self.interpolation_temperature,
                 "uses_gt": False,
                 "uses_teacher": False,
                 "uses_raw_prediction_cache": False,
             }
-            dense_positions = list(range(dense_valid_len))
-            item["irregular_selected_positions"] = dense_positions
-            item["irregular_selected_count"] = dense_valid_len
+            observed_positions = selected.detach().cpu().tolist()
+            item["bh_sdc_detector_metadata"] = {
+                "protocol": "bh_sdc_detector_metadata_v1",
+                "route_label": BH_SDC_ROUTE_LABEL,
+                "observed_dense_indices": observed_positions,
+                "observed_mask": item["bh_sdc_completion"]["observed_mask"],
+                "synthetic_mask": item["bh_sdc_completion"]["synthetic_mask"],
+                "completion_confidence": item["bh_sdc_completion"]["completion_confidence"],
+                "gap_distance": item["bh_sdc_completion"]["gap_distance"],
+                "physical_time_axis": physical_axis_valid,
+                "observed_physical_times": observed_physical_times,
+                "dense_valid_len": dense_valid_len,
+            }
+            item["irregular_selected_positions"] = observed_positions
+            item["irregular_selected_count"] = selected_count
             item["irregular_selected_valid_len"] = dense_valid_len
             item["irregular_dense_valid_len"] = dense_valid_len
             item["irregular_native_axis"] = True
