@@ -20,6 +20,7 @@ FULL_CONFIG = (
     / "boundary_microscope_acquisition_full_train_candidate_n16r4.py"
 )
 VALIDATOR = ROOT / "tools" / "bata" / "validate_boundary_microscope_gate.py"
+DOC_CONTEXT = ROOT / "docs" / "en" / "boundary_microscope_acquisition_route_review_context_20260624.md"
 
 
 def _load_validator():
@@ -143,6 +144,65 @@ def test_boundary_microscope_gate_validator_rejects_open_train_or_claims(tmp_pat
     assert loaded["decision"] == "ALLOW_BOUNDARY_MICROSCOPE_PRECHECK_ONLY"
 
 
+def test_boundary_microscope_gate_rejects_full_train_decision_and_route_attribution_drift():
+    validator = _load_validator()
+    payload = {
+        "decision": "ALLOW_BOUNDARY_MICROSCOPE_PRECHECK_ONLY",
+        "route": "boundary_microscope_acquisition",
+        "route_label": "DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3",
+        "active_sha256_manifest_sha256": "manifest-sha",
+        "resolved_config_sha256": "resolved-sha",
+        "budget": 384,
+        "dense_window_size": 768,
+        "allow_precheck_only": True,
+        "allow_tools_train": False,
+        "allow_tools_test": False,
+        "allow_remote_sync": False,
+        "allow_slurm": False,
+        "allow_gpu": False,
+        "allow_full_train": False,
+        "allow_raw_prediction": False,
+        "load_from_raw_predictions": False,
+        "save_raw_prediction": False,
+        "test_time_gt_allowed": False,
+        "teacher_allowed": False,
+        "raw_prediction_cache_allowed": False,
+        "uses_gt_at_test": False,
+        "uses_teacher": False,
+        "uses_raw_prediction_cache": False,
+        "metric_claim_allowed": False,
+        "paper_claim_allowed": False,
+    }
+
+    for decision in (
+        "ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN",
+        "ALLOW_BOUNDARY_MICROSCOPE_REMOTE_SYNC",
+        "ALLOW_BOUNDARY_MICROSCOPE_PRECHECK_ONLY_AND_FULL_TRAIN",
+    ):
+        bad = dict(payload)
+        bad["decision"] = decision
+        with pytest.raises(ValueError, match="decision"):
+            validator.validate_gate_payload(
+                bad,
+                active_manifest_sha256="manifest-sha",
+                resolved_config_sha256="resolved-sha",
+                budget=384,
+                dense_window_size=768,
+            )
+
+    for token in ("BH-SDC", "Event Surprise", "event-surprise", "frame-token", "frame_token", "combo"):
+        bad = dict(payload)
+        bad["note"] = f"silent attribution drift to {token}"
+        with pytest.raises(ValueError, match="attribution"):
+            validator.validate_gate_payload(
+                bad,
+                active_manifest_sha256="manifest-sha",
+                resolved_config_sha256="resolved-sha",
+                budget=384,
+                dense_window_size=768,
+            )
+
+
 def test_boundary_microscope_validator_cli_passes_for_precheck_payload(tmp_path):
     payload = {
         "decision": "ALLOW_BOUNDARY_MICROSCOPE_PRECHECK_ONLY",
@@ -204,6 +264,33 @@ def test_boundary_microscope_validator_cli_passes_for_precheck_payload(tmp_path)
     assert "BOUNDARY_MICROSCOPE_GATE_VALIDATION_PASS" in result.stdout
 
 
+def test_boundary_microscope_validator_cli_reports_config_is_precheck_only_json():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(VALIDATOR),
+            str(FULL_CONFIG),
+            "--json",
+        ],
+        cwd=str(ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["status"] == "BOUNDARY_MICROSCOPE_CONFIG_GATE_VALIDATION_PASS"
+    assert report["route_label"] == "DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3"
+    assert report["allowed_decision"] == "ALLOW_BOUNDARY_MICROSCOPE_PRECHECK_ONLY"
+    assert report["allows_full_train"] is False
+    assert report["allows_remote_sync"] is False
+    assert report["allows_slurm"] is False
+    assert report["future_full_train_requires_separate_decision"] is True
+
+
 def test_boundary_microscope_configs_do_not_reference_old_c3_selector_tokens():
     forbidden = (
         "pc_ot_mras_prebackbone_frame_selector",
@@ -216,6 +303,18 @@ def test_boundary_microscope_configs_do_not_reference_old_c3_selector_tokens():
         text = path.read_text(encoding="utf-8")
         for token in forbidden:
             assert token not in text
+
+
+def test_boundary_microscope_configs_docs_and_gate_keep_negative_route_attribution_explicit():
+    config_text = "\n".join(path.read_text(encoding="utf-8") for path in (LOCAL_CONFIG, FULL_CONFIG)).lower()
+    doc_text = DOC_CONTEXT.read_text(encoding="utf-8").lower()
+    validator_text = VALIDATOR.read_text(encoding="utf-8").lower()
+
+    for forbidden in ("bh-sdc", "event-surprise", "frame-token", "combo"):
+        assert forbidden not in config_text
+        assert forbidden in doc_text
+    assert "must not be mixed" in doc_text
+    assert "forbidden_attribution_tokens" in validator_text
 
 
 def test_boundary_microscope_selector_is_exported_for_registry_discovery():

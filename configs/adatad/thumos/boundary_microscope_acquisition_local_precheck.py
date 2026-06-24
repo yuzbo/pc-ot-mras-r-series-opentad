@@ -30,6 +30,7 @@ boundary_microscope_gate = dict(
     route=route_id,
     stage=stage_id,
     route_label=route_label,
+    allowed_decision="ALLOW_BOUNDARY_MICROSCOPE_PRECHECK_ONLY",
     requires_gate_json=True,
     allow_precheck_only=True,
     allow_tools_train=False,
@@ -43,6 +44,8 @@ boundary_microscope_gate = dict(
     save_raw_prediction=False,
     metric_claim_allowed=False,
     paper_claim_allowed=False,
+    current_gate_cannot_authorize_remote_sync_or_full_train=True,
+    future_full_train_requires_separate_decision=True,
     allowed_entrypoints=(),
     forbidden_entrypoints=("tools/train.py", "tools/test.py"),
 )

@@ -83,6 +83,33 @@ def _make_boundary_frames(torch, *, batch: int = 2, dense_len: int = 64):
     return frames, masks, metas, gt_segments, gt_labels
 
 
+def _make_boundary_frames_6d(torch, *, batch: int = 2, dense_len: int = 64):
+    signal = torch.zeros(dense_len, dtype=torch.float32)
+    signal[8:22] = 4.0
+    signal[39:50] = 3.0
+    batch_offset = torch.arange(batch, dtype=torch.float32).view(batch, 1, 1, 1, 1, 1) * 1000.0
+    view_offset = torch.arange(2, dtype=torch.float32).view(1, 2, 1, 1, 1, 1) * 100.0
+    channel_offset = torch.arange(3, dtype=torch.float32).view(1, 1, 3, 1, 1, 1) * 10.0
+    height_offset = torch.arange(3, dtype=torch.float32).view(1, 1, 1, 1, 3, 1)
+    width_offset = torch.arange(3, dtype=torch.float32).view(1, 1, 1, 1, 1, 3) * 0.1
+    frames = (
+        signal.view(1, 1, 1, dense_len, 1, 1)
+        + batch_offset
+        + view_offset
+        + channel_offset
+        + height_offset
+        + width_offset
+    ).contiguous()
+    masks = torch.ones((batch, dense_len), dtype=torch.bool)
+    metas = [{"sample_id": f"boundary-microscope-6d-{idx}"} for idx in range(batch)]
+    gt_segments = [
+        torch.tensor([[8.0, 22.0], [39.0, 50.0]], dtype=torch.float32)
+        for _idx in range(batch)
+    ]
+    gt_labels = [torch.tensor([1, 2], dtype=torch.long) for _idx in range(batch)]
+    return frames, masks, metas, gt_segments, gt_labels
+
+
 def test_boundary_microscope_selects_dense_packets_around_scanned_hazards():
     torch = _import_torch_or_skip()
     module = _load_route_module()
@@ -114,6 +141,50 @@ def test_boundary_microscope_selects_dense_packets_around_scanned_hazards():
     assert plan["uses_raw_prediction_cache"] is False
     assert "start_hazard_positions" in plan
     assert "end_hazard_positions" in plan
+
+
+def test_boundary_microscope_supports_videomae_6d_raw_layout_and_temporal_geometry():
+    torch = _import_torch_or_skip()
+    module = _load_route_module()
+    selector = module.BoundaryMicroscopeAcquisitionRoute(
+        target_len=32,
+        dense_window_size=64,
+        microscope_radius=2,
+        microscope_stride=1,
+        anchor_stride=16,
+        max_dense_gap=8,
+    )
+    inputs, masks, metas, gt_segments, gt_labels = _make_boundary_frames_6d(torch)
+
+    outputs = selector.forward_train(inputs, masks, metas, gt_segments, gt_labels)
+
+    selected = outputs["metas"][0]["boundary_microscope_selected_dense_indices"]
+    selected_len = len(selected)
+    assert outputs["inputs"].shape == (2, 2, 3, selected_len, 3, 3)
+    assert outputs["masks"].shape == (2, selected_len)
+    assert outputs["masks"].dtype == torch.bool
+    assert outputs["masks"].all()
+    assert outputs["selected_positions"].shape == (2, selected_len)
+    assert outputs["irregular_selected_positions"].shape == (2, selected_len)
+    assert torch.equal(outputs["selected_positions"], outputs["irregular_selected_positions"])
+    assert torch.equal(outputs["selected_output_valid_lengths"], torch.tensor([selected_len, selected_len]))
+    assert torch.equal(outputs["irregular_selected_output_valid_len"], outputs["selected_output_valid_lengths"])
+    assert torch.equal(outputs["irregular_selected_valid_len"], torch.tensor([64, 64]))
+    assert outputs["metas"][0]["irregular_selected_positions"] == [float(pos) for pos in selected]
+    assert outputs["metas"][0]["irregular_selected_output_valid_len"] == float(selected_len)
+    assert outputs["metas"][0]["irregular_selected_valid_len"] == 64.0
+    plan = outputs["metas"][0]["boundary_microscope_acquisition_plan"]
+    assert plan["input_layout"] == "[B,N,C,T,H,W]"
+    assert plan["input_temporal_axis"] == 3
+    expected = torch.stack(
+        [inputs[batch_idx, :, :, selected, :, :] for batch_idx in range(inputs.shape[0])],
+        dim=0,
+    )
+    assert torch.equal(outputs["inputs"], expected)
+    for boundary in (8, 22, 39, 50):
+        assert any(abs(pos - boundary) <= 2 for pos in selected), (boundary, selected)
+    assert outputs["gt_segments"] is gt_segments
+    assert outputs["gt_labels"] is gt_labels
 
 
 def test_boundary_microscope_keeps_interior_background_anchors_and_max_gap():
@@ -181,11 +252,18 @@ def test_boundary_microscope_rejects_route_drift_and_dense_window_mismatch():
     torch = _import_torch_or_skip()
     module = _load_route_module()
 
-    with pytest.raises(ValueError, match="route_label"):
-        module.BoundaryMicroscopeAcquisitionRoute(
-            dense_window_size=64,
-            route_label="C3-Pro",
-        )
+    for route_label in (
+        "C3-Pro",
+        "BH-SDC",
+        "EventSurpriseTemporalAcquisitionSelector",
+        "frame-token-hybrid",
+        "Boundary-Microscope+C3-combo",
+    ):
+        with pytest.raises(ValueError, match="route_label"):
+            module.BoundaryMicroscopeAcquisitionRoute(
+                dense_window_size=64,
+                route_label=route_label,
+            )
     with pytest.raises(ValueError, match="meta_key"):
         module.BoundaryMicroscopeAcquisitionRoute(
             dense_window_size=64,
@@ -203,3 +281,16 @@ def test_boundary_microscope_exposes_live_selector_cache_guard():
     selector = module.BoundaryMicroscopeAcquisitionRoute(dense_window_size=64)
 
     assert selector.forbid_raw_prediction_cache is True
+
+
+def test_boundary_microscope_metadata_does_not_drift_to_other_routes():
+    torch = _import_torch_or_skip()
+    module = _load_route_module()
+    selector = module.BoundaryMicroscopeAcquisitionRoute(target_len=32, dense_window_size=64)
+    inputs, masks, metas, _gt_segments, _gt_labels = _make_boundary_frames(torch, batch=1)
+
+    outputs = selector.forward_test(inputs, masks, metas)
+
+    serialized_meta = repr(outputs["metas"][0]).lower()
+    for forbidden in ("bh-sdc", "event-surprise", "event surprise", "frame-token", "frame_token", "combo"):
+        assert forbidden not in serialized_meta

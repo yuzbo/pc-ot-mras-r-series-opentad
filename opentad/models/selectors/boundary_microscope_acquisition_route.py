@@ -95,6 +95,15 @@ class _Candidate:
     priority: int
 
 
+@dataclass(frozen=True)
+class _TemporalLayout:
+    name: str
+    batch: int
+    dense_len: int
+    temporal_dim: int
+    signal_mean_dims: Tuple[int, ...]
+
+
 @SELECTORS.register_module()
 class BoundaryMicroscopeAcquisitionRoute(nn.Module):
     """Boundary-focused sparse acquisition route.
@@ -168,25 +177,24 @@ class BoundaryMicroscopeAcquisitionRoute(nn.Module):
         return self._forward_impl(inputs, masks, metas, reject_forbidden_meta=True)
 
     def _forward_impl(self, inputs: torch.Tensor, masks: torch.Tensor, metas, *, reject_forbidden_meta: bool):
-        if inputs.ndim != 5:
-            raise ValueError(f"inputs must be [B,C,T,H,W], got {tuple(inputs.shape)}")
-        batch, _channels, dense_len, _height, _width = inputs.shape
-        if int(dense_len) != self.dense_window_size:
+        layout = self._resolve_temporal_layout(inputs)
+        if int(layout.dense_len) != self.dense_window_size:
             raise ValueError(
-                f"dense_window_size={self.dense_window_size} must match input dense axis {int(dense_len)}"
+                f"dense_window_size={self.dense_window_size} must match input dense axis {int(layout.dense_len)} "
+                f"for layout {layout.name}"
             )
-        valid = _as_bool_prefix_mask(masks, expected_shape=(batch, dense_len))
+        valid = _as_bool_prefix_mask(masks, expected_shape=(layout.batch, layout.dense_len))
         if metas is None:
-            metas = [{} for _idx in range(batch)]
-        if len(metas) != batch:
-            raise ValueError(f"metas length mismatch: expected {batch}, got {len(metas)}")
+            metas = [{} for _idx in range(layout.batch)]
+        if len(metas) != layout.batch:
+            raise ValueError(f"metas length mismatch: expected {layout.batch}, got {len(metas)}")
         if reject_forbidden_meta:
             for meta in metas:
                 forbidden = _contains_forbidden_key(meta)
                 if forbidden is not None:
                     raise ValueError(f"forbidden test-time meta key for boundary microscope route: {forbidden}")
 
-        scores = self._cheap_global_scan(inputs, valid)
+        scores = self._cheap_global_scan(inputs, valid, layout)
         plans = [
             self._build_plan_for_sample(
                 valid_len=int(valid[idx].long().sum().item()),
@@ -194,11 +202,11 @@ class BoundaryMicroscopeAcquisitionRoute(nn.Module):
                 start_scores=scores["start_hazard"][idx].detach().cpu().tolist(),
                 end_scores=scores["end_hazard"][idx].detach().cpu().tolist(),
             )
-            for idx in range(batch)
+            for idx in range(layout.batch)
         ]
         max_selected = max(len(plan["indices"]) for plan in plans)
-        gather_indices = torch.zeros((batch, max_selected), dtype=torch.long, device=inputs.device)
-        selected_masks = torch.zeros((batch, max_selected), dtype=torch.bool, device=inputs.device)
+        gather_indices = torch.zeros((layout.batch, max_selected), dtype=torch.long, device=inputs.device)
+        selected_masks = torch.zeros((layout.batch, max_selected), dtype=torch.bool, device=inputs.device)
         for idx, plan in enumerate(plans):
             selected = torch.tensor(plan["indices"], dtype=torch.long, device=inputs.device)
             gather_indices[idx, : selected.numel()] = selected
@@ -206,26 +214,61 @@ class BoundaryMicroscopeAcquisitionRoute(nn.Module):
                 gather_indices[idx, selected.numel() :] = selected[-1]
             selected_masks[idx, : selected.numel()] = True
 
-        expanded = gather_indices[:, None, :, None, None].expand(
-            -1,
-            inputs.shape[1],
-            -1,
-            inputs.shape[3],
-            inputs.shape[4],
-        )
-        selected_inputs = torch.gather(inputs, dim=2, index=expanded)
-        output_metas = self._write_metas(metas, plans)
+        selected_inputs = self._gather_temporal(inputs, gather_indices, temporal_dim=layout.temporal_dim)
+        output_metas = self._write_metas(metas, plans, layout=layout)
+        selected_lengths = selected_masks.long().sum(dim=1)
+        valid_lengths = valid.long().sum(dim=1)
+        selected_positions = gather_indices.to(dtype=torch.float32)
         return {
             "inputs": selected_inputs,
             "masks": selected_masks,
             "metas": output_metas,
-            "selected_positions": gather_indices.to(dtype=torch.float32),
-            "selected_output_valid_lengths": selected_masks.long().sum(dim=1),
+            "selected_positions": selected_positions,
+            "irregular_selected_positions": selected_positions,
+            "selected_output_valid_lengths": selected_lengths,
+            "irregular_selected_output_valid_len": selected_lengths,
+            "irregular_selected_valid_len": valid_lengths,
             "scanner_scores": scores,
         }
 
-    def _cheap_global_scan(self, inputs: torch.Tensor, valid: torch.Tensor) -> Dict[str, torch.Tensor]:
-        frame_signal = inputs.detach().to(dtype=torch.float32).mean(dim=(1, 3, 4))
+    @staticmethod
+    def _resolve_temporal_layout(inputs: torch.Tensor) -> _TemporalLayout:
+        if inputs.ndim == 5:
+            batch, _channels, dense_len, _height, _width = inputs.shape
+            return _TemporalLayout(
+                name="[B,C,T,H,W]",
+                batch=int(batch),
+                dense_len=int(dense_len),
+                temporal_dim=2,
+                signal_mean_dims=(1, 3, 4),
+            )
+        if inputs.ndim == 6:
+            batch, _num_views, _channels, dense_len, _height, _width = inputs.shape
+            return _TemporalLayout(
+                name="[B,N,C,T,H,W]",
+                batch=int(batch),
+                dense_len=int(dense_len),
+                temporal_dim=3,
+                signal_mean_dims=(1, 2, 4, 5),
+            )
+        raise ValueError(f"inputs must be [B,C,T,H,W] or [B,N,C,T,H,W], got {tuple(inputs.shape)}")
+
+    @staticmethod
+    def _gather_temporal(inputs: torch.Tensor, gather_indices: torch.Tensor, *, temporal_dim: int) -> torch.Tensor:
+        view_shape = [int(gather_indices.shape[0])] + [1] * (inputs.ndim - 1)
+        view_shape[int(temporal_dim)] = int(gather_indices.shape[1])
+        expand_shape = list(inputs.shape)
+        expand_shape[int(temporal_dim)] = int(gather_indices.shape[1])
+        expanded = gather_indices.reshape(view_shape).expand(expand_shape)
+        return torch.gather(inputs, dim=int(temporal_dim), index=expanded)
+
+    def _cheap_global_scan(
+        self,
+        inputs: torch.Tensor,
+        valid: torch.Tensor,
+        layout: _TemporalLayout,
+    ) -> Dict[str, torch.Tensor]:
+        frame_signal = inputs.detach().to(dtype=torch.float32).mean(dim=layout.signal_mean_dims)
         actionness = _normalize_valid(frame_signal, valid).clamp_min(0.0)
         diff = frame_signal.new_zeros(frame_signal.shape)
         diff[:, 1:] = frame_signal[:, 1:] - frame_signal[:, :-1]
@@ -361,7 +404,13 @@ class BoundaryMicroscopeAcquisitionRoute(nn.Module):
         ordered = [candidates[position] for position in sorted(candidates)]
         return [item.position for item in ordered], [item.role for item in ordered]
 
-    def _write_metas(self, metas: Sequence[Dict[str, Any]], plans: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _write_metas(
+        self,
+        metas: Sequence[Dict[str, Any]],
+        plans: Sequence[Dict[str, Any]],
+        *,
+        layout: _TemporalLayout,
+    ) -> List[Dict[str, Any]]:
         output = []
         for meta, plan in zip(metas, plans):
             item = dict(meta)
@@ -372,12 +421,15 @@ class BoundaryMicroscopeAcquisitionRoute(nn.Module):
             item["irregular_selected_positions"] = [float(pos) for pos in indices]
             item["irregular_selected_output_valid_len"] = float(len(indices))
             item["irregular_selected_valid_len"] = float(plan["valid_len"])
+            item["irregular_dense_valid_len"] = float(plan["valid_len"])
             item["irregular_selected_count"] = int(len(indices))
             item[self.meta_key] = {
                 "route_label": self.route_label,
                 "meta_key": self.meta_key,
                 "selection_surface": "pre_backbone_raw_frame",
                 "selection_timing": "online_before_backbone",
+                "input_layout": layout.name,
+                "input_temporal_axis": int(layout.temporal_dim),
                 "acquisition_unit": "frame",
                 "strategy": "cheap_global_boundary_scanner_dense_microscope_packets_sparse_anchors",
                 "budget": len(indices),

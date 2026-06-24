@@ -7,9 +7,10 @@ DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3
 ```
 
 This route is a divergent innovation candidate. It is not part of the original
-C3/C3-Pro optimization route, and it must not be mixed with C3-Pro,
-BoundaryDifficulty scout, BH-SDC, event-surprise, or frame-token-hybrid
-attribution unless a future combo gate explicitly allows that merge.
+C3/C3-Pro optimization route, and the current gate does not allow it to be
+mixed with C3-Pro, BoundaryDifficulty scout, BH-SDC, event-surprise,
+frame-token-hybrid, or combo attribution. It must not be mixed with those
+families under the current Boundary Microscope gate.
 
 ## Purpose
 
@@ -23,6 +24,27 @@ The route is intended to test whether boundary-first acquisition can preserve
 or improve localization under an up-to-384 selected-frame budget from a
 768-frame dense window. It is not a detector-head, loss, assignment,
 post-processing, token-compression, or C3-reader change.
+
+## Tensor And Geometry Contract
+
+`BoundaryMicroscopeAcquisitionRoute` runs before the backbone. It supports both
+plain 5D raw-frame tensors `[B,C,T,H,W]` and inherited VideoMAE-style 6D
+raw-frame tensors `[B,N,C,T,H,W]`. The selector gathers along the true temporal
+axis only: `dim=2` for 5D and `dim=3` for 6D. It preserves the non-temporal
+`N`, `C`, `H`, and `W` axes.
+
+The selector returns prefix masks over the selected temporal axis and writes the
+same geometry into metadata:
+
+- `irregular_selected_positions`: selected dense-frame indices;
+- `irregular_selected_output_valid_len`: number of selected output frames;
+- `irregular_selected_valid_len`: original valid dense-frame prefix length;
+- `selected_output_valid_lengths`: tensor equivalent of the selected valid
+  output length.
+
+These fields describe selected raw-frame coordinates before backbone feature
+extraction. They are not detector predictions, teacher targets, GT-derived
+plans, token-compression outputs, or post-processing shortcuts.
 
 ## Current Changed Surface
 
@@ -55,6 +77,26 @@ Locked:
 - raw-prediction load/save;
 - detector-mAP claim;
 - runtime, deploy, or paper claim.
+
+The current accepted decision string remains:
+
+```text
+ALLOW_BOUNDARY_MICROSCOPE_PRECHECK_ONLY
+```
+
+This decision cannot authorize remote sync, Slurm, `tools/train.py`, full
+training, evaluation, metric claims, runtime claims, deploy claims, or paper
+claims. A future full-training route would require a separate explicit decision
+string and separate validator logic; it must not reuse the precheck-only gate.
+After these Pro blocking fixes, a second GPT-5.5 Pro review remains required
+before any sync, Slurm, training, evaluation, metric claim, or paper claim.
+
+## Negative Attribution Guard
+
+Boundary Microscope must remain separate from C3/C3-Pro, BH-SDC,
+Event-Surprise, frame-token routes, and mixed route proposals. Configs and gate
+payloads must not relabel this route as any of those families. The review text
+may mention those labels only to state that they are excluded from attribution.
 
 ## Required Review Questions
 

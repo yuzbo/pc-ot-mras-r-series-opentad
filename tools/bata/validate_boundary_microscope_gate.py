@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 
 ALLOWED_DECISION = "ALLOW_BOUNDARY_MICROSCOPE_PRECHECK_ONLY"
@@ -91,6 +92,37 @@ CONTROL_KEYS = (
 
 HARMLESS_METADATA_KEYS = ("note", "review_id", "run_tag")
 
+FORBIDDEN_ATTRIBUTION_TOKENS = (
+    "bh-sdc",
+    "bhsdc",
+    "event surprise",
+    "event-surprise",
+    "event_surprise",
+    "framesurprise",
+    "frame-token",
+    "frame_token",
+    "frame token",
+    "frame-token-hybrid",
+    "combo",
+    "combined_route",
+    "c3-pro",
+    "c3_rs",
+    "pc_ot_mras_prebackbone_frame_selector",
+    "pcotmrasprebackboneframeselector",
+)
+
+CONFIG_REQUIRED_FALSE_KEYS = (
+    "allow_tools_train",
+    "allow_tools_test",
+    "allow_remote_sync",
+    "allow_slurm",
+    "allow_gpu",
+    "allow_full_train",
+    "allow_raw_prediction",
+    "metric_claim_allowed",
+    "paper_claim_allowed",
+)
+
 
 def sha256_file(path):
     digest = hashlib.sha256()
@@ -117,6 +149,37 @@ def _allowed_payload_keys():
     )
 
 
+def _contains_forbidden_attribution(value: Any) -> str | None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            nested = _contains_forbidden_attribution(str(key))
+            if nested is not None:
+                return nested
+            nested = _contains_forbidden_attribution(item)
+            if nested is not None:
+                return nested
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            nested = _contains_forbidden_attribution(item)
+            if nested is not None:
+                return nested
+    elif isinstance(value, str):
+        normalized = value.lower()
+        for token in FORBIDDEN_ATTRIBUTION_TOKENS:
+            if token in normalized:
+                return token
+    return None
+
+
+def _reject_forbidden_attribution(payload):
+    for key, value in payload.items():
+        if key == "route_label":
+            continue
+        token = _contains_forbidden_attribution(value)
+        if token is not None:
+            raise ValueError(f"Boundary microscope gate attribution drift is forbidden: {key} contains {token}")
+
+
 def _require_exact(payload, key, expected):
     if payload.get(key) != expected:
         raise ValueError(f"Boundary microscope gate must preserve {key}={expected}: {payload.get(key)}")
@@ -135,6 +198,7 @@ def validate_gate_payload(
         raise ValueError(f"Boundary microscope gate route mismatch: {payload.get('route')}")
     if payload.get("route_label") != ALLOWED_ROUTE_LABEL:
         raise ValueError(f"Boundary microscope gate route_label mismatch: {payload.get('route_label')}")
+    _reject_forbidden_attribution(payload)
 
     expected_manifest = _first_present(
         payload,
@@ -203,17 +267,121 @@ def validate_gate_file(
     return payload
 
 
+def _load_plain_python_config(config_path, seen=None):
+    path = Path(config_path).resolve()
+    if seen is None:
+        seen = set()
+    if path in seen:
+        raise ValueError(f"cyclic Boundary microscope config _base_ reference: {path}")
+    seen.add(path)
+    namespace = {"__file__": str(path), "__name__": "__boundary_microscope_config__"}
+    code = compile(path.read_text(encoding="utf-8"), str(path), "exec")
+    exec(code, namespace)
+    merged = {}
+    for base in namespace.get("_base_", ()):
+        base_path = Path(base)
+        if not base_path.is_absolute():
+            base_path = path.parent / base_path
+        if base_path.suffix == ".py" and base_path.is_file():
+            merged.update(_load_plain_python_config(base_path, seen=seen))
+    merged.update({key: value for key, value in namespace.items() if not key.startswith("__")})
+    return merged
+
+
+def validate_config_file(config_path):
+    path = Path(config_path)
+    if not path.is_file():
+        raise ValueError(f"missing Boundary microscope config: {config_path}")
+    namespace = _load_plain_python_config(path)
+    route = namespace.get("route_id")
+    route_label = namespace.get("route_label")
+    if route != ALLOWED_ROUTE:
+        raise ValueError(f"Boundary microscope config route mismatch: {route}")
+    if route_label != ALLOWED_ROUTE_LABEL:
+        raise ValueError(f"Boundary microscope config route_label mismatch: {route_label}")
+
+    text = path.read_text(encoding="utf-8")
+    forbidden = _contains_forbidden_attribution(text)
+    if forbidden is not None:
+        raise ValueError(f"Boundary microscope config attribution drift is forbidden: {forbidden}")
+
+    gate = namespace.get("boundary_microscope_gate")
+    if not isinstance(gate, dict):
+        raise ValueError("Boundary microscope config must define boundary_microscope_gate dict")
+    if gate.get("route") != ALLOWED_ROUTE:
+        raise ValueError(f"Boundary microscope config gate route mismatch: {gate.get('route')}")
+    if gate.get("route_label") != ALLOWED_ROUTE_LABEL:
+        raise ValueError(f"Boundary microscope config gate route_label mismatch: {gate.get('route_label')}")
+    if gate.get("allow_precheck_only") is not True:
+        raise ValueError("Boundary microscope config gate must keep allow_precheck_only=True")
+    for key in CONFIG_REQUIRED_FALSE_KEYS:
+        if gate.get(key) is not False:
+            raise ValueError(f"Boundary microscope config gate must keep {key}=False")
+    if tuple(gate.get("allowed_entrypoints", ())) != ():
+        raise ValueError("Boundary microscope config gate must keep allowed_entrypoints empty")
+    _reject_forbidden_attribution({key: value for key, value in gate.items() if key != "route_label"})
+
+    inference = namespace.get("inference", {})
+    if isinstance(inference, dict):
+        if inference.get("load_from_raw_predictions") is not False:
+            raise ValueError("Boundary microscope config must keep inference.load_from_raw_predictions=False")
+        if inference.get("save_raw_prediction") is not False:
+            raise ValueError("Boundary microscope config must keep inference.save_raw_prediction=False")
+
+    return {
+        "status": "BOUNDARY_MICROSCOPE_CONFIG_GATE_VALIDATION_PASS",
+        "config": str(path),
+        "config_sha256": sha256_file(path),
+        "route": ALLOWED_ROUTE,
+        "route_label": ALLOWED_ROUTE_LABEL,
+        "stage": gate.get("stage"),
+        "allowed_decision": ALLOWED_DECISION,
+        "allows_precheck_only": bool(gate.get("allow_precheck_only")),
+        "allows_tools_train": bool(gate.get("allow_tools_train")),
+        "allows_tools_test": bool(gate.get("allow_tools_test")),
+        "allows_remote_sync": bool(gate.get("allow_remote_sync")),
+        "allows_slurm": bool(gate.get("allow_slurm")),
+        "allows_gpu": bool(gate.get("allow_gpu")),
+        "allows_full_train": bool(gate.get("allow_full_train")),
+        "allows_raw_prediction": bool(gate.get("allow_raw_prediction")),
+        "metric_claim_allowed": bool(gate.get("metric_claim_allowed")),
+        "paper_claim_allowed": bool(gate.get("paper_claim_allowed")),
+        "future_full_train_requires_separate_decision": True,
+        "current_gate_cannot_authorize_remote_sync_or_full_train": True,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Validate a fail-closed Boundary Microscope Acquisition gate.")
-    parser.add_argument("--gate-json", required=True)
-    parser.add_argument("--gate-sha256", required=True)
-    parser.add_argument("--active-manifest-sha256", required=True)
-    parser.add_argument("--resolved-config-sha256", required=True)
+    parser.add_argument("config", nargs="?")
+    parser.add_argument("--json", action="store_true", dest="emit_json")
+    parser.add_argument("--gate-json")
+    parser.add_argument("--gate-sha256")
+    parser.add_argument("--active-manifest-sha256")
+    parser.add_argument("--resolved-config-sha256")
     parser.add_argument("--budget", type=int, default=384)
     parser.add_argument("--dense-window-size", type=int, default=768)
     args = parser.parse_args()
 
-    validate_gate_file(
+    if args.config is not None:
+        report = validate_config_file(args.config)
+        if args.emit_json:
+            print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+        else:
+            print(report["status"])
+        return
+
+    required = {
+        "--gate-json": args.gate_json,
+        "--gate-sha256": args.gate_sha256,
+        "--active-manifest-sha256": args.active_manifest_sha256,
+        "--resolved-config-sha256": args.resolved_config_sha256,
+    }
+    missing = [flag for flag, value in required.items() if value is None]
+    if missing:
+        parser.error("the following arguments are required for gate JSON mode: " + ", ".join(missing))
+
+    payload = validate_gate_file(
         gate_json=args.gate_json,
         gate_sha256=args.gate_sha256,
         active_manifest_sha256=args.active_manifest_sha256,
@@ -221,7 +389,22 @@ def main():
         budget=int(args.budget),
         dense_window_size=int(args.dense_window_size),
     )
-    print("BOUNDARY_MICROSCOPE_GATE_VALIDATION_PASS")
+    if args.emit_json:
+        print(
+            json.dumps(
+                {
+                    "status": "BOUNDARY_MICROSCOPE_GATE_VALIDATION_PASS",
+                    "decision": payload["decision"],
+                    "route": payload["route"],
+                    "route_label": payload["route_label"],
+                    "current_gate_cannot_authorize_remote_sync_or_full_train": True,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+    else:
+        print("BOUNDARY_MICROSCOPE_GATE_VALIDATION_PASS")
 
 
 if __name__ == "__main__":
