@@ -17,6 +17,11 @@ experiment_scope = dict(
     changed_surface="input_sampling_token_compression_dense_completion",
     candidate_status="implementation_prepared_but_train_locked",
     strict_budget_family="up_to_384_raw_frame_observations_plus_span_tokens_from_768_dense_window",
+    selection_surface="preview_probe_visible_pre_backbone_bridge",
+    actual_decode_saving_in_current_pipeline=False,
+    raw_decode_saving_claim_allowed=False,
+    pre_decode_loader_hook_reviewed=False,
+    requires_deploy_preview_probe_signal=True,
     deploy_time_inputs_only=True,
     test_time_gt_allowed=False,
     teacher_allowed=False,
@@ -30,6 +35,7 @@ frame_token_hybrid_gate = dict(
     stage=stage_id,
     route_label=route_label,
     requires_gate_json=True,
+    allowed_decision="ALLOW_FRAME_TOKEN_HYBRID_PRECHECK_ONLY",
     allow_precheck_only=True,
     allow_tools_train=False,
     allow_tools_test=False,
@@ -60,6 +66,9 @@ model = dict(
         stable_gap_min_len=12,
         stable_epsilon=0.02,
         max_span_tokens=64,
+        require_preview_signal=True,
+        preview_signal_meta_key="frame_token_hybrid_preview_signal",
+        preview_positions_meta_key="frame_token_hybrid_preview_positions",
     )
 )
 

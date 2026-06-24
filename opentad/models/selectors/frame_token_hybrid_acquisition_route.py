@@ -11,6 +11,8 @@ from ..builder import SELECTORS
 
 ROUTE_LABEL = "DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3"
 DEFAULT_META_KEY = "frame_token_hybrid_acquisition_plan"
+DEFAULT_PREVIEW_SIGNAL_META_KEY = "frame_token_hybrid_preview_signal"
+DEFAULT_PREVIEW_POSITIONS_META_KEY = "frame_token_hybrid_preview_positions"
 FORBIDDEN_TEST_META_TOKENS = (
     "gt",
     "ground_truth",
@@ -88,10 +90,12 @@ class _SpanToken:
 class FrameTokenHybridAcquisitionRoute(nn.Module):
     """Frame/token hybrid acquisition route.
 
-    The route keeps deploy-visible raw frame observations at boundary and anchor
-    positions, compresses long stable regions into span-token metadata, then
-    reconstructs a dense temporal axis for ActionFormer-compatible downstream
-    modules.
+    The route can plan from deploy-visible preview/probe metadata, keeps raw
+    frame observations at boundary and anchor positions, compresses long stable
+    regions into span-token metadata, then reconstructs a dense temporal axis
+    for ActionFormer-compatible downstream modules. In the current OpenTAD
+    pipeline this is still a post-decode, pre-backbone bridge unless a reviewed
+    pre-decode loader hook supplies the raw observations.
     """
 
     def __init__(
@@ -107,6 +111,9 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
         max_span_tokens: int = 64,
         route_label: str = ROUTE_LABEL,
         meta_key: str = DEFAULT_META_KEY,
+        require_preview_signal: bool = False,
+        preview_signal_meta_key: str = DEFAULT_PREVIEW_SIGNAL_META_KEY,
+        preview_positions_meta_key: str = DEFAULT_PREVIEW_POSITIONS_META_KEY,
     ) -> None:
         super().__init__()
         if int(target_len) <= 0:
@@ -134,6 +141,9 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
         self.max_span_tokens = int(max_span_tokens)
         self.route_label = str(route_label)
         self.meta_key = str(meta_key)
+        self.require_preview_signal = bool(require_preview_signal)
+        self.preview_signal_meta_key = str(preview_signal_meta_key)
+        self.preview_positions_meta_key = str(preview_positions_meta_key)
 
     def forward_train(self, inputs, masks, metas, gt_segments, gt_labels):
         outputs = self._forward_impl(inputs, masks, metas, reject_forbidden_meta=False)
@@ -163,14 +173,24 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
                 if forbidden is not None:
                     raise ValueError(f"forbidden test-time meta key for frame/token hybrid route: {forbidden}")
 
-        frame_signal = inputs.detach().to(dtype=torch.float32).mean(dim=(1, 3, 4))
-        plans = [
-            self._build_plan_for_sample(
-                valid_len=int(valid[idx].long().sum().item()),
-                signal=frame_signal[idx].detach().cpu().tolist(),
+        fallback_signal = inputs.detach().to(dtype=torch.float32).mean(dim=(1, 3, 4))
+        plans = []
+        for idx in range(batch):
+            valid_len = int(valid[idx].long().sum().item())
+            signal_info = self._selection_signal_for_sample(
+                meta=metas[idx],
+                valid_len=valid_len,
+                fallback_signal=fallback_signal[idx].detach().cpu().tolist(),
             )
-            for idx in range(batch)
-        ]
+            plans.append(
+                self._build_plan_for_sample(
+                    valid_len=valid_len,
+                    signal=signal_info["signal"],
+                    selection_decision_source=signal_info["selection_decision_source"],
+                    selection_surface=signal_info["selection_surface"],
+                    preview_probe=signal_info["preview_probe"],
+                )
+            )
         completed = self._dense_complete(inputs, plans)
         output_metas = self._write_metas(metas, plans)
         return {
@@ -184,7 +204,126 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
             "span_tokens": [plan["span_tokens"] for plan in plans],
         }
 
-    def _build_plan_for_sample(self, *, valid_len: int, signal: Sequence[float]) -> Dict[str, Any]:
+    def _selection_signal_for_sample(
+        self,
+        *,
+        meta: Dict[str, Any],
+        valid_len: int,
+        fallback_signal: Sequence[float],
+    ) -> Dict[str, Any]:
+        if self.require_preview_signal or self.preview_signal_meta_key in meta:
+            if self.preview_signal_meta_key not in meta:
+                raise ValueError(
+                    "FrameTokenHybridAcquisitionRoute requires deploy-visible preview/probe signal "
+                    f"metadata '{self.preview_signal_meta_key}'"
+                )
+            signal = self._coerce_float_sequence(meta[self.preview_signal_meta_key], self.preview_signal_meta_key)
+            positions_value = meta.get(self.preview_positions_meta_key)
+            if positions_value is None:
+                positions = list(range(len(signal)))
+            else:
+                positions = self._coerce_int_sequence(positions_value, self.preview_positions_meta_key)
+            dense_signal = self._densify_preview_signal(
+                signal=signal,
+                positions=positions,
+                valid_len=int(valid_len),
+            )
+            return {
+                "signal": dense_signal,
+                "selection_decision_source": "deploy_preview_probe_metadata",
+                "selection_surface": "preview_probe_visible_pre_backbone_bridge",
+                "preview_probe": {
+                    "required": self.require_preview_signal,
+                    "signal_meta_key": self.preview_signal_meta_key,
+                    "positions_meta_key": self.preview_positions_meta_key,
+                    "observation_count": len(signal),
+                    "covers_full_valid_axis": len(set(positions)) == int(valid_len),
+                },
+            }
+
+        return {
+            "signal": [float(value) for value in fallback_signal[:valid_len]],
+            "selection_decision_source": "post_decode_dense_tensor_fallback",
+            "selection_surface": "post_decode_pre_backbone_bridge",
+            "preview_probe": {
+                "required": self.require_preview_signal,
+                "signal_meta_key": self.preview_signal_meta_key,
+                "positions_meta_key": self.preview_positions_meta_key,
+                "observation_count": 0,
+                "covers_full_valid_axis": False,
+            },
+        }
+
+    @staticmethod
+    def _coerce_float_sequence(value: Any, name: str) -> List[float]:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"{name} must be a list/tuple of preview/probe floats")
+        if len(value) == 0:
+            raise ValueError(f"{name} must contain at least one preview/probe observation")
+        try:
+            return [float(item) for item in value]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must contain only numeric preview/probe values") from exc
+
+    @staticmethod
+    def _coerce_int_sequence(value: Any, name: str) -> List[int]:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"{name} must be a list/tuple of integer preview/probe positions")
+        try:
+            positions = [int(item) for item in value]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must contain only integer preview/probe positions") from exc
+        return positions
+
+    @staticmethod
+    def _densify_preview_signal(*, signal: Sequence[float], positions: Sequence[int], valid_len: int) -> List[float]:
+        if len(signal) != len(positions):
+            raise ValueError("preview/probe signal and position lengths must match")
+        if valid_len <= 0:
+            raise ValueError("valid_len must be positive")
+        pairs = sorted((int(pos), float(value)) for pos, value in zip(positions, signal))
+        seen = set()
+        for position, _value in pairs:
+            if position in seen:
+                raise ValueError(f"duplicate preview/probe position: {position}")
+            if position < 0 or position >= valid_len:
+                raise ValueError(f"preview/probe position out of valid range: {position}")
+            seen.add(position)
+
+        dense = [0.0 for _idx in range(valid_len)]
+        if len(pairs) == 1:
+            return [pairs[0][1] for _idx in range(valid_len)]
+
+        pair_idx = 0
+        for position in range(valid_len):
+            if position <= pairs[0][0]:
+                dense[position] = pairs[0][1]
+                continue
+            if position >= pairs[-1][0]:
+                dense[position] = pairs[-1][1]
+                continue
+            while pair_idx + 1 < len(pairs) and pairs[pair_idx + 1][0] < position:
+                pair_idx += 1
+            left_pos, left_value = pairs[pair_idx]
+            right_pos, right_value = pairs[pair_idx + 1]
+            if position == left_pos:
+                dense[position] = left_value
+            elif position == right_pos:
+                dense[position] = right_value
+            else:
+                alpha = float(position - left_pos) / float(right_pos - left_pos)
+                dense[position] = left_value * (1.0 - alpha) + right_value * alpha
+        return dense
+
+    def _build_plan_for_sample(
+        self,
+        *,
+        valid_len: int,
+        signal: Sequence[float],
+        selection_decision_source: str,
+        selection_surface: str,
+        preview_probe: Dict[str, Any],
+    ) -> Dict[str, Any]:
         valid_len = int(valid_len)
         observed = set(self._anchor_positions(valid_len))
         boundary_positions = self._boundary_positions(signal[:valid_len])
@@ -218,6 +357,9 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
             "observed_positions": observed_positions,
             "boundary_positions": boundary_positions,
             "span_tokens": span_dicts,
+            "selection_decision_source": selection_decision_source,
+            "selection_surface": selection_surface,
+            "preview_probe": dict(preview_probe),
         }
 
     def _anchor_positions(self, valid_len: int) -> Iterable[int]:
@@ -337,6 +479,26 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
         stable_level = (left + right) * 0.5
         return interpolated * (1.0 - span_strength) + stable_level * span_strength
 
+    def _metadata_masks(self, plan: Dict[str, Any]) -> Tuple[List[bool], List[bool], List[bool]]:
+        valid_len = int(plan["valid_len"])
+        observed_set = {int(pos) for pos in plan["observed_positions"]}
+        span_tokens = list(plan["span_tokens"])
+        observed_mask = []
+        span_derived_mask = []
+        dense_completion_mask = []
+        for position in range(self.target_dense_len):
+            is_valid = position < valid_len
+            is_observed = is_valid and position in observed_set
+            is_span_derived = (
+                is_valid
+                and not is_observed
+                and self._span_token_covering_position(span_tokens, position) is not None
+            )
+            observed_mask.append(bool(is_observed))
+            span_derived_mask.append(bool(is_span_derived))
+            dense_completion_mask.append(bool(is_valid and not is_observed))
+        return observed_mask, span_derived_mask, dense_completion_mask
+
     def _write_metas(self, metas: Sequence[Dict[str, Any]], plans: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         output = []
         conditioning_keys = [
@@ -350,7 +512,11 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
             item = dict(meta)
             observed = [int(pos) for pos in plan["observed_positions"]]
             span_tokens = [dict(token) for token in plan["span_tokens"]]
+            observed_mask, span_derived_mask, dense_completion_mask = self._metadata_masks(plan)
             item["frame_token_hybrid_observed_raw_positions"] = observed
+            item["frame_token_hybrid_observed_raw_mask"] = observed_mask
+            item["frame_token_hybrid_span_derived_mask"] = span_derived_mask
+            item["frame_token_hybrid_dense_completion_mask"] = dense_completion_mask
             item["irregular_selected_positions"] = [float(pos) for pos in observed]
             item["irregular_selected_output_valid_len"] = float(len(observed))
             item["irregular_selected_valid_len"] = float(plan["valid_len"])
@@ -360,11 +526,15 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
                 "completion_rule": "raw_observed_positions_are_copied; unobserved_valid_positions_are_interpolated_and_span_conditioned; invalid_mask_suffix_is_zero",
                 "preserves_observed_raw_positions": True,
                 "output_dense_axis_len": self.target_dense_len,
+                "actual_decode_saving_in_current_actionformer_pipeline": False,
+                "raw_decode_saving_claim_allowed": False,
+                "pre_decode_loader_hook_reviewed": False,
             }
             item[self.meta_key] = {
                 "route_label": self.route_label,
                 "meta_key": self.meta_key,
-                "selection_surface": "frame_token_hybrid_pre_backbone",
+                "selection_surface": plan["selection_surface"],
+                "selection_decision_source": plan["selection_decision_source"],
                 "selection_timing": "online_before_backbone",
                 "acquisition_unit": "raw_frame_observation_plus_span_token",
                 "strategy": "boundary_anchor_raw_frames_stable_gap_span_tokens_dense_completion",
@@ -375,12 +545,32 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
                 "span_token_count": len(span_tokens),
                 "boundary_positions": [int(pos) for pos in plan["boundary_positions"]],
                 "span_tokens": span_tokens,
+                "preview_probe": dict(plan["preview_probe"]),
+                "compute_accounting": {
+                    "observed_raw_frame_count": len(observed),
+                    "compressed_span_token_count": len(span_tokens),
+                    "dense_completion_position_count": int(sum(dense_completion_mask)),
+                    "actual_decode_saving_in_current_actionformer_pipeline": False,
+                    "raw_decode_saving_claim_allowed": False,
+                    "pre_decode_loader_hook_reviewed": False,
+                    "saved_compute_in_current_pipeline": [],
+                    "not_saved_compute_in_current_pipeline": [
+                        "dense LoadFrames/DecordDecode remains upstream of this selector",
+                        "full dense input tensor is still materialized before the bridge",
+                    ],
+                },
                 "uses_gt": False,
                 "uses_teacher": False,
                 "uses_oracle": False,
                 "uses_raw_prediction_cache": False,
                 "uses_detector_outputs": False,
-                "deploy_time_signals": ["frame_mean", "temporal_difference", "valid_prefix_mask"],
+                "deploy_time_signals": [
+                    self.preview_signal_meta_key
+                    if plan["selection_decision_source"] == "deploy_preview_probe_metadata"
+                    else "post_decode_dense_tensor_fallback",
+                    "temporal_difference",
+                    "valid_prefix_mask",
+                ],
             }
             output.append(item)
         return output

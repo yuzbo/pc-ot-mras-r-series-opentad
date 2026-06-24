@@ -16,10 +16,16 @@ experiment_scope = dict(
     route_label=route_label,
     changed_surface="input_sampling_token_compression_dense_completion",
     protocol=(
-        "Boundary and anchor raw frame observations are preserved; long stable "
-        "temporal gaps are represented as span-token metadata; dense completion "
-        "reconstructs the ActionFormer-compatible 768-step axis."
+        "Preview/probe-visible metadata decides boundary and anchor raw frame "
+        "observations; long stable temporal gaps are represented as span-token "
+        "metadata; dense completion reconstructs the ActionFormer-compatible "
+        "768-step axis after the current dense decoder."
     ),
+    selection_surface="preview_probe_visible_pre_backbone_bridge",
+    actual_decode_saving_in_current_pipeline=False,
+    raw_decode_saving_claim_allowed=False,
+    pre_decode_loader_hook_reviewed=False,
+    requires_deploy_preview_probe_signal=True,
     deploy_time_inputs_only=True,
     test_time_gt_allowed=False,
     teacher_allowed=False,
@@ -33,6 +39,7 @@ frame_token_hybrid_gate = dict(
     stage=stage_id,
     route_label=route_label,
     requires_gate_json=True,
+    allowed_decision="ALLOW_FRAME_TOKEN_HYBRID_PRECHECK_ONLY",
     allow_precheck_only=True,
     allow_tools_train=False,
     allow_tools_test=False,
@@ -63,6 +70,9 @@ model = dict(
         stable_gap_min_len=12,
         stable_epsilon=0.02,
         max_span_tokens=64,
+        require_preview_signal=True,
+        preview_signal_meta_key="frame_token_hybrid_preview_signal",
+        preview_positions_meta_key="frame_token_hybrid_preview_positions",
     )
 )
 
