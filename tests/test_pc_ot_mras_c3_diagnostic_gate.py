@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from tools.bata.analyze_actionformer_post_nms_overload import run_post_nms_overload_audit
+from tools.bata.analyze_p2_proposal_localization import run_localization_attribution
 from tools.bata.analyze_pc_ot_mras_selector_posttrain_diagnostics import analyze_selector_payload
 from tools.bata.validate_pc_ot_mras_c3_diagnostic_gate import (
     READY,
@@ -19,6 +21,10 @@ TOOL = ROOT / "tools" / "bata" / "validate_pc_ot_mras_c3_diagnostic_gate.py"
 
 def _write_json(path: Path, payload):
     path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_jsonl(path: Path, rows):
+    path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
 
 
 def _selector_summary():
@@ -160,6 +166,186 @@ def test_c3_diagnostic_gate_passes_only_when_selector_ranking_and_cap_evidence_e
     assert payload["protocol_flags"]["diagnostic_only"] is True
     assert payload["protocol_flags"]["tools_train_allowed"] is False
     assert payload["protocol_flags"]["metric_claim_allowed"] is False
+
+
+def test_c3_diagnostic_gate_rejects_summaries_without_matching_run_provenance(tmp_path):
+    selector = _selector_summary()
+    proposal = _proposal_summary(tmp_path)
+    overload = _overload_summary()
+    run_root = "/run/current_c3"
+    work_dir = "/run/current_c3/train_workdir/gpu1_id0"
+    train_stdout = "/run/current_c3/current.train.stdout.log"
+    result_detection = "/run/current_c3/train_workdir/gpu1_id0/result_detection.json"
+
+    for summary in (selector, proposal, overload):
+        summary["provenance"] = {
+            "run_root": "/run/old_c3",
+            "work_dir": work_dir,
+            "train_stdout": train_stdout,
+            "result_detection_json": result_detection,
+        }
+    overload["summary"]["result_detection_counts"]["result_detection_json"] = "/run/old_c3/result_detection.json"
+
+    payload = validate_c3_diagnostic_gate_payloads(
+        selector_summary=selector,
+        proposal_summary=proposal,
+        overload_summary=overload,
+        min_selector_samples=2,
+        expected_run_root=run_root,
+        expected_work_dir=work_dir,
+        expected_train_stdout=train_stdout,
+        expected_result_detection_json=result_detection,
+    )
+
+    assert payload["decision"] == NO_GO
+    assert payload["gate"]["provenance"]["status"] == "NO_GO"
+    assert any("run_root must match current C3 run" in item for item in payload["gate"]["provenance"]["missing"])
+    assert any("result_detection_json must match current C3 result file" in item for item in payload["gate"]["provenance"]["missing"])
+
+
+def test_c3_diagnostic_gate_accepts_actual_producer_outputs_with_current_run_provenance(tmp_path):
+    run_root = tmp_path / "run"
+    work_dir = run_root / "train_workdir" / "gpu1_id0"
+    train_stdout = run_root / "c3.train.stdout.log"
+    result_detection = work_dir / "result_detection.json"
+    annotation = tmp_path / "anno.json"
+    class_map = tmp_path / "category_idx.txt"
+    proposal_jsonl = run_root / "proposals.jsonl"
+    proposal_out = run_root / "proposal_diag"
+    overload_out = run_root / "overload_diag"
+    work_dir.mkdir(parents=True)
+    run_root.mkdir(parents=True, exist_ok=True)
+    provenance = {
+        "run_root": str(run_root),
+        "work_dir": str(work_dir),
+        "train_stdout": str(train_stdout),
+        "result_detection_json": str(result_detection),
+    }
+
+    selector_summary = analyze_selector_payload(
+        {
+            "samples": [
+                {
+                    "sample_id": "video_a",
+                    "selected_dense_indices": [0, 2, 4, 6],
+                    "valid_len": 8,
+                    "gt_segments": [[1, 5]],
+                    "selector_scores": [0.1, 0.3, 0.7, 0.2, 0.8, 0.4, 0.6, 0.1],
+                    "pc_ot_mras_prebackbone_raw_slot_dense_indices": [0, 2, 4, 6],
+                    "pc_ot_mras_prebackbone_reader_fill_count": 0,
+                    "pc_ot_mras_prebackbone_st_active_row_count": 4,
+                    "irregular_selected_positions": [0, 2, 4, 6],
+                    "irregular_dense_valid_len": 8,
+                    "irregular_selected_valid_len": 8,
+                }
+            ]
+        },
+        boundary_radius=1.0,
+        provenance=provenance,
+    )
+
+    _write_json(
+        annotation,
+        {
+            "database": {
+                "video_a": {
+                    "subset": "validation",
+                    "duration": 10.0,
+                    "annotations": [{"segment": [1.0, 3.0], "label": "A"}],
+                },
+                "video_b": {
+                    "subset": "validation",
+                    "duration": 10.0,
+                    "annotations": [{"segment": [2.0, 4.0], "label": "A"}],
+                },
+            }
+        },
+    )
+    class_map.write_text("0 A\n", encoding="utf-8")
+    _write_jsonl(
+        proposal_jsonl,
+        [
+            {
+                "video_id": "video_a",
+                "sample_id": "video_a|window_start_frame=0",
+                "class_id": 0,
+                "label": "A",
+                "fps": 10.0,
+                "snippet_stride": 2.0,
+                "window_start_frame": 0.0,
+                "offset_frames": 0.0,
+                "window_size": 64.0,
+                "window_start_seconds": 0.0,
+                "window_end_seconds": 12.8,
+                "duration_seconds": 10.0,
+                "segment": [5.0, 15.0],
+                "segment_seconds": [1.0, 3.0],
+                "segment_frames": [10.0, 30.0],
+                "final_score": 0.9,
+                "duration": 10.0,
+            }
+        ],
+    )
+    proposal_summary = run_localization_attribution(
+        proposal_jsonl=proposal_jsonl,
+        output_dir=proposal_out,
+        annotation=annotation,
+        class_map=class_map,
+        topk=(1,),
+        iou_thresholds=(0.5,),
+        score_bins=1,
+        provenance=provenance,
+    )
+
+    train_stdout.write_text(
+        "\n".join(
+            [
+                "2026-06-24 00:00:00 Train INFO: Number of predictions: 4",
+                "2026-06-24 00:00:00 Train INFO: Average-mAP: 1.00 (%)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "cfg.py"
+    config.write_text("post_processing = dict(nms=dict(max_seg_num=2))\n", encoding="utf-8")
+    _write_json(
+        result_detection,
+        {
+            "results": {
+                "video_a": [
+                    {"segment": [1.0, 2.0], "label": "A", "score": 0.9},
+                    {"segment": [2.0, 3.0], "label": "A", "score": 0.8},
+                ],
+                "video_b": [
+                    {"segment": [2.0, 3.0], "label": "A", "score": 0.7},
+                    {"segment": [3.0, 4.0], "label": "A", "score": 0.6},
+                ],
+            }
+        },
+    )
+    overload_summary = run_post_nms_overload_audit(
+        train_log=train_stdout,
+        annotation=annotation,
+        output_dir=overload_out,
+        config=config,
+        result_detection_json=result_detection,
+        provenance=provenance,
+    )
+
+    payload = validate_c3_diagnostic_gate_payloads(
+        selector_summary=selector_summary,
+        proposal_summary=proposal_summary,
+        overload_summary=overload_summary,
+        min_selector_samples=1,
+        expected_run_root=str(run_root),
+        expected_work_dir=str(work_dir),
+        expected_train_stdout=str(train_stdout),
+        expected_result_detection_json=str(result_detection),
+    )
+
+    assert payload["decision"] == READY
+    assert payload["gate"]["provenance"]["status"] == "PASS"
 
 
 @pytest.mark.parametrize(

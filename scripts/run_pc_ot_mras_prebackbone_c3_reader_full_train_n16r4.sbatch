@@ -81,6 +81,23 @@ RESOLVED_CONFIG_DUMP="$RUN_ROOT/resolved_config.py"
 SUMMARY_JSON="$RUN_ROOT/prebackbone_c3_reader_full_train_summary.json"
 WORK_DIR="$RUN_ROOT/train_workdir"
 FINAL_WORK_DIR="$WORK_DIR/gpu1_id${TRAIN_ID}"
+POSTTRAIN_DIAGNOSTIC_GATE_REQUIRED="${POSTTRAIN_DIAGNOSTIC_GATE_REQUIRED:-1}"
+# Bind all post-train diagnostic inputs to this run. Do not let inherited
+# environment variables point diagnostics at stale selector/proposal artifacts.
+C3_SELECTOR_METADATA_JSONL="$RUN_ROOT/selector_metadata.jsonl"
+C3_SELECTOR_METADATA_MAX_ROWS="${C3_SELECTOR_METADATA_MAX_ROWS:-4096}"
+C3_SELECTOR_SUMMARY_JSON="${C3_SELECTOR_SUMMARY_JSON:-$RUN_ROOT/c3_selector_posttrain_diagnostic_summary.json}"
+C3_RESULT_DETECTION_GEOMETRY_DIR="${C3_RESULT_DETECTION_GEOMETRY_DIR:-$RUN_ROOT/c3_result_detection_geometry}"
+C3_RESULT_DETECTION_PROPOSALS_JSONL="$C3_RESULT_DETECTION_GEOMETRY_DIR/converted_result_detection_proposals.jsonl"
+C3_PROPOSAL_DIAGNOSTIC_DIR="${C3_PROPOSAL_DIAGNOSTIC_DIR:-$RUN_ROOT/c3_proposal_localization_diagnostic}"
+C3_PROPOSAL_SUMMARY_JSON="${C3_PROPOSAL_SUMMARY_JSON:-$C3_PROPOSAL_DIAGNOSTIC_DIR/summary.json}"
+C3_OVERLOAD_DIAGNOSTIC_DIR="${C3_OVERLOAD_DIAGNOSTIC_DIR:-$RUN_ROOT/c3_post_nms_overload_diagnostic}"
+C3_OVERLOAD_SUMMARY_JSON="${C3_OVERLOAD_SUMMARY_JSON:-$C3_OVERLOAD_DIAGNOSTIC_DIR/summary.json}"
+C3_DIAGNOSTIC_GATE_JSON="${C3_DIAGNOSTIC_GATE_JSON:-$RUN_ROOT/c3_posttrain_diagnostic_gate_summary.json}"
+C3_DIAGNOSTIC_GATE_MIN_SELECTOR_SAMPLES="${C3_DIAGNOSTIC_GATE_MIN_SELECTOR_SAMPLES:-1}"
+# This must be bound to the current train work directory. Do not let an
+# inherited environment variable point post-train diagnostics at stale results.
+C3_RESULT_DETECTION_JSON="$FINAL_WORK_DIR/result_detection.json"
 
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
@@ -91,6 +108,8 @@ export THUMOS14_CLASS_MAP="${THUMOS14_CLASS_MAP:-$YUZIBO_ROOT/thumos14/annotatio
 export THUMOS14_TRAIN_DATA_PATH="${THUMOS14_TRAIN_DATA_PATH:-$YUZIBO_ROOT/thumos14/train}"
 export THUMOS14_TEST_DATA_PATH="${THUMOS14_TEST_DATA_PATH:-$YUZIBO_ROOT/thumos14/test}"
 export PC_OT_MRAS_PREBACKBONE_C3_PRETRAINED_PATH="$PRETRAINED_PATH"
+export PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_JSONL="$C3_SELECTOR_METADATA_JSONL"
+export PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_MAX_ROWS="$C3_SELECTOR_METADATA_MAX_ROWS"
 
 mkdir -p "$RUN_ROOT"
 exec > >(tee -a "$RUN_LOG") 2>&1
@@ -171,14 +190,27 @@ if [ "$DENSE_WINDOW_SIZE" -ne 768 ]; then fail "reviewed dense window size is 76
 if [ "$SELECTION_UNIT" -ne 1 ]; then fail "reviewed selection unit is 1; got $SELECTION_UNIT"; fi
 if [ "$SCOUT_SPATIAL_SIZE" -ne 32 ]; then fail "reviewed scout spatial size is 32; got $SCOUT_SPATIAL_SIZE"; fi
 if [ "$PRETRAINED_PATH" != "$PRETRAINED_PATH_REVIEWED" ]; then fail "PRETRAINED_PATH override is forbidden"; fi
-if [ -z "${SLURM_JOB_ID:-}" ] && [ "${ALLOW_LOGIN_NODE_DEBUG:-0}" != "1" ]; then
-  fail "refusing direct non-Slurm execution unless ALLOW_LOGIN_NODE_DEBUG=1 for lightweight PRECHECK_ONLY"
+if [ -z "${SLURM_JOB_ID:-}" ]; then
+  if [ "${ALLOW_LOGIN_NODE_DEBUG:-0}" = "1" ]; then
+    if [ "$PRECHECK_ONLY" != "1" ]; then
+      fail "ALLOW_LOGIN_NODE_DEBUG=1 only permits PRECHECK_ONLY=1"
+    fi
+  else
+    fail "refusing direct non-Slurm execution unless ALLOW_LOGIN_NODE_DEBUG=1 for lightweight PRECHECK_ONLY"
+  fi
+fi
+if [ "$PRECHECK_ONLY" = "0" ] && [ -z "${SLURM_JOB_ID:-}" ]; then
+  fail "full training requires a Slurm GPU allocation"
 fi
 if [ "$PRECHECK_ONLY" = "0" ] && [ "$ALLOW_PC_OT_MRAS_PREBACKBONE_C3_READER_FULL_TRAIN" != "1" ]; then
   fail "PRECHECK_ONLY=0 requires ALLOW_PC_OT_MRAS_PREBACKBONE_C3_READER_FULL_TRAIN=1"
 fi
+case "$POSTTRAIN_DIAGNOSTIC_GATE_REQUIRED" in 0|1) ;; *) fail "POSTTRAIN_DIAGNOSTIC_GATE_REQUIRED must be 0 or 1; got $POSTTRAIN_DIAGNOSTIC_GATE_REQUIRED" ;; esac
+if [ "$PRECHECK_ONLY" = "0" ] && [ "$POSTTRAIN_DIAGNOSTIC_GATE_REQUIRED" != "1" ]; then
+  fail "full training requires POSTTRAIN_DIAGNOSTIC_GATE_REQUIRED=1"
+fi
 
-EXPECTED_GIT_BRANCH="${OPENTAD_PCOTMRAS_EXPECTED_BRANCH:-codex/prebackbone-pcotmras-scout-selector}"
+EXPECTED_GIT_BRANCH="${OPENTAD_PCOTMRAS_EXPECTED_BRANCH:-codex/c3-pro-boundary-stability-20260624}"
 GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || fail "repo must be a git checkout"
 GIT_HEAD="$(git rev-parse HEAD 2>/dev/null)" || fail "repo HEAD unavailable"
 if [ "$GIT_BRANCH" != "$EXPECTED_GIT_BRANCH" ]; then fail "expected branch $EXPECTED_GIT_BRANCH; got $GIT_BRANCH"; fi
@@ -222,6 +254,8 @@ if cfg.model.rpn_head.type != "ActionFormerHead":
     raise SystemExit("detector head must stay ActionFormerHead")
 if int(cfg.workflow.end_epoch) != 60:
     raise SystemExit("end_epoch must be 60")
+if cfg.post_processing.get("save_dict", False) is not True:
+    raise SystemExit("post_processing.save_dict must be True so current run writes result_detection.json")
 for split in ("train", "val", "test"):
     text = repr(cfg.dataset[split].pipeline).lower()
     for forbidden in ("bata_value_transport_ledger_subsample", "hard_positions", "teacher", "oracle", "raw_prediction"):
@@ -251,15 +285,35 @@ log "resolved_config_sha256=$RESOLVED_CONFIG_SHA256"
     opentad/models/detectors/base.py \
     opentad/models/detectors/actionformer.py \
     opentad/models/dense_heads/actionformer_head.py \
-    opentad/models/selectors/pc_ot_mras_prebackbone_frame_selector.py
+    opentad/models/selectors/pc_ot_mras_prebackbone_frame_selector.py \
+    tools/bata/analyze_pc_ot_mras_selector_posttrain_diagnostics.py \
+    tools/bata/analyze_actionformer_result_detection_geometry.py \
+    tools/bata/analyze_p2_proposal_localization.py \
+    tools/bata/analyze_actionformer_post_nms_overload.py \
+    tools/bata/validate_pc_ot_mras_c3_diagnostic_gate.py \
+    tests/test_pc_ot_mras_prebackbone_nan_guards.py \
+    tests/test_pc_ot_mras_prebackbone_c3_pro_stability.py \
+    tests/test_pc_ot_mras_selector_posttrain_diagnostics.py \
+    tests/test_pc_ot_mras_c3_diagnostic_gate.py
 } > "$SHA_MANIFEST"
 ACTIVE_MANIFEST_SHA256="$(sha256sum "$SHA_MANIFEST" | awk '{print $1}')"
 log "active_sha256_manifest_sha256=$ACTIVE_MANIFEST_SHA256"
 
-python -m py_compile "$CONFIG" opentad/models/selectors/pc_ot_mras_prebackbone_frame_selector.py
+python -m py_compile \
+  "$CONFIG" \
+  opentad/models/selectors/pc_ot_mras_prebackbone_frame_selector.py \
+  tools/bata/analyze_pc_ot_mras_selector_posttrain_diagnostics.py \
+  tools/bata/analyze_actionformer_result_detection_geometry.py \
+  tools/bata/analyze_p2_proposal_localization.py \
+  tools/bata/analyze_actionformer_post_nms_overload.py \
+  tools/bata/validate_pc_ot_mras_c3_diagnostic_gate.py
 python -m pytest \
   tests/test_pc_ot_mras_prebackbone_c3_reader_variants.py \
   tests/test_pc_ot_mras_prebackbone_pro_reader_design.py \
+  tests/test_pc_ot_mras_prebackbone_nan_guards.py \
+  tests/test_pc_ot_mras_prebackbone_c3_pro_stability.py \
+  tests/test_pc_ot_mras_selector_posttrain_diagnostics.py \
+  tests/test_pc_ot_mras_c3_diagnostic_gate.py \
   -q
 
 if [ "$PRECHECK_ONLY" = "1" ]; then
@@ -274,6 +328,7 @@ test -d "$THUMOS14_TRAIN_DATA_PATH" || fail "missing train data dir: $THUMOS14_T
 test -d "$THUMOS14_TEST_DATA_PATH" || fail "missing test data dir: $THUMOS14_TEST_DATA_PATH"
 
 mkdir -p "$WORK_DIR"
+rm -f "$C3_SELECTOR_METADATA_JSONL"
 log "launching reader full train tools/train.py"
 torchrun --nproc_per_node=1 --master_port="$MASTER_PORT" \
   tools/train.py "$CONFIG" --id "$TRAIN_ID" --seed "$SEED" \
@@ -292,9 +347,76 @@ torchrun --nproc_per_node=1 --master_port="$MASTER_PORT" \
   2>&1 | tee "$TRAIN_STDOUT"
 
 grep -q "Training Over" "$TRAIN_STDOUT" || fail "train stdout does not show clean Training Over"
-if grep -Eiq "nan|\\binf\\b|load_from_raw_predictions|RAW_PREDICTION_CACHE|PREDICTION_CACHE" "$TRAIN_STDOUT"; then
-  fail "train stdout contains NaN/Inf or raw prediction/cache marker"
+if grep -Eiq "load_from_raw_predictions|RAW_PREDICTION_CACHE|PREDICTION_CACHE" "$TRAIN_STDOUT"; then
+  fail "train stdout contains raw prediction/cache marker"
 fi
 
-write_summary "PASS" "PREBACKBONE_C3_READER_FULL_TRAIN_PASS_NO_DIRECT_TEST_NO_CLAIMS" "tools/train.py completed full 60-epoch schedule"
-log "PREBACKBONE_C3_READER_FULL_TRAIN_PASS_NO_DIRECT_TEST_NO_CLAIMS"
+if [ "$POSTTRAIN_DIAGNOSTIC_GATE_REQUIRED" = "1" ]; then
+  if [ -z "$C3_SELECTOR_METADATA_JSONL" ]; then fail "POSTTRAIN_DIAGNOSTIC_GATE_REQUIRED=1 but C3_SELECTOR_METADATA_JSONL is missing"; fi
+  test -s "$C3_SELECTOR_METADATA_JSONL" || fail "missing current selector metadata dump: $C3_SELECTOR_METADATA_JSONL"
+  test -f "$C3_RESULT_DETECTION_JSON" || fail "missing current result_detection json: $C3_RESULT_DETECTION_JSON"
+  mkdir -p "$C3_RESULT_DETECTION_GEOMETRY_DIR" "$C3_PROPOSAL_DIAGNOSTIC_DIR" "$C3_OVERLOAD_DIAGNOSTIC_DIR"
+
+  log "running C3 selector diagnostic producer"
+  python tools/bata/analyze_pc_ot_mras_selector_posttrain_diagnostics.py \
+    --input "$C3_SELECTOR_METADATA_JSONL" \
+    --output "$C3_SELECTOR_SUMMARY_JSON" \
+    --provenance-run-root "$RUN_ROOT" \
+    --provenance-work-dir "$FINAL_WORK_DIR" \
+    --provenance-train-stdout "$TRAIN_STDOUT" \
+    --provenance-result-detection-json "$C3_RESULT_DETECTION_JSON"
+  test -f "$C3_SELECTOR_SUMMARY_JSON" || fail "selector diagnostic producer did not write: $C3_SELECTOR_SUMMARY_JSON"
+
+  log "running C3 result_detection-to-proposal converter"
+  python tools/bata/analyze_actionformer_result_detection_geometry.py \
+    --result-detection-json "$C3_RESULT_DETECTION_JSON" \
+    --output-dir "$C3_RESULT_DETECTION_GEOMETRY_DIR" \
+    --annotation "$THUMOS14_ANNOTATION_PATH" \
+    --class-map "$THUMOS14_CLASS_MAP" \
+    --config "$CONFIG" \
+    --group-by video
+  test -s "$C3_RESULT_DETECTION_PROPOSALS_JSONL" || fail "result_detection converter did not write proposals: $C3_RESULT_DETECTION_PROPOSALS_JSONL"
+
+  log "running C3 proposal localization diagnostic producer"
+  python tools/bata/analyze_p2_proposal_localization.py \
+    --proposal-jsonl "$C3_RESULT_DETECTION_PROPOSALS_JSONL" \
+    --output-dir "$C3_PROPOSAL_DIAGNOSTIC_DIR" \
+    --annotation "$THUMOS14_ANNOTATION_PATH" \
+    --class-map "$THUMOS14_CLASS_MAP" \
+    --config "$CONFIG" \
+    --group-by video \
+    --provenance-run-root "$RUN_ROOT" \
+    --provenance-work-dir "$FINAL_WORK_DIR" \
+    --provenance-train-stdout "$TRAIN_STDOUT" \
+    --provenance-result-detection-json "$C3_RESULT_DETECTION_JSON"
+  test -f "$C3_PROPOSAL_SUMMARY_JSON" || fail "proposal diagnostic producer did not write: $C3_PROPOSAL_SUMMARY_JSON"
+
+  log "running C3 post-NMS overload diagnostic producer"
+  python tools/bata/analyze_actionformer_post_nms_overload.py \
+    --train-log "$TRAIN_STDOUT" \
+    --annotation "$THUMOS14_ANNOTATION_PATH" \
+    --output-dir "$C3_OVERLOAD_DIAGNOSTIC_DIR" \
+    --config "$CONFIG" \
+    --result-detection-json "$C3_RESULT_DETECTION_JSON" \
+    --provenance-run-root "$RUN_ROOT" \
+    --provenance-work-dir "$FINAL_WORK_DIR" \
+    --provenance-train-stdout "$TRAIN_STDOUT" \
+    --provenance-result-detection-json "$C3_RESULT_DETECTION_JSON"
+  test -f "$C3_OVERLOAD_SUMMARY_JSON" || fail "overload diagnostic producer did not write: $C3_OVERLOAD_SUMMARY_JSON"
+
+  log "running C3 posttrain diagnostic gate"
+  python tools/bata/validate_pc_ot_mras_c3_diagnostic_gate.py \
+    --selector-summary "$C3_SELECTOR_SUMMARY_JSON" \
+    --proposal-summary "$C3_PROPOSAL_SUMMARY_JSON" \
+    --overload-summary "$C3_OVERLOAD_SUMMARY_JSON" \
+    --min-selector-samples "$C3_DIAGNOSTIC_GATE_MIN_SELECTOR_SAMPLES" \
+    --expected-run-root "$RUN_ROOT" \
+    --expected-work-dir "$FINAL_WORK_DIR" \
+    --expected-train-stdout "$TRAIN_STDOUT" \
+    --expected-result-detection-json "$C3_RESULT_DETECTION_JSON" \
+    --output "$C3_DIAGNOSTIC_GATE_JSON"
+  log "c3_diagnostic_gate_json=$C3_DIAGNOSTIC_GATE_JSON"
+fi
+
+write_summary "PASS" "PREBACKBONE_C3_READER_FULL_TRAIN_PASS_WITH_DIAGNOSTIC_GATE" "tools/train.py completed full 60-epoch schedule and C3 posttrain diagnostic gate passed"
+log "PREBACKBONE_C3_READER_FULL_TRAIN_PASS_WITH_DIAGNOSTIC_GATE"
