@@ -62,6 +62,50 @@ This implementation is a full candidate model for the route, but the launch gate
 - `tests/test_bh_sdc_launcher_gate.py`
 - `docs/en/bh_sdc_n16r4_launch_gate_review_context_20260624.md`
 
+## 2026-06-25 Launch-Unlock Status
+
+This section supersedes the earlier fail-closed ProFix launch text below for
+the dedicated launch-unlock branch only.
+
+Route label remains exactly:
+
+`DIVERGENT_INNOVATION_BH_SDC_DO_NOT_MERGE_WITH_C3`
+
+The BH-SDC full-train candidate is now unlocked by explicit user/coordinator
+override for BH-SDC formal training only:
+
+- reviewed base implementation commit:
+  `2cebd955c2df7552f1291a179bfab9c892e9c5f5`;
+- launch decision:
+  `ALLOW_BH_SDC_N16R4_SYNC_AND_FULL_TRAIN_CANDIDATE_V1`;
+- `launch_gate_passed=true` for static config precheck;
+- `external_payload_required=true` for formal training;
+- allowed runtime actions: remote sync to `~/run/yuzibo/OpenTAD_Back_check`,
+  Slurm, one GPU, `tools/train.py`, standard THUMOS14 dataset access, route
+  work-dir checkpoint writes, and long/full training;
+- still forbidden: `tools/test.py`, direct detector mAP claims, metric/paper/
+  runtime/deploy claims, checkpoint load, pretrained initialization, resume,
+  raw-prediction cache, test-time GT, validation/test teacher, and oracle use.
+
+`PRECHECK_ONLY=1` remains the default launcher mode. It performs static
+precheck, writes the resolved config dump, active SHA256 manifest, summary JSON,
+and exits before training. `PRECHECK_ONLY=0` requires
+`ALLOW_BH_SDC_FULL_TRAIN=1`, a launch gate JSON, its SHA256, a matching resolved
+config SHA256, and a matching active manifest SHA256 before `torchrun` starts.
+
+N16R4 data staging is explicitly checked only on the formal training path. The
+expected staged THUMOS14 manifest directories are:
+
+- `~/run/yuzibo/thumos14/train`: 200 annotated training-subset mp4 files;
+- `~/run/yuzibo/thumos14/test`: 211 annotated validation/test mp4 files.
+
+The source raw videos may remain under
+`~/run/yuzibo/raw/Validation Data/validation` and
+`~/run/yuzibo/raw/Test Data/TH14_test_set_mp4`; formal training expects a
+manifest/symlink staging step to populate `thumos14/train` and `thumos14/test`.
+The launcher default counts are 200/211 and may be overridden only through
+`EXPECTED_THUMOS14_TRAIN_COUNT` and `EXPECTED_THUMOS14_TEST_COUNT`.
+
 ## 2026-06-25 Owner Fix Status
 
 The 2026-06-24 Pro review rejected BH-SDC full training because the reviewed

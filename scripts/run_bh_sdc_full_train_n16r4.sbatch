@@ -3,9 +3,9 @@
 # Route: DIVERGENT_INNOVATION_BH_SDC_DO_NOT_MERGE_WITH_C3
 # Decision: ALLOW_BH_SDC_N16R4_SYNC_AND_FULL_TRAIN_CANDIDATE_V1
 #
-# This script is a reviewed launch-gate candidate only. It refuses training
-# unless a separate Pro-reviewed gate JSON is supplied and bound to the active
-# manifest plus resolved config hash.
+# This script is fail-closed for formal training. It refuses training unless a
+# reviewed gate JSON is supplied and bound to the active manifest plus resolved
+# config hash.
 #SBATCH -p gpu
 #SBATCH --gpus=1
 #SBATCH --time=48:00:00
@@ -28,6 +28,8 @@ ALLOW_BH_SDC_FULL_TRAIN="${ALLOW_BH_SDC_FULL_TRAIN:-0}"
 ALLOW_LOGIN_NODE_DEBUG="${ALLOW_LOGIN_NODE_DEBUG:-0}"
 GATE_JSON="${OPENTAD_BH_SDC_GATE_JSON:-${BH_SDC_GATE_JSON:-}}"
 GATE_SHA256="${OPENTAD_BH_SDC_GATE_SHA256:-${BH_SDC_GATE_SHA256:-}}"
+EXPECTED_THUMOS14_TRAIN_COUNT="${EXPECTED_THUMOS14_TRAIN_COUNT:-200}"
+EXPECTED_THUMOS14_TEST_COUNT="${EXPECTED_THUMOS14_TEST_COUNT:-211}"
 EXPECTED_SYNC_COMMAND="REMOTE_SYNC_TO_N16R4:~/run/yuzibo/OpenTAD_Back_check"
 
 case "$PRECHECK_ONLY" in
@@ -72,8 +74,17 @@ esac
 case "$MASTER_PORT" in
   ''|*[!0-9]*) fail "MASTER_PORT must be numeric; got $MASTER_PORT" ;;
 esac
+case "$EXPECTED_THUMOS14_TRAIN_COUNT" in
+  ''|*[!0-9]*) fail "EXPECTED_THUMOS14_TRAIN_COUNT must be numeric; got $EXPECTED_THUMOS14_TRAIN_COUNT" ;;
+esac
+case "$EXPECTED_THUMOS14_TEST_COUNT" in
+  ''|*[!0-9]*) fail "EXPECTED_THUMOS14_TEST_COUNT must be numeric; got $EXPECTED_THUMOS14_TEST_COUNT" ;;
+esac
 if [ "$MASTER_PORT" -lt 1024 ] || [ "$MASTER_PORT" -gt 65535 ]; then
   fail "MASTER_PORT must be between 1024 and 65535; got $MASTER_PORT"
+fi
+if [ "$EXPECTED_THUMOS14_TRAIN_COUNT" -lt 1 ] || [ "$EXPECTED_THUMOS14_TEST_COUNT" -lt 1 ]; then
+  fail "expected THUMOS14 train/test counts must be positive"
 fi
 if [ "$CONFIG" != "$CONFIG_REVIEWED" ]; then
   fail "launcher is reviewed only for $CONFIG_REVIEWED; got $CONFIG"
@@ -272,6 +283,21 @@ test -f "$THUMOS14_ANNOTATION_PATH" || fail "missing annotation: $THUMOS14_ANNOT
 test -f "$THUMOS14_CLASS_MAP" || fail "missing class map: $THUMOS14_CLASS_MAP"
 test -d "$THUMOS14_TRAIN_DATA_PATH" || fail "missing train data dir: $THUMOS14_TRAIN_DATA_PATH"
 test -d "$THUMOS14_TEST_DATA_PATH" || fail "missing validation/test data dir: $THUMOS14_TEST_DATA_PATH"
+
+count_mp4_files() {
+  find "$1" -maxdepth 1 \( -type f -o -type l \) -iname '*.mp4' | wc -l | awk '{print $1}'
+}
+
+train_count="$(count_mp4_files "$THUMOS14_TRAIN_DATA_PATH")"
+test_count="$(count_mp4_files "$THUMOS14_TEST_DATA_PATH")"
+log "thumos14_train_mp4_count=$train_count expected=$EXPECTED_THUMOS14_TRAIN_COUNT"
+log "thumos14_test_mp4_count=$test_count expected=$EXPECTED_THUMOS14_TEST_COUNT"
+if [ "$train_count" -ne "$EXPECTED_THUMOS14_TRAIN_COUNT" ]; then
+  fail "THUMOS14 train data count mismatch: expected $EXPECTED_THUMOS14_TRAIN_COUNT mp4 files, found $train_count in $THUMOS14_TRAIN_DATA_PATH"
+fi
+if [ "$test_count" -ne "$EXPECTED_THUMOS14_TEST_COUNT" ]; then
+  fail "THUMOS14 validation/test data count mismatch: expected $EXPECTED_THUMOS14_TEST_COUNT mp4 files, found $test_count in $THUMOS14_TEST_DATA_PATH"
+fi
 
 if command -v ss >/dev/null 2>&1; then
   if ss -ltn | awk '{print $4}' | grep -Eq "[:.]${MASTER_PORT}$"; then

@@ -19,8 +19,7 @@ FULL_CONFIG = (
 )
 BH_SDC_ROUTE_LABEL = "DIVERGENT_INNOVATION_BH_SDC_DO_NOT_MERGE_WITH_C3"
 LAUNCH_DECISION = "ALLOW_BH_SDC_N16R4_SYNC_AND_FULL_TRAIN_CANDIDATE_V1"
-FOLLOWUP_PRO_STATUS = "FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO"
-REVIEWED_IMPL_COMMIT = "FOLLOWUP_PRO_REQUIRED_AFTER_BH_SDC_PRO_FIX"
+REVIEWED_IMPL_COMMIT = "2cebd955c2df7552f1291a179bfab9c892e9c5f5"
 EXPECTED_REMOTE_WORKSPACE = "~/run/yuzibo/OpenTAD_Back_check"
 EXPECTED_SYNC_COMMAND = f"REMOTE_SYNC_TO_N16R4:{EXPECTED_REMOTE_WORKSPACE}"
 EXPECTED_SLURM_COMMAND = "sbatch scripts/run_bh_sdc_full_train_n16r4.sbatch"
@@ -48,16 +47,12 @@ def _synthetic_launch_payload(resolved_config_sha256: str, active_manifest_sha25
     return {
         "schema_version": 1,
         "decision": LAUNCH_DECISION,
-        "explicit_user_pro_launch_decision": LAUNCH_DECISION,
-        "pro_launch_gate_verdict": LAUNCH_DECISION,
-        "pro_launch_gate_session": "synthetic-pro-launch-gate-session",
+        "explicit_user_override_decision": LAUNCH_DECISION,
         "route": "bh_sdc_boundary_hazard_sparse_dense",
         "route_label": BH_SDC_ROUTE_LABEL,
         "stage": "bh_sdc_boundary_hazard_sparse_dense_full_train_candidate_n16r4",
         "reviewed_impl_commit": REVIEWED_IMPL_COMMIT,
         "launch_gate_commit": "b" * 40,
-        "pro_implementation_verdict": "PASS_SECOND_GPT_5_5_PRO_REVIEW_NO_BLOCKERS",
-        "pro_implementation_session": "synthetic-pro-implementation-session",
         "final_read_only_review_verdict": "PASS_SUBAGENT_FINAL_REVIEW_ONLY",
         "final_read_only_review_id": "synthetic-final-read-only-review",
         "resolved_config_sha256": resolved_config_sha256,
@@ -74,8 +69,12 @@ def _synthetic_launch_payload(resolved_config_sha256: str, active_manifest_sha25
         "train_command": EXPECTED_TRAIN_COMMAND,
         "allow_remote_sync": True,
         "allow_slurm": True,
+        "allow_gpu": True,
         "allow_full_train": True,
         "allow_tools_train": True,
+        "allow_train_validation_map": True,
+        "allow_long_training": True,
+        "allow_dataset_access": True,
         "allow_tools_test": False,
         "allow_detector_map": False,
         "allow_metric_claim": False,
@@ -89,6 +88,7 @@ def _synthetic_launch_payload(resolved_config_sha256: str, active_manifest_sha25
         "uses_val_test_teacher": False,
         "uses_oracle": False,
         "uses_raw_prediction_cache": False,
+        "allow_raw_prediction_cache": False,
         "load_from_raw_predictions": False,
         "save_raw_prediction": False,
         "allow_checkpoint_load": False,
@@ -122,13 +122,13 @@ def test_bh_sdc_configs_use_sparse_dense_chain_and_distinct_gate_modes():
     assert local["allow_long_training"] is False
     assert local["allowed_entrypoints"] == []
     assert local["launch_decision"] is None
-    assert full["launch_gate_passed"] is False
-    assert full["allow_long_training"] is False
-    assert full["allow_tools_train"] is False
+    assert full["launch_gate_passed"] is True
+    assert full["allow_long_training"] is True
+    assert full["allow_tools_train"] is True
     assert full["allow_tools_test"] is False
-    assert full["allowed_entrypoints"] == []
-    assert full["launch_decision"] == FOLLOWUP_PRO_STATUS
-    assert full["static_authorization"] is False
+    assert full["allowed_entrypoints"] == ["tools/train.py"]
+    assert full["launch_decision"] == LAUNCH_DECISION
+    assert full["static_authorization"] is True
     assert full["reviewed_impl_commit"] == REVIEWED_IMPL_COMMIT
     local_text = LOCAL_CONFIG.read_text(encoding="utf-8")
     assert "pc_ot_mras_prebackbone_c3_hybrid_reader_candidate_n16r4.py" not in local_text
@@ -268,7 +268,7 @@ def test_bh_sdc_validator_rejects_non_strict_budget_bounds(tmp_path):
         validator.validate_static_config(bad)
 
 
-def test_bh_sdc_validator_cli_without_payload_remains_fail_closed():
+def test_bh_sdc_validator_cli_without_payload_passes_static_config_without_authorizing_train():
     result = subprocess.run(
         [
             sys.executable,
@@ -285,12 +285,13 @@ def test_bh_sdc_validator_cli_without_payload_remains_fail_closed():
     )
     payload = json.loads(result.stdout)
 
-    assert result.returncode != 0
-    assert payload["ok"] is False
+    assert result.returncode == 0
+    assert payload["ok"] is True
     assert payload["authorized"] is False
-    assert "pending follow-up Pro" in payload["reason"]
+    assert payload["payload_required_for_full_train"] is True
+    assert payload["claims_allowed"] is False
     assert payload["route_label"] == BH_SDC_ROUTE_LABEL
-    assert payload["launch_decision"] == FOLLOWUP_PRO_STATUS
+    assert payload["launch_decision"] == LAUNCH_DECISION
 
 
 def test_bh_sdc_old_precheck_payload_does_not_authorize_training():
@@ -304,7 +305,7 @@ def test_bh_sdc_old_precheck_payload_does_not_authorize_training():
         "active_sha256_manifest_sha256": "a" * 64,
     }
 
-    with pytest.raises(ValueError, match="pending follow-up Pro"):
+    with pytest.raises(ValueError, match="decision must be"):
         validator.validate_launch_gate_payload(
             FULL_CONFIG,
             old_payload,
@@ -315,13 +316,13 @@ def test_bh_sdc_old_precheck_payload_does_not_authorize_training():
         )
 
 
-def test_bh_sdc_launch_payload_rejects_unknown_keys_after_followup_pro_unlock_only():
+def test_bh_sdc_launch_payload_rejects_unknown_keys():
     validator = _load_validator()
     static = validator.validate_static_config(FULL_CONFIG)
     payload = _synthetic_launch_payload(static["resolved_config_sha256"])
     payload["surprise_unlock"] = True
 
-    with pytest.raises(ValueError, match="pending follow-up Pro"):
+    with pytest.raises(ValueError, match="unknown key"):
         validator.validate_launch_gate_payload(
             FULL_CONFIG,
             payload,
@@ -335,10 +336,10 @@ def test_bh_sdc_launch_payload_rejects_unknown_keys_after_followup_pro_unlock_on
 @pytest.mark.parametrize(
     "missing_key",
     [
-        "pro_implementation_session",
-        "pro_launch_gate_verdict",
         "final_read_only_review_verdict",
-        "explicit_user_pro_launch_decision",
+        "explicit_user_override_decision",
+        "reviewed_impl_commit",
+        "launch_gate_commit",
     ],
 )
 def test_bh_sdc_launch_payload_requires_review_and_launch_decision_evidence(missing_key):
@@ -347,7 +348,7 @@ def test_bh_sdc_launch_payload_requires_review_and_launch_decision_evidence(miss
     payload = _synthetic_launch_payload(static["resolved_config_sha256"])
     payload.pop(missing_key)
 
-    with pytest.raises(ValueError, match="pending follow-up Pro"):
+    with pytest.raises(ValueError, match="launch gate payload missing"):
         validator.validate_launch_gate_payload(
             FULL_CONFIG,
             payload,
@@ -358,20 +359,23 @@ def test_bh_sdc_launch_payload_requires_review_and_launch_decision_evidence(miss
         )
 
 
-def test_bh_sdc_launch_payload_remains_locked_even_with_old_matching_payload():
+def test_bh_sdc_launch_payload_authorizes_only_reviewed_train_command():
     validator = _load_validator()
     static = validator.validate_static_config(FULL_CONFIG)
     payload = _synthetic_launch_payload(static["resolved_config_sha256"])
 
-    with pytest.raises(ValueError, match="pending follow-up Pro"):
-        validator.validate_launch_gate_payload(
-            FULL_CONFIG,
-            payload,
-            requested_action="slurm_full_train_candidate",
-            requested_command=EXPECTED_TRAIN_COMMAND,
-            active_manifest_sha256="a" * 64,
-            resolved_config_sha256=static["resolved_config_sha256"],
-        )
+    result = validator.validate_launch_gate_payload(
+        FULL_CONFIG,
+        payload,
+        requested_action="slurm_full_train_candidate",
+        requested_command=EXPECTED_TRAIN_COMMAND,
+        active_manifest_sha256="a" * 64,
+        resolved_config_sha256=static["resolved_config_sha256"],
+    )
+
+    assert result["authorized"] is True
+    assert result["claims_allowed"] is False
+    assert result["reviewed_impl_commit"] == REVIEWED_IMPL_COMMIT
 
 
 def test_bh_sdc_locked_full_candidate_rejects_tools_test_before_payload_validation():
@@ -379,7 +383,7 @@ def test_bh_sdc_locked_full_candidate_rejects_tools_test_before_payload_validati
     static = validator.validate_static_config(FULL_CONFIG)
     payload = _synthetic_launch_payload(static["resolved_config_sha256"])
 
-    with pytest.raises(ValueError, match="pending follow-up Pro"):
+    with pytest.raises(ValueError, match="requested_command"):
         validator.validate_launch_gate_payload(
             FULL_CONFIG,
             payload,

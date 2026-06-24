@@ -23,6 +23,11 @@ def test_bh_sdc_launcher_is_payload_gated_n16r4_train_candidate():
     assert "ALLOW_LOGIN_NODE_DEBUG" in text
     assert "OPENTAD_BH_SDC_GATE_JSON" in text
     assert "OPENTAD_BH_SDC_GATE_SHA256" in text
+    assert "EXPECTED_THUMOS14_TRAIN_COUNT=\"${EXPECTED_THUMOS14_TRAIN_COUNT:-200}\"" in text
+    assert "EXPECTED_THUMOS14_TEST_COUNT=\"${EXPECTED_THUMOS14_TEST_COUNT:-211}\"" in text
+    assert "count_mp4_files" in text
+    assert "train_count" in text
+    assert "test_count" in text
     assert "validate_bh_sdc_full_train_gate.py" in text
     assert "ALLOW_BH_SDC_N16R4_SYNC_AND_FULL_TRAIN_CANDIDATE_V1" in text
     assert "tools/train.py" in text

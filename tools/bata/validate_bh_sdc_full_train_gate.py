@@ -18,7 +18,7 @@ FULL_STAGE = "bh_sdc_boundary_hazard_sparse_dense_full_train_candidate_n16r4"
 LOCAL_STAGE = "bh_sdc_boundary_hazard_sparse_dense_local_precheck"
 LAUNCH_DECISION = "ALLOW_BH_SDC_N16R4_SYNC_AND_FULL_TRAIN_CANDIDATE_V1"
 FOLLOWUP_PRO_STATUS = "FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO"
-REVIEWED_IMPL_COMMIT = "FOLLOWUP_PRO_REQUIRED_AFTER_BH_SDC_PRO_FIX"
+REVIEWED_IMPL_COMMIT = "2cebd955c2df7552f1291a179bfab9c892e9c5f5"
 SELECTOR_TYPE = "PCOTMRASBoundaryHazardSparseDenseFrameSelector"
 COMPLETION_TYPE = "PCOTMRASBoundaryHazardSparseToDenseBridge"
 REMOTE_WORKSPACE = "~/run/yuzibo/OpenTAD_Back_check"
@@ -95,16 +95,12 @@ FORBIDDEN_SCOPE_TRUE_KEYS = (
 PAYLOAD_KEYS = {
     "schema_version",
     "decision",
-    "explicit_user_pro_launch_decision",
-    "pro_launch_gate_verdict",
-    "pro_launch_gate_session",
+    "explicit_user_override_decision",
     "route",
     "route_label",
     "stage",
     "reviewed_impl_commit",
     "launch_gate_commit",
-    "pro_implementation_verdict",
-    "pro_implementation_session",
     "final_read_only_review_verdict",
     "final_read_only_review_id",
     "resolved_config_sha256",
@@ -121,8 +117,12 @@ PAYLOAD_KEYS = {
     "train_command",
     "allow_remote_sync",
     "allow_slurm",
+    "allow_gpu",
     "allow_full_train",
     "allow_tools_train",
+    "allow_train_validation_map",
+    "allow_long_training",
+    "allow_dataset_access",
     "allow_tools_test",
     "allow_detector_map",
     "allow_metric_claim",
@@ -136,6 +136,7 @@ PAYLOAD_KEYS = {
     "uses_val_test_teacher",
     "uses_oracle",
     "uses_raw_prediction_cache",
+    "allow_raw_prediction_cache",
     "load_from_raw_predictions",
     "save_raw_prediction",
     "allow_checkpoint_load",
@@ -152,8 +153,12 @@ PAYLOAD_KEYS = {
 PAYLOAD_TRUE_KEYS = (
     "allow_remote_sync",
     "allow_slurm",
+    "allow_gpu",
     "allow_full_train",
     "allow_tools_train",
+    "allow_train_validation_map",
+    "allow_long_training",
+    "allow_dataset_access",
     "allow_checkpoint_write",
     "no_gt_test_leakage_assertion",
     "no_teacher_or_oracle_assertion",
@@ -171,6 +176,7 @@ PAYLOAD_FALSE_KEYS = (
     "uses_val_test_teacher",
     "uses_oracle",
     "uses_raw_prediction_cache",
+    "allow_raw_prediction_cache",
     "load_from_raw_predictions",
     "save_raw_prediction",
     "allow_checkpoint_load",
@@ -376,30 +382,30 @@ def _validate_local_locked_gate(gate: dict[str, Any]) -> None:
 
 
 def _validate_full_candidate_gate(gate: dict[str, Any]) -> None:
-    _require(gate.get("launch_gate_passed") is False, "full candidate must remain locked pending follow-up Pro review")
-    _require(gate.get("static_authorization") is False, "full candidate must not be statically authorized")
-    _require(gate.get("external_payload_required") is False, "full candidate must not accept launch payloads yet")
-    _require(gate.get("launch_gate_commit_review_required") is True, "launch gate commit must require Pro review")
-    _require(gate.get("launch_decision") == FOLLOWUP_PRO_STATUS, f"launch_decision must be {FOLLOWUP_PRO_STATUS}")
+    _require(gate.get("launch_gate_passed") is True, "full candidate must be unlocked for static precheck")
+    _require(gate.get("static_authorization") is True, "full candidate must carry explicit static authorization")
+    _require(gate.get("external_payload_required") is True, "formal full train must require an external launch payload")
+    _require(gate.get("launch_gate_commit_review_required") is False, "launch gate commit must not require Pro follow-up")
+    _require(gate.get("launch_decision") == LAUNCH_DECISION, f"launch_decision must be {LAUNCH_DECISION}")
     _require(gate.get("reviewed_impl_commit") == REVIEWED_IMPL_COMMIT, "reviewed_impl_commit mismatch")
-    _require(gate.get("allow_tools_train") is False, "full candidate must not allow tools/train.py before follow-up Pro")
+    _require(gate.get("allow_tools_train") is True, "full candidate must allow payload-gated tools/train.py")
     _require(gate.get("allow_tools_test") is False, "full candidate must reject tools/test.py")
     _require(gate.get("allow_detector_map") is False, "full candidate must reject direct detector mAP claims")
-    _require(gate.get("allow_train_validation_map") is False, "full candidate must not allow train-time validation mAP")
-    _require(gate.get("allow_long_training") is False, "full candidate must not allow long training")
-    _require(gate.get("allow_remote_sync") is False, "full candidate must not allow remote sync")
-    _require(gate.get("allow_slurm") is False, "full candidate must not allow Slurm")
-    _require(gate.get("allow_gpu") is False, "full candidate must not allow GPU use")
-    _require(gate.get("allow_full_train") is False, "full candidate must not allow full train")
+    _require(gate.get("allow_train_validation_map") is True, "full candidate must allow standard tools/train.py validation only")
+    _require(gate.get("allow_long_training") is True, "full candidate must allow payload-gated long training")
+    _require(gate.get("allow_remote_sync") is True, "full candidate must allow remote sync to the reviewed workspace")
+    _require(gate.get("allow_slurm") is True, "full candidate must allow payload-gated Slurm")
+    _require(gate.get("allow_gpu") is True, "full candidate must allow one payload-gated GPU")
+    _require(gate.get("allow_full_train") is True, "full candidate must allow payload-gated full train")
     _require(gate.get("allow_precheck_only") is True, "full candidate should allow local/static/smoke precheck only")
-    _require(gate.get("allow_dataset_access") is False, "full candidate must not allow dataset access")
-    _require(gate.get("allow_checkpoint_write") is False, "full candidate must not allow checkpoint writes")
+    _require(gate.get("allow_dataset_access") is True, "full candidate must allow standard THUMOS14 dataset access")
+    _require(gate.get("allow_checkpoint_write") is True, "full candidate must allow route-workdir checkpoint writes")
     _require(gate.get("allow_checkpoint_load") is False, "checkpoint load must remain disabled")
     _require(gate.get("allow_pretrained_initialization") is False, "pretrained initialization must remain disabled")
     _require(gate.get("allow_resume") is False, "resume must remain disabled")
     _require(gate.get("allow_raw_prediction_cache") is False, "raw prediction cache must remain disabled")
-    _require(_as_list(gate.get("allowed_entrypoints")) == [], "full candidate allowed_entrypoints must be empty")
-    _require(_as_list(gate.get("command_whitelist")) == [], "full candidate command_whitelist must be empty")
+    _require(_as_list(gate.get("allowed_entrypoints")) == ["tools/train.py"], "full candidate must allow only tools/train.py")
+    _require(_as_list(gate.get("command_whitelist")) == COMMAND_WHITELIST, "full candidate command_whitelist mismatch")
     _require(gate.get("remote_workspace") == REMOTE_WORKSPACE, "remote workspace must be N16R4 ~/run/yuzibo path")
     _require(gate.get("slurm_script") == SLURM_SCRIPT, "slurm script mismatch")
     _require(gate.get("train_command") == TRAIN_COMMAND, "train command mismatch")
@@ -407,7 +413,7 @@ def _validate_full_candidate_gate(gate: dict[str, Any]) -> None:
     context = gate.get("entrypoint_gate_context")
     _require(isinstance(context, dict), "entrypoint_gate_context must be a dict")
     _require(context.get("required") is True, "entrypoint gate context must be required")
-    _require(_as_list(context.get("allowed_decisions")) == [], "full candidate must not allow launch decisions yet")
+    _require(_as_list(context.get("allowed_decisions")) == [LAUNCH_DECISION], "full candidate allowed_decisions mismatch")
     _require(context.get("gate_json_env") == "OPENTAD_BH_SDC_GATE_JSON", "gate JSON env mismatch")
     _require(context.get("gate_sha256_env") == "OPENTAD_BH_SDC_GATE_SHA256", "gate SHA env mismatch")
     _require(context.get("active_manifest_sha256_env") == "OPENTAD_BH_SDC_ACTIVE_MANIFEST_SHA256", "manifest env mismatch")
@@ -497,25 +503,17 @@ def validate_launch_gate_payload(
 ) -> dict[str, Any]:
     static = validate_static_config(config_path)
     _require(static["stage"] == FULL_STAGE, "launch payload is only valid for the BH-SDC full-train candidate config")
-    raise ValueError(
-        "BH-SDC full train remains locked pending follow-up Pro review; "
-        "no payload authorizes remote sync, Slurm, tools/train.py, checkpoint writes, or mAP claims."
-    )
     _validate_payload_schema(payload)
 
     _require_exact(payload, "schema_version", 1)
     _require_exact(payload, "decision", LAUNCH_DECISION)
-    _require_exact(payload, "explicit_user_pro_launch_decision", LAUNCH_DECISION)
-    _require_exact(payload, "pro_launch_gate_verdict", LAUNCH_DECISION)
-    _require(str(payload["pro_launch_gate_session"]).strip(), "pro_launch_gate_session must be non-empty")
+    _require_exact(payload, "explicit_user_override_decision", LAUNCH_DECISION)
     _require_exact(payload, "route", ROUTE)
     _require_exact(payload, "route_label", ROUTE_LABEL)
     _require_exact(payload, "stage", FULL_STAGE)
     _require_exact(payload, "reviewed_impl_commit", REVIEWED_IMPL_COMMIT)
     _require_hex(payload["reviewed_impl_commit"], 40, "reviewed_impl_commit")
     _require_hex(payload["launch_gate_commit"], 40, "launch_gate_commit")
-    _require(str(payload["pro_implementation_verdict"]).startswith("PASS_"), "pro_implementation_verdict must be PASS_*")
-    _require(str(payload["pro_implementation_session"]).strip(), "pro_implementation_session must be non-empty")
     _require_exact(payload, "final_read_only_review_verdict", "PASS_SUBAGENT_FINAL_REVIEW_ONLY")
     _require(str(payload["final_read_only_review_id"]).strip(), "final_read_only_review_id must be non-empty")
 
@@ -628,15 +626,24 @@ def main() -> int:
     static: dict[str, Any] | None = None
     try:
         static = validate_static_config(args.config)
-        if static.get("stage") == FULL_STAGE and static.get("launch_decision") == FOLLOWUP_PRO_STATUS:
-            raise ValueError(
-                "BH-SDC full train remains locked pending follow-up Pro review; "
-                "no payload authorizes remote sync, Slurm, tools/train.py, checkpoint writes, or mAP claims."
-            )
         gate_json = args.gate_json or os.environ.get("OPENTAD_BH_SDC_GATE_JSON")
         gate_sha256 = args.gate_sha256 or os.environ.get("OPENTAD_BH_SDC_GATE_SHA256")
         active_manifest = args.active_manifest_sha256 or os.environ.get("OPENTAD_BH_SDC_ACTIVE_MANIFEST_SHA256")
         resolved_hash = args.resolved_config_sha256 or os.environ.get("OPENTAD_BH_SDC_RESOLVED_CONFIG_SHA256")
+        if not gate_json and not gate_sha256:
+            result = {
+                **static,
+                "authorized": False,
+                "payload_required_for_full_train": static.get("stage") == FULL_STAGE,
+                "claims_allowed": False,
+                "direct_eval_entrypoint_allowed": False,
+                "raw_prediction_cache_allowed": False,
+            }
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print("BH-SDC static gate PASS: payload is still required before formal full train.")
+            return 0
         if not gate_json:
             raise ValueError("missing launch gate payload: pass --gate-json or set OPENTAD_BH_SDC_GATE_JSON")
         if not gate_sha256:
