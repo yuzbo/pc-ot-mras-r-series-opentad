@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping, Sequence
 
 import torch
@@ -25,6 +26,136 @@ def _as_bool_prefix_mask(masks: torch.Tensor, *, expected_shape: tuple[int, int]
     if not torch.equal(valid, prefix):
         raise ValueError("prebackbone selector requires prefix-contiguous masks")
     return valid
+
+
+def _validate_frame_scout_inputs(
+    features: torch.Tensor,
+    valid: torch.Tensor,
+    time_coords: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if features.ndim != 3:
+        raise ValueError(f"features must be [B,T,C], got {tuple(features.shape)}")
+    if not torch.isfinite(features).all():
+        raise ValueError("features must be finite")
+    if valid.ndim != 2:
+        raise ValueError(f"valid mask must be [B,T], got {tuple(valid.shape)}")
+    if tuple(valid.shape) != tuple(features.shape[:2]):
+        raise ValueError("valid mask must match feature batch/time axes")
+    if valid.dtype != torch.bool:
+        if not bool(torch.logical_or(valid == 0, valid == 1).all().item()):
+            raise ValueError("valid mask must be boolean or binary")
+    valid = valid.to(device=features.device).bool()
+    if bool((valid.long().sum(dim=1) <= 0).any().item()):
+        raise ValueError("each sample must contain at least one valid frame")
+    if time_coords is None:
+        time_coords = torch.zeros(features.shape[:2], dtype=features.dtype, device=features.device)
+    else:
+        if time_coords.ndim != 2 or tuple(time_coords.shape) != tuple(features.shape[:2]):
+            raise ValueError("time_coords must match feature batch/time axes")
+        time_coords = time_coords.to(device=features.device, dtype=features.dtype)
+        if not torch.isfinite(time_coords).all():
+            raise ValueError("time_coords must be finite")
+    return valid, time_coords
+
+
+def _masked_slot_transport(slot_logits: torch.Tensor, valid: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    if slot_logits.ndim != 3:
+        raise ValueError(f"slot_logits must be [B,K,T], got {tuple(slot_logits.shape)}")
+    if valid.ndim != 2 or tuple(valid.shape) != (int(slot_logits.shape[0]), int(slot_logits.shape[2])):
+        raise ValueError("valid mask must match slot_logits batch/time axes")
+    if not torch.isfinite(slot_logits).all():
+        raise ValueError("slot_logits must be finite")
+    valid = valid.to(device=slot_logits.device).bool()
+    if bool((valid.long().sum(dim=1) <= 0).any().item()):
+        raise ValueError("each sample must contain at least one valid frame")
+    logits_fp32 = slot_logits.float()
+    masked_logits = logits_fp32.masked_fill(~valid[:, None, :], torch.finfo(torch.float32).min)
+    acquisition_matrix = F.softmax(masked_logits, dim=-1).masked_fill(~valid[:, None, :], 0.0)
+    row_mass = acquisition_matrix.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(torch.float32).tiny)
+    acquisition_matrix = acquisition_matrix / row_mass
+    if not torch.isfinite(acquisition_matrix).all():
+        raise ValueError("acquisition_matrix must be finite")
+    return masked_logits, acquisition_matrix
+
+
+def _masked_frame_logits(logits: torch.Tensor, valid: torch.Tensor, name: str) -> torch.Tensor:
+    if logits.ndim != 2 or tuple(logits.shape) != tuple(valid.shape):
+        raise ValueError(f"{name} must be [B,T] and match valid mask")
+    if not torch.isfinite(logits).all():
+        raise ValueError(f"{name} must be finite")
+    return logits.float().masked_fill(~valid.to(device=logits.device).bool(), 0.0)
+
+
+def _inverse_softplus(value: float) -> float:
+    value = float(value)
+    if value <= 0.0:
+        raise ValueError("inverse softplus input must be positive")
+    return math.log(math.expm1(value))
+
+
+def _resolve_temporal_dilations(
+    *,
+    num_layers: int,
+    dilation_base: int = 1,
+    dilations: Sequence[int] | None = None,
+) -> list[int]:
+    if dilations is not None:
+        resolved = [int(item) for item in dilations]
+        if len(resolved) != int(num_layers):
+            raise ValueError("dilations length must match num_layers")
+    else:
+        base = int(dilation_base)
+        if base <= 0:
+            raise ValueError("dilation_base must be positive")
+        resolved = [base ** layer_idx for layer_idx in range(int(num_layers))]
+    if any(item <= 0 for item in resolved):
+        raise ValueError("all temporal dilations must be positive")
+    return resolved
+
+
+class _MaskedTemporalConvStack(nn.Module):
+    def __init__(
+        self,
+        *,
+        hidden_dim: int,
+        num_layers: int,
+        kernel_size: int,
+        dropout: float,
+        dilation_base: int = 1,
+        dilations: Sequence[int] | None = None,
+    ) -> None:
+        super().__init__()
+        if int(num_layers) <= 0:
+            raise ValueError("num_layers must be positive")
+        if int(kernel_size) <= 0 or int(kernel_size) % 2 == 0:
+            raise ValueError("kernel_size must be a positive odd integer")
+        resolved_dilations = _resolve_temporal_dilations(
+            num_layers=int(num_layers),
+            dilation_base=int(dilation_base),
+            dilations=dilations,
+        )
+        self.convs = nn.ModuleList()
+        self.dropouts = nn.ModuleList()
+        for dilation in resolved_dilations:
+            padding = (int(kernel_size) // 2) * int(dilation)
+            self.convs.append(
+                nn.Conv1d(
+                    int(hidden_dim),
+                    int(hidden_dim),
+                    kernel_size=int(kernel_size),
+                    padding=padding,
+                    dilation=int(dilation),
+                )
+            )
+            self.dropouts.append(nn.Dropout(float(dropout)))
+
+    def forward(self, x: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+        mask = valid[:, None, :].to(device=x.device).bool()
+        x = x.masked_fill(~mask, 0.0)
+        for conv, dropout in zip(self.convs, self.dropouts):
+            x = dropout(F.gelu(conv(x)))
+            x = x.masked_fill(~mask, 0.0)
+        return x
 
 
 @SELECTORS.register_module()
@@ -57,19 +188,12 @@ class PCOTMRASTinyTransformerFrameScout(nn.Module):
         self.slot_queries = nn.Parameter(torch.randn(self.num_slots, int(hidden_dim)) * 0.02)
 
     def forward(self, features: torch.Tensor, valid: torch.Tensor, time_coords: torch.Tensor | None = None):
-        if features.ndim != 3:
-            raise ValueError(f"features must be [B,T,C], got {tuple(features.shape)}")
-        if valid.shape != features.shape[:2]:
-            raise ValueError("valid mask must match feature batch/time axes")
-        if time_coords is None:
-            time_coords = torch.zeros(features.shape[:2], dtype=features.dtype, device=features.device)
+        valid, time_coords = _validate_frame_scout_inputs(features, valid, time_coords)
         x = torch.cat([features, time_coords.to(dtype=features.dtype).unsqueeze(-1)], dim=-1)
-        encoded = self.encoder(self.input_proj(x), src_key_padding_mask=~valid.bool())
+        x = x.masked_fill(~valid.unsqueeze(-1), 0.0)
+        encoded = self.encoder(self.input_proj(x), src_key_padding_mask=~valid)
         slot_logits = torch.einsum("bth,kh->bkt", encoded, self.slot_queries) * (encoded.shape[-1] ** -0.5)
-        slot_logits = slot_logits.masked_fill(~valid[:, None, :].bool(), torch.finfo(slot_logits.dtype).min)
-        acquisition_matrix = F.softmax(slot_logits, dim=-1).masked_fill(~valid[:, None, :].bool(), 0.0)
-        row_mass = acquisition_matrix.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(acquisition_matrix.dtype).eps)
-        acquisition_matrix = acquisition_matrix / row_mass
+        slot_logits, acquisition_matrix = _masked_slot_transport(slot_logits, valid)
         return {"slot_logits": slot_logits, "acquisition_matrix": acquisition_matrix}
 
 
@@ -85,6 +209,8 @@ class PCOTMRASCNNFrameScout(nn.Module):
         num_layers: int = 3,
         kernel_size: int = 5,
         dropout: float = 0.10,
+        dilation_base: int = 1,
+        dilations: Sequence[int] | None = None,
     ) -> None:
         super().__init__()
         if int(in_dim) <= 0:
@@ -93,44 +219,384 @@ class PCOTMRASCNNFrameScout(nn.Module):
             raise ValueError("hidden_dim must be positive")
         if int(num_slots) <= 0:
             raise ValueError("num_slots must be positive")
-        if int(num_layers) <= 0:
-            raise ValueError("num_layers must be positive")
-        if int(kernel_size) <= 0 or int(kernel_size) % 2 == 0:
-            raise ValueError("kernel_size must be a positive odd integer")
         self.num_slots = int(num_slots)
         self.input_proj = nn.Conv1d(int(in_dim) + 1, int(hidden_dim), kernel_size=1)
-        blocks = []
-        padding = int(kernel_size) // 2
-        for _ in range(int(num_layers)):
-            blocks.extend(
-                [
-                    nn.Conv1d(int(hidden_dim), int(hidden_dim), kernel_size=int(kernel_size), padding=padding),
-                    nn.GELU(),
-                    nn.Dropout(float(dropout)),
-                ]
-            )
-        self.blocks = nn.Sequential(*blocks)
+        self.blocks = _MaskedTemporalConvStack(
+            hidden_dim=int(hidden_dim),
+            num_layers=int(num_layers),
+            kernel_size=int(kernel_size),
+            dropout=float(dropout),
+            dilation_base=int(dilation_base),
+            dilations=dilations,
+        )
         self.norm = nn.LayerNorm(int(hidden_dim))
         self.slot_queries = nn.Parameter(torch.randn(self.num_slots, int(hidden_dim)) * 0.02)
 
     def forward(self, features: torch.Tensor, valid: torch.Tensor, time_coords: torch.Tensor | None = None):
-        if features.ndim != 3:
-            raise ValueError(f"features must be [B,T,C], got {tuple(features.shape)}")
-        if valid.shape != features.shape[:2]:
-            raise ValueError("valid mask must match feature batch/time axes")
-        valid = valid.bool()
-        if time_coords is None:
-            time_coords = torch.zeros(features.shape[:2], dtype=features.dtype, device=features.device)
+        valid, time_coords = _validate_frame_scout_inputs(features, valid, time_coords)
         x = torch.cat([features, time_coords.to(dtype=features.dtype).unsqueeze(-1)], dim=-1)
         x = x.masked_fill(~valid.unsqueeze(-1), 0.0).transpose(1, 2)
-        encoded = self.blocks(self.input_proj(x)).transpose(1, 2)
+        encoded = self.blocks(self.input_proj(x), valid).transpose(1, 2)
         encoded = self.norm(encoded).masked_fill(~valid.unsqueeze(-1), 0.0)
         slot_logits = torch.einsum("bth,kh->bkt", encoded, self.slot_queries) * (encoded.shape[-1] ** -0.5)
-        slot_logits = slot_logits.masked_fill(~valid[:, None, :], torch.finfo(slot_logits.dtype).min)
-        acquisition_matrix = F.softmax(slot_logits, dim=-1).masked_fill(~valid[:, None, :], 0.0)
-        row_mass = acquisition_matrix.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(acquisition_matrix.dtype).eps)
-        acquisition_matrix = acquisition_matrix / row_mass
+        slot_logits, acquisition_matrix = _masked_slot_transport(slot_logits, valid)
         return {"slot_logits": slot_logits, "acquisition_matrix": acquisition_matrix}
+
+
+@SELECTORS.register_module()
+class PCOTMRASMotionTCNFrameScout(nn.Module):
+    """Motion-aware TCN scout using only deploy-visible compressed descriptors."""
+
+    def __init__(
+        self,
+        in_dim: int,
+        hidden_dim: int = 64,
+        num_slots: int = 384,
+        num_layers: int = 3,
+        kernel_size: int = 5,
+        dropout: float = 0.10,
+        dilation_base: int = 2,
+        dilations: Sequence[int] | None = None,
+        motion_feature_mode: str = "frame_delta_abs",
+        motion_delta_stride: int = 1,
+        motion_rgb_fusion: str = "descriptor_plus_delta",
+    ) -> None:
+        super().__init__()
+        if int(in_dim) <= 0:
+            raise ValueError("in_dim must be positive")
+        if int(hidden_dim) <= 0:
+            raise ValueError("hidden_dim must be positive")
+        if int(num_slots) <= 0:
+            raise ValueError("num_slots must be positive")
+        if str(motion_feature_mode) != "frame_delta_abs":
+            raise ValueError("PCOTMRASMotionTCNFrameScout supports only motion_feature_mode='frame_delta_abs'")
+        if int(motion_delta_stride) <= 0:
+            raise ValueError("motion_delta_stride must be positive")
+        if str(motion_rgb_fusion) != "descriptor_plus_delta":
+            raise ValueError("PCOTMRASMotionTCNFrameScout supports only motion_rgb_fusion='descriptor_plus_delta'")
+        self.num_slots = int(num_slots)
+        self.motion_delta_stride = int(motion_delta_stride)
+        motion_dim = int(in_dim) * 3 + 4
+        self.input_proj = nn.Conv1d(motion_dim, int(hidden_dim), kernel_size=1)
+        self.blocks = _MaskedTemporalConvStack(
+            hidden_dim=int(hidden_dim),
+            num_layers=int(num_layers),
+            kernel_size=int(kernel_size),
+            dropout=float(dropout),
+            dilation_base=int(dilation_base),
+            dilations=dilations,
+        )
+        self.norm = nn.LayerNorm(int(hidden_dim))
+        self.slot_queries = nn.Parameter(torch.randn(self.num_slots, int(hidden_dim)) * 0.02)
+
+    def _motion_descriptor(self, features: torch.Tensor, valid: torch.Tensor, time_coords: torch.Tensor) -> torch.Tensor:
+        stride = self.motion_delta_stride
+        prev_valid = torch.zeros_like(valid)
+        prev_valid[:, stride:] = valid[:, :-stride]
+        valid_pair = valid & prev_valid
+        diff = torch.zeros_like(features)
+        diff[:, stride:] = features[:, stride:] - features[:, :-stride]
+        diff = diff.masked_fill(~valid_pair.unsqueeze(-1), 0.0)
+        abs_diff = diff.abs()
+        motion_energy = abs_diff.mean(dim=-1, keepdim=True)
+        local_energy = F.avg_pool1d(
+            motion_energy.transpose(1, 2),
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        ).transpose(1, 2)
+        time_delta = torch.zeros_like(time_coords)
+        time_delta[:, stride:] = time_coords[:, stride:] - time_coords[:, :-stride]
+        time_delta = time_delta.masked_fill(~valid_pair, 0.0).unsqueeze(-1)
+        descriptor = torch.cat(
+            [
+                features,
+                diff,
+                abs_diff,
+                motion_energy,
+                local_energy,
+                time_coords.unsqueeze(-1),
+                time_delta,
+            ],
+            dim=-1,
+        )
+        return descriptor.masked_fill(~valid.unsqueeze(-1), 0.0)
+
+    def forward(self, features: torch.Tensor, valid: torch.Tensor, time_coords: torch.Tensor | None = None):
+        valid, time_coords = _validate_frame_scout_inputs(features, valid, time_coords)
+        features = features.masked_fill(~valid.unsqueeze(-1), 0.0)
+        descriptor = self._motion_descriptor(features, valid, time_coords)
+        encoded = self.blocks(self.input_proj(descriptor.transpose(1, 2)), valid).transpose(1, 2)
+        encoded = self.norm(encoded).masked_fill(~valid.unsqueeze(-1), 0.0)
+        slot_logits = torch.einsum("bth,kh->bkt", encoded, self.slot_queries) * (encoded.shape[-1] ** -0.5)
+        slot_logits, acquisition_matrix = _masked_slot_transport(slot_logits, valid)
+        return {"slot_logits": slot_logits, "acquisition_matrix": acquisition_matrix}
+
+
+@SELECTORS.register_module()
+class PCOTMRASHybridFrameScout(nn.Module):
+    """Descriptor-projection plus temporal-TCN scout with learned slot queries."""
+
+    def __init__(
+        self,
+        in_dim: int,
+        hidden_dim: int = 96,
+        num_slots: int = 384,
+        num_layers: int = 3,
+        kernel_size: int = 5,
+        temporal_layers: int | None = None,
+        temporal_kernel_size: int | None = None,
+        dropout: float = 0.10,
+        dilation_base: int = 2,
+        dilations: Sequence[int] | None = None,
+        descriptor_hidden_dim: int | None = None,
+        slot_mlp_layers: int = 1,
+        slot_hidden_dim: int | None = None,
+        slot_dropout: float = 0.0,
+        slot_temperature_init: float = 1.0,
+        local_global_fusion: str = "temporal_cnn_plus_slot_attention",
+    ) -> None:
+        super().__init__()
+        if int(in_dim) <= 0:
+            raise ValueError("in_dim must be positive")
+        if int(hidden_dim) <= 0:
+            raise ValueError("hidden_dim must be positive")
+        if int(num_slots) <= 0:
+            raise ValueError("num_slots must be positive")
+        if temporal_layers is not None:
+            num_layers = int(temporal_layers)
+        if temporal_kernel_size is not None:
+            kernel_size = int(temporal_kernel_size)
+        descriptor_hidden_dim = int(descriptor_hidden_dim or hidden_dim)
+        if descriptor_hidden_dim <= 0:
+            raise ValueError("descriptor_hidden_dim must be positive")
+        if int(slot_mlp_layers) <= 0:
+            raise ValueError("slot_mlp_layers must be positive")
+        slot_hidden_dim = int(slot_hidden_dim or hidden_dim)
+        if slot_hidden_dim <= 0:
+            raise ValueError("slot_hidden_dim must be positive")
+        if float(slot_temperature_init) <= 0:
+            raise ValueError("slot_temperature_init must be positive")
+        if str(local_global_fusion) != "temporal_cnn_plus_slot_attention":
+            raise ValueError("PCOTMRASHybridFrameScout supports only local_global_fusion='temporal_cnn_plus_slot_attention'")
+        self.num_slots = int(num_slots)
+        self.slot_temperature = float(slot_temperature_init)
+        self.descriptor_proj = nn.Sequential(
+            nn.LayerNorm(int(in_dim)),
+            nn.Linear(int(in_dim), descriptor_hidden_dim),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(descriptor_hidden_dim, int(hidden_dim)),
+        )
+        self.time_proj = nn.Linear(1, int(hidden_dim))
+        self.blocks = _MaskedTemporalConvStack(
+            hidden_dim=int(hidden_dim),
+            num_layers=int(num_layers),
+            kernel_size=int(kernel_size),
+            dropout=float(dropout),
+            dilation_base=int(dilation_base),
+            dilations=dilations,
+        )
+        self.norm = nn.LayerNorm(int(hidden_dim))
+        slot_layers: list[nn.Module] = []
+        for layer_idx in range(int(slot_mlp_layers) - 1):
+            in_features = int(hidden_dim) if layer_idx == 0 else slot_hidden_dim
+            slot_layers.extend(
+                [
+                    nn.Linear(in_features, slot_hidden_dim),
+                    nn.GELU(),
+                    nn.Dropout(float(slot_dropout)),
+                ]
+            )
+        slot_layers.append(nn.Linear(slot_hidden_dim if int(slot_mlp_layers) > 1 else int(hidden_dim), int(hidden_dim)))
+        self.slot_mlp = nn.Sequential(*slot_layers)
+        self.slot_dropout = nn.Dropout(float(slot_dropout))
+        self.slot_queries = nn.Parameter(torch.randn(self.num_slots, int(hidden_dim)) * 0.02)
+
+    def forward(self, features: torch.Tensor, valid: torch.Tensor, time_coords: torch.Tensor | None = None):
+        valid, time_coords = _validate_frame_scout_inputs(features, valid, time_coords)
+        features = features.masked_fill(~valid.unsqueeze(-1), 0.0)
+        frame_tokens = self.descriptor_proj(features) + self.time_proj(time_coords.unsqueeze(-1))
+        frame_tokens = frame_tokens.masked_fill(~valid.unsqueeze(-1), 0.0)
+        encoded = self.blocks(frame_tokens.transpose(1, 2), valid).transpose(1, 2)
+        encoded = self.norm(encoded).masked_fill(~valid.unsqueeze(-1), 0.0)
+        slot_features = self.slot_dropout(self.slot_mlp(encoded)).masked_fill(~valid.unsqueeze(-1), 0.0)
+        slot_logits = torch.einsum("bth,kh->bkt", slot_features, self.slot_queries) * (
+            slot_features.shape[-1] ** -0.5
+        )
+        slot_logits = slot_logits / self.slot_temperature
+        slot_logits, acquisition_matrix = _masked_slot_transport(slot_logits, valid)
+        return {"slot_logits": slot_logits, "acquisition_matrix": acquisition_matrix}
+
+
+@SELECTORS.register_module()
+class PCOTMRASRSeriesHybridFrameScout(nn.Module):
+    """R-series inspired pre-backbone reader for deploy-visible low-res pixels.
+
+    The module keeps the C3 hard-real-frame contract while adding the pieces that
+    made the R-series selector diagnostically meaningful: ordered slot geometry,
+    action/boundary/difficulty/redundancy frame heads, and gated slot allocation.
+    """
+
+    def __init__(
+        self,
+        in_dim: int,
+        hidden_dim: int = 128,
+        num_slots: int = 384,
+        temporal_layers: int = 3,
+        temporal_kernel_size: int = 5,
+        dilations: Sequence[int] | None = (1, 2, 4),
+        dropout: float = 0.05,
+        descriptor_hidden_dim: int | None = None,
+        slot_mlp_layers: int = 2,
+        slot_hidden_dim: int | None = None,
+        slot_temperature_init: float = 1.0,
+        center_offset_scale: float = 0.35,
+        width_init: float = 0.0125,
+        width_min: float = 0.0025,
+        width_max: float = 0.08,
+        geometry_bias_weight: float = 1.0,
+        action_bias_weight: float = 0.35,
+        boundary_bias_weight: float = 0.45,
+        uncertainty_bias_weight: float = 0.20,
+        redundancy_bias_weight: float = 0.25,
+        slot_logit_clamp: float = 30.0,
+        local_global_fusion: str = "rseries_temporal_geometry_slot_attention",
+    ) -> None:
+        super().__init__()
+        if int(in_dim) <= 0:
+            raise ValueError("in_dim must be positive")
+        if int(hidden_dim) <= 0:
+            raise ValueError("hidden_dim must be positive")
+        if int(num_slots) <= 0:
+            raise ValueError("num_slots must be positive")
+        if int(temporal_layers) <= 0:
+            raise ValueError("temporal_layers must be positive")
+        if int(slot_mlp_layers) <= 0:
+            raise ValueError("slot_mlp_layers must be positive")
+        if float(slot_temperature_init) <= 0.0:
+            raise ValueError("slot_temperature_init must be positive")
+        if str(local_global_fusion) != "rseries_temporal_geometry_slot_attention":
+            raise ValueError(
+                "PCOTMRASRSeriesHybridFrameScout supports only "
+                "local_global_fusion='rseries_temporal_geometry_slot_attention'"
+            )
+        self.num_slots = int(num_slots)
+        self.slot_temperature = float(slot_temperature_init)
+        self.center_offset_scale = float(center_offset_scale)
+        self.width_min = float(width_min)
+        self.width_max = float(width_max)
+        self.geometry_bias_weight = float(geometry_bias_weight)
+        self.action_bias_weight = float(action_bias_weight)
+        self.boundary_bias_weight = float(boundary_bias_weight)
+        self.uncertainty_bias_weight = float(uncertainty_bias_weight)
+        self.redundancy_bias_weight = float(redundancy_bias_weight)
+        self.slot_logit_clamp = float(slot_logit_clamp)
+
+        descriptor_hidden_dim = int(descriptor_hidden_dim or hidden_dim)
+        slot_hidden_dim = int(slot_hidden_dim or hidden_dim)
+        self.descriptor_proj = nn.Sequential(
+            nn.LayerNorm(int(in_dim)),
+            nn.Linear(int(in_dim), descriptor_hidden_dim),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(descriptor_hidden_dim, int(hidden_dim)),
+        )
+        self.time_proj = nn.Linear(1, int(hidden_dim))
+        self.temporal = _MaskedTemporalConvStack(
+            hidden_dim=int(hidden_dim),
+            num_layers=int(temporal_layers),
+            kernel_size=int(temporal_kernel_size),
+            dropout=float(dropout),
+            dilations=dilations,
+        )
+        self.norm = nn.LayerNorm(int(hidden_dim))
+
+        slot_layers: list[nn.Module] = []
+        for layer_idx in range(int(slot_mlp_layers) - 1):
+            in_features = int(hidden_dim) if layer_idx == 0 else slot_hidden_dim
+            slot_layers.extend([nn.Linear(in_features, slot_hidden_dim), nn.GELU(), nn.Dropout(float(dropout))])
+        slot_layers.append(nn.Linear(slot_hidden_dim if int(slot_mlp_layers) > 1 else int(hidden_dim), int(hidden_dim)))
+        self.slot_mlp = nn.Sequential(*slot_layers)
+        self.slot_queries = nn.Parameter(torch.randn(self.num_slots, int(hidden_dim)) * 0.02)
+        base_centers = torch.linspace(0.0, 1.0, steps=self.num_slots, dtype=torch.float32)
+        self.register_buffer("base_slot_centers", base_centers, persistent=False)
+        self.center_offsets = nn.Parameter(torch.zeros(self.num_slots))
+        self.width_logits = nn.Parameter(torch.full((self.num_slots,), _inverse_softplus(float(width_init))))
+        self.slot_gate_logits = nn.Parameter(torch.zeros(self.num_slots))
+
+        self.value_head = nn.Linear(int(hidden_dim), 1)
+        self.boundary_head = nn.Linear(int(hidden_dim), 1)
+        self.uncertainty_head = nn.Linear(int(hidden_dim), 1)
+        self.redundancy_head = nn.Linear(int(hidden_dim), 1)
+        self.role_head = nn.Linear(int(hidden_dim), 4)
+
+    def _slot_geometry_bias(self, time_coords: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        max_offset = self.center_offset_scale / float(max(1, self.num_slots))
+        centers = (self.base_slot_centers + torch.tanh(self.center_offsets.float()) * max_offset).clamp(0.0, 1.0)
+        widths = (F.softplus(self.width_logits.float()) + self.width_min).clamp(max=self.width_max)
+        gates = torch.sigmoid(self.slot_gate_logits.float()).clamp(1.0e-4, 1.0)
+        delta = time_coords.float()[:, None, :] - centers[None, :, None]
+        geometry_bias = -0.5 * (delta / widths[None, :, None].clamp_min(1.0e-4)).square()
+        geometry_bias = geometry_bias + gates.log()[None, :, None]
+        return geometry_bias, centers, widths
+
+    def forward(self, features: torch.Tensor, valid: torch.Tensor, time_coords: torch.Tensor | None = None):
+        valid, time_coords = _validate_frame_scout_inputs(features, valid, time_coords)
+        features = features.float().masked_fill(~valid.unsqueeze(-1), 0.0)
+        frame_tokens = self.descriptor_proj(features) + self.time_proj(time_coords.float().unsqueeze(-1))
+        frame_tokens = frame_tokens.masked_fill(~valid.unsqueeze(-1), 0.0)
+        encoded = self.temporal(frame_tokens.transpose(1, 2), valid).transpose(1, 2)
+        encoded = self.norm(encoded).masked_fill(~valid.unsqueeze(-1), 0.0)
+        slot_features = self.slot_mlp(encoded).masked_fill(~valid.unsqueeze(-1), 0.0)
+
+        content_logits = torch.einsum("bth,kh->bkt", slot_features, self.slot_queries.float())
+        content_logits = content_logits * (slot_features.shape[-1] ** -0.5)
+        geometry_bias, centers, widths = self._slot_geometry_bias(time_coords)
+
+        value_logits = _masked_frame_logits(self.value_head(encoded).squeeze(-1), valid, "value_logits")
+        boundary_logits = _masked_frame_logits(self.boundary_head(encoded).squeeze(-1), valid, "risk_logits")
+        uncertainty_logits = _masked_frame_logits(
+            self.uncertainty_head(encoded).squeeze(-1),
+            valid,
+            "uncertainty_logits",
+        )
+        redundancy_logits = _masked_frame_logits(
+            self.redundancy_head(encoded).squeeze(-1),
+            valid,
+            "redundancy_logits",
+        )
+        role_logits = self.role_head(encoded).float().masked_fill(~valid.unsqueeze(-1), 0.0)
+        if not torch.isfinite(role_logits).all():
+            raise ValueError("role_logits must be finite")
+
+        task_bias = (
+            self.action_bias_weight * value_logits[:, None, :]
+            + self.boundary_bias_weight * boundary_logits[:, None, :]
+            + self.uncertainty_bias_weight * uncertainty_logits[:, None, :]
+            - self.redundancy_bias_weight * redundancy_logits[:, None, :]
+        )
+        slot_logits = (content_logits.float() / self.slot_temperature) + self.geometry_bias_weight * geometry_bias + task_bias
+        if self.slot_logit_clamp > 0.0:
+            slot_logits = slot_logits.clamp(min=-self.slot_logit_clamp, max=self.slot_logit_clamp)
+        slot_logits, acquisition_matrix = _masked_slot_transport(slot_logits, valid)
+        center_diffs = centers[1:] - centers[:-1]
+        order_regularizer = F.relu(-center_diffs).square().mean() if center_diffs.numel() else centers.sum() * 0.0
+        width_regularizer = F.relu(widths - self.width_max).square().mean() + F.relu(self.width_min - widths).square().mean()
+        return {
+            "slot_logits": slot_logits,
+            "acquisition_matrix": acquisition_matrix,
+            "value_logits": value_logits,
+            "risk_logits": boundary_logits,
+            "uncertainty_logits": uncertainty_logits,
+            "redundancy_logits": redundancy_logits,
+            "role_logits": role_logits,
+            "regularizers": {
+                "order_regularizer": order_regularizer,
+                "width_regularizer": width_regularizer,
+                "total_regularizer": order_regularizer + width_regularizer,
+            },
+        }
 
 
 @SELECTORS.register_module()
@@ -166,10 +632,17 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         straight_through_downstream: bool | None = None,
         remap_gt_to_selected_axis: bool = True,
         aux_gt_acquisition_loss_weight: float = 0.05,
+        aux_duplicate_cap_loss_weight: float = 0.001,
+        aux_duplicate_column_cap: float = 1.5,
         aux_value_loss_weight: float = 0.0,
         aux_risk_loss_weight: float = 0.0,
+        aux_uncertainty_loss_weight: float = 0.0,
+        aux_redundancy_loss_weight: float = 0.0,
         aux_role_entropy_loss_weight: float = 0.0,
         reader_regularizer_loss_weight: float = 0.01,
+        st_surrogate_mode: str = "mean_proxy",
+        scout_pixel_normalize: bool = True,
+        scout_pixel_clamp: float = 5.0,
         meta_source: str = "pc_ot_mras_prebackbone_e2e_frame_selector",
     ) -> None:
         super().__init__()
@@ -238,10 +711,19 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         self.straight_through_detector_loss = self.straight_through_downstream
         self.remap_gt_to_selected_axis = bool(remap_gt_to_selected_axis)
         self.aux_gt_acquisition_loss_weight = float(aux_gt_acquisition_loss_weight)
+        self.aux_duplicate_cap_loss_weight = float(aux_duplicate_cap_loss_weight)
+        self.aux_duplicate_column_cap = float(aux_duplicate_column_cap)
         self.aux_value_loss_weight = float(aux_value_loss_weight)
         self.aux_risk_loss_weight = float(aux_risk_loss_weight)
+        self.aux_uncertainty_loss_weight = float(aux_uncertainty_loss_weight)
+        self.aux_redundancy_loss_weight = float(aux_redundancy_loss_weight)
         self.aux_role_entropy_loss_weight = float(aux_role_entropy_loss_weight)
         self.reader_regularizer_loss_weight = float(reader_regularizer_loss_weight)
+        if str(st_surrogate_mode) not in ("mean_proxy", "full_flat"):
+            raise ValueError("st_surrogate_mode must be 'mean_proxy' or 'full_flat'")
+        self.st_surrogate_mode = str(st_surrogate_mode)
+        self.scout_pixel_normalize = bool(scout_pixel_normalize)
+        self.scout_pixel_clamp = float(scout_pixel_clamp)
         self.meta_source = str(meta_source)
 
     def forward_train(self, inputs, masks, metas, gt_segments, gt_labels):
@@ -391,6 +873,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
 
     def _compressed_pixel_features(self, inputs: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
         video = self._video_tensor_for_descriptors(inputs).float()
+        video = self._normalize_scout_pixels(video)
         batch, channels, dense_len, height, width = video.shape
         frames = video.permute(0, 2, 1, 3, 4).reshape(batch * dense_len, channels, height, width)
         compressed = F.interpolate(
@@ -401,7 +884,29 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         )
         features = compressed.reshape(batch, dense_len, channels * self.scout_spatial_size[0] * self.scout_spatial_size[1])
         features = self._fit_descriptor_width(features, width=self.descriptor_dim)
+        if not torch.isfinite(features).all():
+            raise FloatingPointError("compressed scout features must be finite")
         return features.masked_fill(~valid.unsqueeze(-1), 0.0)
+
+    def _normalize_scout_pixels(self, video: torch.Tensor) -> torch.Tensor:
+        if not self.scout_pixel_normalize:
+            if not torch.isfinite(video).all():
+                raise FloatingPointError("raw scout pixel tensor must be finite")
+            return video
+        video = video.float()
+        if not torch.isfinite(video).all():
+            raise FloatingPointError("raw scout pixel tensor must be finite")
+        max_abs = video.detach().abs().amax()
+        if bool((max_abs > 2.0).item()):
+            video = video / 255.0
+        mean = video.mean(dim=(-2, -1), keepdim=True)
+        std = video.std(dim=(-2, -1), keepdim=True, unbiased=False).clamp_min(1.0e-4)
+        video = (video - mean) / std
+        if self.scout_pixel_clamp > 0.0:
+            video = video.clamp(min=-self.scout_pixel_clamp, max=self.scout_pixel_clamp)
+        if not torch.isfinite(video).all():
+            raise FloatingPointError("normalized scout pixel tensor must be finite")
+        return video
 
     @staticmethod
     def _video_tensor_for_descriptors(inputs: torch.Tensor) -> torch.Tensor:
@@ -491,6 +996,10 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             raise ValueError("prebackbone selector requires slot_logits, acquisition_matrix, or allocation")
         if matrix is None:
             matrix = logits
+        if torch.is_tensor(logits) and not bool(torch.isfinite(logits).all().item()):
+            raise ValueError("slot_logits must be finite")
+        if torch.is_tensor(matrix) and not bool(torch.isfinite(matrix).all().item()):
+            raise ValueError("acquisition matrix must be finite")
         if matrix.ndim != 3:
             raise ValueError(f"acquisition matrix must be [B,K,T], got {tuple(matrix.shape)}")
         batch, slots, candidate_len = matrix.shape
@@ -911,7 +1420,8 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         )
         valid = valid_mask.to(device=device).bool()
         if matrix is not None and self.aux_gt_acquisition_loss_weight > 0.0 and bool(valid.any().item()):
-            scores = matrix.sum(dim=1).float().clamp(min=1.0e-6, max=1.0 - 1.0e-6)
+            slot_prob = matrix.float().clamp(min=0.0, max=1.0)
+            scores = (1.0 - torch.prod(1.0 - slot_prob, dim=1)).clamp(min=1.0e-6, max=1.0 - 1.0e-6)
             score_logits = torch.logit(scores)
             losses["selector_gt_acquisition_loss"] = (
                 F.binary_cross_entropy_with_logits(score_logits[valid], action_target.float()[valid])
@@ -987,4 +1497,6 @@ __all__ = [
     "PCOTMRASPreBackboneFrameSelector",
     "PCOTMRASTinyTransformerFrameScout",
     "PCOTMRASCNNFrameScout",
+    "PCOTMRASMotionTCNFrameScout",
+    "PCOTMRASHybridFrameScout",
 ]

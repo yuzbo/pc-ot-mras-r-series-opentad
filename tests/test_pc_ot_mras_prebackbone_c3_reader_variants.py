@@ -92,6 +92,100 @@ def _import_torch_or_skip():
     return torch
 
 
+def test_c3_masked_slot_transport_keeps_probability_path_float32_under_half_logits():
+    torch = _import_torch_or_skip()
+    module = _load_prebackbone_selector_module()
+    logits = torch.tensor(
+        [
+            [
+                [512.0, 500.0, -512.0, -640.0],
+                [-640.0, 500.0, 512.0, -640.0],
+            ]
+        ],
+        dtype=torch.float16,
+    )
+    valid = torch.tensor([[True, True, True, False]], dtype=torch.bool)
+
+    masked_logits, acquisition_matrix = module._masked_slot_transport(logits, valid)
+
+    assert masked_logits.dtype == torch.float32
+    assert acquisition_matrix.dtype == torch.float32
+    assert torch.isfinite(masked_logits[valid[:, None, :].expand_as(masked_logits)]).all()
+    assert torch.isfinite(acquisition_matrix).all()
+    assert torch.all(acquisition_matrix[..., 3] == 0.0)
+    row_sums = acquisition_matrix.sum(dim=-1)
+    assert torch.allclose(row_sums, torch.ones_like(row_sums), atol=1.0e-6)
+
+
+def test_c3_sparse_transport_rejects_nonfinite_reader_outputs():
+    torch = _import_torch_or_skip()
+    module = _load_prebackbone_selector_module()
+    selector_cls = module.PCOTMRASPreBackboneFrameSelector
+    selector = selector_cls.__new__(selector_cls)
+    selector.target_len = 2
+    selector.residual_count = None
+    selector.protected_uniform_count = 0
+    selector.coverage_guard_count = 0
+    selector.straight_through_detector_loss = True
+    selector.residual_slot_role = "learned_residual"
+
+    valid = torch.tensor([[True, True, True]], dtype=torch.bool)
+    candidate_valid = valid.clone()
+    candidate_dense_indices = torch.tensor([[0, 1, 2]], dtype=torch.long)
+    logits = torch.zeros(1, 2, 3)
+    logits[0, 0, 1] = float("nan")
+
+    with pytest.raises(ValueError, match="slot_logits must be finite"):
+        selector._sparse_transport_plan(
+            {"slot_logits": logits},
+            valid,
+            candidate_valid=candidate_valid,
+            candidate_dense_indices=candidate_dense_indices,
+            training=True,
+        )
+
+
+def test_c3_acquisition_aux_loss_keeps_gradient_for_duplicate_positive_slots():
+    torch = _import_torch_or_skip()
+    module = _load_prebackbone_selector_module()
+    selector_cls = module.PCOTMRASPreBackboneFrameSelector
+    selector = selector_cls.__new__(selector_cls)
+    selector.aux_gt_acquisition_loss_weight = 1.0
+    selector.aux_value_loss_weight = 0.0
+    selector.aux_risk_loss_weight = 0.0
+    selector.aux_role_entropy_loss_weight = 0.0
+    selector.reader_regularizer_loss_weight = 0.0
+
+    matrix = torch.tensor(
+        [
+            [
+                [0.90, 0.10, 0.00, 0.00],
+                [0.90, 0.10, 0.00, 0.00],
+                [0.90, 0.10, 0.00, 0.00],
+                [0.90, 0.10, 0.00, 0.00],
+            ]
+        ],
+        dtype=torch.float32,
+        requires_grad=True,
+    )
+    valid = torch.tensor([[True, True, True, True]], dtype=torch.bool)
+    candidate_dense_indices = torch.tensor([[0, 1, 2, 3]], dtype=torch.long)
+    gt_segments = [torch.tensor([[0.0, 1.0]], dtype=torch.float32)]
+
+    losses = selector._losses(
+        reader_outputs={"acquisition_matrix": matrix},
+        valid_mask=valid,
+        candidate_dense_indices=candidate_dense_indices,
+        gt_segments=gt_segments,
+    )
+    losses["selector_gt_acquisition_loss"].backward()
+
+    assert torch.isfinite(losses["selector_gt_acquisition_loss"])
+    assert matrix.grad is not None
+    assert torch.isfinite(matrix.grad).all()
+    assert matrix.grad[0, :, 0].abs().sum().item() > 0.0
+
+
 @pytest.mark.parametrize(
     "reader_name",
     [
@@ -215,6 +309,8 @@ def _iter_new_c3_configs(label: str, reader_type: str, tokens: tuple[str, ...]):
 @pytest.mark.parametrize("label,reader_type,tokens", _C3_CONFIG_VARIANTS)
 def test_c3_reader_variant_configs_load_with_fixed_768_to_384_prebackbone_contract(label, reader_type, tokens):
     for path, cfg, expected_reader in _iter_new_c3_configs(label, reader_type, tokens):
+        torch = _import_torch_or_skip()
+        selector_module = _load_prebackbone_selector_module()
         frame_selector = cfg.model.frame_selector
         assert frame_selector.type == "PCOTMRASPreBackboneFrameSelector", path.name
         assert frame_selector.reader.type == expected_reader, path.name
@@ -229,6 +325,21 @@ def test_c3_reader_variant_configs_load_with_fixed_768_to_384_prebackbone_contra
         assert int(cfg.dataset.test.window_size) == 768, path.name
         assert cfg.model.get("neck", {}).get("type") != "PCOTMRASDetectorBridge", path.name
         assert "PCOTMRASDetectorBridge" not in repr(cfg.model), path.name
+
+        reader_cls = getattr(selector_module, expected_reader)
+        reader_kwargs = {
+            key: value for key, value in frame_selector.reader.items() if key not in {"type", "_delete_"}
+        }
+        reader = reader_cls(**reader_kwargs)
+        features = torch.randn(1, 6, int(frame_selector.reader.in_dim))
+        valid = torch.tensor([[True, True, True, True, False, False]], dtype=torch.bool)
+        time_coords = torch.linspace(0.0, 1.0, steps=6).unsqueeze(0)
+        outputs = reader(features, valid, time_coords=time_coords)
+        assert outputs["slot_logits"].shape == (1, 384, 6), path.name
+        assert outputs["acquisition_matrix"].shape == (1, 384, 6), path.name
+        assert torch.all(outputs["acquisition_matrix"][..., 4:] == 0.0), path.name
+        row_sums = outputs["acquisition_matrix"].sum(dim=-1)
+        assert torch.allclose(row_sums, torch.ones_like(row_sums), atol=1.0e-5), path.name
 
 
 @pytest.mark.parametrize("label,reader_type,tokens", _C3_CONFIG_VARIANTS)
