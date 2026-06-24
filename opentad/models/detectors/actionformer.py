@@ -396,11 +396,22 @@ class ActionFormer(SingleStageDetector):
     def _call_bh_sdc_compact_backbone(self, inputs, masks):
         valid = self._prefix_binary_mask(masks, name="BH-SDC sparse backbone masks")
         counts = valid.long().sum(dim=1)
+        fixed_temporal_frames = self._bh_sdc_fixed_backbone_temporal_frames(inputs)
+        if fixed_temporal_frames is not None and bool((counts > fixed_temporal_frames).any().item()):
+            max_count = int(counts.max().item())
+            raise ValueError(
+                "BH-SDC selected count exceeds fixed backbone temporal frames: "
+                f"selected_count={max_count}, fixed_temporal_frames={fixed_temporal_frames}. "
+                "Refusing to truncate selected frames."
+            )
         features = []
         for batch_idx, count_tensor in enumerate(counts):
             count = int(count_tensor.item())
             sample_inputs = self._slice_temporal_sample(inputs, batch_idx, count)
-            sample_mask = torch.ones((1, count), dtype=torch.bool, device=masks.device)
+            backbone_count = fixed_temporal_frames if fixed_temporal_frames is not None else count
+            sample_inputs = self._pad_temporal_sample_to_expected(sample_inputs, count, backbone_count)
+            sample_mask = torch.zeros((1, backbone_count), dtype=torch.bool, device=masks.device)
+            sample_mask[:, :count] = True
             sample_features = self._call_backbone_single_sample(sample_inputs, sample_mask)
             if sample_features.ndim != 3:
                 raise RuntimeError(
@@ -425,6 +436,91 @@ class ActionFormer(SingleStageDetector):
             output_mask[batch_idx, :count] = True
         return output, output_mask
 
+    def _bh_sdc_fixed_backbone_temporal_frames(self, inputs):
+        if inputs.ndim not in (5, 6):
+            return None
+        selector = getattr(self, "frame_selector", None)
+        for value in self._iter_bh_sdc_fixed_temporal_frame_candidates(selector):
+            return value
+        for value in self._iter_bh_sdc_fixed_temporal_frame_candidates(getattr(self, "backbone", None)):
+            return value
+        return None
+
+    @classmethod
+    def _iter_bh_sdc_fixed_temporal_frame_candidates(cls, root):
+        if root is None:
+            return
+        direct_attrs = (
+            "max_budget",
+            "total_frames",
+            "fixed_temporal_frames",
+            "expected_temporal_frames",
+            "expected_frames",
+        )
+        for attr in direct_attrs:
+            value = cls._positive_int_or_none(getattr(root, attr, None))
+            if value is not None:
+                yield value
+
+        for child_attr in ("backbone", "model", "module"):
+            child = getattr(root, child_attr, None)
+            if child is not None and child is not root:
+                for value in cls._iter_bh_sdc_fixed_temporal_frame_candidates(child):
+                    yield value
+
+        modules_fn = getattr(root, "modules", None)
+        if modules_fn is None:
+            return
+        root_tubelet_size = cls._infer_tubelet_size_for_module(root)
+        for module in modules_fn():
+            temporal_size = cls._positive_int_or_none(getattr(module, "temporal_size", None))
+            if temporal_size is None:
+                continue
+            tubelet_size = cls._infer_tubelet_size_for_module(module) or root_tubelet_size
+            if tubelet_size is not None:
+                yield temporal_size * tubelet_size
+
+    @staticmethod
+    def _positive_int_or_none(value):
+        if value is None:
+            return None
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return None
+        if value <= 0:
+            return None
+        return value
+
+    @classmethod
+    def _infer_tubelet_size_for_module(cls, module):
+        value = cls._positive_int_or_none(getattr(module, "tubelet_size", None))
+        if value is not None:
+            return value
+        for patch_attr in ("patch_embed", "patch_embedding"):
+            patch_embed = getattr(module, patch_attr, None)
+            value = cls._tubelet_size_from_patch_embed(patch_embed)
+            if value is not None:
+                return value
+        for child in getattr(module, "children", lambda: [])():
+            value = cls._infer_tubelet_size_for_module(child)
+            if value is not None:
+                return value
+        return None
+
+    @classmethod
+    def _tubelet_size_from_patch_embed(cls, patch_embed):
+        if patch_embed is None:
+            return None
+        for attr in ("projection", "proj"):
+            projection = getattr(patch_embed, attr, None)
+            kernel_size = getattr(projection, "kernel_size", None)
+            if isinstance(kernel_size, tuple) and len(kernel_size) >= 1:
+                value = cls._positive_int_or_none(kernel_size[0])
+                if value is not None:
+                    return value
+        return None
+
     def _call_backbone_single_sample(self, sample_inputs, sample_mask):
         if self._callable_accepts_metas(self.backbone.forward):
             raise RuntimeError("BH-SDC compact backbone does not support backbone.forward(metas=...)")
@@ -444,6 +540,37 @@ class ActionFormer(SingleStageDetector):
         if inputs.ndim == 6:
             return inputs[batch_idx : batch_idx + 1, :, :, :count, :, :]
         raise ValueError(f"BH-SDC compact backbone unsupported input shape {tuple(inputs.shape)}")
+
+    @staticmethod
+    def _pad_temporal_sample_to_expected(sample_inputs, count, expected_frames):
+        if expected_frames < count:
+            raise ValueError(
+                "BH-SDC selected count exceeds fixed backbone temporal frames: "
+                f"selected_count={count}, fixed_temporal_frames={expected_frames}. "
+                "Refusing to truncate selected frames."
+            )
+        if expected_frames == count:
+            return sample_inputs
+        if sample_inputs.ndim == 3:
+            temporal_dim = 2
+        elif sample_inputs.ndim == 5:
+            temporal_dim = 2
+        elif sample_inputs.ndim == 6:
+            temporal_dim = 3
+        else:
+            raise ValueError(f"BH-SDC compact backbone unsupported input shape {tuple(sample_inputs.shape)}")
+        temporal_len = int(sample_inputs.shape[temporal_dim])
+        if temporal_len != count:
+            raise RuntimeError(
+                "BH-SDC compact backbone temporal slice mismatch before padding: "
+                f"slice_len={temporal_len}, selected_count={count}"
+            )
+        pad_frames = int(expected_frames) - int(count)
+        if sample_inputs.ndim == 3:
+            padding = [0, pad_frames]
+        else:
+            padding = [0, 0, 0, 0, 0, pad_frames]
+        return F.pad(sample_inputs, padding, value=0)
 
     @staticmethod
     def _prefix_binary_mask(mask, *, name):

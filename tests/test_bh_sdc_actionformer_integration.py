@@ -299,6 +299,65 @@ def test_bh_sdc_actionformer_compacts_before_temporal_mixing_backbone_and_preser
     assert captured["bh_sdc_detector_metadata"]["route_label"] == BH_SDC_ROUTE_LABEL
 
 
+def test_bh_sdc_compact_backbone_pads_video_sample_to_fixed_temporal_shape_without_expanding_budget():
+    model = ActionFormer(
+        backbone=dict(type="TailSensitiveTemporalMixingBackbone", channels=1),
+        projection=dict(type="IdentityProjection", max_seq_len=384),
+        rpn_head=dict(type="CapturingHead"),
+    )
+
+    class FixedTemporalShapeBackbone(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def forward(self, inputs, masks=None):
+            temporal_len = int(inputs.shape[2])
+            self.calls.append(
+                {
+                    "temporal_len": temporal_len,
+                    "mask": None if masks is None else masks.detach().cpu().tolist(),
+                }
+            )
+            return torch.arange(temporal_len, dtype=inputs.dtype, device=inputs.device).view(1, 1, temporal_len)
+
+    model.backbone = FixedTemporalShapeBackbone()
+    model.frame_selector = types.SimpleNamespace(
+        bh_sdc_requires_compact_backbone=True,
+        max_budget=448,
+    )
+
+    inputs = torch.ones(1, 3, 384, 2, 2)
+    masks = torch.ones(1, 384, dtype=torch.bool)
+
+    features, output_mask = model._call_bh_sdc_compact_backbone(inputs, masks)
+
+    assert model.backbone.calls[0]["temporal_len"] == 448
+    assert model.backbone.calls[0]["mask"][0][:384] == [True] * 384
+    assert model.backbone.calls[0]["mask"][0][384:] == [False] * 64
+    assert features.shape == (1, 1, 384)
+    assert output_mask.shape == (1, 384)
+    assert int(output_mask.sum().item()) == 384
+
+
+def test_bh_sdc_compact_backbone_fails_fast_when_selected_count_exceeds_fixed_temporal_shape():
+    model = ActionFormer(
+        backbone=dict(type="TailSensitiveTemporalMixingBackbone", channels=1),
+        projection=dict(type="IdentityProjection", max_seq_len=9),
+        rpn_head=dict(type="CapturingHead"),
+    )
+    model.frame_selector = types.SimpleNamespace(
+        bh_sdc_requires_compact_backbone=True,
+        max_budget=8,
+    )
+
+    inputs = torch.ones(1, 3, 9, 2, 2)
+    masks = torch.ones(1, 9, dtype=torch.bool)
+
+    with pytest.raises(ValueError, match="exceeds fixed backbone temporal frames"):
+        model._call_bh_sdc_compact_backbone(inputs, masks)
+
+
 def test_bh_sdc_refine_scale_is_in_optimizer_no_decay_group_once():
     model = _bh_sdc_model()
     model.token_compressor.refine = torch.nn.Conv1d(1, 1, kernel_size=1)
