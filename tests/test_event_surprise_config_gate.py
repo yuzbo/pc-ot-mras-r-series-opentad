@@ -16,6 +16,7 @@ CONFIG_DIR = ROOT / "configs" / "adatad" / "thumos"
 LOCAL_CONFIG = CONFIG_DIR / "event_surprise_temporal_acquisition_local_precheck.py"
 FULL_CONFIG = CONFIG_DIR / "event_surprise_temporal_acquisition_full_train_candidate_n16r4.py"
 VALIDATOR = ROOT / "tools" / "bata" / "validate_event_surprise_gate.py"
+LAUNCHER = ROOT / "scripts" / "run_event_surprise_temporal_acquisition_precheck_n16r4.sbatch"
 
 
 FORBIDDEN_C3_TOKENS = (
@@ -255,3 +256,20 @@ def test_event_surprise_gate_validator_rejects_unlocked_payload():
 
     with pytest.raises(validator.EventSurpriseGateError, match="allow_remote_sync"):
         validator.validate_gate_payload(payload)
+
+
+def test_event_surprise_n16r4_launcher_is_precheck_default_and_full_train_fail_closed():
+    text = LAUNCHER.read_text(encoding="utf-8")
+
+    assert "PRECHECK_ONLY=\"${PRECHECK_ONLY:-1}\"" in text
+    assert "OpenTAD_EventSurprise_PrecheckDeploy_20260624_126e04e" in text
+    assert "--action precheck-only" in text
+    assert "--action full-train --gate-json" in text
+    assert "EVENT_SURPRISE_FULL_TRAIN_GATE_JSON" in text
+    assert "EVENT_SURPRISE_FULL_TRAIN_GATE_SHA256" in text
+    assert "ALLOW_EVENT_SURPRISE_FULL_TRAIN_CANDIDATE" in text
+    assert "EVENT_SURPRISE_ENABLE_TOOLS_TRAIN_AFTER_GATE=1" in text
+    assert "python tools/train.py" not in text
+    assert "tools/test.py" not in text
+    for token in FORBIDDEN_C3_TOKENS:
+        assert token not in text
