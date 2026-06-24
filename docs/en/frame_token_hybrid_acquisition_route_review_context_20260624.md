@@ -43,12 +43,17 @@ loss/assignment, or test-time post-processing.
 
 ## Protocol Boundary
 
-Current status is implementation/precheck preparation only.
+Current status is implementation/precheck deployment only.
 
-- Remote sync: locked.
-- Slurm or full training: locked.
+- Route-owned remote sync/precheck: allowed only for this deployment-precheck
+  branch, a new Frame/Token-owned remote path, and `PRECHECK_ONLY=1`.
+- Slurm full training: locked.
+- The N16R4 launcher is a fail-closed precheck launcher. It validates the
+  gate/config, writes bounded precheck artifacts, and exits before any training
+  command when `PRECHECK_ONLY=1`.
 - `tools/train.py` and `tools/test.py`: locked by config gate.
-- `sbatch`, `scp`, and `rsync`: locked by the full-train-candidate gate.
+- Full train remains locked unless a later reviewed gate explicitly opens both
+  the config and launcher.
 - Metric, runtime, deploy, and paper claims: locked.
 - Test-time GT, teacher, oracle, detector-output, raw-prediction-cache, result,
   and checkpoint payloads: forbidden by the route and validator.
@@ -77,6 +82,16 @@ The route-specific tests check:
 - validator JSON summary for config-only precheck remains precheck-only and has
   empty allowed entrypoints;
 - UTF-8 BOM gate JSON compatibility.
+- N16R4 deployment-precheck launcher defaulting to `PRECHECK_ONLY=1`, refusing
+  training/test entrypoints, and containing no training command.
 
 The validator command remains precheck-only and accepts only
 `ALLOW_FRAME_TOKEN_HYBRID_PRECHECK_ONLY`.
+
+## Deployment Precheck Status
+
+2026-06-24T20:01:33+08:00: deployment-precheck owner prepared the route-owned
+N16R4 precheck launcher
+`scripts/run_frame_token_hybrid_acquisition_precheck_n16r4.sbatch`. This does
+not unlock full training, Slurm training, metric claims, runtime claims, deploy
+claims, or paper claims.

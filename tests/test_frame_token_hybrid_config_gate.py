@@ -15,6 +15,7 @@ LOCAL_CONFIG = ROOT / "configs" / "adatad" / "thumos" / "frame_token_hybrid_acqu
 FULL_CONFIG = ROOT / "configs" / "adatad" / "thumos" / "frame_token_hybrid_acquisition_full_train_candidate_n16r4.py"
 VALIDATOR = ROOT / "tools" / "bata" / "validate_frame_token_hybrid_gate.py"
 SELECTOR_INIT = ROOT / "opentad" / "models" / "selectors" / "__init__.py"
+N16R4_PRECHECK_LAUNCHER = ROOT / "scripts" / "run_frame_token_hybrid_acquisition_precheck_n16r4.sbatch"
 
 
 def _load_validator():
@@ -315,3 +316,17 @@ def test_frame_token_hybrid_configs_do_not_reference_old_c3_selector_tokens():
         for token in forbidden:
             assert token not in text
             assert token not in resolved_text
+
+
+def test_frame_token_hybrid_n16r4_precheck_launcher_is_fail_closed():
+    text = N16R4_PRECHECK_LAUNCHER.read_text(encoding="utf-8")
+
+    assert "DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3" in text
+    assert 'PRECHECK_ONLY="${PRECHECK_ONLY:-1}"' in text
+    assert "ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN" in text
+    assert "validate_frame_token_hybrid_gate.py" in text
+    assert "FRAME_TOKEN_HYBRID_PRECHECK_ONLY_PASS_NO_TRAIN" in text
+    assert "full train gate is still locked" in text
+    assert "torchrun" not in text
+    assert "python tools/train.py" not in text
+    assert "tools/test.py" not in text
