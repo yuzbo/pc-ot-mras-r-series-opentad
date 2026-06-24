@@ -31,6 +31,67 @@ def _assert_no_deploy_leakage(scope):
     assert scope.deploy_claim_allowed is False
 
 
+def _assert_remote_precheck_only_gate(gate):
+    assert gate.formal_train_candidate is False
+    assert gate.remote_precheck_only_candidate is True
+    assert gate.allow_precheck_only is True
+    assert gate.allow_remote_sync is True
+    assert gate.allow_slurm is False
+    assert gate.allow_gpu is False
+    assert gate.allow_tools_train is False
+    assert gate.allow_tools_test is False
+    assert gate.allow_detector_map is False
+    assert gate.allow_train_validation_map is False
+    assert gate.allow_long_training is False
+    assert gate.allow_checkpoint_write is False
+    assert gate.allow_checkpoint_load is False
+    assert gate.allow_resume is False
+    assert gate.allow_raw_prediction_cache is False
+    assert gate.allow_detector_training is False
+    assert gate.allow_joint_selector_detector_training is False
+    assert gate.allow_dataset_access is False
+    assert gate.allow_pretrained_initialization is False
+    assert gate.metric_claim_allowed is False
+    assert gate.paper_claim_allowed is False
+    assert gate.runtime_flops_claim_allowed is False
+    assert gate.deploy_claim_allowed is False
+    assert tuple(gate.allowed_entrypoints) == ()
+
+    context = gate.entrypoint_gate_context
+    assert context.required is True
+    assert context.strict_payload_validation is True
+    assert tuple(context.allowed_decisions) == ("ALLOW_C3_NEXT_MECHANISM_REMOTE_PRECHECK_ONLY",)
+    forbidden = set(context.forbidden_true_keys)
+    for key in (
+        "allow_tools_train",
+        "allow_tools_test",
+        "allow_detector_map",
+        "allow_detector_training",
+        "allow_train_validation_map",
+        "allow_long_training",
+        "allow_joint_selector_detector_training",
+        "allow_dataset_access",
+        "allow_pretrained_initialization",
+        "allow_slurm",
+        "allow_gpu",
+        "allow_checkpoint_write",
+        "allow_checkpoint_load",
+        "allow_resume",
+        "allow_raw_prediction_cache",
+        "load_from_raw_predictions",
+        "save_raw_prediction",
+        "uses_p2",
+        "uses_teacher",
+        "uses_oracle",
+        "uses_test_gt",
+        "metric_claim_allowed",
+        "paper_claim_allowed",
+        "runtime_flops_claim_allowed",
+        "deploy_claim_allowed",
+    ):
+        assert key in forbidden
+
+
 def test_interval_packet_candidate_config_actually_enables_interval_selector_and_global_rank_st():
     cfg = _load(INTERVAL_CONFIG)
 
@@ -49,6 +110,7 @@ def test_interval_packet_candidate_config_actually_enables_interval_selector_and
     assert cfg.experiment_scope.changes_input_sampling is True
     assert cfg.experiment_scope.changes_detector_head is False
     _assert_no_deploy_leakage(cfg.experiment_scope)
+    _assert_remote_precheck_only_gate(cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate)
 
 
 def test_global_rank_st_candidate_config_keeps_frame_score_hard_path_but_changes_surrogate():
@@ -65,6 +127,7 @@ def test_global_rank_st_candidate_config_keeps_frame_score_hard_path_but_changes
         "fixed384_over_dense768_frame_score_first_global_rank_st"
     )
     _assert_no_deploy_leakage(cfg.experiment_scope)
+    _assert_remote_precheck_only_gate(cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate)
 
 
 def test_dynamic_marginal_budget_candidate_remains_isolated_from_interval_and_physical_grid():
@@ -84,6 +147,8 @@ def test_dynamic_marginal_budget_candidate_remains_isolated_from_interval_and_ph
     assert not hasattr(cfg.model.get("rpn_head", {}), "temporal_grid")
     assert cfg.experiment_scope.dynamic_budget_claim_allowed is False
     _assert_no_deploy_leakage(cfg.experiment_scope)
+    _assert_remote_precheck_only_gate(cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate)
+    assert cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate.dynamic_budget_claim_allowed is False
 
 
 def test_physical_grid_candidate_is_detector_geometry_isolation_not_dynamic_budget_combo():
@@ -104,3 +169,4 @@ def test_physical_grid_candidate_is_detector_geometry_isolation_not_dynamic_budg
     assert cfg.experiment_scope.changes_loss_assignment is True
     assert cfg.experiment_scope.temporal_grid_mode == "physical"
     _assert_no_deploy_leakage(cfg.experiment_scope)
+    _assert_remote_precheck_only_gate(cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate)
