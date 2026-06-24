@@ -22,14 +22,28 @@ def _assert_loss_dict_finite(losses, *, stage):
         raise FloatingPointError(f"{stage} produced non-finite cost")
 
 
+def _format_nonfinite_grad(name, grad):
+    finite = torch.isfinite(grad)
+    finite_values = grad[finite]
+    max_abs = finite_values.float().abs().max().item() if finite_values.numel() else None
+    nan_count = torch.isnan(grad).sum().item()
+    inf_count = torch.isinf(grad).sum().item()
+    return (
+        f"{name}: shape={tuple(grad.shape)} "
+        f"nan={int(nan_count)} inf={int(inf_count)} max_abs_finite={max_abs}"
+    )
+
+
 def _assert_grad_norm_finite(model):
     total_sq = None
-    for parameter in model.parameters():
+    named_parameters = model.named_parameters() if hasattr(model, "named_parameters") else []
+    for name, parameter in named_parameters:
         if parameter.grad is None:
             continue
         grad = parameter.grad.detach()
         if not bool(torch.isfinite(grad).all().item()):
-            raise FloatingPointError("training produced non-finite parameter gradient")
+            detail = _format_nonfinite_grad(name, grad)
+            raise FloatingPointError(f"training produced non-finite parameter gradient: {detail}")
         grad_norm = grad.float().norm(2)
         total_sq = grad_norm.pow(2) if total_sq is None else total_sq + grad_norm.pow(2)
     if total_sq is None:

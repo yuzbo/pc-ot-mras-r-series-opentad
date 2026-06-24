@@ -43,12 +43,23 @@ class _Loss:
     def clone(self):
         return self
 
+    def detach(self):
+        return self
+
     def div_(self, value):
         self.value /= float(value)
         return self
 
     def item(self):
         return self.value
+
+
+class _Finite:
+    def all(self):
+        return self
+
+    def item(self):
+        return True
 
 
 class _Logger:
@@ -116,6 +127,9 @@ class _ToyScheduler:
 def _load_train_engine_with_fake_runtime(monkeypatch):
     fake_torch = types.SimpleNamespace(
         float16="float16",
+        is_tensor=lambda value: isinstance(value, _Loss),
+        as_tensor=lambda value: value,
+        isfinite=lambda value: _Finite(),
         cuda=types.SimpleNamespace(
             amp=types.SimpleNamespace(autocast=_Autocast),
             max_memory_allocated=lambda: 0,
@@ -196,3 +210,18 @@ def test_train_one_epoch_rejects_non_positive_max_train_iters(monkeypatch, max_t
     assert model.train_calls == 0
     assert model.forward_calls == 0
     assert scheduler.steps == 0
+
+
+def test_grad_finite_error_reports_parameter_name():
+    torch = pytest.importorskip("torch")
+    sys.modules.pop("train_engine_real_runtime_under_test", None)
+    spec = importlib.util.spec_from_file_location("train_engine_real_runtime_under_test", TRAIN_ENGINE_PATH)
+    train_engine = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(train_engine)
+
+    model = torch.nn.Linear(2, 1)
+    model.weight.grad = torch.tensor([[float("nan"), float("inf")]])
+    model.bias.grad = torch.zeros_like(model.bias)
+
+    with pytest.raises(FloatingPointError, match=r"weight: shape=\(1, 2\).*nan=1 inf=1"):
+        train_engine._assert_grad_norm_finite(model)
