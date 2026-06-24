@@ -1,0 +1,205 @@
+from __future__ import annotations
+
+import importlib.util
+import subprocess
+import sys
+import types
+from pathlib import Path
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ROUTE_PATH = ROOT / "opentad" / "models" / "selectors" / "boundary_microscope_acquisition_route.py"
+
+
+class _Registry:
+    def register_module(self):
+        def _decorator(cls):
+            return cls
+
+        return _decorator
+
+
+def _import_torch_or_skip():
+    probe = subprocess.run(
+        [sys.executable, "-c", "import torch"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if probe.returncode != 0:
+        detail = probe.stderr.strip().splitlines()[-1] if probe.stderr.strip() else f"exit {probe.returncode}"
+        pytest.skip(f"torch unavailable in this process: {detail}")
+    try:
+        import torch
+    except Exception as exc:  # pragma: no cover - depends on local DLL state.
+        pytest.skip(f"torch unavailable in this process: {exc}")
+    return torch
+
+
+def _ensure_package(name: str, path: Path):
+    module = sys.modules.get(name)
+    if module is None:
+        module = types.ModuleType(name)
+        module.__path__ = [str(path)]
+        sys.modules[name] = module
+    return module
+
+
+def _load_route_module():
+    sys.modules.pop("opentad.models.selectors.boundary_microscope_acquisition_route", None)
+    _ensure_package("opentad", ROOT / "opentad")
+    _ensure_package("opentad.models", ROOT / "opentad" / "models")
+    _ensure_package("opentad.models.selectors", ROOT / "opentad" / "models" / "selectors")
+    builder = types.ModuleType("opentad.models.builder")
+    builder.SELECTORS = _Registry()
+    sys.modules["opentad.models.builder"] = builder
+
+    spec = importlib.util.spec_from_file_location(
+        "opentad.models.selectors.boundary_microscope_acquisition_route",
+        ROUTE_PATH,
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _make_boundary_frames(torch, *, batch: int = 2, dense_len: int = 64):
+    signal = torch.zeros(dense_len, dtype=torch.float32)
+    signal[8:22] = 4.0
+    signal[39:50] = 3.0
+    frames = signal.view(1, 1, dense_len, 1, 1).expand(batch, 3, dense_len, 3, 3).contiguous()
+    masks = torch.ones((batch, dense_len), dtype=torch.bool)
+    metas = [{"sample_id": f"boundary-microscope-{idx}"} for idx in range(batch)]
+    gt_segments = [
+        torch.tensor([[8.0, 22.0], [39.0, 50.0]], dtype=torch.float32)
+        for _idx in range(batch)
+    ]
+    gt_labels = [torch.tensor([1, 2], dtype=torch.long) for _idx in range(batch)]
+    return frames, masks, metas, gt_segments, gt_labels
+
+
+def test_boundary_microscope_selects_dense_packets_around_scanned_hazards():
+    torch = _import_torch_or_skip()
+    module = _load_route_module()
+    selector = module.BoundaryMicroscopeAcquisitionRoute(
+        target_len=32,
+        dense_window_size=64,
+        microscope_radius=2,
+        microscope_stride=1,
+        anchor_stride=16,
+        max_dense_gap=8,
+    )
+    inputs, masks, metas, _gt_segments, _gt_labels = _make_boundary_frames(torch)
+
+    outputs = selector.forward_test(inputs, masks, metas)
+
+    selected = outputs["metas"][0]["boundary_microscope_selected_dense_indices"]
+    plan = outputs["metas"][0]["boundary_microscope_acquisition_plan"]
+    assert outputs["inputs"].shape == (2, 3, len(selected), 3, 3)
+    assert outputs["masks"].dtype == torch.bool
+    assert outputs["masks"].all()
+    assert selected == sorted(set(selected))
+    assert len(selected) <= 32
+    for boundary in (8, 22, 39, 50):
+        assert any(abs(pos - boundary) <= 2 for pos in selected), (boundary, selected)
+    assert plan["route_label"] == "DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3"
+    assert plan["meta_key"] == "boundary_microscope_acquisition_plan"
+    assert plan["uses_gt"] is False
+    assert plan["uses_teacher"] is False
+    assert plan["uses_raw_prediction_cache"] is False
+    assert "start_hazard_positions" in plan
+    assert "end_hazard_positions" in plan
+
+
+def test_boundary_microscope_keeps_interior_background_anchors_and_max_gap():
+    torch = _import_torch_or_skip()
+    module = _load_route_module()
+    selector = module.BoundaryMicroscopeAcquisitionRoute(
+        target_len=40,
+        dense_window_size=64,
+        microscope_radius=1,
+        microscope_stride=1,
+        anchor_stride=20,
+        max_dense_gap=6,
+    )
+    inputs, masks, metas, _gt_segments, _gt_labels = _make_boundary_frames(torch, batch=1)
+
+    outputs = selector.forward_test(inputs, masks, metas)
+
+    selected = outputs["metas"][0]["boundary_microscope_selected_dense_indices"]
+    roles = outputs["metas"][0]["boundary_microscope_selected_roles"]
+    gaps = [right - left for left, right in zip(selected[:-1], selected[1:])]
+    assert max(gaps) <= 6
+    assert any(role in {"interior_anchor", "background_anchor", "gap_guard_anchor"} for role in roles)
+    assert any(12 <= pos <= 18 for pos, role in zip(selected, roles) if role == "interior_anchor")
+    assert any(pos <= 4 or pos >= 55 for pos, role in zip(selected, roles) if role == "background_anchor")
+
+
+def test_boundary_microscope_forward_train_and_test_shapes_match_prefix_masks():
+    torch = _import_torch_or_skip()
+    module = _load_route_module()
+    selector = module.BoundaryMicroscopeAcquisitionRoute(
+        target_len=36,
+        dense_window_size=64,
+        microscope_radius=2,
+        anchor_stride=12,
+        max_dense_gap=8,
+    )
+    inputs, masks, metas, gt_segments, gt_labels = _make_boundary_frames(torch, batch=1)
+
+    train_outputs = selector.forward_train(inputs, masks, metas, gt_segments, gt_labels)
+    test_outputs = selector.forward_test(inputs, masks, [{"sample_id": "shape-test"}])
+
+    assert train_outputs["inputs"].shape[:2] == (1, 3)
+    assert train_outputs["inputs"].shape[2] == int(train_outputs["masks"].sum().item())
+    assert test_outputs["inputs"].shape[:2] == (1, 3)
+    assert test_outputs["inputs"].shape[2] == int(test_outputs["masks"].sum().item())
+    assert train_outputs["gt_segments"] is gt_segments
+    assert train_outputs["gt_labels"] is gt_labels
+    assert "boundary_microscope_acquisition_plan" in train_outputs["metas"][0]
+
+
+def test_boundary_microscope_forward_test_rejects_forbidden_meta_shortcuts():
+    torch = _import_torch_or_skip()
+    module = _load_route_module()
+    selector = module.BoundaryMicroscopeAcquisitionRoute(target_len=16, dense_window_size=64)
+    inputs, masks, _metas, _gt_segments, _gt_labels = _make_boundary_frames(torch, batch=1)
+
+    with pytest.raises(ValueError, match="forbidden test-time meta"):
+        selector.forward_test(inputs, masks, [{"raw_prediction_cache": "must-not-use"}])
+
+    with pytest.raises(ValueError, match="forbidden test-time meta"):
+        selector.forward_test(inputs, masks, [{"note": "teacher shortcut must-not-use"}])
+
+
+def test_boundary_microscope_rejects_route_drift_and_dense_window_mismatch():
+    torch = _import_torch_or_skip()
+    module = _load_route_module()
+
+    with pytest.raises(ValueError, match="route_label"):
+        module.BoundaryMicroscopeAcquisitionRoute(
+            dense_window_size=64,
+            route_label="C3-Pro",
+        )
+    with pytest.raises(ValueError, match="meta_key"):
+        module.BoundaryMicroscopeAcquisitionRoute(
+            dense_window_size=64,
+            meta_key="c3_boundary_plan",
+        )
+
+    selector = module.BoundaryMicroscopeAcquisitionRoute(target_len=16, dense_window_size=63)
+    inputs, masks, metas, _gt_segments, _gt_labels = _make_boundary_frames(torch, batch=1)
+    with pytest.raises(ValueError, match="dense_window_size"):
+        selector.forward_test(inputs, masks, metas)
+
+
+def test_boundary_microscope_exposes_live_selector_cache_guard():
+    module = _load_route_module()
+    selector = module.BoundaryMicroscopeAcquisitionRoute(dense_window_size=64)
+
+    assert selector.forbid_raw_prediction_cache is True
