@@ -982,9 +982,15 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             raise ValueError("max_dense_gap must be non-negative")
         if int(max_gap_guard_count) < 0:
             raise ValueError("max_gap_guard_count must be non-negative")
-        if str(selection_strategy) not in ("slot_transport", "frame_score_topk", "interval_boundary_packet"):
+        if str(selection_strategy) not in (
+            "slot_transport",
+            "frame_score_topk",
+            "interval_boundary_packet",
+            "interval_score_first_packet",
+        ):
             raise ValueError(
-                "selection_strategy must be 'slot_transport', 'frame_score_topk', or 'interval_boundary_packet'"
+                "selection_strategy must be 'slot_transport', 'frame_score_topk', "
+                "'interval_boundary_packet', or 'interval_score_first_packet'"
             )
         if float(frame_score_st_temperature) <= 0.0:
             raise ValueError("frame_score_st_temperature must be positive")
@@ -1312,7 +1318,10 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 candidate_dense_indices=candidate_dense_indices,
                 training=training,
             )
-        if getattr(self, "selection_strategy", "slot_transport") == "interval_boundary_packet":
+        if getattr(self, "selection_strategy", "slot_transport") in (
+            "interval_boundary_packet",
+            "interval_score_first_packet",
+        ):
             return self._interval_boundary_packet_transport_plan(
                 reader_outputs=reader_outputs,
                 valid=valid,
@@ -1656,6 +1665,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             names=("redundancy_logits",),
             device=device,
         )
+        score_first_variant = getattr(self, "selection_strategy", "slot_transport") == "interval_score_first_packet"
         source_heads = [
             action_source,
             start_source,
@@ -1664,6 +1674,8 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             uncertainty_source,
             redundancy_source,
         ]
+        if score_first_variant:
+            source_heads.append("interval_score")
         dense_len = int(valid.shape[1])
         batch = int(candidate_valid.shape[0])
         topk = 1
@@ -1728,6 +1740,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                     {
                         "enabled": True,
                         "status": "short_valid_prefix",
+                        "score_first": bool(score_first_variant),
                         "boundary_budget": 0,
                         "interior_budget": 0,
                         "boundary_positions": [],
@@ -1951,7 +1964,8 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             interval_packet_metadata.append(
                 {
                     "enabled": True,
-                    "status": "interval_score_first",
+                    "status": "interval_score_first_packet" if score_first_variant else "interval_score_first",
+                    "score_first": bool(score_first_variant),
                     "boundary_budget": int(boundary_budget),
                     "interior_budget": int(interior_budget),
                     "boundary_positions": sorted(int(pos) for pos in boundary_positions),
@@ -2585,6 +2599,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             hard_source_by_strategy = {
                 "frame_score_topk": "frame_selection_logits",
                 "interval_boundary_packet": "interval_boundary_packet",
+                "interval_score_first_packet": "interval_score_first_packet",
             }
             meta["pc_ot_mras_prebackbone_hard_selection_source"] = hard_source_by_strategy.get(
                 selection_strategy,
