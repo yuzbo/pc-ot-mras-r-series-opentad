@@ -7,13 +7,16 @@ from pathlib import Path
 from typing import Any
 
 
-ALLOWED_DECISION = "ALLOW_BOUNDARY_MICROSCOPE_PRECHECK_ONLY"
+PRECHECK_ALLOWED_DECISION = "ALLOW_BOUNDARY_MICROSCOPE_PRECHECK_ONLY"
+FULL_TRAIN_ALLOWED_DECISION = "ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN"
+ALLOWED_DECISION = PRECHECK_ALLOWED_DECISION
 ALLOWED_ROUTE = "boundary_microscope_acquisition"
 ALLOWED_ROUTE_LABEL = "DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3"
+FULL_TRAIN_USER_OVERRIDE_STATEMENT = "USER_EXPLICITLY_REQUESTED_BOUNDARY_MICROSCOPE_FULL_TRAIN_CANDIDATE_ON_2026-06-24"
 
-REQUIRED_TRUE_KEYS = ("allow_precheck_only",)
+PRECHECK_REQUIRED_TRUE_KEYS = ("allow_precheck_only",)
 
-REQUIRED_FALSE_KEYS = (
+PRECHECK_REQUIRED_FALSE_KEYS = (
     "allow_tools_train",
     "allow_tools_test",
     "allow_remote_sync",
@@ -33,7 +36,7 @@ REQUIRED_FALSE_KEYS = (
     "paper_claim_allowed",
 )
 
-FORBIDDEN_TRUE_KEYS = (
+PRECHECK_FORBIDDEN_TRUE_KEYS = (
     "tools_train",
     "allow_tools_train",
     "tools_test",
@@ -78,6 +81,70 @@ FORBIDDEN_TRUE_KEYS = (
     "uses_oracle",
 )
 
+FULL_TRAIN_REQUIRED_TRUE_KEYS = (
+    "allow_tools_train",
+    "allow_slurm",
+    "allow_gpu",
+    "allow_full_train",
+)
+
+FULL_TRAIN_REQUIRED_FALSE_KEYS = (
+    "allow_precheck_only",
+    "allow_tools_test",
+    "allow_remote_sync",
+    "allow_raw_prediction",
+    "load_from_raw_predictions",
+    "save_raw_prediction",
+    "test_time_gt_allowed",
+    "teacher_allowed",
+    "raw_prediction_cache_allowed",
+    "uses_gt_at_test",
+    "uses_teacher",
+    "uses_raw_prediction_cache",
+    "metric_claim_allowed",
+    "paper_claim_allowed",
+)
+
+FULL_TRAIN_FORBIDDEN_TRUE_KEYS = (
+    "tools_train",
+    "tools_test",
+    "allow_tools_test",
+    "direct_tools_test",
+    "remote_sync",
+    "allow_remote_sync",
+    "sbatch",
+    "allow_sbatch",
+    "gpu_train",
+    "allow_gpu_train",
+    "raw_prediction",
+    "allow_raw_prediction",
+    "raw_predictions",
+    "allow_raw_predictions",
+    "raw_prediction_cache",
+    "allow_raw_prediction_cache",
+    "prediction_cache",
+    "allow_prediction_cache",
+    "load_from_raw_predictions",
+    "allow_load_from_raw_predictions",
+    "save_raw_prediction",
+    "allow_save_raw_prediction",
+    "metric",
+    "metric_claim",
+    "allow_metric_claim",
+    "metric_claim_allowed",
+    "paper_claim",
+    "allow_paper_claim",
+    "paper_claim_allowed",
+    "runtime_claim",
+    "allow_runtime_claim",
+    "deploy_claim",
+    "allow_deploy_claim",
+    "uses_gt_at_test",
+    "uses_test_gt",
+    "uses_teacher",
+    "uses_oracle",
+)
+
 CONTROL_KEYS = (
     "decision",
     "route",
@@ -86,6 +153,7 @@ CONTROL_KEYS = (
     "expected_active_sha256_manifest_sha256",
     "resolved_config_sha256",
     "expected_resolved_config_sha256",
+    "user_override_statement",
     "budget",
     "dense_window_size",
 )
@@ -139,12 +207,31 @@ def _first_present(payload, keys):
     return None
 
 
-def _allowed_payload_keys():
+def _gate_schema(action):
+    if action == "precheck":
+        return (
+            PRECHECK_ALLOWED_DECISION,
+            PRECHECK_REQUIRED_TRUE_KEYS,
+            PRECHECK_REQUIRED_FALSE_KEYS,
+            PRECHECK_FORBIDDEN_TRUE_KEYS,
+        )
+    if action == "full-train":
+        return (
+            FULL_TRAIN_ALLOWED_DECISION,
+            FULL_TRAIN_REQUIRED_TRUE_KEYS,
+            FULL_TRAIN_REQUIRED_FALSE_KEYS,
+            FULL_TRAIN_FORBIDDEN_TRUE_KEYS,
+        )
+    raise ValueError(f"unknown Boundary microscope gate action: {action}")
+
+
+def _allowed_payload_keys(action):
+    _, required_true_keys, required_false_keys, forbidden_true_keys = _gate_schema(action)
     return (
         set(CONTROL_KEYS)
-        | set(REQUIRED_TRUE_KEYS)
-        | set(REQUIRED_FALSE_KEYS)
-        | set(FORBIDDEN_TRUE_KEYS)
+        | set(required_true_keys)
+        | set(required_false_keys)
+        | set(forbidden_true_keys)
         | set(HARMLESS_METADATA_KEYS)
     )
 
@@ -191,8 +278,11 @@ def validate_gate_payload(
     resolved_config_sha256,
     budget,
     dense_window_size,
+    action="precheck",
+    run_tag=None,
 ):
-    if payload.get("decision") != ALLOWED_DECISION:
+    expected_decision, required_true_keys, required_false_keys, forbidden_true_keys = _gate_schema(action)
+    if payload.get("decision") != expected_decision:
         raise ValueError(f"Boundary microscope gate decision is not allowed: {payload.get('decision')}")
     if payload.get("route") != ALLOWED_ROUTE:
         raise ValueError(f"Boundary microscope gate route mismatch: {payload.get('route')}")
@@ -226,18 +316,23 @@ def validate_gate_payload(
 
     _require_exact(payload, "budget", int(budget))
     _require_exact(payload, "dense_window_size", int(dense_window_size))
+    if action == "full-train":
+        if not run_tag:
+            raise ValueError("Boundary microscope full-train gate requires --run-tag")
+        _require_exact(payload, "run_tag", run_tag)
+        _require_exact(payload, "user_override_statement", FULL_TRAIN_USER_OVERRIDE_STATEMENT)
 
-    for key in REQUIRED_TRUE_KEYS:
+    for key in required_true_keys:
         if payload.get(key) is not True:
             raise ValueError(f"Boundary microscope gate must set {key}=true")
-    for key in REQUIRED_FALSE_KEYS:
+    for key in required_false_keys:
         if payload.get(key) is not False:
             raise ValueError(f"Boundary microscope gate must set {key}=false")
-    for key in FORBIDDEN_TRUE_KEYS:
+    for key in forbidden_true_keys:
         if key in payload and payload[key] is not False:
             raise ValueError(f"Boundary microscope gate must keep {key}=false/absent; got {payload[key]!r}")
     for key in payload:
-        if key not in _allowed_payload_keys():
+        if key not in _allowed_payload_keys(action):
             raise ValueError(f"Boundary microscope gate contains unknown or unallowlisted key: {key}")
     return True
 
@@ -249,6 +344,8 @@ def validate_gate_file(
     resolved_config_sha256,
     budget,
     dense_window_size,
+    action="precheck",
+    run_tag=None,
 ):
     gate_path = Path(gate_json)
     if not gate_path.is_file():
@@ -263,6 +360,8 @@ def validate_gate_file(
         resolved_config_sha256=resolved_config_sha256,
         budget=int(budget),
         dense_window_size=int(dense_window_size),
+        action=action,
+        run_tag=run_tag,
     )
     return payload
 
@@ -355,10 +454,12 @@ def main():
     parser = argparse.ArgumentParser(description="Validate a fail-closed Boundary Microscope Acquisition gate.")
     parser.add_argument("config", nargs="?")
     parser.add_argument("--json", action="store_true", dest="emit_json")
+    parser.add_argument("--action", choices=("precheck", "full-train"), default="precheck")
     parser.add_argument("--gate-json")
     parser.add_argument("--gate-sha256")
     parser.add_argument("--active-manifest-sha256")
     parser.add_argument("--resolved-config-sha256")
+    parser.add_argument("--run-tag")
     parser.add_argument("--budget", type=int, default=384)
     parser.add_argument("--dense-window-size", type=int, default=768)
     args = parser.parse_args()
@@ -377,6 +478,8 @@ def main():
         "--active-manifest-sha256": args.active_manifest_sha256,
         "--resolved-config-sha256": args.resolved_config_sha256,
     }
+    if args.action == "full-train":
+        required["--run-tag"] = args.run_tag
     missing = [flag for flag, value in required.items() if value is None]
     if missing:
         parser.error("the following arguments are required for gate JSON mode: " + ", ".join(missing))
@@ -388,23 +491,38 @@ def main():
         resolved_config_sha256=args.resolved_config_sha256,
         budget=int(args.budget),
         dense_window_size=int(args.dense_window_size),
+        action=args.action,
+        run_tag=args.run_tag,
     )
     if args.emit_json:
+        status = "BOUNDARY_MICROSCOPE_GATE_VALIDATION_PASS"
+        if args.action == "full-train":
+            status = "BOUNDARY_MICROSCOPE_FULL_TRAIN_GATE_VALIDATION_PASS"
         print(
             json.dumps(
                 {
-                    "status": "BOUNDARY_MICROSCOPE_GATE_VALIDATION_PASS",
+                    "status": status,
                     "decision": payload["decision"],
                     "route": payload["route"],
                     "route_label": payload["route_label"],
-                    "current_gate_cannot_authorize_remote_sync_or_full_train": True,
+                    "run_tag": payload.get("run_tag"),
+                    "allows_tools_train": bool(payload.get("allow_tools_train")),
+                    "allows_slurm": bool(payload.get("allow_slurm")),
+                    "allows_gpu": bool(payload.get("allow_gpu")),
+                    "allows_full_train": bool(payload.get("allow_full_train")),
+                    "metric_claim_allowed": bool(payload.get("metric_claim_allowed")),
+                    "paper_claim_allowed": bool(payload.get("paper_claim_allowed")),
+                    "current_gate_cannot_authorize_remote_sync_or_full_train": args.action != "full-train",
                 },
                 ensure_ascii=False,
                 sort_keys=True,
             )
         )
     else:
-        print("BOUNDARY_MICROSCOPE_GATE_VALIDATION_PASS")
+        if args.action == "full-train":
+            print("BOUNDARY_MICROSCOPE_FULL_TRAIN_GATE_VALIDATION_PASS")
+        else:
+            print("BOUNDARY_MICROSCOPE_GATE_VALIDATION_PASS")
 
 
 if __name__ == "__main__":

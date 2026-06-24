@@ -54,13 +54,18 @@ plans, token-compression outputs, or post-processing shortcuts.
 - Token compression: unchanged.
 - Adapter/backbone/neck/head/loss/assignment/post-processing: unchanged.
 - Launcher/gate logic: fail-closed local precheck and full-train-candidate
-  configs remain locked against train/test/remote/Slurm/GPU actions.
+  configs remain locked by default. The N16R4 full-train launcher may run
+  `tools/train.py` only when `PRECHECK_ONLY=0`,
+  `ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN=1`, and an external full-train gate JSON
+  passes validator checks against the exact active manifest SHA256, resolved
+  config SHA256, route label, fixed run tag, and user override statement.
 
 ## Protocol Boundary
 
-Current status is implementation, local gate validation, and
-deployment-precheck validation only. The deployment-precheck stage is limited
-to a route-owned N16R4 checkout plus `PRECHECK_ONLY=1` launcher execution.
+Current status is implementation, local gate validation, deployment-precheck
+validation, and full-train gate/deployment ownership for the route-owned N16R4
+checkout. The default launcher mode remains `PRECHECK_ONLY=1` and exits before
+training.
 
 Allowed:
 
@@ -68,14 +73,14 @@ Allowed:
 - local config parsing;
 - local fail-closed gate validator;
 - route-owned remote sync into a new Boundary Microscope precheck path;
-- route-owned `PRECHECK_ONLY=1` launcher execution that exits before training.
+- route-owned `PRECHECK_ONLY=1` launcher execution that exits before training;
+- route-owned full-train Slurm submission only after full-train gate JSON
+  validation binds the same fixed `RUN_TAG`, active manifest hash, resolved
+  config hash, route label, and user override statement.
 
 Locked:
 
 - any shared-repo write, branch switch, staging, commit, push, prompt, or log;
-- full-training Slurm submission;
-- GPU training;
-- `tools/train.py`;
 - `tools/test.py`;
 - raw-prediction load/save;
 - detector-mAP claim;
@@ -91,8 +96,16 @@ This decision cannot authorize remote sync, Slurm, `tools/train.py`, full
 training, evaluation, metric claims, runtime claims, deploy claims, or paper
 claims. A future full-training route would require a separate explicit decision
 string and separate validator logic; it must not reuse the precheck-only gate.
-The current deployment-precheck update does not unlock full training,
-evaluation, metric claim, deploy claim, or paper claim.
+
+The separate full-training decision string is:
+
+```text
+ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN
+```
+
+This decision is valid only through the dedicated full-train gate action. It
+does not authorize `tools/test.py`, raw-prediction caches, detector-mAP claims,
+runtime claims, deploy claims, or paper claims.
 
 ## Negative Attribution Guard
 
