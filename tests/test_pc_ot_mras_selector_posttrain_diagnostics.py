@@ -27,6 +27,9 @@ def test_selector_posttrain_diagnostics_aggregates_selection_roles_metadata_and_
                 "boundary_radius": 1,
                 "role_ids": [0, 1, 2, 3, 4],
                 "selector_scores": [0.05, 0.10, 0.75, 0.25, 0.40, 0.20, 0.15, 0.95, 0.80, 0.01],
+                "pc_ot_mras_prebackbone_raw_slot_dense_indices": [0, 2, 2, 4, 4],
+                "pc_ot_mras_prebackbone_reader_fill_count": 2,
+                "pc_ot_mras_prebackbone_st_active_row_count": 3,
                 "irregular_native_axis": True,
                 "physical_grid_actionformer": True,
                 "irregular_selected_positions": [0, 2, 4, 4, 7],
@@ -42,6 +45,9 @@ def test_selector_posttrain_diagnostics_aggregates_selection_roles_metadata_and_
                 "boundary_radius": 1,
                 "packet_roles": ["boundary", "interior", "background"],
                 "selector_scores": [0.1, 0.8, 0.2, 0.3, 0.4, 0.9, 0.2, 0.1, 0.3, 0.7, 0.5, 0.05],
+                "pc_ot_mras_prebackbone_raw_slot_dense_indices": [1, 5, 9],
+                "pc_ot_mras_prebackbone_reader_fill_count": 0,
+                "pc_ot_mras_prebackbone_st_active_row_count": 3,
                 "irregular_native_axis": False,
                 "physical_grid_actionformer": True,
                 "irregular_selected_positions": [1, 5, 9],
@@ -64,9 +70,16 @@ def test_selector_posttrain_diagnostics_aggregates_selection_roles_metadata_and_
     assert summary["aggregate"]["boundary"]["near_selected_rate"] == pytest.approx(4 / 8)
     assert summary["aggregate"]["packet_roles"]["boundary_ratio"] == pytest.approx(3 / 8)
     assert summary["aggregate"]["packet_roles"]["interior_ratio"] == pytest.approx(2 / 8)
+    assert summary["aggregate"]["slot_transport"]["samples_with_raw_slot_duplicate"] == 2
+    assert summary["aggregate"]["slot_transport"]["raw_slot_duplicate_rate_mean"] == pytest.approx(0.2)
+    assert summary["aggregate"]["slot_transport"]["reader_fill_count_mean"] == pytest.approx(1.0)
+    assert summary["aggregate"]["slot_transport"]["st_active_row_count_mean"] == pytest.approx(3.0)
     assert summary["aggregate"]["metadata_consistency"]["inconsistent_sample_count"] == 1
     assert summary["samples"][0]["gap"]["max"] == 3
     assert summary["samples"][0]["duplicate_rate"] == pytest.approx(0.2)
+    assert summary["samples"][0]["slot_transport"]["raw_slot_duplicate_rate"] == pytest.approx(0.4)
+    assert summary["samples"][0]["slot_transport"]["reader_fill_count"] == 2
+    assert summary["samples"][0]["slot_transport"]["st_active_row_count"] == 3
     assert summary["samples"][0]["score_rank"]["available"] is True
     assert summary["samples"][1]["metadata_consistency"]["consistent"] is False
 

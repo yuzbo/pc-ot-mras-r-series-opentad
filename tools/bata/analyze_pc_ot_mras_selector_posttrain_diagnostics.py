@@ -534,6 +534,88 @@ def _proposal_rank_diagnostics(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _optional_int(value: Any, *, name: str) -> int | None:
+    data = _to_plain(value)
+    if data is None:
+        return None
+    try:
+        return _as_int(data, name=name)
+    except ValueError:
+        return None
+
+
+def _optional_float(value: Any, *, name: str) -> float | None:
+    data = _to_plain(value)
+    if data is None:
+        return None
+    try:
+        return _as_finite_float(data, name=name)
+    except ValueError:
+        return None
+
+
+def _slot_transport_diagnostics(row: Mapping[str, Any]) -> dict[str, Any]:
+    raw_value = _nested_get(
+        row,
+        (
+            "pc_ot_mras_prebackbone_raw_slot_dense_indices",
+            "raw_slot_dense_indices",
+            "raw_slot_indices",
+        ),
+    )
+    raw_positions: list[int] = []
+    if raw_value is not None:
+        raw_positions = _as_positions(raw_value, name="raw_slot_dense_indices")
+
+    raw_duplicate_rate = _optional_float(
+        _nested_get(
+            row,
+            (
+                "pc_ot_mras_prebackbone_raw_slot_duplicate_rate",
+                "raw_slot_duplicate_rate",
+            ),
+        ),
+        name="raw_slot_duplicate_rate",
+    )
+    if raw_duplicate_rate is None and raw_positions:
+        raw_duplicate_rate = 1.0 - float(len(set(raw_positions))) / float(max(1, len(raw_positions)))
+
+    reader_fill_count = _optional_int(
+        _nested_get(
+            row,
+            (
+                "pc_ot_mras_prebackbone_reader_fill_count",
+                "reader_fill_count",
+            ),
+        ),
+        name="reader_fill_count",
+    )
+    st_active_row_count = _optional_int(
+        _nested_get(
+            row,
+            (
+                "pc_ot_mras_prebackbone_st_active_row_count",
+                "st_active_row_count",
+            ),
+        ),
+        name="st_active_row_count",
+    )
+
+    return {
+        "available": bool(
+            raw_positions
+            or raw_duplicate_rate is not None
+            or reader_fill_count is not None
+            or st_active_row_count is not None
+        ),
+        "raw_slot_count": len(raw_positions),
+        "raw_slot_unique_count": len(set(raw_positions)) if raw_positions else None,
+        "raw_slot_duplicate_rate": _round_float(raw_duplicate_rate),
+        "reader_fill_count": reader_fill_count,
+        "st_active_row_count": st_active_row_count,
+    }
+
+
 def _score_rank_diagnostics(selected: Sequence[int], row: Mapping[str, Any], valid_len: int) -> dict[str, Any]:
     dense_scores, per_selected_scores, source = _extract_scores(row, selected, valid_len)
     proposal = _proposal_rank_diagnostics(row)
@@ -818,6 +900,7 @@ def _diagnose_sample(sample: Mapping[str, Any], *, default_boundary_radius: floa
     boundary = _boundary_diagnostics(selected, row, default_radius=default_boundary_radius)
     packet_roles = _packet_role_diagnostics(selected, row, default_radius=default_boundary_radius)
     metadata = _metadata_consistency(row, selected, valid_len)
+    slot_transport = _slot_transport_diagnostics(row)
     return {
         "sample_id": sample["sample_id"],
         "selected_dense_indices": selected,
@@ -835,6 +918,7 @@ def _diagnose_sample(sample: Mapping[str, Any], *, default_boundary_radius: floa
         "boundary": boundary,
         "packet_roles": packet_roles,
         "score_rank": _score_rank_diagnostics(selected, row, valid_len),
+        "slot_transport": slot_transport,
         "metadata_consistency": metadata,
     }
 
@@ -866,6 +950,22 @@ def _aggregate(samples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
     metadata_inconsistent = [
         item for item in samples if not bool(item.get("metadata_consistency", {}).get("consistent", False))
+    ]
+    slot_items = [item.get("slot_transport", {}) for item in samples]
+    raw_slot_duplicate_rates = [
+        float(item["raw_slot_duplicate_rate"])
+        for item in slot_items
+        if item.get("raw_slot_duplicate_rate") is not None
+    ]
+    reader_fill_counts = [
+        float(item["reader_fill_count"])
+        for item in slot_items
+        if item.get("reader_fill_count") is not None
+    ]
+    st_active_counts = [
+        float(item["st_active_row_count"])
+        for item in slot_items
+        if item.get("st_active_row_count") is not None
     ]
 
     return {
@@ -913,6 +1013,18 @@ def _aggregate(samples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "samples_with_selected_rank": sum(
                 1 for item in samples if item.get("score_rank", {}).get("selected_rank_available")
             ),
+        },
+        "slot_transport": {
+            "samples_with_slot_transport": sum(1 for item in slot_items if item.get("available")),
+            "samples_with_raw_slot_duplicate": len(raw_slot_duplicate_rates),
+            "samples_with_reader_fill_count": len(reader_fill_counts),
+            "samples_with_st_active_row_count": len(st_active_counts),
+            "raw_slot_duplicate_rate_mean": _round_float(_mean(raw_slot_duplicate_rates)),
+            "raw_slot_duplicate_rate_p95": _round_float(_percentile(raw_slot_duplicate_rates, 0.95)),
+            "reader_fill_count_mean": _round_float(_mean(reader_fill_counts)),
+            "reader_fill_count_p95": _round_float(_percentile(reader_fill_counts, 0.95)),
+            "st_active_row_count_mean": _round_float(_mean(st_active_counts)),
+            "st_active_row_count_p05": _round_float(_percentile(st_active_counts, 0.05)),
         },
     }
 

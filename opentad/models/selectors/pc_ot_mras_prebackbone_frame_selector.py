@@ -89,6 +89,17 @@ def _masked_frame_logits(logits: torch.Tensor, valid: torch.Tensor, name: str) -
     return logits.float().masked_fill(~valid.to(device=logits.device).bool(), 0.0)
 
 
+def _smooth_clamp_logits(logits: torch.Tensor, limit: float, name: str) -> torch.Tensor:
+    logits = logits.float()
+    _require_finite(logits, name, error_type=ValueError)
+    limit = float(limit)
+    if limit <= 0.0:
+        return logits
+    bounded = torch.tanh(logits / limit) * limit
+    _require_finite(bounded, f"{name} smooth-clamped", error_type=ValueError)
+    return bounded
+
+
 def _inverse_softplus(value: float) -> float:
     value = float(value)
     if value <= 0.0:
@@ -872,6 +883,9 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         frame_score_st_local_width: float = 8.0,
         frame_score_st_local_bias_weight: float = 1.0,
         frame_score_st_surrogate: str = "local_softmax",
+        frame_score_st_logit_clamp: float = 0.0,
+        frame_score_st_gradient_scale: float = 1.0,
+        frame_score_aux_logit_clamp: float = 0.0,
         interval_boundary_budget_ratio: float = 0.5,
         interval_candidate_topk: int = 16,
         dynamic_budget: Mapping[str, Any] | None = None,
@@ -980,6 +994,12 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             raise ValueError("frame_score_st_local_bias_weight must be non-negative")
         if str(frame_score_st_surrogate) not in ("local_softmax", "global_softmax"):
             raise ValueError("frame_score_st_surrogate must be 'local_softmax' or 'global_softmax'")
+        if float(frame_score_st_logit_clamp) < 0.0:
+            raise ValueError("frame_score_st_logit_clamp must be non-negative")
+        if not 0.0 <= float(frame_score_st_gradient_scale) <= 1.0:
+            raise ValueError("frame_score_st_gradient_scale must be in [0, 1]")
+        if float(frame_score_aux_logit_clamp) < 0.0:
+            raise ValueError("frame_score_aux_logit_clamp must be non-negative")
         if not 0.0 <= float(interval_boundary_budget_ratio) <= 1.0:
             raise ValueError("interval_boundary_budget_ratio must be in [0, 1]")
         if int(interval_candidate_topk) <= 0:
@@ -994,6 +1014,9 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         self.frame_score_st_local_width = float(frame_score_st_local_width)
         self.frame_score_st_local_bias_weight = float(frame_score_st_local_bias_weight)
         self.frame_score_st_surrogate = str(frame_score_st_surrogate)
+        self.frame_score_st_logit_clamp = float(frame_score_st_logit_clamp)
+        self.frame_score_st_gradient_scale = float(frame_score_st_gradient_scale)
+        self.frame_score_aux_logit_clamp = float(frame_score_aux_logit_clamp)
         self.interval_boundary_budget_ratio = float(interval_boundary_budget_ratio)
         self.interval_candidate_topk = int(interval_candidate_topk)
         self.dynamic_budget = self._normalize_dynamic_budget_config(dynamic_budget)
@@ -1554,6 +1577,11 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             pass
         else:
             raise ValueError(f"unknown frame_score_st_surrogate={surrogate}")
+        logits = _smooth_clamp_logits(
+            logits,
+            float(getattr(self, "frame_score_st_logit_clamp", 0.0)),
+            f"{name} rank transport logits",
+        )
         logits = logits.masked_fill(~candidate_valid.bool(), min_score)
         _require_finite(logits, f"{name} rank transport logits")
         soft_candidate = F.softmax(logits, dim=0).masked_fill(~candidate_valid.bool(), 0.0)
@@ -2149,7 +2177,8 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                         dense_len=dense_len,
                         device=device,
                     )
-                    transport_weights[batch_idx, out_idx] = hard + soft_dense - soft_dense.detach()
+                    st_scale = float(getattr(self, "frame_score_st_gradient_scale", 1.0))
+                    transport_weights[batch_idx, out_idx] = hard + st_scale * (soft_dense - soft_dense.detach())
                 else:
                     transport_weights[batch_idx, out_idx] = hard
             selected_roles.append(batch_roles)
@@ -2567,6 +2596,15 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 "frame_score_st_surrogate",
                 "local_softmax",
             )
+            meta["pc_ot_mras_prebackbone_frame_score_st_logit_clamp"] = float(
+                getattr(self, "frame_score_st_logit_clamp", 0.0)
+            )
+            meta["pc_ot_mras_prebackbone_frame_score_st_gradient_scale"] = float(
+                getattr(self, "frame_score_st_gradient_scale", 1.0)
+            )
+            meta["pc_ot_mras_prebackbone_frame_score_aux_logit_clamp"] = float(
+                getattr(self, "frame_score_aux_logit_clamp", 0.0)
+            )
             meta["pc_ot_mras_prebackbone_selected_roles"] = roles
             meta["pc_ot_mras_prebackbone_raw_slot_dense_indices"] = (
                 [int(pos) for pos in raw_slot_dense_indices[idx]] if raw_slot_dense_indices is not None else []
@@ -2906,8 +2944,13 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             and self.aux_gt_acquisition_loss_weight > 0.0
             and bool(valid.any().item())
         ):
+            aux_frame_selection_logits = _smooth_clamp_logits(
+                frame_selection_logits.float(),
+                float(getattr(self, "frame_score_aux_logit_clamp", 0.0)),
+                "selector gt frame score logits",
+            )
             frame_score_loss = (
-                F.binary_cross_entropy_with_logits(frame_selection_logits.float()[valid], action_target[valid])
+                F.binary_cross_entropy_with_logits(aux_frame_selection_logits[valid], action_target[valid])
                 * self.aux_gt_acquisition_loss_weight
             )
             _require_finite(frame_score_loss, "selector gt frame score loss")
