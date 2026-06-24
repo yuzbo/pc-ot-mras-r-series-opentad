@@ -5,8 +5,19 @@ variant_id = "BH-SDC-BoundaryHazard-SparseDense-FullTrainCandidate"
 route_id = "bh_sdc_boundary_hazard_sparse_dense"
 route_label = "DIVERGENT_INNOVATION_BH_SDC_DO_NOT_MERGE_WITH_C3"
 stage_id = "bh_sdc_boundary_hazard_sparse_dense_full_train_candidate_n16r4"
+launch_decision = "ALLOW_BH_SDC_N16R4_SYNC_AND_FULL_TRAIN_CANDIDATE_V1"
+reviewed_impl_commit = "ae4354307d903f537e2be78723c39a3e19787f9b"
+remote_workspace = "~/run/yuzibo/OpenTAD_Back_check"
+sync_command = f"REMOTE_SYNC_TO_N16R4:{remote_workspace}"
+slurm_command = "sbatch scripts/run_bh_sdc_full_train_n16r4.sbatch"
+train_command = (
+    "python tools/train.py "
+    "configs/adatad/thumos/bh_sdc_boundary_hazard_sparse_dense_full_train_candidate_n16r4.py --id 0"
+)
+command_whitelist = (sync_command, slurm_command, train_command)
 
 experiment_scope = dict(
+    _delete_=True,
     variant_id=variant_id,
     route=route_id,
     route_label=route_label,
@@ -16,9 +27,12 @@ experiment_scope = dict(
     formal_train_candidate=True,
     full_train_candidate_only=True,
     local_synthetic_gate_only=False,
-    pro_decision="GO_WITH_CONSTRAINTS_IMPLEMENT_BH_SDC_LOCAL_PROTOTYPE_ONLY",
+    reviewed_impl_commit=reviewed_impl_commit,
+    pro_decision="BASE_IMPL_PASSED_SECOND_GPT_5_5_PRO_AND_FINAL_READ_ONLY_REVIEW",
     pro_code_or_launch_approval=False,
-    launch_status="locked_until_major_code_review_pro_gate_and_subagent_final_review",
+    launch_status="launch_gate_commit_candidate_requires_new_pro_review_before_sync_or_slurm",
+    launch_gate_decision=launch_decision,
+    launch_gate_commit_review_required=True,
     complete_training_required=True,
     metric_claim_allowed=False,
     deploy_claim_allowed=False,
@@ -27,30 +41,41 @@ experiment_scope = dict(
 )
 
 bh_sdc_gate = dict(
+    _delete_=True,
     route=route_id,
     route_label=route_label,
     stage=stage_id,
     default_off=True,
     requires_launch_gate=True,
-    launch_gate_passed=False,
-    allow_remote_sync=False,
-    allow_slurm=False,
-    allow_gpu=False,
-    allow_tools_train=False,
+    launch_gate_passed=True,
+    static_authorization=False,
+    external_payload_required=True,
+    launch_gate_commit_review_required=True,
+    launch_decision=launch_decision,
+    reviewed_impl_commit=reviewed_impl_commit,
+    allow_remote_sync=True,
+    allow_slurm=True,
+    allow_gpu=True,
+    allow_tools_train=True,
     allow_tools_test=False,
     allow_detector_map=False,
-    allow_train_validation_map=False,
-    allow_long_training=False,
-    allow_precheck_only=True,
-    allow_dataset_access=False,
+    allow_train_validation_map=True,
+    allow_long_training=True,
+    allow_full_train=True,
+    allow_precheck_only=False,
+    allow_dataset_access=True,
     allow_pretrained_initialization=False,
-    allow_checkpoint_write=False,
+    allow_checkpoint_write=True,
     allow_checkpoint_load=False,
     allow_resume=False,
     allow_raw_prediction_cache=False,
     allow_metric_claim=False,
     allow_paper_claim=False,
-    allowed_entrypoints=(),
+    allowed_entrypoints=("tools/train.py",),
+    command_whitelist=command_whitelist,
+    remote_workspace=remote_workspace,
+    slurm_script="scripts/run_bh_sdc_full_train_n16r4.sbatch",
+    train_command=train_command,
     entrypoint_gate_context=dict(
         required=True,
         gate_json_env="OPENTAD_BH_SDC_GATE_JSON",
@@ -58,11 +83,59 @@ bh_sdc_gate = dict(
         active_manifest_sha256_env="OPENTAD_BH_SDC_ACTIVE_MANIFEST_SHA256",
         resolved_config_sha256_env="OPENTAD_BH_SDC_RESOLVED_CONFIG_SHA256",
         require_resolved_config_sha256=True,
-        allowed_decisions=(),
+        allowed_decisions=(launch_decision,),
         strict_payload_validation=True,
-        forbidden_true_keys=(
-            "tools_train",
+        required_exact_values=dict(
+            schema_version=1,
+            route=route_id,
+            route_label=route_label,
+            stage=stage_id,
+            reviewed_impl_commit=reviewed_impl_commit,
+            explicit_user_pro_launch_decision=launch_decision,
+            pro_launch_gate_verdict=launch_decision,
+            remote_workspace=remote_workspace,
+            remote_workspace_policy="N16R4_YUZIBO_ONLY",
+            slurm_script="scripts/run_bh_sdc_full_train_n16r4.sbatch",
+            slurm_partition="gpu",
+            max_gpus=1,
+            max_nodes=1,
+            max_time_hours=48,
+            max_epochs=60,
+            train_command=train_command,
+            checkpoint_write_policy="route_work_dir_only",
+            checkpoint_load_policy="none",
+            pretrained_initialization_policy="none",
+            resume_policy="none",
+            dataset_scope="THUMOS14_TAD_ONLY_TRAIN200_VALTEST211",
+        ),
+        required_true_keys=(
+            "allow_remote_sync",
+            "allow_slurm",
+            "allow_full_train",
             "allow_tools_train",
+            "allow_checkpoint_write",
+            "no_gt_test_leakage_assertion",
+            "no_teacher_or_oracle_assertion",
+            "no_raw_prediction_cache_assertion",
+        ),
+        required_false_keys=(
+            "allow_tools_test",
+            "allow_detector_map",
+            "allow_metric_claim",
+            "allow_paper_claim",
+            "allow_runtime_flops_claim",
+            "allow_deploy_claim",
+            "uses_test_gt",
+            "uses_val_test_teacher",
+            "uses_oracle",
+            "uses_raw_prediction_cache",
+            "load_from_raw_predictions",
+            "save_raw_prediction",
+            "allow_checkpoint_load",
+            "allow_pretrained_initialization",
+            "allow_resume",
+        ),
+        forbidden_true_keys=(
             "tools_test",
             "allow_tools_test",
             "detector_map",
@@ -95,11 +168,23 @@ bh_sdc_gate = dict(
             "runtime_flops_claim_allowed",
             "deploy_claim_allowed",
         ),
+        unknown_key_policy="reject_unknown_except_explicit_harmless_metadata",
+        harmless_metadata_keys=(
+            "launch_gate_commit",
+            "pro_implementation_verdict",
+            "pro_implementation_session",
+            "final_read_only_review_verdict",
+            "final_read_only_review_id",
+            "pro_launch_gate_session",
+            "command_whitelist",
+        ),
     ),
     metric_claim_allowed=False,
     paper_claim_allowed=False,
     runtime_flops_claim_allowed=False,
     deploy_claim_allowed=False,
 )
+
+pc_ot_mras_prebackbone_e2e_acquisition_gate = None
 
 work_dir = "exps/thumos/adatad/bh_sdc_boundary_hazard_sparse_dense_full_train_candidate_n16r4"

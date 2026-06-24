@@ -60,6 +60,47 @@ This implementation is a full candidate model for the route, but the launch gate
 - `tests/test_bh_sdc_actionformer_integration.py`
 - `tests/test_bh_sdc_metadata_contract.py`
 - `tests/test_bh_sdc_launcher_gate.py`
+- `docs/en/bh_sdc_n16r4_launch_gate_review_context_20260624.md`
+
+## N16R4 Launch-Gate Candidate Update
+
+This branch now contains a separate launch-gate candidate commit for the same
+BH-SDC route. The base implementation commit
+`ae4354307d903f537e2be78723c39a3e19787f9b` passed the second GPT-5.5 Pro
+implementation review and the final read-only implementation review, but that
+base commit intentionally did not authorize remote sync, Slurm, GPU full
+training, direct detector evaluation, raw prediction cache use, or metric/paper
+claims.
+
+The previous BH-SDC full-train candidate could not sync or train because its
+config, validator, and sbatch script were deliberately static-precheck only:
+`launch_gate_passed=false`, `allowed_entrypoints=()`, remote sync and Slurm
+flags were false, and the launcher requested no GPU and never called the train
+entrypoint. That state was correct for implementation review, but it was not an
+execution request.
+
+The new launch-gate candidate introduces the decision string
+`ALLOW_BH_SDC_N16R4_SYNC_AND_FULL_TRAIN_CANDIDATE_V1`. It does not silently reuse
+the old implementation/precheck decision. The full-train config is now an
+entrypoint-gated train candidate: `tools/train.py` is the only allowed detector
+entrypoint, but `entrypoint_gate_context.required=true` means training still
+fails closed unless a separate launch gate JSON, JSON SHA256, active manifest
+SHA256, and resolved config SHA256 are all supplied and validated.
+
+The validator now rejects missing payloads, old precheck-only payloads, unknown
+keys, missing Pro/final review evidence, non-exact command whitelists, direct
+evaluation entrypoints, raw prediction caches, checkpoint/pretrain/resume
+shortcuts, and paper/runtime/deploy/metric claims before real results exist. A
+valid payload may authorize only these exact reviewed actions:
+
+- `REMOTE_SYNC_TO_N16R4:~/run/yuzibo/OpenTAD_Back_check`
+- `sbatch scripts/run_bh_sdc_full_train_n16r4.sbatch`
+- `python tools/train.py configs/adatad/thumos/bh_sdc_boundary_hazard_sparse_dense_full_train_candidate_n16r4.py --id 0`
+
+This launch-gate commit itself still requires a new GPT-5 Pro / GPT-5.5 Pro
+review before any real N16R4 sync, Slurm submission, or full training. The
+required review context is summarized in
+`docs/en/bh_sdc_n16r4_launch_gate_review_context_20260624.md`.
 
 ## Owner-Fix Pro Blocking Repairs
 

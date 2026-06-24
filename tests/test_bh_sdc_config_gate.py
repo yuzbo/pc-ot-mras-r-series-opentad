@@ -18,6 +18,20 @@ FULL_CONFIG = (
     ROOT / "configs" / "adatad" / "thumos" / "bh_sdc_boundary_hazard_sparse_dense_full_train_candidate_n16r4.py"
 )
 BH_SDC_ROUTE_LABEL = "DIVERGENT_INNOVATION_BH_SDC_DO_NOT_MERGE_WITH_C3"
+LAUNCH_DECISION = "ALLOW_BH_SDC_N16R4_SYNC_AND_FULL_TRAIN_CANDIDATE_V1"
+REVIEWED_IMPL_COMMIT = "ae4354307d903f537e2be78723c39a3e19787f9b"
+EXPECTED_REMOTE_WORKSPACE = "~/run/yuzibo/OpenTAD_Back_check"
+EXPECTED_SYNC_COMMAND = f"REMOTE_SYNC_TO_N16R4:{EXPECTED_REMOTE_WORKSPACE}"
+EXPECTED_SLURM_COMMAND = "sbatch scripts/run_bh_sdc_full_train_n16r4.sbatch"
+EXPECTED_TRAIN_COMMAND = (
+    "python tools/train.py "
+    "configs/adatad/thumos/bh_sdc_boundary_hazard_sparse_dense_full_train_candidate_n16r4.py --id 0"
+)
+EXPECTED_COMMAND_WHITELIST = [
+    EXPECTED_SYNC_COMMAND,
+    EXPECTED_SLURM_COMMAND,
+    EXPECTED_TRAIN_COMMAND,
+]
 
 
 def _load_validator():
@@ -27,11 +41,72 @@ def _load_validator():
     return module
 
 
-def test_bh_sdc_configs_remain_fail_closed_and_use_sparse_dense_chain():
+def _synthetic_launch_payload(resolved_config_sha256: str, active_manifest_sha256: str | None = None):
+    if active_manifest_sha256 is None:
+        active_manifest_sha256 = "a" * 64
+    return {
+        "schema_version": 1,
+        "decision": LAUNCH_DECISION,
+        "explicit_user_pro_launch_decision": LAUNCH_DECISION,
+        "pro_launch_gate_verdict": LAUNCH_DECISION,
+        "pro_launch_gate_session": "synthetic-pro-launch-gate-session",
+        "route": "bh_sdc_boundary_hazard_sparse_dense",
+        "route_label": BH_SDC_ROUTE_LABEL,
+        "stage": "bh_sdc_boundary_hazard_sparse_dense_full_train_candidate_n16r4",
+        "reviewed_impl_commit": REVIEWED_IMPL_COMMIT,
+        "launch_gate_commit": "b" * 40,
+        "pro_implementation_verdict": "PASS_SECOND_GPT_5_5_PRO_REVIEW_NO_BLOCKERS",
+        "pro_implementation_session": "synthetic-pro-implementation-session",
+        "final_read_only_review_verdict": "PASS_SUBAGENT_FINAL_REVIEW_ONLY",
+        "final_read_only_review_id": "synthetic-final-read-only-review",
+        "resolved_config_sha256": resolved_config_sha256,
+        "active_sha256_manifest_sha256": active_manifest_sha256,
+        "command_whitelist": list(EXPECTED_COMMAND_WHITELIST),
+        "remote_workspace": EXPECTED_REMOTE_WORKSPACE,
+        "remote_workspace_policy": "N16R4_YUZIBO_ONLY",
+        "slurm_script": "scripts/run_bh_sdc_full_train_n16r4.sbatch",
+        "slurm_partition": "gpu",
+        "max_gpus": 1,
+        "max_nodes": 1,
+        "max_time_hours": 48,
+        "max_epochs": 60,
+        "train_command": EXPECTED_TRAIN_COMMAND,
+        "allow_remote_sync": True,
+        "allow_slurm": True,
+        "allow_full_train": True,
+        "allow_tools_train": True,
+        "allow_tools_test": False,
+        "allow_detector_map": False,
+        "allow_metric_claim": False,
+        "allow_paper_claim": False,
+        "allow_runtime_flops_claim": False,
+        "allow_deploy_claim": False,
+        "no_gt_test_leakage_assertion": True,
+        "no_teacher_or_oracle_assertion": True,
+        "no_raw_prediction_cache_assertion": True,
+        "uses_test_gt": False,
+        "uses_val_test_teacher": False,
+        "uses_oracle": False,
+        "uses_raw_prediction_cache": False,
+        "load_from_raw_predictions": False,
+        "save_raw_prediction": False,
+        "allow_checkpoint_load": False,
+        "allow_pretrained_initialization": False,
+        "allow_resume": False,
+        "allow_checkpoint_write": True,
+        "checkpoint_write_policy": "route_work_dir_only",
+        "checkpoint_load_policy": "none",
+        "pretrained_initialization_policy": "none",
+        "resume_policy": "none",
+        "dataset_scope": "THUMOS14_TAD_ONLY_TRAIN200_VALTEST211",
+    }
+
+
+def test_bh_sdc_configs_use_sparse_dense_chain_and_distinct_gate_modes():
     validator = _load_validator()
 
-    local = validator.validate_locked_config(LOCAL_CONFIG)
-    full = validator.validate_locked_config(FULL_CONFIG)
+    local = validator.validate_static_config(LOCAL_CONFIG)
+    full = validator.validate_static_config(FULL_CONFIG)
 
     for result in (local, full):
         assert result["route"] == "bh_sdc_boundary_hazard_sparse_dense"
@@ -40,11 +115,19 @@ def test_bh_sdc_configs_remain_fail_closed_and_use_sparse_dense_chain():
         assert result["completion_bridge"] == "PCOTMRASBoundaryHazardSparseToDenseBridge"
         assert result["dense_window_size"] == 768
         assert result["min_budget"] < result["target_budget"] < result["max_budget"]
-        assert result["launch_gate_passed"] is False
-        assert result["allow_long_training"] is False
         assert result["base_chain_forbidden_tokens"] == []
-        assert result["allowed_entrypoints"] == []
 
+    assert local["launch_gate_passed"] is False
+    assert local["allow_long_training"] is False
+    assert local["allowed_entrypoints"] == []
+    assert local["launch_decision"] is None
+    assert full["launch_gate_passed"] is True
+    assert full["allow_long_training"] is True
+    assert full["allow_tools_train"] is True
+    assert full["allow_tools_test"] is False
+    assert full["allowed_entrypoints"] == ["tools/train.py"]
+    assert full["launch_decision"] == LAUNCH_DECISION
+    assert full["static_authorization"] is False
     local_text = LOCAL_CONFIG.read_text(encoding="utf-8")
     assert "pc_ot_mras_prebackbone_c3_hybrid_reader_candidate_n16r4.py" not in local_text
     assert "e2e_thumos_videomae_s_768x1_160_adapter.py" in local_text
@@ -139,7 +222,7 @@ def test_bh_sdc_validator_rejects_forbidden_base_chain_tokens(tmp_path):
     )
 
     with pytest.raises(ValueError, match="forbidden route/base token"):
-        validator.validate_locked_config(child)
+        validator.validate_static_config(child)
 
 
 def test_bh_sdc_validator_rejects_non_strict_budget_bounds(tmp_path):
@@ -152,10 +235,10 @@ def test_bh_sdc_validator_rejects_non_strict_budget_bounds(tmp_path):
     )
 
     with pytest.raises(ValueError, match="min_budget < target_budget < max_budget <= dense_window_size"):
-        validator.validate_locked_config(bad)
+        validator.validate_static_config(bad)
 
 
-def test_bh_sdc_validator_cli_emits_locked_json_contract():
+def test_bh_sdc_validator_cli_without_payload_remains_fail_closed():
     result = subprocess.run(
         [
             sys.executable,
@@ -168,13 +251,136 @@ def test_bh_sdc_validator_cli_emits_locked_json_contract():
         stderr=subprocess.PIPE,
         text=True,
         timeout=60,
-        check=True,
+        check=False,
     )
     payload = json.loads(result.stdout)
 
-    assert payload["ok"] is True
+    assert result.returncode != 0
+    assert payload["ok"] is False
+    assert payload["authorized"] is False
+    assert "gate payload" in payload["reason"]
     assert payload["route_label"] == BH_SDC_ROUTE_LABEL
-    assert payload["launch_gate_passed"] is False
-    assert payload["allowed_entrypoints"] == []
-    assert payload["base_chain_forbidden_tokens"] == []
-    assert payload["min_budget"] < payload["target_budget"] < payload["max_budget"] <= payload["dense_window_size"]
+    assert payload["launch_decision"] == LAUNCH_DECISION
+
+
+def test_bh_sdc_old_precheck_payload_does_not_authorize_training():
+    validator = _load_validator()
+    static = validator.validate_static_config(FULL_CONFIG)
+    old_payload = {
+        "decision": "GO_WITH_CONSTRAINTS_IMPLEMENT_BH_SDC_LOCAL_PROTOTYPE_ONLY",
+        "route": "bh_sdc_boundary_hazard_sparse_dense",
+        "route_label": BH_SDC_ROUTE_LABEL,
+        "resolved_config_sha256": static["resolved_config_sha256"],
+        "active_sha256_manifest_sha256": "a" * 64,
+    }
+
+    with pytest.raises(ValueError, match="decision"):
+        validator.validate_launch_gate_payload(
+            FULL_CONFIG,
+            old_payload,
+            requested_action="slurm_full_train_candidate",
+            requested_command=EXPECTED_TRAIN_COMMAND,
+            active_manifest_sha256="a" * 64,
+            resolved_config_sha256=static["resolved_config_sha256"],
+        )
+
+
+def test_bh_sdc_launch_payload_rejects_unknown_keys():
+    validator = _load_validator()
+    static = validator.validate_static_config(FULL_CONFIG)
+    payload = _synthetic_launch_payload(static["resolved_config_sha256"])
+    payload["surprise_unlock"] = True
+
+    with pytest.raises(ValueError, match="unknown"):
+        validator.validate_launch_gate_payload(
+            FULL_CONFIG,
+            payload,
+            requested_action="slurm_full_train_candidate",
+            requested_command=EXPECTED_TRAIN_COMMAND,
+            active_manifest_sha256="a" * 64,
+            resolved_config_sha256=static["resolved_config_sha256"],
+        )
+
+
+@pytest.mark.parametrize(
+    "missing_key",
+    [
+        "pro_implementation_session",
+        "pro_launch_gate_verdict",
+        "final_read_only_review_verdict",
+        "explicit_user_pro_launch_decision",
+    ],
+)
+def test_bh_sdc_launch_payload_requires_review_and_launch_decision_evidence(missing_key):
+    validator = _load_validator()
+    static = validator.validate_static_config(FULL_CONFIG)
+    payload = _synthetic_launch_payload(static["resolved_config_sha256"])
+    payload.pop(missing_key)
+
+    with pytest.raises(ValueError, match=missing_key):
+        validator.validate_launch_gate_payload(
+            FULL_CONFIG,
+            payload,
+            requested_action="slurm_full_train_candidate",
+            requested_command=EXPECTED_TRAIN_COMMAND,
+            active_manifest_sha256="a" * 64,
+            resolved_config_sha256=static["resolved_config_sha256"],
+        )
+
+
+def test_bh_sdc_launch_payload_requires_exact_command_whitelist_and_rejects_tools_test():
+    validator = _load_validator()
+    static = validator.validate_static_config(FULL_CONFIG)
+    payload = _synthetic_launch_payload(static["resolved_config_sha256"])
+
+    extra_command_payload = dict(payload)
+    extra_command_payload["command_whitelist"] = list(EXPECTED_COMMAND_WHITELIST) + ["python tools/test.py anything"]
+    with pytest.raises(ValueError, match="command_whitelist"):
+        validator.validate_launch_gate_payload(
+            FULL_CONFIG,
+            extra_command_payload,
+            requested_action="slurm_full_train_candidate",
+            requested_command=EXPECTED_TRAIN_COMMAND,
+            active_manifest_sha256="a" * 64,
+            resolved_config_sha256=static["resolved_config_sha256"],
+        )
+
+    with pytest.raises(ValueError, match="requested_command"):
+        validator.validate_launch_gate_payload(
+            FULL_CONFIG,
+            payload,
+            requested_action="slurm_full_train_candidate",
+            requested_command="python tools/test.py configs/adatad/thumos/bh_sdc_boundary_hazard_sparse_dense_full_train_candidate_n16r4.py best.pth",
+            active_manifest_sha256="a" * 64,
+            resolved_config_sha256=static["resolved_config_sha256"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("requested_action", "requested_command"),
+    [
+        ("remote_sync_to_n16r4_workspace", EXPECTED_SYNC_COMMAND),
+        ("slurm_submit_bh_sdc_n16r4", EXPECTED_SLURM_COMMAND),
+        ("slurm_full_train_candidate", EXPECTED_TRAIN_COMMAND),
+    ],
+)
+def test_bh_sdc_valid_synthetic_launch_payload_passes(requested_action, requested_command):
+    validator = _load_validator()
+    static = validator.validate_static_config(FULL_CONFIG)
+    payload = _synthetic_launch_payload(static["resolved_config_sha256"])
+
+    result = validator.validate_launch_gate_payload(
+        FULL_CONFIG,
+        payload,
+        requested_action=requested_action,
+        requested_command=requested_command,
+        active_manifest_sha256="a" * 64,
+        resolved_config_sha256=static["resolved_config_sha256"],
+    )
+
+    assert result["ok"] is True
+    assert result["authorized"] is True
+    assert result["decision"] == LAUNCH_DECISION
+    assert result["requested_action"] == requested_action
+    assert result["requested_command"] == requested_command
+    assert result["command_whitelist"] == EXPECTED_COMMAND_WHITELIST
