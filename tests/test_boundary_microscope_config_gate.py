@@ -21,6 +21,7 @@ FULL_CONFIG = (
 )
 VALIDATOR = ROOT / "tools" / "bata" / "validate_boundary_microscope_gate.py"
 DOC_CONTEXT = ROOT / "docs" / "en" / "boundary_microscope_acquisition_route_review_context_20260624.md"
+N16R4_PRECHECK_LAUNCHER = ROOT / "scripts" / "run_boundary_microscope_precheck_n16r4.sbatch"
 
 
 def _load_validator():
@@ -324,3 +325,17 @@ def test_boundary_microscope_selector_is_exported_for_registry_discovery():
     assert "boundary_microscope_acquisition_route" in text
     assert "BoundaryMicroscopeAcquisitionRoute" in text
     assert "BOUNDARY_MICROSCOPE_ROUTE_LABEL" in text
+
+
+def test_boundary_microscope_n16r4_precheck_launcher_is_fail_closed():
+    text = N16R4_PRECHECK_LAUNCHER.read_text(encoding="utf-8")
+
+    assert 'PRECHECK_ONLY="${PRECHECK_ONLY:-1}"' in text
+    assert "ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN" in text
+    assert "PRECHECK_ONLY=1 must not set ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN=1" in text
+    assert "PRECHECK_ONLY=0 requires ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN=1" in text
+    assert "full train remains locked" in text
+    assert "BOUNDARY_MICROSCOPE_PRECHECK_ONLY_PASS_NO_TRAIN" in text
+    assert "tools/train.py" in text
+    assert text.index('if [ "$PRECHECK_ONLY" = "1" ]') < text.index("tools/train.py")
+    assert "DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3" in text

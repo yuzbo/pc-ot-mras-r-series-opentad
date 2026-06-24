@@ -58,19 +58,22 @@ plans, token-compression outputs, or post-processing shortcuts.
 
 ## Protocol Boundary
 
-Current status is implementation and local gate validation only.
+Current status is implementation, local gate validation, and
+deployment-precheck validation only. The deployment-precheck stage is limited
+to a route-owned N16R4 checkout plus `PRECHECK_ONLY=1` launcher execution.
 
 Allowed:
 
 - local unit tests;
 - local config parsing;
 - local fail-closed gate validator;
-- GPT-5.5 Pro / Rosetta review using a bounded context packet.
+- route-owned remote sync into a new Boundary Microscope precheck path;
+- route-owned `PRECHECK_ONLY=1` launcher execution that exits before training.
 
 Locked:
 
-- remote sync;
-- Slurm submission;
+- any shared-repo write, branch switch, staging, commit, push, prompt, or log;
+- full-training Slurm submission;
 - GPU training;
 - `tools/train.py`;
 - `tools/test.py`;
@@ -88,8 +91,8 @@ This decision cannot authorize remote sync, Slurm, `tools/train.py`, full
 training, evaluation, metric claims, runtime claims, deploy claims, or paper
 claims. A future full-training route would require a separate explicit decision
 string and separate validator logic; it must not reuse the precheck-only gate.
-After these Pro blocking fixes, a second GPT-5.5 Pro review remains required
-before any sync, Slurm, training, evaluation, metric claim, or paper claim.
+The current deployment-precheck update does not unlock full training,
+evaluation, metric claim, deploy claim, or paper claim.
 
 ## Negative Attribution Guard
 
