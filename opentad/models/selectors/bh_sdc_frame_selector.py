@@ -94,6 +94,22 @@ class AcquisitionPlan:
     diagnostics: dict[str, torch.Tensor]
 
 
+def _dtype_safe_logit_fill_value(tensor: torch.Tensor, fill_value: float) -> float:
+    value = float(fill_value)
+    if not torch.is_floating_point(tensor):
+        return value
+    finfo = torch.finfo(tensor.dtype)
+    if value < finfo.min:
+        return max(finfo.min, _MASKED_LOW_LOGIT)
+    if value > finfo.max:
+        return min(finfo.max, -_MASKED_LOW_LOGIT)
+    return value
+
+
+def _invalid_low_logit_like(tensor: torch.Tensor) -> float:
+    return _dtype_safe_logit_fill_value(tensor, _MASKED_LOW_LOGIT)
+
+
 def _require_finite(tensor: torch.Tensor, name: str) -> None:
     if torch.is_complex(tensor):
         raise ValueError(f"{name} must be real-valued")
@@ -248,7 +264,8 @@ def _dense_probe_logits(
 ) -> torch.Tensor:
     if temperature <= 0.0:
         raise ValueError("probe_interpolation_temperature must be positive")
-    dense = torch.full_like(probe_logits, float(invalid_fill))
+    fill_value = _dtype_safe_logit_fill_value(probe_logits, invalid_fill)
+    dense = torch.full_like(probe_logits, fill_value)
     time_axis = torch.arange(probe_logits.shape[1], device=probe_logits.device, dtype=probe_logits.dtype)
     for batch_idx in range(probe_logits.shape[0]):
         probe_positions = torch.nonzero(probe_mask[batch_idx], as_tuple=False).flatten()
@@ -259,7 +276,7 @@ def _dense_probe_logits(
         distance = (time_axis[:valid_len, None] - probe_positions.to(dtype=probe_logits.dtype)[None, :]).abs()
         weights = torch.softmax(-distance / float(temperature), dim=1)
         dense[batch_idx, :valid_len] = probe_values @ weights.transpose(0, 1)
-    return dense.masked_fill(~valid, float(invalid_fill))
+    return dense.masked_fill(~valid, fill_value)
 
 
 def _densify_probe_scout_outputs(
@@ -292,13 +309,17 @@ def _densify_probe_scout_outputs(
         temperature=temperature,
         invalid_fill=-_MASKED_LOW_LOGIT,
     )
-    outputs["frame_selection_logits"] = (
+    frame_selection_logits = (
         outputs["actionness_logits"]
         + 0.5 * outputs["boundary_logits"]
         + 0.25 * outputs["difficulty_logits"]
         + 0.25 * outputs["uncertainty_logits"]
         - 0.25 * outputs["redundancy_logits"]
-    ).masked_fill(~valid, _MASKED_LOW_LOGIT)
+    )
+    outputs["frame_selection_logits"] = frame_selection_logits.masked_fill(
+        ~valid,
+        _invalid_low_logit_like(frame_selection_logits),
+    )
     outputs["valid_mask"] = valid
     outputs["probe_visible_mask"] = probe_mask
     outputs["protocol"] = dict(_deploy_protocol_flags(), scout_input_scope="explicit_probe_visible_only")
@@ -465,16 +486,20 @@ class BoundaryHazardTemporalScout(nn.Module):
             fill_value = _MASKED_LOW_LOGIT
             if key == "redundancy_logits":
                 fill_value = -_MASKED_LOW_LOGIT
-            value = value.masked_fill(~valid, fill_value)
+            value = value.masked_fill(~valid, _dtype_safe_logit_fill_value(value, fill_value))
             _require_finite(value, key)
             outputs[key] = value
-        outputs["frame_selection_logits"] = (
+        frame_selection_logits = (
             outputs["actionness_logits"]
             + 0.5 * outputs["boundary_logits"]
             + 0.25 * outputs["difficulty_logits"]
             + 0.25 * outputs["uncertainty_logits"]
             - 0.25 * outputs["redundancy_logits"]
-        ).masked_fill(~valid, _MASKED_LOW_LOGIT)
+        )
+        outputs["frame_selection_logits"] = frame_selection_logits.masked_fill(
+            ~valid,
+            _invalid_low_logit_like(frame_selection_logits),
+        )
         outputs["valid_mask"] = valid
         outputs["protocol"] = _deploy_protocol_flags()
         return outputs
@@ -637,7 +662,7 @@ class BoundaryHazardAcquisitionPolicy(nn.Module):
         redundancy_score = torch.sigmoid(scout_out["redundancy_logits"])
         combined = action_score + 0.75 * boundary_score + 0.35 * difficulty_score + 0.25 * uncertainty_score
         combined = combined - 0.45 * redundancy_score
-        combined = combined.masked_fill(~valid, -1.0e6)
+        combined = combined.masked_fill(~valid, _invalid_low_logit_like(combined))
 
         for batch_idx in range(batch):
             valid_len = int(valid[batch_idx].long().sum().item())

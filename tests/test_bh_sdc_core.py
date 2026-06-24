@@ -253,6 +253,88 @@ def test_acquisition_policy_keeps_boundary_peaks_coverage_and_sorted_unique_indi
     _assert_prefix_mask(plan.selected_mask)
 
 
+def test_acquisition_policy_accepts_fp16_scout_logits_with_invalid_tail():
+    module, _builder = _load_bh_sdc_module()
+    policy = module.BoundaryHazardAcquisitionPolicy(
+        dense_window_size=12,
+        min_budget=3,
+        max_budget=6,
+        coverage_ratio=0.25,
+        boundary_ratio=0.50,
+        max_dense_gap=4,
+    )
+    valid = torch.ones(1, 12, dtype=torch.bool)
+    valid[0, 9:] = False
+    zeros = torch.zeros(1, 12, dtype=torch.float16)
+    scout_out = {
+        "actionness_logits": zeros.clone(),
+        "start_hazard_logits": zeros.clone(),
+        "end_hazard_logits": zeros.clone(),
+        "boundary_logits": zeros.clone(),
+        "difficulty_logits": zeros.clone(),
+        "uncertainty_logits": zeros.clone(),
+        "redundancy_logits": zeros.clone(),
+        "valid_mask": valid,
+    }
+    scout_out["start_hazard_logits"][0, 2] = torch.tensor(8.0, dtype=torch.float16)
+    scout_out["end_hazard_logits"][0, 7] = torch.tensor(8.0, dtype=torch.float16)
+
+    plan = policy(
+        dense_axis=torch.arange(12, dtype=torch.float32)[None, :],
+        scout_out=scout_out,
+        budget_per_sample=torch.tensor([6]),
+        valid_mask=valid,
+        metas=[{"sample_id": "policy-fp16-mask"}],
+    )
+
+    selected = plan.selected_dense_indices[0, plan.selected_mask[0]]
+    assert selected.max().item() < 9
+    assert torch.isfinite(plan.diagnostics["combined_score_mean"]).all()
+    _assert_prefix_mask(plan.selected_mask)
+
+
+def test_probe_scout_densification_accepts_fp16_logits_with_invalid_tail():
+    module, _builder = _load_bh_sdc_module()
+    valid = torch.ones(1, 10, dtype=torch.bool)
+    valid[0, 8:] = False
+    probe_mask = torch.zeros_like(valid)
+    probe_mask[0, [0, 3, 7]] = True
+    logits = torch.zeros(1, 10, dtype=torch.float16)
+    logits[0, [0, 3, 7]] = torch.tensor([1.0, 4.0, 2.0], dtype=torch.float16)
+    probe_out = {
+        "actionness_logits": logits.clone(),
+        "start_hazard_logits": logits.clone(),
+        "end_hazard_logits": logits.clone(),
+        "boundary_logits": logits.clone(),
+        "difficulty_logits": logits.clone(),
+        "uncertainty_logits": logits.clone(),
+        "redundancy_logits": -logits.clone(),
+    }
+
+    outputs = module._densify_probe_scout_outputs(
+        probe_out,
+        probe_mask,
+        valid,
+        temperature=1.5,
+    )
+
+    for key in (
+        "actionness_logits",
+        "start_hazard_logits",
+        "end_hazard_logits",
+        "boundary_logits",
+        "difficulty_logits",
+        "uncertainty_logits",
+        "redundancy_logits",
+        "frame_selection_logits",
+    ):
+        assert outputs[key].dtype == torch.float16
+        assert torch.isfinite(outputs[key]).all()
+    assert outputs["actionness_logits"][0, 8:].max().item() < -1000.0
+    assert outputs["redundancy_logits"][0, 8:].min().item() > 1000.0
+    assert outputs["frame_selection_logits"][0, 8:].max().item() < -1000.0
+
+
 def test_selector_probe_only_scout_ignores_non_probe_dense_values_and_records_probe_mask():
     module, _builder = _load_bh_sdc_module()
     selector = module.PCOTMRASBoundaryHazardSparseDenseFrameSelector(
