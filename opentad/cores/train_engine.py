@@ -4,6 +4,42 @@ import tqdm
 from opentad.utils.misc import AverageMeter, reduce_loss
 
 
+def _assert_loss_dict_finite(losses, *, stage):
+    if not isinstance(losses, dict):
+        raise TypeError(f"{stage} must return a loss dict, got {type(losses)!r}")
+    if "cost" not in losses:
+        raise KeyError(f"{stage} loss dict must contain cost")
+    for key, value in losses.items():
+        if not torch.is_tensor(value):
+            value = torch.as_tensor(value)
+        finite = torch.isfinite(value.detach()).all()
+        if not bool(finite.item()):
+            raise FloatingPointError(f"{stage} produced non-finite loss {key}")
+    cost = losses["cost"]
+    if not torch.is_tensor(cost):
+        cost = torch.as_tensor(cost)
+    if not bool(torch.isfinite(cost.detach()).all().item()):
+        raise FloatingPointError(f"{stage} produced non-finite cost")
+
+
+def _assert_grad_norm_finite(model):
+    total_sq = None
+    for parameter in model.parameters():
+        if parameter.grad is None:
+            continue
+        grad = parameter.grad.detach()
+        if not bool(torch.isfinite(grad).all().item()):
+            raise FloatingPointError("training produced non-finite parameter gradient")
+        grad_norm = grad.float().norm(2)
+        total_sq = grad_norm.pow(2) if total_sq is None else total_sq + grad_norm.pow(2)
+    if total_sq is None:
+        return None
+    total_norm = total_sq.sqrt()
+    if not bool(torch.isfinite(total_norm).all().item()):
+        raise FloatingPointError("training produced non-finite gradient norm")
+    return total_norm
+
+
 def train_one_epoch(
     train_loader,
     model,
@@ -43,18 +79,21 @@ def train_one_epoch(
         # forward pass
         with torch.cuda.amp.autocast(dtype=torch.float16, enabled=use_amp):
             losses = model(**data_dict, return_loss=True)
+        _assert_loss_dict_finite(losses, stage="train forward")
 
         # compute the gradients
         if use_amp:
             scaler.scale(losses["cost"]).backward()
+            scaler.unscale_(optimizer)
         else:
             losses["cost"].backward()
+        _assert_grad_norm_finite(model)
 
         # gradient clipping (to stabilize training if necessary)
         if clip_grad_l2norm > 0.0:
-            if use_amp:
-                scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_l2norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_l2norm)
+            if not bool(torch.isfinite(grad_norm.detach()).all().item()):
+                raise FloatingPointError("training produced non-finite clipped gradient norm")
 
         # update parameters
         if use_amp:

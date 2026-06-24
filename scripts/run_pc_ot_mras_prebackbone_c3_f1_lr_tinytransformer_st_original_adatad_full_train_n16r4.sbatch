@@ -2,7 +2,7 @@
 #SBATCH -p gpu
 #SBATCH --gpus=1
 #SBATCH --time=72:00:00
-#SBATCH -J pcot_c3full
+#SBATCH -J pcot_c3rsst
 #SBATCH -o logs/%x-%j.out
 
 set -eo pipefail
@@ -100,9 +100,9 @@ payload = {
     "status": status,
     "decision": decision,
     "reason": reason,
-    "stage": "PC_OT_MRAS_PREBACKBONE_C3_FULL_TRAIN",
-    "route": "pc_ot_mras_prebackbone_c3_f1_lr_tinytransformer_st_original_adatad",
-    "variant_id": "C3-F1-LR-TinyTransformer-ST-OriginalAdaTAD",
+    "stage": "PC_OT_MRAS_PREBACKBONE_C3_RS_HYBRID_ST_FULL_TRAIN",
+    "route": "pc_ot_mras_prebackbone_c3_rs_hybrid_st_original_adatad",
+    "variant_id": "C3-RS-Hybrid-ST-OriginalAdaTAD",
     "host": socket.gethostname(),
     "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
     "run_root": run_root,
@@ -111,7 +111,14 @@ payload = {
     "claim_boundaries": {
         "selection_surface": "pre_backbone_raw_frame",
         "selection_timing": "online_before_backbone",
+        "selector_reader": "PCOTMRASRSeriesHybridFrameScout",
+        "selector_gradient": "ST hard real frames + full_flat soft transport surrogate",
         "detector_head": "original_ActionFormerHead",
+        "nan_fail_fast": True,
+        "robust_aux_objective": "gt_duplicate_value_risk_uncertainty_redundancy_role",
+        "st_surrogate_mode": "full_flat",
+        "scout_pixel_normalize": True,
+        "scout_pixel_clamp": 5.0,
         "p2": False,
         "offline_ledger": False,
         "teacher": False,
@@ -133,7 +140,7 @@ PY
 on_exit() {
   local status="$?"
   if [ "$status" -ne 0 ] && [ ! -f "$SUMMARY_JSON" ]; then
-    write_summary "FAIL" "PREBACKBONE_C3_FULL_TRAIN_FAILED" "launcher exited before successful completion"
+    write_summary "FAIL" "PREBACKBONE_C3_RS_HYBRID_ST_FULL_TRAIN_FAILED" "launcher exited before successful completion"
   fi
 }
 trap on_exit EXIT
@@ -194,7 +201,7 @@ log "config=$CONFIG"
 log "run_root=$RUN_ROOT"
 log "work_dir=$WORK_DIR"
 log "seed=$SEED train_id=$TRAIN_ID master_port=$MASTER_PORT"
-log "required_gate_decision=ALLOW_PC_OT_MRAS_PREBACKBONE_C3_FULL_TRAIN_FIXED50"
+log "required_gate_decision=ALLOW_PC_OT_MRAS_PREBACKBONE_C3_RS_HYBRID_ST_FULL_TRAIN_FIXED50"
 test -f "$CONFIG" || fail "missing reviewed config: $CONFIG"
 
 log "dumping resolved config"
@@ -214,15 +221,27 @@ def require(condition, message):
 cfg = Config.fromfile(sys.argv[1])
 Path(sys.argv[2]).write_text(cfg.pretty_text + "\n", encoding="utf-8")
 gate = cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate
-require(gate.route == "pc_ot_mras_prebackbone_c3_f1_lr_tinytransformer_st_original_adatad", gate)
-require(gate.stage == "c3_f1_lr_tinytransformer_st_original_adatad_full_train_candidate", gate)
+require(gate.route == "pc_ot_mras_prebackbone_c3_rs_hybrid_st_original_adatad", gate)
+require(gate.stage == "c3_rs_hybrid_st_original_adatad_full_train", gate)
 require(gate.selection_surface == "pre_backbone_raw_frame", gate)
 require(gate.selection_timing == "online_before_backbone", gate)
 require(gate.allow_tools_train is True, gate)
 require(gate.allow_tools_test is False, gate)
 require(gate.allow_detector_map is False, gate)
 require(gate.allow_long_training is True, gate)
-require(cfg.experiment_scope.variant_id == "C3-F1-LR-TinyTransformer-ST-OriginalAdaTAD", cfg.experiment_scope)
+require(cfg.experiment_scope.variant_id == "C3-RS-Hybrid-ST-OriginalAdaTAD", cfg.experiment_scope)
+require(cfg.experiment_scope.route == "pc_ot_mras_prebackbone_c3_rs_hybrid_st_original_adatad", cfg.experiment_scope)
+require(cfg.experiment_scope.stage == "c3_rs_hybrid_st_original_adatad_full_train", cfg.experiment_scope)
+require(cfg.experiment_scope.selector_reader == "PCOTMRASRSeriesHybridFrameScout", cfg.experiment_scope)
+require(cfg.experiment_scope.reader_family == "RSeriesHybrid", cfg.experiment_scope)
+require(cfg.experiment_scope.selector_gradient == "st_hard_real_frames_with_full_flat_soft_transport_surrogate", cfg.experiment_scope)
+require(cfg.experiment_scope.st_hard_real_frames is True, cfg.experiment_scope)
+require(cfg.experiment_scope.st_surrogate_mode == "full_flat", cfg.experiment_scope)
+require(cfg.experiment_scope.train_loop_finite_fail_fast is True, cfg.experiment_scope)
+require(cfg.experiment_scope.nan_fail_fast is True, cfg.experiment_scope)
+require(cfg.experiment_scope.robust_aux_objective == "gt_duplicate_value_risk_uncertainty_redundancy_role", cfg.experiment_scope)
+require(cfg.experiment_scope.scout_pixel_normalize is True, cfg.experiment_scope)
+require(float(cfg.experiment_scope.scout_pixel_clamp) == 5.0, cfg.experiment_scope)
 require(cfg.experiment_scope.free_frame_level_selector is True, cfg.experiment_scope)
 require(cfg.experiment_scope.protected_scaffold is False, cfg.experiment_scope)
 require(cfg.experiment_scope.uses_p2 is False, cfg.experiment_scope)
@@ -241,10 +260,25 @@ require(cfg.model.frame_selector.scout_feature_source == "compressed_pixels", cf
 require(int(cfg.model.frame_selector.scout_spatial_size) == 32, cfg.model.frame_selector)
 require(int(cfg.model.frame_selector.transport_topk) == 1, cfg.model.frame_selector)
 require(int(cfg.model.frame_selector.eval_transport_topk) == 1, cfg.model.frame_selector)
-require(cfg.model.frame_selector.reader.type == "PCOTMRASTinyTransformerFrameScout", cfg.model.frame_selector.reader)
+require(cfg.model.frame_selector.straight_through_downstream is True, cfg.model.frame_selector)
+require(cfg.model.frame_selector.st_surrogate_mode == "full_flat", cfg.model.frame_selector)
+require(cfg.model.frame_selector.scout_pixel_normalize is True, cfg.model.frame_selector)
+require(float(cfg.model.frame_selector.scout_pixel_clamp) == 5.0, cfg.model.frame_selector)
+require(float(cfg.model.frame_selector.aux_gt_acquisition_loss_weight) == 0.05, cfg.model.frame_selector)
+require(float(cfg.model.frame_selector.aux_duplicate_cap_loss_weight) == 0.001, cfg.model.frame_selector)
+require(float(cfg.model.frame_selector.aux_duplicate_column_cap) == 1.25, cfg.model.frame_selector)
+require(float(cfg.model.frame_selector.aux_value_loss_weight) == 0.02, cfg.model.frame_selector)
+require(float(cfg.model.frame_selector.aux_risk_loss_weight) == 0.02, cfg.model.frame_selector)
+require(float(cfg.model.frame_selector.aux_uncertainty_loss_weight) == 0.01, cfg.model.frame_selector)
+require(float(cfg.model.frame_selector.aux_redundancy_loss_weight) == 0.01, cfg.model.frame_selector)
+require(float(cfg.model.frame_selector.aux_role_entropy_loss_weight) == 0.001, cfg.model.frame_selector)
+require(float(cfg.model.frame_selector.reader_regularizer_loss_weight) == 0.01, cfg.model.frame_selector)
+require(cfg.model.frame_selector.reader.type == "PCOTMRASRSeriesHybridFrameScout", cfg.model.frame_selector.reader)
 require(int(cfg.model.frame_selector.reader.in_dim) == 3072, cfg.model.frame_selector.reader)
 require(int(cfg.model.frame_selector.reader.num_slots) == 384, cfg.model.frame_selector.reader)
-require(float(cfg.model.frame_selector.reader.dropout) == 0.0, cfg.model.frame_selector.reader)
+require(int(cfg.model.frame_selector.reader.temporal_layers) == 3, cfg.model.frame_selector.reader)
+require(float(cfg.model.frame_selector.reader.dropout) == 0.05, cfg.model.frame_selector.reader)
+require(cfg.model.frame_selector.reader.local_global_fusion == "rseries_temporal_geometry_slot_attention", cfg.model.frame_selector.reader)
 require("pc_ot_mras_reader" not in cfg.model, cfg.model)
 require(cfg.model.rpn_head.type == "ActionFormerHead", cfg.model.rpn_head)
 require(cfg.model.neck.type != "PCOTMRASDetectorBridge", cfg.model.neck)
@@ -304,17 +338,22 @@ log "static py_compile and focused tests"
 python -m py_compile \
   "$CONFIG" \
   tools/bata/validate_pc_ot_mras_prebackbone_c3_full_train_gate.py \
+  opentad/cores/train_engine.py \
   opentad/models/selectors/pc_ot_mras_prebackbone_frame_selector.py \
   opentad/models/detectors/base.py \
-  tests/test_pc_ot_mras_prebackbone_c3_full_train_execution.py
+  tests/test_pc_ot_mras_prebackbone_c3_full_train_execution.py \
+  tests/test_pc_ot_mras_prebackbone_c3_reader_variants.py \
+  tests/test_pc_ot_mras_prebackbone_nan_guards.py
 python -m pytest \
   tests/test_pc_ot_mras_prebackbone_c3_full_train_execution.py \
+  tests/test_pc_ot_mras_prebackbone_c3_reader_variants.py \
+  tests/test_pc_ot_mras_prebackbone_nan_guards.py \
   tests/test_pc_ot_mras_prebackbone_c3_frame_level.py \
   tests/test_pc_ot_mras_prebackbone_selector_behavior.py \
   -q
 
 if [ "$PRECHECK_ONLY" = "1" ]; then
-  write_summary "PASS" "PREBACKBONE_C3_FULL_TRAIN_PRECHECK_ONLY_PASS_NO_TRAIN" "PRECHECK_ONLY=1; no tools/train.py execution"
+  write_summary "PASS" "PREBACKBONE_C3_RS_HYBRID_ST_FULL_TRAIN_PRECHECK_ONLY_PASS_NO_TRAIN" "PRECHECK_ONLY=1; no tools/train.py execution"
   exit 0
 fi
 
@@ -363,5 +402,5 @@ if grep -Eiq "load_from_raw_predictions|RAW_PREDICTION_CACHE|PREDICTION_CACHE" "
   fail "train stdout contains raw prediction/cache marker"
 fi
 
-write_summary "PASS" "PREBACKBONE_C3_FULL_TRAIN_PASS_NO_DIRECT_TEST_NO_CLAIMS" "tools/train.py completed full 60-epoch schedule; use final scheduled validation as performance"
-log "PREBACKBONE_C3_FULL_TRAIN_PASS_NO_DIRECT_TEST_NO_CLAIMS"
+write_summary "PASS" "PREBACKBONE_C3_RS_HYBRID_ST_FULL_TRAIN_PASS_NO_DIRECT_TEST_NO_CLAIMS" "tools/train.py completed full 60-epoch schedule; use final scheduled validation as performance"
+log "PREBACKBONE_C3_RS_HYBRID_ST_FULL_TRAIN_PASS_NO_DIRECT_TEST_NO_CLAIMS"

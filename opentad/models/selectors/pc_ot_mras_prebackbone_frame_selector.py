@@ -10,6 +10,14 @@ import torch.nn.functional as F
 from ..builder import SELECTORS, build_selector
 
 
+def _require_finite(tensor: torch.Tensor, name: str, *, error_type: type[Exception] = FloatingPointError) -> torch.Tensor:
+    if not torch.is_tensor(tensor):
+        raise TypeError(f"{name} must be a tensor")
+    if not torch.isfinite(tensor).all():
+        raise error_type(f"{name} must be finite")
+    return tensor
+
+
 def _as_bool_prefix_mask(masks: torch.Tensor, *, expected_shape: tuple[int, int]) -> torch.Tensor:
     if masks.ndim != 2:
         raise ValueError(f"masks must be [B,T], got {tuple(masks.shape)}")
@@ -35,8 +43,7 @@ def _validate_frame_scout_inputs(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if features.ndim != 3:
         raise ValueError(f"features must be [B,T,C], got {tuple(features.shape)}")
-    if not torch.isfinite(features).all():
-        raise ValueError("features must be finite")
+    _require_finite(features, "features", error_type=ValueError)
     if valid.ndim != 2:
         raise ValueError(f"valid mask must be [B,T], got {tuple(valid.shape)}")
     if tuple(valid.shape) != tuple(features.shape[:2]):
@@ -53,8 +60,7 @@ def _validate_frame_scout_inputs(
         if time_coords.ndim != 2 or tuple(time_coords.shape) != tuple(features.shape[:2]):
             raise ValueError("time_coords must match feature batch/time axes")
         time_coords = time_coords.to(device=features.device, dtype=features.dtype)
-        if not torch.isfinite(time_coords).all():
-            raise ValueError("time_coords must be finite")
+        _require_finite(time_coords, "time_coords", error_type=ValueError)
     return valid, time_coords
 
 
@@ -63,8 +69,7 @@ def _masked_slot_transport(slot_logits: torch.Tensor, valid: torch.Tensor) -> tu
         raise ValueError(f"slot_logits must be [B,K,T], got {tuple(slot_logits.shape)}")
     if valid.ndim != 2 or tuple(valid.shape) != (int(slot_logits.shape[0]), int(slot_logits.shape[2])):
         raise ValueError("valid mask must match slot_logits batch/time axes")
-    if not torch.isfinite(slot_logits).all():
-        raise ValueError("slot_logits must be finite")
+    _require_finite(slot_logits, "slot_logits", error_type=ValueError)
     valid = valid.to(device=slot_logits.device).bool()
     if bool((valid.long().sum(dim=1) <= 0).any().item()):
         raise ValueError("each sample must contain at least one valid frame")
@@ -73,16 +78,14 @@ def _masked_slot_transport(slot_logits: torch.Tensor, valid: torch.Tensor) -> tu
     acquisition_matrix = F.softmax(masked_logits, dim=-1).masked_fill(~valid[:, None, :], 0.0)
     row_mass = acquisition_matrix.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(torch.float32).tiny)
     acquisition_matrix = acquisition_matrix / row_mass
-    if not torch.isfinite(acquisition_matrix).all():
-        raise ValueError("acquisition_matrix must be finite")
+    _require_finite(acquisition_matrix, "acquisition_matrix", error_type=ValueError)
     return masked_logits, acquisition_matrix
 
 
 def _masked_frame_logits(logits: torch.Tensor, valid: torch.Tensor, name: str) -> torch.Tensor:
     if logits.ndim != 2 or tuple(logits.shape) != tuple(valid.shape):
         raise ValueError(f"{name} must be [B,T] and match valid mask")
-    if not torch.isfinite(logits).all():
-        raise ValueError(f"{name} must be finite")
+    _require_finite(logits, name, error_type=ValueError)
     return logits.float().masked_fill(~valid.to(device=logits.device).bool(), 0.0)
 
 
@@ -539,6 +542,9 @@ class PCOTMRASRSeriesHybridFrameScout(nn.Module):
         delta = time_coords.float()[:, None, :] - centers[None, :, None]
         geometry_bias = -0.5 * (delta / widths[None, :, None].clamp_min(1.0e-4)).square()
         geometry_bias = geometry_bias + gates.log()[None, :, None]
+        _require_finite(geometry_bias, "slot geometry bias")
+        _require_finite(centers, "slot centers")
+        _require_finite(widths, "slot widths")
         return geometry_bias, centers, widths
 
     def forward(self, features: torch.Tensor, valid: torch.Tensor, time_coords: torch.Tensor | None = None):
@@ -546,12 +552,16 @@ class PCOTMRASRSeriesHybridFrameScout(nn.Module):
         features = features.float().masked_fill(~valid.unsqueeze(-1), 0.0)
         frame_tokens = self.descriptor_proj(features) + self.time_proj(time_coords.float().unsqueeze(-1))
         frame_tokens = frame_tokens.masked_fill(~valid.unsqueeze(-1), 0.0)
+        _require_finite(frame_tokens, "rseries frame tokens")
         encoded = self.temporal(frame_tokens.transpose(1, 2), valid).transpose(1, 2)
         encoded = self.norm(encoded).masked_fill(~valid.unsqueeze(-1), 0.0)
+        _require_finite(encoded, "rseries encoded tokens")
         slot_features = self.slot_mlp(encoded).masked_fill(~valid.unsqueeze(-1), 0.0)
+        _require_finite(slot_features, "rseries slot features")
 
         content_logits = torch.einsum("bth,kh->bkt", slot_features, self.slot_queries.float())
         content_logits = content_logits * (slot_features.shape[-1] ** -0.5)
+        _require_finite(content_logits, "rseries content slot logits")
         geometry_bias, centers, widths = self._slot_geometry_bias(time_coords)
 
         value_logits = _masked_frame_logits(self.value_head(encoded).squeeze(-1), valid, "value_logits")
@@ -567,8 +577,7 @@ class PCOTMRASRSeriesHybridFrameScout(nn.Module):
             "redundancy_logits",
         )
         role_logits = self.role_head(encoded).float().masked_fill(~valid.unsqueeze(-1), 0.0)
-        if not torch.isfinite(role_logits).all():
-            raise ValueError("role_logits must be finite")
+        _require_finite(role_logits, "role_logits", error_type=ValueError)
 
         task_bias = (
             self.action_bias_weight * value_logits[:, None, :]
@@ -579,14 +588,19 @@ class PCOTMRASRSeriesHybridFrameScout(nn.Module):
         slot_logits = (content_logits.float() / self.slot_temperature) + self.geometry_bias_weight * geometry_bias + task_bias
         if self.slot_logit_clamp > 0.0:
             slot_logits = slot_logits.clamp(min=-self.slot_logit_clamp, max=self.slot_logit_clamp)
+        _require_finite(slot_logits, "rseries slot logits")
         slot_logits, acquisition_matrix = _masked_slot_transport(slot_logits, valid)
         center_diffs = centers[1:] - centers[:-1]
         order_regularizer = F.relu(-center_diffs).square().mean() if center_diffs.numel() else centers.sum() * 0.0
         width_regularizer = F.relu(widths - self.width_max).square().mean() + F.relu(self.width_min - widths).square().mean()
+        _require_finite(order_regularizer, "slot order regularizer")
+        _require_finite(width_regularizer, "slot width regularizer")
         return {
             "slot_logits": slot_logits,
             "acquisition_matrix": acquisition_matrix,
+            "action_logits": value_logits,
             "value_logits": value_logits,
+            "boundary_logits": boundary_logits,
             "risk_logits": boundary_logits,
             "uncertainty_logits": uncertainty_logits,
             "redundancy_logits": redundancy_logits,
@@ -622,7 +636,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         protected_uniform_count: int = 0,
         coverage_guard_count: int = 0,
         scout_feature_source: str = "handcrafted_descriptors",
-        scout_spatial_size: int | Sequence[int] = 2,
+        scout_spatial_size: int | Sequence[int] = 32,
         selection_unit: int = 1,
         selection_unit2_supported: bool = True,
         residual_count: int | None = None,
@@ -690,6 +704,15 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         reader_cfg.setdefault("type", "PCOTMRASReader")
         reader_cfg.setdefault("in_dim", int(descriptor_dim))
         reader_cfg.setdefault("num_slots", int(target_len))
+        if int(reader_cfg["in_dim"]) != int(descriptor_dim):
+            raise ValueError("reader in_dim must match selector descriptor_dim")
+        if str(reader_cfg.get("type")) == "PCOTMRASRSeriesHybridFrameScout":
+            if str(scout_feature_source) != "compressed_pixels":
+                raise ValueError("PCOTMRASRSeriesHybridFrameScout requires scout_feature_source='compressed_pixels'")
+            if (scout_height, scout_width) != (32, 32):
+                raise ValueError("PCOTMRASRSeriesHybridFrameScout requires 32x32 compressed pixel descriptors")
+            if int(descriptor_dim) != 3 * 32 * 32:
+                raise ValueError("PCOTMRASRSeriesHybridFrameScout requires descriptor_dim=3072 for RGB 32x32 pixels")
         self.reader = build_selector(reader_cfg)
         self.target_len = int(target_len)
         self.dense_window_size = int(dense_window_size)
@@ -771,6 +794,21 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             valid=valid,
         )
         reader_outputs = self.reader(candidate_descriptors, candidate_valid, time_coords=candidate_time_coords)
+        for name in (
+            "slot_logits",
+            "acquisition_matrix",
+            "allocation",
+            "action_logits",
+            "value_logits",
+            "boundary_logits",
+            "risk_logits",
+            "uncertainty_logits",
+            "redundancy_logits",
+            "role_logits",
+        ):
+            tensor = reader_outputs.get(name)
+            if torch.is_tensor(tensor):
+                _require_finite(tensor, f"reader output {name}")
         plan = self._sparse_transport_plan(
             reader_outputs,
             valid,
@@ -884,18 +922,15 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         )
         features = compressed.reshape(batch, dense_len, channels * self.scout_spatial_size[0] * self.scout_spatial_size[1])
         features = self._fit_descriptor_width(features, width=self.descriptor_dim)
-        if not torch.isfinite(features).all():
-            raise FloatingPointError("compressed scout features must be finite")
+        _require_finite(features, "compressed scout features")
         return features.masked_fill(~valid.unsqueeze(-1), 0.0)
 
     def _normalize_scout_pixels(self, video: torch.Tensor) -> torch.Tensor:
         if not self.scout_pixel_normalize:
-            if not torch.isfinite(video).all():
-                raise FloatingPointError("raw scout pixel tensor must be finite")
+            _require_finite(video, "raw scout pixel tensor")
             return video
         video = video.float()
-        if not torch.isfinite(video).all():
-            raise FloatingPointError("raw scout pixel tensor must be finite")
+        _require_finite(video, "raw scout pixel tensor")
         max_abs = video.detach().abs().amax()
         if bool((max_abs > 2.0).item()):
             video = video / 255.0
@@ -904,8 +939,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         video = (video - mean) / std
         if self.scout_pixel_clamp > 0.0:
             video = video.clamp(min=-self.scout_pixel_clamp, max=self.scout_pixel_clamp)
-        if not torch.isfinite(video).all():
-            raise FloatingPointError("normalized scout pixel tensor must be finite")
+        _require_finite(video, "normalized scout pixel tensor")
         return video
 
     @staticmethod
@@ -996,10 +1030,10 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             raise ValueError("prebackbone selector requires slot_logits, acquisition_matrix, or allocation")
         if matrix is None:
             matrix = logits
-        if torch.is_tensor(logits) and not bool(torch.isfinite(logits).all().item()):
-            raise ValueError("slot_logits must be finite")
-        if torch.is_tensor(matrix) and not bool(torch.isfinite(matrix).all().item()):
-            raise ValueError("acquisition matrix must be finite")
+        if torch.is_tensor(logits):
+            _require_finite(logits, "slot_logits", error_type=ValueError)
+        if torch.is_tensor(matrix):
+            _require_finite(matrix, "acquisition matrix", error_type=ValueError)
         if matrix.ndim != 3:
             raise ValueError(f"acquisition matrix must be [B,K,T], got {tuple(matrix.shape)}")
         batch, slots, candidate_len = matrix.shape
@@ -1014,25 +1048,36 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
 
         if logits is not None and logits.shape != matrix.shape:
             raise ValueError("slot_logits shape must match acquisition_matrix/allocation when both are provided")
-        score_source = logits if logits is not None else matrix
-        min_score = torch.finfo(score_source.dtype).min
+        candidate_valid = candidate_valid.to(device=matrix.device).bool()
+        candidate_dense_indices = candidate_dense_indices.to(device=matrix.device)
+        valid = valid.to(device=matrix.device).bool()
+        if bool((candidate_valid.long().sum(dim=1) <= 0).any().item()):
+            raise ValueError("each sample must contain at least one valid sparse transport candidate")
+
+        matrix_fp32 = matrix.float()
+        logits_fp32 = logits.float() if logits is not None else None
+        score_source = logits_fp32 if logits_fp32 is not None else matrix_fp32
+        min_score = torch.finfo(torch.float32).min
         hard_scores = score_source.masked_fill(~candidate_valid[:, None, :], min_score)
+        _require_finite(hard_scores, "masked hard transport scores")
         candidate_indices = hard_scores.argmax(dim=-1)
-        selected_positions = candidate_dense_indices.gather(dim=1, index=candidate_indices).to(dtype=matrix.dtype)
-        if logits is not None:
+        selected_positions = candidate_dense_indices.gather(dim=1, index=candidate_indices).to(dtype=torch.float32)
+        if logits_fp32 is not None:
             soft_surrogate = F.softmax(hard_scores, dim=-1).masked_fill(~candidate_valid[:, None, :], 0.0)
         else:
-            soft_surrogate = matrix.masked_fill(~candidate_valid[:, None, :], 0.0).clamp_min(0.0)
+            soft_surrogate = matrix_fp32.masked_fill(~candidate_valid[:, None, :], 0.0).clamp_min(0.0)
         soft_surrogate = soft_surrogate / soft_surrogate.sum(dim=-1, keepdim=True).clamp_min(
-            torch.finfo(soft_surrogate.dtype).eps
+            torch.finfo(torch.float32).eps
         )
+        _require_finite(soft_surrogate, "soft transport surrogate")
         column_scores = soft_surrogate.sum(dim=1).masked_fill(~candidate_valid, min_score)
+        _require_finite(column_scores, "sparse transport column scores")
 
         topk = 1
         fixed_indices = torch.empty((batch, self.target_len, topk), dtype=torch.long, device=matrix.device)
-        fixed_weights = torch.ones((batch, self.target_len, topk), dtype=matrix.dtype, device=matrix.device)
-        fixed_positions = torch.empty((batch, self.target_len), dtype=matrix.dtype, device=matrix.device)
-        transport_weights = torch.zeros((batch, self.target_len, dense_len), dtype=matrix.dtype, device=matrix.device)
+        fixed_weights = torch.ones((batch, self.target_len, topk), dtype=torch.float32, device=matrix.device)
+        fixed_positions = torch.empty((batch, self.target_len), dtype=torch.float32, device=matrix.device)
+        transport_weights = torch.zeros((batch, self.target_len, dense_len), dtype=torch.float32, device=matrix.device)
         selected_roles: list[list[str]] = []
         raw_slot_dense_indices: list[list[int]] = []
         raw_slot_duplicate_rates: list[float] = []
@@ -1116,11 +1161,11 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 fixed_indices[batch_idx, out_idx, 0] = pos
                 fixed_weights[batch_idx, out_idx, 0] = 1.0
                 batch_roles.append(role)
-                hard = torch.zeros((dense_len,), dtype=matrix.dtype, device=matrix.device)
+                hard = torch.zeros((dense_len,), dtype=torch.float32, device=matrix.device)
                 hard[pos] = 1.0
                 if self.straight_through_detector_loss and training and slot is not None:
                     # Straight-through contract: hard + soft_surrogate - detach(soft_surrogate).
-                    soft_dense = torch.zeros((dense_len,), dtype=matrix.dtype, device=matrix.device)
+                    soft_dense = torch.zeros((dense_len,), dtype=torch.float32, device=matrix.device)
                     soft_dense.scatter_add_(
                         0,
                         candidate_dense_indices[batch_idx].to(device=matrix.device),
@@ -1133,6 +1178,9 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             reader_fill_counts.append(sum(1 for _pos, _slot, role in rows if role == "reader_fill"))
             st_active_row_counts.append(sum(1 for _pos, slot, _role in rows if slot is not None))
 
+        _require_finite(fixed_weights, "sparse transport fixed weights")
+        _require_finite(fixed_positions, "sparse transport selected positions")
+        _require_finite(transport_weights, "sparse transport weights")
         return {
             "indices": fixed_indices,
             "weights": fixed_weights,
@@ -1212,6 +1260,14 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         flat, shape_tail, has_view_dim = self._flatten_time(inputs)
         flat = flat.to(dtype=weights.dtype)
         batch, _dense_len, flat_dim = flat.shape
+        _require_finite(flat, "sparse transport dense inputs")
+        _require_finite(weights, "sparse transport gather weights")
+        if indices.ndim != 3 or indices.shape[:2] != (batch, self.target_len):
+            raise ValueError("sparse transport indices must be [B,target_len,K]")
+        if tuple(weights.shape) != tuple(indices.shape):
+            raise ValueError("sparse transport weights must match indices")
+        if bool((indices < 0).any().item()) or bool((indices >= int(_dense_len)).any().item()):
+            raise ValueError("sparse transport indices out of dense input range")
         out = torch.zeros((batch, self.target_len, flat_dim), dtype=flat.dtype, device=flat.device)
         for item_idx in range(indices.shape[-1]):
             gather_index = indices[:, :, item_idx].unsqueeze(-1).expand(batch, self.target_len, flat_dim)
@@ -1219,10 +1275,22 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             out = out + gathered * weights[:, :, item_idx].unsqueeze(-1)
         if transport_weights is not None:
             transport_weights = transport_weights.to(dtype=flat.dtype)
-            frame_proxy = flat.detach().mean(dim=-1, keepdim=True)
-            surrogate = torch.bmm(transport_weights, frame_proxy)
-            out = out + (surrogate - surrogate.detach()).expand_as(out)
-        return self._restore_time(out, shape_tail, has_view_dim)
+            if tuple(transport_weights.shape) != (batch, self.target_len, int(_dense_len)):
+                raise ValueError("transport_weights must be [B,target_len,dense_len]")
+            _require_finite(transport_weights, "sparse transport straight-through weights")
+            if self.st_surrogate_mode == "full_flat":
+                surrogate = torch.bmm(transport_weights, flat.detach())
+            elif self.st_surrogate_mode == "mean_proxy":
+                frame_proxy = flat.detach().mean(dim=-1, keepdim=True)
+                surrogate = torch.bmm(transport_weights, frame_proxy).expand_as(out)
+            else:
+                raise ValueError(f"unknown st_surrogate_mode={self.st_surrogate_mode}")
+            _require_finite(surrogate, "sparse transport straight-through surrogate")
+            out = out + (surrogate - surrogate.detach())
+        _require_finite(out, "sparse transport output flat")
+        restored = self._restore_time(out, shape_tail, has_view_dim)
+        _require_finite(restored, "sparse transport output")
+        return restored
 
     def _write_selected_axis_meta(
         self,
@@ -1388,21 +1456,27 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         losses: dict[str, torch.Tensor] = {}
         regularizers = reader_outputs.get("regularizers")
         if isinstance(regularizers, Mapping) and "total_regularizer" in regularizers:
-            losses["selector_reader_regularizer_loss"] = (
-                regularizers["total_regularizer"] * self.reader_regularizer_loss_weight
-            )
+            regularizer_loss = regularizers["total_regularizer"] * self.reader_regularizer_loss_weight
+            _require_finite(regularizer_loss, "selector reader regularizer loss")
+            losses["selector_reader_regularizer_loss"] = regularizer_loss
         if gt_segments is None:
             return losses
         matrix = reader_outputs.get("acquisition_matrix")
-        value_logits = reader_outputs.get("value_logits")
-        risk_logits = reader_outputs.get("risk_logits")
+        value_logits = reader_outputs.get("value_logits", reader_outputs.get("action_logits"))
+        risk_logits = reader_outputs.get("risk_logits", reader_outputs.get("boundary_logits"))
+        uncertainty_logits = reader_outputs.get("uncertainty_logits")
+        redundancy_logits = reader_outputs.get("redundancy_logits")
         role_logits = reader_outputs.get("role_logits")
-        if matrix is None and value_logits is None and risk_logits is None and role_logits is None:
+        aux_tensors = (matrix, value_logits, risk_logits, uncertainty_logits, redundancy_logits, role_logits)
+        if all(not torch.is_tensor(tensor) for tensor in aux_tensors):
             return losses
 
         dtype = None
         device = valid_mask.device
-        for tensor in (matrix, value_logits, risk_logits, role_logits):
+        for tensor in aux_tensors:
+            if torch.is_tensor(tensor):
+                _require_finite(tensor, "selector auxiliary tensor")
+        for tensor in aux_tensors:
             if torch.is_tensor(tensor):
                 dtype = tensor.dtype
                 device = tensor.device
@@ -1419,32 +1493,94 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             else candidate_dense_indices.to(device=device),
         )
         valid = valid_mask.to(device=device).bool()
+        action_target = action_target.float()
+        boundary_target = boundary_target.float()
+        _require_finite(action_target, "selector action auxiliary target")
+        _require_finite(boundary_target, "selector boundary auxiliary target")
+        slot_prob = None
+        column_mass = None
         if matrix is not None and self.aux_gt_acquisition_loss_weight > 0.0 and bool(valid.any().item()):
-            slot_prob = matrix.float().clamp(min=0.0, max=1.0)
-            scores = (1.0 - torch.prod(1.0 - slot_prob, dim=1)).clamp(min=1.0e-6, max=1.0 - 1.0e-6)
-            score_logits = torch.logit(scores)
-            losses["selector_gt_acquisition_loss"] = (
-                F.binary_cross_entropy_with_logits(score_logits[valid], action_target.float()[valid])
+            slot_prob = matrix.float().masked_fill(~valid[:, None, :], 0.0).clamp(min=0.0, max=1.0)
+            _require_finite(slot_prob, "selector acquisition probabilities")
+            eps = 1.0e-6
+            log_not_selected = torch.log1p(-slot_prob.clamp(max=1.0 - eps)).sum(dim=1)
+            union_scores = (-torch.expm1(log_not_selected)).clamp(min=eps, max=1.0 - eps)
+            _require_finite(union_scores, "selector union acquisition probabilities")
+            union_logits = torch.logit(union_scores)
+            _require_finite(union_logits, "selector union acquisition logits")
+            loss = (
+                F.binary_cross_entropy_with_logits(union_logits[valid], action_target[valid])
                 * self.aux_gt_acquisition_loss_weight
             )
+            _require_finite(loss, "selector gt acquisition loss")
+            losses["selector_gt_acquisition_loss"] = loss
+        elif matrix is not None:
+            slot_prob = matrix.float().masked_fill(~valid[:, None, :], 0.0).clamp(min=0.0, max=1.0)
+            _require_finite(slot_prob, "selector acquisition probabilities")
+        if slot_prob is not None:
+            column_mass = slot_prob.sum(dim=1).masked_fill(~valid, 0.0)
+            _require_finite(column_mass, "selector acquisition column mass")
+        if (
+            column_mass is not None
+            and getattr(self, "aux_duplicate_cap_loss_weight", 0.0) > 0.0
+            and bool(valid.any().item())
+        ):
+            cap = float(self.aux_duplicate_column_cap)
+            if cap <= 0.0:
+                raise ValueError("aux_duplicate_column_cap must be positive")
+            duplicate_cap_loss = F.relu(column_mass[valid] - cap).square().mean()
+            duplicate_cap_loss = duplicate_cap_loss * self.aux_duplicate_cap_loss_weight
+            _require_finite(duplicate_cap_loss, "selector duplicate column cap loss")
+            losses["selector_duplicate_column_cap_loss"] = duplicate_cap_loss
         if value_logits is not None and self.aux_value_loss_weight > 0.0 and bool(valid.any().item()):
-            losses["selector_value_aux_loss"] = (
-                F.binary_cross_entropy_with_logits(value_logits[valid], action_target[valid])
+            loss = (
+                F.binary_cross_entropy_with_logits(value_logits.float()[valid], action_target[valid])
                 * self.aux_value_loss_weight
             )
+            _require_finite(loss, "selector value auxiliary loss")
+            losses["selector_value_aux_loss"] = loss
         if risk_logits is not None and self.aux_risk_loss_weight > 0.0 and bool(valid.any().item()):
-            losses["selector_risk_aux_loss"] = (
-                F.binary_cross_entropy_with_logits(risk_logits[valid], boundary_target[valid])
+            loss = (
+                F.binary_cross_entropy_with_logits(risk_logits.float()[valid], boundary_target[valid])
                 * self.aux_risk_loss_weight
             )
-        if role_logits is not None and self.aux_role_entropy_loss_weight > 0.0:
-            role_prob = F.softmax(role_logits, dim=-1).clamp_min(1.0e-8)
-            role_entropy = -(role_prob * role_prob.log()).sum(dim=-1)
-            max_entropy = torch.log(role_prob.new_tensor(float(role_prob.shape[-1]))).clamp_min(1.0e-8)
-            losses["selector_role_entropy_loss"] = (
-                (max_entropy - role_entropy).mean()
-                * self.aux_role_entropy_loss_weight
+            _require_finite(loss, "selector risk auxiliary loss")
+            losses["selector_risk_aux_loss"] = loss
+        uncertainty_target = (0.65 * boundary_target + 0.35 * action_target).clamp(0.0, 1.0)
+        _require_finite(uncertainty_target, "selector uncertainty auxiliary target")
+        if uncertainty_logits is not None and self.aux_uncertainty_loss_weight > 0.0 and bool(valid.any().item()):
+            loss = (
+                F.binary_cross_entropy_with_logits(uncertainty_logits.float()[valid], uncertainty_target[valid])
+                * self.aux_uncertainty_loss_weight
             )
+            _require_finite(loss, "selector uncertainty auxiliary loss")
+            losses["selector_uncertainty_aux_loss"] = loss
+        redundancy_target = torch.zeros_like(action_target)
+        if column_mass is not None:
+            mass_denom = column_mass.masked_fill(~valid, 0.0).amax(dim=1, keepdim=True).clamp_min(1.0)
+            normalized_mass = (column_mass / mass_denom).clamp(0.0, 1.0)
+            duplicate_pressure = F.relu(column_mass - 1.0).clamp(0.0, 1.0)
+            redundancy_target = torch.maximum(normalized_mass, duplicate_pressure).detach()
+            redundancy_target = redundancy_target.masked_fill(~valid, 0.0)
+        _require_finite(redundancy_target, "selector redundancy auxiliary target")
+        if redundancy_logits is not None and self.aux_redundancy_loss_weight > 0.0 and bool(valid.any().item()):
+            loss = (
+                F.binary_cross_entropy_with_logits(redundancy_logits.float()[valid], redundancy_target[valid])
+                * self.aux_redundancy_loss_weight
+            )
+            _require_finite(loss, "selector redundancy auxiliary loss")
+            losses["selector_redundancy_aux_loss"] = loss
+        if role_logits is not None and self.aux_role_entropy_loss_weight > 0.0 and bool(valid.any().item()):
+            if role_logits.shape[-1] < 4:
+                raise ValueError("role_logits must contain at least four role classes")
+            role_target = torch.zeros(valid.shape, dtype=torch.long, device=device)
+            role_target = torch.where(action_target > 0.5, torch.ones_like(role_target), role_target)
+            role_target = torch.where(boundary_target > 0.5, torch.full_like(role_target, 2), role_target)
+            role_target = torch.where(redundancy_target > 0.5, torch.full_like(role_target, 3), role_target)
+            role_target = role_target.masked_fill(~valid, 0)
+            loss = F.cross_entropy(role_logits.float()[valid], role_target[valid]) * self.aux_role_entropy_loss_weight
+            _require_finite(loss, "selector role auxiliary loss")
+            losses["selector_role_aux_loss"] = loss
         return losses
 
     @staticmethod
@@ -1472,6 +1608,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             if segments is None or segments.numel() == 0:
                 continue
             seg = segments.to(device=device, dtype=dtype)
+            _require_finite(seg, "selector gt segment auxiliary source")
             for start, end in seg:
                 positions = candidate_positions[batch_idx]
                 action = (positions >= start) & (positions < end)
@@ -1490,6 +1627,8 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 )
         action_target = action_target.masked_fill(~valid_mask.bool(), 0.0)
         boundary_target = boundary_target.masked_fill(~valid_mask.bool(), 0.0)
+        _require_finite(action_target, "selector dense action target")
+        _require_finite(boundary_target, "selector dense boundary target")
         return action_target, boundary_target
 
 
@@ -1499,4 +1638,5 @@ __all__ = [
     "PCOTMRASCNNFrameScout",
     "PCOTMRASMotionTCNFrameScout",
     "PCOTMRASHybridFrameScout",
+    "PCOTMRASRSeriesHybridFrameScout",
 ]

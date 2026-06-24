@@ -4,9 +4,13 @@ import json
 from pathlib import Path
 
 
-ALLOWED_DECISION = "ALLOW_PC_OT_MRAS_PREBACKBONE_C3_FULL_TRAIN_FIXED50"
-ALLOWED_ROUTE = "pc_ot_mras_prebackbone_c3_f1_lr_tinytransformer_st_original_adatad"
-ALLOWED_VARIANT = "C3-F1-LR-TinyTransformer-ST-OriginalAdaTAD"
+ALLOWED_DECISION = "ALLOW_PC_OT_MRAS_PREBACKBONE_C3_RS_HYBRID_ST_FULL_TRAIN_FIXED50"
+ALLOWED_ROUTE = "pc_ot_mras_prebackbone_c3_rs_hybrid_st_original_adatad"
+ALLOWED_VARIANT = "C3-RS-Hybrid-ST-OriginalAdaTAD"
+ALLOWED_READER = "PCOTMRASRSeriesHybridFrameScout"
+ALLOWED_READER_FAMILY = "RSeriesHybrid"
+ALLOWED_SELECTOR_GRADIENT = "st_hard_real_frames_with_full_flat_soft_transport_surrogate"
+ALLOWED_ROBUST_AUX_OBJECTIVE = "gt_duplicate_value_risk_uncertainty_redundancy_role"
 
 REQUIRED_EXACT = {
     "variant_id": ALLOWED_VARIANT,
@@ -18,6 +22,21 @@ REQUIRED_EXACT = {
     "selection_unit": 1,
     "scout_feature_source": "compressed_pixels",
     "scout_spatial_size": 32,
+    "selector_reader": ALLOWED_READER,
+    "reader_family": ALLOWED_READER_FAMILY,
+    "selector_gradient": ALLOWED_SELECTOR_GRADIENT,
+    "robust_aux_objective": ALLOWED_ROBUST_AUX_OBJECTIVE,
+    "st_surrogate_mode": "full_flat",
+    "scout_pixel_clamp": 5.0,
+    "aux_gt_acquisition_loss_weight": 0.05,
+    "aux_duplicate_cap_loss_weight": 0.001,
+    "aux_duplicate_column_cap": 1.25,
+    "aux_value_loss_weight": 0.02,
+    "aux_risk_loss_weight": 0.02,
+    "aux_uncertainty_loss_weight": 0.01,
+    "aux_redundancy_loss_weight": 0.01,
+    "aux_role_entropy_loss_weight": 0.001,
+    "reader_regularizer_loss_weight": 0.01,
 }
 
 REQUIRED_TRUE_KEYS = (
@@ -35,6 +54,11 @@ REQUIRED_TRUE_KEYS = (
     "allow_train_validation_map",
     "allow_long_training",
     "reader_trainable",
+    "st_hard_real_frames",
+    "train_loop_finite_fail_fast",
+    "nan_fail_fast",
+    "robust_aux_enabled",
+    "scout_pixel_normalize",
 )
 
 REQUIRED_FALSE_KEYS = (
@@ -43,6 +67,11 @@ REQUIRED_FALSE_KEYS = (
     "uses_teacher",
     "uses_test_gt",
     "uses_raw_prediction_cache",
+    "st_off",
+    "tools_test",
+    "allow_tools_test",
+    "direct_tools_test",
+    "allow_detector_map",
 )
 
 FORBIDDEN_TRUE_KEYS = (
@@ -84,6 +113,7 @@ FORBIDDEN_TRUE_KEYS = (
     "uses_oracle",
     "uses_test_gt",
     "uses_raw_prediction",
+    "st_off",
     "metric_claim",
     "allow_metric_claim",
     "metric_claim_allowed",
@@ -254,7 +284,7 @@ def validate_gate_file(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Validate a PC-OT-MRAS prebackbone C3 full-train gate.")
+    parser = argparse.ArgumentParser(description="Validate a PC-OT-MRAS C3-RS-Hybrid-ST full-train gate.")
     parser.add_argument("--gate-json", required=True)
     parser.add_argument("--gate-sha256", required=True)
     parser.add_argument("--active-manifest-sha256", required=True)
@@ -273,7 +303,7 @@ def main():
         budget=int(args.budget),
         dense_window_size=int(args.dense_window_size),
     )
-    print("PC_OT_MRAS_PREBACKBONE_C3_FULL_TRAIN_GATE_VALIDATION_PASS")
+    print("PC_OT_MRAS_PREBACKBONE_C3_RS_HYBRID_ST_FULL_TRAIN_GATE_VALIDATION_PASS")
 
 
 if __name__ == "__main__":

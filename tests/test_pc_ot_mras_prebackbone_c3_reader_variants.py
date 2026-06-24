@@ -192,6 +192,7 @@ def test_c3_acquisition_aux_loss_keeps_gradient_for_duplicate_positive_slots():
         "PCOTMRASCNNFrameScout",
         "PCOTMRASMotionTCNFrameScout",
         "PCOTMRASHybridFrameScout",
+        "PCOTMRASRSeriesHybridFrameScout",
     ],
 )
 def test_c3_reader_variants_emit_masked_slot_transport_with_gradients(reader_name):

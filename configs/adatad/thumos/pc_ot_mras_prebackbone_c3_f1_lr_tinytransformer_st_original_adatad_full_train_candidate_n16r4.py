@@ -3,15 +3,32 @@ _base_ = ["./pc_ot_mras_prebackbone_c3_f1_lr_tinytransformer_st_original_adatad.
 import os
 
 
-variant_id = "C3-F1-LR-TinyTransformer-ST-OriginalAdaTAD"
-route_id = "pc_ot_mras_prebackbone_c3_f1_lr_tinytransformer_st_original_adatad"
-stage_id = "c3_f1_lr_tinytransformer_st_original_adatad_full_train_candidate"
+variant_id = "C3-RS-Hybrid-ST-OriginalAdaTAD"
+route_id = "pc_ot_mras_prebackbone_c3_rs_hybrid_st_original_adatad"
+stage_id = "c3_rs_hybrid_st_original_adatad_full_train"
+reader_type = "PCOTMRASRSeriesHybridFrameScout"
+reader_family = "RSeriesHybrid"
+selector_gradient = "st_hard_real_frames_with_full_flat_soft_transport_surrogate"
+robust_aux_objective = "gt_duplicate_value_risk_uncertainty_redundancy_role"
 
 window_size = 384
 dense_window_size = 768
 selection_unit = 1
 scout_spatial_size = 32
 scout_descriptor_dim = 3 * scout_spatial_size * scout_spatial_size
+
+aux_gt_acquisition_loss_weight = 0.05
+aux_duplicate_cap_loss_weight = 0.001
+aux_duplicate_column_cap = 1.25
+aux_value_loss_weight = 0.02
+aux_risk_loss_weight = 0.02
+aux_uncertainty_loss_weight = 0.01
+aux_redundancy_loss_weight = 0.01
+aux_role_entropy_loss_weight = 0.001
+reader_regularizer_loss_weight = 0.01
+st_surrogate_mode = "full_flat"
+scout_pixel_normalize = True
+scout_pixel_clamp = 5.0
 
 pretrained_path = os.environ.get(
     "PC_OT_MRAS_PREBACKBONE_C3_PRETRAINED_PATH",
@@ -23,6 +40,7 @@ experiment_scope = dict(
     variant_id=variant_id,
     route=route_id,
     stage=stage_id,
+    formal_scope="C3-RS-Hybrid-ST full train",
     detector_stack="original_adatad_actionformer_adapter",
     backend="OriginalAdaTAD",
     selection_surface="pre_backbone_raw_frame",
@@ -30,28 +48,48 @@ experiment_scope = dict(
     acquisition_unit="frame",
     budget_protocol="fixed384_over_dense768_frame_level_full_train",
     boundary_lock=(
-        "C3 full train is free frame-level 384-slot compressed-pixel "
-        "TinyTransformer ST selection before VideoMAE; not C2 320+64, not P2, "
-        "not offline ledger, and not raw-cache evaluation."
+        "C3-RS-Hybrid-ST full train uses hard real selected frames for the "
+        "unchanged Original AdaTAD/ActionFormer detector and full_flat soft "
+        "transport only as the selector-gradient surrogate. It is not "
+        "CNN-Lite, Motion, TinyTransformer mainline, P2, bridge, teacher, "
+        "offline ledger, test-GT, raw-cache evaluation, or ST-off."
     ),
     free_frame_level_selector=True,
     protected_scaffold=False,
     c2_320_uniform_plus_64_residual=False,
     s80r16_cell96x4_enabled=False,
     s80r16_cell96x4_note=(
-        "Not S80R16/cell96x4. C3 full train keeps one candidate per dense frame "
-        "and learns 384 frame-level slots without protected uniform scaffold."
+        "Not S80R16/cell96x4. C3-RS-Hybrid-ST keeps one candidate per dense "
+        "frame and learns 384 frame-level slots without protected uniform scaffold."
     ),
     train_protocol="joint_selector_detector_fixed50_prebackbone_full_train",
-    selector_reader="PCOTMRASTinyTransformerFrameScout",
-    selector_gradient="straight_through_hard_real_frames_soft_slot_logits",
+    selector_reader=reader_type,
+    reader_family=reader_family,
+    selector_gradient=selector_gradient,
+    selector_gradient_note="ST hard real frames + full_flat soft transport surrogate",
     selector_support_status="supported_by_prebackbone_frame_selector",
     reader_trainable=True,
     low_resolution_scout=True,
     scout_input="compressed_low_resolution_frame_pixels_before_videomae",
     scout_feature_source="compressed_pixels",
     scout_spatial_size=scout_spatial_size,
+    scout_pixel_normalize=scout_pixel_normalize,
+    scout_pixel_clamp=scout_pixel_clamp,
     selection_unit=selection_unit,
+    st_hard_real_frames=True,
+    st_surrogate_mode=st_surrogate_mode,
+    train_loop_finite_fail_fast=True,
+    nan_fail_fast=True,
+    robust_aux_objective=robust_aux_objective,
+    aux_gt_acquisition_loss_weight=aux_gt_acquisition_loss_weight,
+    aux_duplicate_cap_loss_weight=aux_duplicate_cap_loss_weight,
+    aux_duplicate_column_cap=aux_duplicate_column_cap,
+    aux_value_loss_weight=aux_value_loss_weight,
+    aux_risk_loss_weight=aux_risk_loss_weight,
+    aux_uncertainty_loss_weight=aux_uncertainty_loss_weight,
+    aux_redundancy_loss_weight=aux_redundancy_loss_weight,
+    aux_role_entropy_loss_weight=aux_role_entropy_loss_weight,
+    reader_regularizer_loss_weight=reader_regularizer_loss_weight,
     uses_p2=False,
     uses_offline_ledger=False,
     uses_teacher=False,
@@ -77,6 +115,7 @@ pc_ot_mras_prebackbone_e2e_acquisition_gate = dict(
     default_off=False,
     explicit_config_opt_in=True,
     formal_train_candidate=True,
+    formal_train=True,
     selection_surface="pre_backbone_raw_frame",
     selection_timing="online_before_backbone",
     acquisition_unit="frame",
@@ -110,7 +149,7 @@ pc_ot_mras_prebackbone_e2e_acquisition_gate = dict(
         active_manifest_sha256_env="OPENTAD_PCOTMRAS_PREBACKBONE_C3_ACTIVE_MANIFEST_SHA256",
         resolved_config_sha256_env="OPENTAD_PCOTMRAS_PREBACKBONE_C3_RESOLVED_CONFIG_SHA256",
         require_resolved_config_sha256=True,
-        allowed_decisions=("ALLOW_PC_OT_MRAS_PREBACKBONE_C3_FULL_TRAIN_FIXED50",),
+        allowed_decisions=("ALLOW_PC_OT_MRAS_PREBACKBONE_C3_RS_HYBRID_ST_FULL_TRAIN_FIXED50",),
         strict_payload_validation=True,
         required_exact_values=dict(
             route=route_id,
@@ -125,6 +164,21 @@ pc_ot_mras_prebackbone_e2e_acquisition_gate = dict(
             selection_unit=selection_unit,
             scout_feature_source="compressed_pixels",
             scout_spatial_size=scout_spatial_size,
+            selector_reader=reader_type,
+            reader_family=reader_family,
+            selector_gradient=selector_gradient,
+            robust_aux_objective=robust_aux_objective,
+            st_surrogate_mode=st_surrogate_mode,
+            scout_pixel_clamp=scout_pixel_clamp,
+            aux_gt_acquisition_loss_weight=aux_gt_acquisition_loss_weight,
+            aux_duplicate_cap_loss_weight=aux_duplicate_cap_loss_weight,
+            aux_duplicate_column_cap=aux_duplicate_column_cap,
+            aux_value_loss_weight=aux_value_loss_weight,
+            aux_risk_loss_weight=aux_risk_loss_weight,
+            aux_uncertainty_loss_weight=aux_uncertainty_loss_weight,
+            aux_redundancy_loss_weight=aux_redundancy_loss_weight,
+            aux_role_entropy_loss_weight=aux_role_entropy_loss_weight,
+            reader_regularizer_loss_weight=reader_regularizer_loss_weight,
             max_epochs=60,
             checkpoint_interval=60,
             val_start_epoch=40,
@@ -145,6 +199,11 @@ pc_ot_mras_prebackbone_e2e_acquisition_gate = dict(
             "allow_train_validation_map",
             "allow_long_training",
             "reader_trainable",
+            "st_hard_real_frames",
+            "train_loop_finite_fail_fast",
+            "nan_fail_fast",
+            "robust_aux_enabled",
+            "scout_pixel_normalize",
         ),
         required_false_keys=(
             "uses_p2",
@@ -152,6 +211,11 @@ pc_ot_mras_prebackbone_e2e_acquisition_gate = dict(
             "uses_teacher",
             "uses_test_gt",
             "uses_raw_prediction_cache",
+            "st_off",
+            "tools_test",
+            "allow_tools_test",
+            "direct_tools_test",
+            "allow_detector_map",
         ),
         unknown_key_policy="reject_unknown_except_explicit_harmless_metadata",
         harmless_metadata_keys=(
@@ -206,6 +270,7 @@ pc_ot_mras_prebackbone_e2e_acquisition_gate = dict(
             "uses_oracle",
             "uses_test_gt",
             "uses_raw_prediction",
+            "st_off",
             "metric_claim",
             "allow_metric_claim",
             "metric_claim_allowed",
@@ -233,6 +298,7 @@ pc_ot_mras_prebackbone_e2e_acquisition_gate = dict(
 
 model = dict(
     frame_selector=dict(
+        type="PCOTMRASPreBackboneFrameSelector",
         target_len=window_size,
         dense_window_size=dense_window_size,
         descriptor_dim=scout_descriptor_dim,
@@ -245,15 +311,43 @@ model = dict(
         eval_transport_topk=1,
         straight_through_downstream=True,
         remap_gt_to_selected_axis=True,
+        aux_gt_acquisition_loss_weight=aux_gt_acquisition_loss_weight,
+        aux_duplicate_cap_loss_weight=aux_duplicate_cap_loss_weight,
+        aux_duplicate_column_cap=aux_duplicate_column_cap,
+        aux_value_loss_weight=aux_value_loss_weight,
+        aux_risk_loss_weight=aux_risk_loss_weight,
+        aux_uncertainty_loss_weight=aux_uncertainty_loss_weight,
+        aux_redundancy_loss_weight=aux_redundancy_loss_weight,
+        aux_role_entropy_loss_weight=aux_role_entropy_loss_weight,
+        reader_regularizer_loss_weight=reader_regularizer_loss_weight,
+        st_surrogate_mode=st_surrogate_mode,
+        scout_pixel_normalize=scout_pixel_normalize,
+        scout_pixel_clamp=scout_pixel_clamp,
         reader=dict(
             _delete_=True,
-            type="PCOTMRASTinyTransformerFrameScout",
+            type=reader_type,
             in_dim=scout_descriptor_dim,
             hidden_dim=128,
             num_slots=window_size,
-            num_layers=2,
-            num_heads=4,
-            dropout=0.0,
+            temporal_layers=3,
+            temporal_kernel_size=5,
+            dilations=(1, 2, 4),
+            dropout=0.05,
+            descriptor_hidden_dim=128,
+            slot_mlp_layers=2,
+            slot_hidden_dim=128,
+            slot_temperature_init=1.0,
+            center_offset_scale=0.35,
+            width_init=0.0125,
+            width_min=0.0025,
+            width_max=0.08,
+            geometry_bias_weight=1.0,
+            action_bias_weight=0.35,
+            boundary_bias_weight=0.45,
+            uncertainty_bias_weight=0.20,
+            redundancy_bias_weight=0.25,
+            slot_logit_clamp=30.0,
+            local_global_fusion="rseries_temporal_geometry_slot_attention",
         ),
     ),
     backbone=dict(
@@ -274,4 +368,4 @@ workflow = dict(
 
 inference = dict(load_from_raw_predictions=False, save_raw_prediction=False)
 
-work_dir = "exps/thumos/adatad/pc_ot_mras_prebackbone_c3_f1_lr_tinytransformer_st_original_adatad_full_train_candidate_n16r4"
+work_dir = "exps/thumos/adatad/pc_ot_mras_prebackbone_c3_rs_hybrid_st_original_adatad_full_train_n16r4"
