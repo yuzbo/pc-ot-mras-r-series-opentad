@@ -47,10 +47,15 @@ Current status is implementation/precheck deployment only.
 
 - Route-owned remote sync/precheck: allowed only for this deployment-precheck
   branch, a new Frame/Token-owned remote path, and `PRECHECK_ONLY=1`.
-- Slurm full training: locked.
-- The N16R4 launcher is a fail-closed precheck launcher. It validates the
-  gate/config, writes bounded precheck artifacts, and exits before any training
-  command when `PRECHECK_ONLY=1`.
+- Slurm full training: locked by default.
+- The N16R4 precheck launcher is fail-closed. It validates the gate/config,
+  writes bounded precheck artifacts, and exits before any training command when
+  `PRECHECK_ONLY=1`.
+- The N16R4 full-train launcher is also locked by default. With
+  `PRECHECK_ONLY=0`, it may run `tools/train.py` only when
+  `ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN=1` and an external full-train gate JSON
+  passes exact SHA256, active manifest SHA256, resolved config SHA256, RUN_TAG,
+  route-label, user-override, and coordinator-override checks.
 - `tools/train.py` and `tools/test.py`: locked by config gate.
 - Full train remains locked unless a later reviewed gate explicitly opens both
   the config and launcher.
@@ -81,12 +86,20 @@ The route-specific tests check:
 - validator rejection of train, remote, Slurm, GPU, full-train, and claim flags;
 - validator JSON summary for config-only precheck remains precheck-only and has
   empty allowed entrypoints;
+- full-train gate JSON missing/invalid cases fail closed;
+- valid full-train gate JSON authorizes train only when RUN_TAG, manifest,
+  resolved config, route label, and override statements match exactly;
 - UTF-8 BOM gate JSON compatibility.
 - N16R4 deployment-precheck launcher defaulting to `PRECHECK_ONLY=1`, refusing
   training/test entrypoints, and containing no training command.
+- N16R4 full-train launcher defaulting to `PRECHECK_ONLY=1` and binding
+  full-train execution to the external full-train gate.
 
-The validator command remains precheck-only and accepts only
-`ALLOW_FRAME_TOKEN_HYBRID_PRECHECK_ONLY`.
+The config validator remains precheck-only by default. Gate JSON validation now
+has two explicit actions: `precheck` accepts only
+`ALLOW_FRAME_TOKEN_HYBRID_PRECHECK_ONLY`, and `full-train` accepts only
+`ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN` with the additional fail-closed
+authorization fields.
 
 ## Deployment Precheck Status
 

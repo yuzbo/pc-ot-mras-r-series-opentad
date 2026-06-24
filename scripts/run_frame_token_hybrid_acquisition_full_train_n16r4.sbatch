@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -p gpu
 #SBATCH --gpus=1
-#SBATCH -J ft_hybrid_pre
+#SBATCH -J ft_hybrid_full
 #SBATCH -o logs/%x-%j.out
 
 set -eo pipefail
@@ -18,7 +18,7 @@ REPO="${FRAME_TOKEN_HYBRID_REPO:-$YUZIBO_ROOT/OpenTAD_FrameToken_PrecheckDeploy_
 PYTHON="${PYTHON:-$YUZIBO_ROOT/conda_envs/opentad/bin/python}"
 
 if [ ! -d "$REPO" ]; then
-  echo "[frame-token-hybrid-precheck] ERROR missing repo: $REPO" >&2
+  echo "[frame-token-hybrid-full] ERROR missing repo: $REPO" >&2
   exit 2
 fi
 cd "$REPO"
@@ -32,52 +32,46 @@ if [ ! -x "$PYTHON" ]; then
   elif command -v python >/dev/null 2>&1; then
     PYTHON="python"
   else
-    echo "[frame-token-hybrid-precheck] ERROR no Python interpreter found" >&2
+    echo "[frame-token-hybrid-full] ERROR no Python interpreter found" >&2
     exit 2
   fi
 fi
 
 PRECHECK_ONLY="${PRECHECK_ONLY:-1}"
 ALLOW_FULL_TRAIN="${ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN:-0}"
-ALLOW_TOOLS_TRAIN="${ALLOW_FRAME_TOKEN_HYBRID_TOOLS_TRAIN:-0}"
 ALLOW_TOOLS_TEST="${ALLOW_FRAME_TOKEN_HYBRID_TOOLS_TEST:-0}"
 ALLOW_RAW_PREDICTION_CACHE="${ALLOW_FRAME_TOKEN_HYBRID_RAW_PREDICTION_CACHE:-0}"
 
 CONFIG="${FRAME_TOKEN_HYBRID_CONFIG:-configs/adatad/thumos/frame_token_hybrid_acquisition_full_train_candidate_n16r4.py}"
 LOCAL_CONFIG="configs/adatad/thumos/frame_token_hybrid_acquisition_local_precheck.py"
 VALIDATOR="tools/bata/validate_frame_token_hybrid_gate.py"
-LAUNCHER="scripts/run_frame_token_hybrid_acquisition_precheck_n16r4.sbatch"
+FULL_LAUNCHER="scripts/run_frame_token_hybrid_acquisition_full_train_n16r4.sbatch"
 SELECTOR="opentad/models/selectors/frame_token_hybrid_acquisition_route.py"
 CONFIG_TEST="tests/test_frame_token_hybrid_config_gate.py"
 ROUTE_LABEL="DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3"
 
-RUN_TAG="${RUN_TAG:-frame_token_hybrid_precheck_$(git rev-parse --short HEAD 2>/dev/null || echo nogit)_$(date '+%Y%m%d_%H%M%S')}"
+RUN_TAG="${RUN_TAG:-frame_token_hybrid_full_train_$(git rev-parse --short HEAD 2>/dev/null || echo nogit)_$(date '+%Y%m%d_%H%M%S')}"
 case "$RUN_TAG" in
   *..*|*/*|*\\*|*[[:space:]]*|*[\;\&\|\>\<\`\"\'$]*)
-    echo "[frame-token-hybrid-precheck] ERROR RUN_TAG must be path-safe; got $RUN_TAG" >&2
+    echo "[frame-token-hybrid-full] ERROR RUN_TAG must be path-safe; got $RUN_TAG" >&2
     exit 2
     ;;
 esac
+export RUN_TAG
 
 RUN_ROOT="${RUN_ROOT:-logs/$RUN_TAG}"
 RUN_LOG="$RUN_ROOT/${RUN_TAG}.log"
 RESOLVED_CONFIG_DUMP="$RUN_ROOT/resolved_config.py"
 CONFIG_GATE_SUMMARY="$RUN_ROOT/config_gate_summary.json"
-GATE_JSON="$RUN_ROOT/frame_token_hybrid_gate.json"
+PRECHECK_GATE_JSON="$RUN_ROOT/frame_token_hybrid_precheck_gate.json"
 SHA_MANIFEST="$RUN_ROOT/active_sha256_manifest.txt"
-SUMMARY_JSON="$RUN_ROOT/frame_token_hybrid_precheck_summary.json"
+SUMMARY_JSON="$RUN_ROOT/frame_token_hybrid_full_train_summary.json"
 
 mkdir -p "$RUN_ROOT"
 exec > >(tee -a "$RUN_LOG") 2>&1
 
 log() {
-  echo "[frame-token-hybrid-precheck] $(date -Is) $*"
-}
-
-fail() {
-  log "ERROR $*"
-  write_summary "FAIL" "FRAME_TOKEN_HYBRID_PRECHECK_FAILED" "$*"
-  exit 2
+  echo "[frame-token-hybrid-full] $(date -Is) $*"
 }
 
 write_summary() {
@@ -96,7 +90,7 @@ payload = {
     "status": status,
     "decision": decision,
     "reason": reason,
-    "stage": "FRAME_TOKEN_HYBRID_DEPLOYMENT_PRECHECK_ONLY",
+    "stage": "FRAME_TOKEN_HYBRID_FULL_TRAIN_CANDIDATE_N16R4",
     "route": "frame_token_hybrid_acquisition",
     "route_label": route_label,
     "host": socket.gethostname(),
@@ -104,11 +98,14 @@ payload = {
     "repo": os.getcwd(),
     "git_branch": os.popen("git rev-parse --abbrev-ref HEAD 2>/dev/null").read().strip(),
     "git_head": os.popen("git rev-parse HEAD 2>/dev/null").read().strip(),
+    "run_tag": os.environ.get("RUN_TAG"),
     "run_root": run_root,
     "config": config,
     "precheck_only": os.environ.get("PRECHECK_ONLY", "1"),
-    "full_train_locked": True,
-    "tools_train": False,
+    "active_manifest_sha256": os.environ.get("FRAME_TOKEN_HYBRID_ACTIVE_MANIFEST_SHA256"),
+    "resolved_config_sha256": os.environ.get("FRAME_TOKEN_HYBRID_RESOLVED_CONFIG_SHA256"),
+    "full_train_gate_json": os.environ.get("FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_JSON"),
+    "full_train_gate_sha256": os.environ.get("FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_SHA256"),
     "tools_test": False,
     "metric_claim_allowed": False,
     "paper_claim_allowed": False,
@@ -118,13 +115,21 @@ PY
   log "summary_json=$SUMMARY_JSON"
 }
 
+fail() {
+  log "ERROR $*"
+  write_summary "FAIL" "FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_FAILED_CLOSED" "$*"
+  exit 2
+}
+
 case "$PRECHECK_ONLY" in
   0|1) ;;
   *) fail "PRECHECK_ONLY must be 0 or 1; got $PRECHECK_ONLY" ;;
 esac
-case "$ALLOW_TOOLS_TRAIN" in 0) ;; *) fail "training entrypoint is forbidden during deployment precheck" ;; esac
-case "$ALLOW_TOOLS_TEST" in 0) ;; *) fail "test entrypoint is forbidden during deployment precheck" ;; esac
-case "$ALLOW_RAW_PREDICTION_CACHE" in 0) ;; *) fail "raw prediction/cache is forbidden for this route precheck" ;; esac
+case "$ALLOW_TOOLS_TEST" in 0) ;; *) fail "test entrypoint is forbidden for this route gate" ;; esac
+case "$ALLOW_RAW_PREDICTION_CACHE" in 0) ;; *) fail "raw prediction/cache is forbidden for this route gate" ;; esac
+if [ "$PRECHECK_ONLY" = "0" ] && [ -z "${SLURM_JOB_ID:-}" ]; then
+  fail "PRECHECK_ONLY=0 full train must run inside Slurm"
+fi
 
 GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || fail "repo must be a git checkout"
 GIT_HEAD="$(git rev-parse HEAD 2>/dev/null)" || fail "repo HEAD unavailable"
@@ -133,19 +138,20 @@ if [ "$GIT_BRANCH" != "$EXPECTED_BRANCH" ]; then
   fail "expected branch $EXPECTED_BRANCH; got $GIT_BRANCH"
 fi
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-  fail "tracked repo files are modified; refusing precheck"
+  fail "tracked repo files are modified; refusing full-train gate"
 fi
 
 log "repo=$REPO"
 log "git_branch=$GIT_BRANCH git_head=$GIT_HEAD"
 log "config=$CONFIG"
 log "precheck_only=$PRECHECK_ONLY"
+log "run_tag=$RUN_TAG"
 log "run_root=$RUN_ROOT"
 
 test -f "$CONFIG" || fail "missing config: $CONFIG"
 test -f "$LOCAL_CONFIG" || fail "missing local config: $LOCAL_CONFIG"
 test -f "$VALIDATOR" || fail "missing validator: $VALIDATOR"
-test -f "$LAUNCHER" || fail "missing launcher: $LAUNCHER"
+test -f "$FULL_LAUNCHER" || fail "missing full-train launcher: $FULL_LAUNCHER"
 test -f "$SELECTOR" || fail "missing selector: $SELECTOR"
 test -f "$CONFIG_TEST" || fail "missing config test: $CONFIG_TEST"
 
@@ -172,7 +178,7 @@ for key in (
     "paper_claim_allowed",
 ):
     if payload.get(key) is not False:
-        raise SystemExit(f"{key} must remain false")
+        raise SystemExit(f"{key} must remain false in config default")
 if payload.get("allow_precheck_only") is not True:
     raise SystemExit("allow_precheck_only must be true")
 if payload.get("allowed_entrypoints") != []:
@@ -191,7 +197,7 @@ if cfg.route_label != route_label:
     raise SystemExit("route_label mismatch")
 gate = cfg.frame_token_hybrid_gate
 if gate.allowed_decision != "ALLOW_FRAME_TOKEN_HYBRID_PRECHECK_ONLY":
-    raise SystemExit("unexpected gate decision")
+    raise SystemExit("config default must remain precheck-only")
 if gate.allow_precheck_only is not True:
     raise SystemExit("allow_precheck_only must be true")
 for key in (
@@ -205,7 +211,7 @@ for key in (
     "paper_claim_allowed",
 ):
     if getattr(gate, key) is not False:
-        raise SystemExit(f"{key} must remain false")
+        raise SystemExit(f"{key} must remain false in config default")
 selector = cfg.model.frame_selector
 if selector.type != "FrameTokenHybridAcquisitionRoute":
     raise SystemExit("selector type mismatch")
@@ -222,25 +228,28 @@ RESOLVED_CONFIG_SHA256="$(sha256sum "$RESOLVED_CONFIG_DUMP" | awk '{print $1}')"
   sha256sum "$CONFIG"
   sha256sum "$LOCAL_CONFIG"
   sha256sum "$VALIDATOR"
-  sha256sum "$LAUNCHER"
+  sha256sum "$FULL_LAUNCHER"
   sha256sum "$SELECTOR"
   sha256sum "$CONFIG_TEST"
   printf '%s  resolved_config.py\n' "$RESOLVED_CONFIG_SHA256"
 } > "$SHA_MANIFEST"
 ACTIVE_MANIFEST_SHA256="$(sha256sum "$SHA_MANIFEST" | awk '{print $1}')"
+export FRAME_TOKEN_HYBRID_ACTIVE_MANIFEST_SHA256="$ACTIVE_MANIFEST_SHA256"
+export FRAME_TOKEN_HYBRID_RESOLVED_CONFIG_SHA256="$RESOLVED_CONFIG_SHA256"
 
-"$PYTHON" - "$GATE_JSON" "$ACTIVE_MANIFEST_SHA256" "$RESOLVED_CONFIG_SHA256" <<'PY'
+"$PYTHON" - "$PRECHECK_GATE_JSON" "$ACTIVE_MANIFEST_SHA256" "$RESOLVED_CONFIG_SHA256" "$RUN_TAG" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-gate_path, manifest_sha, config_sha = sys.argv[1:4]
+gate_path, manifest_sha, config_sha, run_tag = sys.argv[1:5]
 payload = {
     "decision": "ALLOW_FRAME_TOKEN_HYBRID_PRECHECK_ONLY",
     "route": "frame_token_hybrid_acquisition",
     "route_label": "DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3",
     "active_sha256_manifest_sha256": manifest_sha,
     "resolved_config_sha256": config_sha,
+    "run_tag": run_tag,
     "budget": 384,
     "dense_window_size": 768,
     "target_dense_len": 768,
@@ -262,11 +271,12 @@ payload = {
 }
 Path(gate_path).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
-GATE_SHA256="$(sha256sum "$GATE_JSON" | awk '{print $1}')"
+PRECHECK_GATE_SHA256="$(sha256sum "$PRECHECK_GATE_JSON" | awk '{print $1}')"
 
 "$PYTHON" "$VALIDATOR" \
-  --gate-json "$GATE_JSON" \
-  --gate-sha256 "$GATE_SHA256" \
+  --action precheck \
+  --gate-json "$PRECHECK_GATE_JSON" \
+  --gate-sha256 "$PRECHECK_GATE_SHA256" \
   --active-manifest-sha256 "$ACTIVE_MANIFEST_SHA256" \
   --resolved-config-sha256 "$RESOLVED_CONFIG_SHA256" \
   --budget 384 \
@@ -276,23 +286,44 @@ GATE_SHA256="$(sha256sum "$GATE_JSON" | awk '{print $1}')"
 "$PYTHON" -m pytest "$CONFIG_TEST" -q
 
 if [ "$PRECHECK_ONLY" = "1" ]; then
-  write_summary "PASS" "FRAME_TOKEN_HYBRID_PRECHECK_ONLY_PASS_NO_TRAIN" "PRECHECK_ONLY=1; gate/config/tests passed; no training command executed"
+  write_summary "PASS" "FRAME_TOKEN_HYBRID_PRECHECK_ONLY_PASS_NO_TRAIN" "PRECHECK_ONLY=1; manifest/config/gate/tests passed; no training command executed"
   log "FRAME_TOKEN_HYBRID_PRECHECK_ONLY_PASS_NO_TRAIN"
   exit 0
 fi
 
 if [ "$ALLOW_FULL_TRAIN" != "1" ]; then
-  fail "PRECHECK_ONLY=0 requires ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN=1 and a reviewed full-train gate"
+  fail "PRECHECK_ONLY=0 requires ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN=1"
+fi
+if [ -z "${FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_JSON:-}" ]; then
+  fail "PRECHECK_ONLY=0 requires FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_JSON"
+fi
+if [ -z "${FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_SHA256:-}" ]; then
+  fail "PRECHECK_ONLY=0 requires FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_SHA256"
 fi
 
-"$PYTHON" - "$CONFIG_GATE_SUMMARY" <<'PY'
-import json
-import sys
-from pathlib import Path
+"$PYTHON" "$VALIDATOR" \
+  --action full-train \
+  --gate-json "$FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_JSON" \
+  --gate-sha256 "$FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_SHA256" \
+  --active-manifest-sha256 "$ACTIVE_MANIFEST_SHA256" \
+  --resolved-config-sha256 "$RESOLVED_CONFIG_SHA256" \
+  --run-tag "$RUN_TAG" \
+  --budget 384 \
+  --dense-window-size 768 \
+  --target-dense-len 768
 
-payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-if payload.get("allow_full_train") is not True or payload.get("allow_tools_train") is not True:
-    raise SystemExit("full train gate is still locked")
-PY
+TRAIN_ID="${FRAME_TOKEN_HYBRID_TRAIN_ID:-0}"
+log "FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_VALIDATION_PASS"
+log "launching_train=$PYTHON tools/train.py $CONFIG --id $TRAIN_ID"
+write_summary "PASS" "FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_PASS_TRAIN_LAUNCHED" "full-train gate validated; launching tools/train.py"
 
-fail "this deployment-precheck launcher is not a full-training launcher"
+set +e
+"$PYTHON" tools/train.py "$CONFIG" --id "$TRAIN_ID"
+TRAIN_RC="$?"
+set -e
+if [ "$TRAIN_RC" -ne 0 ]; then
+  fail "tools/train.py exited with code $TRAIN_RC"
+fi
+
+write_summary "PASS" "FRAME_TOKEN_HYBRID_FULL_TRAIN_FINISHED" "tools/train.py exited 0"
+log "FRAME_TOKEN_HYBRID_FULL_TRAIN_FINISHED"

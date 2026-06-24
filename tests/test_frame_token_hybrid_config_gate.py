@@ -16,6 +16,7 @@ FULL_CONFIG = ROOT / "configs" / "adatad" / "thumos" / "frame_token_hybrid_acqui
 VALIDATOR = ROOT / "tools" / "bata" / "validate_frame_token_hybrid_gate.py"
 SELECTOR_INIT = ROOT / "opentad" / "models" / "selectors" / "__init__.py"
 N16R4_PRECHECK_LAUNCHER = ROOT / "scripts" / "run_frame_token_hybrid_acquisition_precheck_n16r4.sbatch"
+N16R4_FULL_TRAIN_LAUNCHER = ROOT / "scripts" / "run_frame_token_hybrid_acquisition_full_train_n16r4.sbatch"
 
 
 def _load_validator():
@@ -28,6 +29,39 @@ def _load_validator():
 def _load_config_or_skip(path: Path):
     mmengine_config = pytest.importorskip("mmengine.config")
     return mmengine_config.Config.fromfile(str(path))
+
+
+def _valid_full_train_gate_payload():
+    return {
+        "decision": "ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN",
+        "route": "frame_token_hybrid_acquisition",
+        "route_label": "DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3",
+        "route_label_override_statement": "DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3",
+        "user_override_statement": "USER_REQUESTED_FRAME_TOKEN_HYBRID_FULL_TRAIN_CANDIDATE_20260624",
+        "coordinator_override_statement": "FRAME_TOKEN_HYBRID_OWNER_AUTHORIZES_FULL_TRAIN_CANDIDATE_20260624",
+        "active_sha256_manifest_sha256": "manifest-sha",
+        "resolved_config_sha256": "resolved-sha",
+        "run_tag": "frame_token_hybrid_full_train_gate_unit",
+        "budget": 384,
+        "dense_window_size": 768,
+        "target_dense_len": 768,
+        "precheck_passed": True,
+        "allow_precheck_only": True,
+        "allow_tools_train": True,
+        "allow_tools_test": False,
+        "allow_remote_sync": False,
+        "allow_slurm": True,
+        "allow_gpu": True,
+        "allow_full_train": True,
+        "load_from_raw_predictions": False,
+        "save_raw_prediction": False,
+        "uses_gt_at_test": False,
+        "uses_teacher": False,
+        "uses_oracle": False,
+        "uses_raw_prediction_cache": False,
+        "metric_claim_allowed": False,
+        "paper_claim_allowed": False,
+    }
 
 
 def test_frame_token_hybrid_local_config_is_parseable_and_fail_closed():
@@ -224,6 +258,86 @@ def test_frame_token_hybrid_validator_cli_passes_for_precheck_payload(tmp_path):
     assert "FRAME_TOKEN_HYBRID_GATE_VALIDATION_PASS" in result.stdout
 
 
+def test_frame_token_hybrid_full_train_gate_missing_json_fails_closed(tmp_path):
+    validator = _load_validator()
+
+    with pytest.raises(ValueError, match="missing Frame/token hybrid gate JSON"):
+        validator.validate_gate_file(
+            gate_json=tmp_path / "missing_full_train_gate.json",
+            gate_sha256="missing-sha",
+            active_manifest_sha256="manifest-sha",
+            resolved_config_sha256="resolved-sha",
+            budget=384,
+            dense_window_size=768,
+            target_dense_len=768,
+            action="full-train",
+            run_tag="frame_token_hybrid_full_train_gate_unit",
+        )
+
+
+def test_frame_token_hybrid_valid_full_train_gate_authorizes_train_only_with_exact_run_tag(tmp_path):
+    validator = _load_validator()
+    payload = _valid_full_train_gate_payload()
+    gate_json = tmp_path / "frame_token_hybrid_full_train_gate.json"
+    gate_json.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    gate_sha = hashlib.sha256(gate_json.read_bytes()).hexdigest()
+
+    loaded = validator.validate_gate_file(
+        gate_json=gate_json,
+        gate_sha256=gate_sha,
+        active_manifest_sha256="manifest-sha",
+        resolved_config_sha256="resolved-sha",
+        budget=384,
+        dense_window_size=768,
+        target_dense_len=768,
+        action="full-train",
+        run_tag="frame_token_hybrid_full_train_gate_unit",
+    )
+
+    assert loaded["allow_full_train"] is True
+    assert loaded["allow_tools_train"] is True
+    assert loaded["allow_tools_test"] is False
+    assert loaded["metric_claim_allowed"] is False
+    assert loaded["paper_claim_allowed"] is False
+
+
+def test_frame_token_hybrid_full_train_gate_rejects_wrong_run_tag_or_missing_override(tmp_path):
+    validator = _load_validator()
+    payload = _valid_full_train_gate_payload()
+    gate_json = tmp_path / "frame_token_hybrid_full_train_gate.json"
+    gate_json.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    gate_sha = hashlib.sha256(gate_json.read_bytes()).hexdigest()
+
+    with pytest.raises(ValueError, match="run_tag"):
+        validator.validate_gate_file(
+            gate_json=gate_json,
+            gate_sha256=gate_sha,
+            active_manifest_sha256="manifest-sha",
+            resolved_config_sha256="resolved-sha",
+            budget=384,
+            dense_window_size=768,
+            target_dense_len=768,
+            action="full-train",
+            run_tag="different_run_tag",
+        )
+
+    payload.pop("coordinator_override_statement")
+    gate_json.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    gate_sha = hashlib.sha256(gate_json.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="coordinator_override_statement"):
+        validator.validate_gate_file(
+            gate_json=gate_json,
+            gate_sha256=gate_sha,
+            active_manifest_sha256="manifest-sha",
+            resolved_config_sha256="resolved-sha",
+            budget=384,
+            dense_window_size=768,
+            target_dense_len=768,
+            action="full-train",
+            run_tag="frame_token_hybrid_full_train_gate_unit",
+        )
+
+
 def test_frame_token_hybrid_validator_cli_json_config_precheck_is_fail_closed():
     result = subprocess.run(
         [
@@ -329,4 +443,20 @@ def test_frame_token_hybrid_n16r4_precheck_launcher_is_fail_closed():
     assert "full train gate is still locked" in text
     assert "torchrun" not in text
     assert "python tools/train.py" not in text
+    assert "tools/test.py" not in text
+
+
+def test_frame_token_hybrid_n16r4_full_train_launcher_is_locked_by_default_and_gate_bound():
+    text = N16R4_FULL_TRAIN_LAUNCHER.read_text(encoding="utf-8")
+
+    assert "DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3" in text
+    assert 'PRECHECK_ONLY="${PRECHECK_ONLY:-1}"' in text
+    assert "ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN" in text
+    assert "FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_JSON" in text
+    assert "FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_SHA256" in text
+    assert "--action full-train" in text
+    assert "--run-tag \"$RUN_TAG\"" in text
+    assert "FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_VALIDATION_PASS" in text
+    assert "tools/train.py" in text
+    assert "PRECHECK_ONLY=0 requires ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN=1" in text
     assert "tools/test.py" not in text

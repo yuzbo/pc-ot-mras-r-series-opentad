@@ -7,9 +7,17 @@ import runpy
 from pathlib import Path
 
 
-ALLOWED_DECISION = "ALLOW_FRAME_TOKEN_HYBRID_PRECHECK_ONLY"
+PRECHECK_DECISION = "ALLOW_FRAME_TOKEN_HYBRID_PRECHECK_ONLY"
+FULL_TRAIN_DECISION = "ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN"
+ALLOWED_DECISION = PRECHECK_DECISION
 ALLOWED_ROUTE = "frame_token_hybrid_acquisition"
 ALLOWED_ROUTE_LABEL = "DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3"
+ACTION_PRECHECK = "precheck"
+ACTION_FULL_TRAIN = "full-train"
+
+FULL_TRAIN_ROUTE_LABEL_OVERRIDE_STATEMENT = ALLOWED_ROUTE_LABEL
+FULL_TRAIN_USER_OVERRIDE_STATEMENT = "USER_REQUESTED_FRAME_TOKEN_HYBRID_FULL_TRAIN_CANDIDATE_20260624"
+FULL_TRAIN_COORDINATOR_OVERRIDE_STATEMENT = "FRAME_TOKEN_HYBRID_OWNER_AUTHORIZES_FULL_TRAIN_CANDIDATE_20260624"
 
 REQUIRED_TRUE_KEYS = ("allow_precheck_only",)
 
@@ -90,6 +98,41 @@ CONTROL_KEYS = (
 
 HARMLESS_METADATA_KEYS = ("note", "review_id", "run_tag")
 
+FULL_TRAIN_REQUIRED_TRUE_KEYS = (
+    "precheck_passed",
+    "allow_precheck_only",
+    "allow_tools_train",
+    "allow_slurm",
+    "allow_gpu",
+    "allow_full_train",
+)
+
+FULL_TRAIN_REQUIRED_FALSE_KEYS = (
+    "allow_tools_test",
+    "allow_remote_sync",
+    "load_from_raw_predictions",
+    "save_raw_prediction",
+    "uses_gt_at_test",
+    "uses_teacher",
+    "uses_oracle",
+    "uses_raw_prediction_cache",
+    "metric_claim_allowed",
+    "paper_claim_allowed",
+)
+
+FULL_TRAIN_EXACT_KEYS = {
+    "route_label_override_statement": FULL_TRAIN_ROUTE_LABEL_OVERRIDE_STATEMENT,
+    "user_override_statement": FULL_TRAIN_USER_OVERRIDE_STATEMENT,
+    "coordinator_override_statement": FULL_TRAIN_COORDINATOR_OVERRIDE_STATEMENT,
+}
+
+FULL_TRAIN_METADATA_KEYS = (
+    "precheck_passed",
+    "route_label_override_statement",
+    "user_override_statement",
+    "coordinator_override_statement",
+)
+
 CONFIG_REQUIRED_TRUE_KEYS = (
     "allow_precheck_only",
     "requires_deploy_preview_probe_signal",
@@ -117,14 +160,21 @@ def _first_present(payload, keys):
     return None
 
 
-def _allowed_payload_keys():
-    return (
+def _allowed_payload_keys(action=ACTION_PRECHECK):
+    allowed = (
         set(CONTROL_KEYS)
         | set(REQUIRED_TRUE_KEYS)
         | set(REQUIRED_FALSE_KEYS)
         | set(FORBIDDEN_TRUE_KEYS)
         | set(HARMLESS_METADATA_KEYS)
     )
+    if action == ACTION_FULL_TRAIN:
+        allowed |= (
+            set(FULL_TRAIN_REQUIRED_TRUE_KEYS)
+            | set(FULL_TRAIN_REQUIRED_FALSE_KEYS)
+            | set(FULL_TRAIN_METADATA_KEYS)
+        )
+    return allowed
 
 
 def _require_exact(payload, key, expected):
@@ -139,9 +189,17 @@ def validate_gate_payload(
     budget,
     dense_window_size,
     target_dense_len,
+    action=ACTION_PRECHECK,
+    run_tag=None,
 ):
-    if payload.get("decision") != ALLOWED_DECISION:
-        raise ValueError(f"Frame/token hybrid gate decision is not allowed: {payload.get('decision')}")
+    if action not in (ACTION_PRECHECK, ACTION_FULL_TRAIN):
+        raise ValueError(f"Frame/token hybrid gate action is not allowed: {action}")
+    expected_decision = PRECHECK_DECISION if action == ACTION_PRECHECK else FULL_TRAIN_DECISION
+    if payload.get("decision") != expected_decision:
+        raise ValueError(
+            "Frame/token hybrid gate decision is not allowed for "
+            f"{action}: {payload.get('decision')}"
+        )
     if payload.get("route") != ALLOWED_ROUTE:
         raise ValueError(f"Frame/token hybrid gate route mismatch: {payload.get('route')}")
     if payload.get("route_label") != ALLOWED_ROUTE_LABEL:
@@ -175,17 +233,38 @@ def validate_gate_payload(
     _require_exact(payload, "dense_window_size", int(dense_window_size))
     _require_exact(payload, "target_dense_len", int(target_dense_len))
 
-    for key in REQUIRED_TRUE_KEYS:
-        if payload.get(key) is not True:
-            raise ValueError(f"Frame/token hybrid gate must set {key}=true")
-    for key in REQUIRED_FALSE_KEYS:
-        if payload.get(key) is not False:
-            raise ValueError(f"Frame/token hybrid gate must set {key}=false")
-    for key in FORBIDDEN_TRUE_KEYS:
-        if key in payload and payload[key] is not False:
-            raise ValueError(f"Frame/token hybrid gate must keep {key}=false/absent; got {payload[key]!r}")
+    if action == ACTION_PRECHECK:
+        for key in REQUIRED_TRUE_KEYS:
+            if payload.get(key) is not True:
+                raise ValueError(f"Frame/token hybrid gate must set {key}=true")
+        for key in REQUIRED_FALSE_KEYS:
+            if payload.get(key) is not False:
+                raise ValueError(f"Frame/token hybrid gate must set {key}=false")
+        for key in FORBIDDEN_TRUE_KEYS:
+            if key in payload and payload[key] is not False:
+                raise ValueError(f"Frame/token hybrid gate must keep {key}=false/absent; got {payload[key]!r}")
+    else:
+        if not run_tag:
+            raise ValueError("Frame/token hybrid full-train gate requires run_tag")
+        _require_exact(payload, "run_tag", run_tag)
+        for key, expected in FULL_TRAIN_EXACT_KEYS.items():
+            _require_exact(payload, key, expected)
+        for key in FULL_TRAIN_REQUIRED_TRUE_KEYS:
+            if payload.get(key) is not True:
+                raise ValueError(f"Frame/token hybrid full-train gate must set {key}=true")
+        for key in FULL_TRAIN_REQUIRED_FALSE_KEYS:
+            if payload.get(key) is not False:
+                raise ValueError(f"Frame/token hybrid full-train gate must set {key}=false")
+        for key in FORBIDDEN_TRUE_KEYS:
+            if key in FULL_TRAIN_REQUIRED_TRUE_KEYS:
+                continue
+            if key in payload and payload[key] is not False:
+                raise ValueError(
+                    f"Frame/token hybrid full-train gate must keep {key}=false/absent; "
+                    f"got {payload[key]!r}"
+                )
     for key in payload:
-        if key not in _allowed_payload_keys():
+        if key not in _allowed_payload_keys(action=action):
             raise ValueError(f"Frame/token hybrid gate contains unknown or unallowlisted key: {key}")
     return True
 
@@ -198,6 +277,8 @@ def validate_gate_file(
     budget,
     dense_window_size,
     target_dense_len,
+    action=ACTION_PRECHECK,
+    run_tag=None,
 ):
     gate_path = Path(gate_json)
     if not gate_path.is_file():
@@ -213,6 +294,8 @@ def validate_gate_file(
         budget=int(budget),
         dense_window_size=int(dense_window_size),
         target_dense_len=int(target_dense_len),
+        action=action,
+        run_tag=run_tag,
     )
     return payload
 
@@ -311,6 +394,8 @@ def main():
     parser.add_argument("--gate-sha256")
     parser.add_argument("--active-manifest-sha256")
     parser.add_argument("--resolved-config-sha256")
+    parser.add_argument("--action", choices=(ACTION_PRECHECK, ACTION_FULL_TRAIN), default=ACTION_PRECHECK)
+    parser.add_argument("--run-tag")
     parser.add_argument("--budget", type=int, default=384)
     parser.add_argument("--dense-window-size", type=int, default=768)
     parser.add_argument("--target-dense-len", type=int, default=768)
@@ -336,6 +421,8 @@ def main():
     ]
     if missing:
         parser.error("the following arguments are required for gate JSON validation: " + ", ".join(f"--{name.replace('_', '-')}" for name in missing))
+    if args.action == ACTION_FULL_TRAIN and not args.run_tag:
+        parser.error("--run-tag is required for --action full-train")
 
     validate_gate_file(
         gate_json=args.gate_json,
@@ -345,8 +432,13 @@ def main():
         budget=int(args.budget),
         dense_window_size=int(args.dense_window_size),
         target_dense_len=int(args.target_dense_len),
+        action=args.action,
+        run_tag=args.run_tag,
     )
-    print("FRAME_TOKEN_HYBRID_GATE_VALIDATION_PASS")
+    if args.action == ACTION_FULL_TRAIN:
+        print("FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_VALIDATION_PASS")
+    else:
+        print("FRAME_TOKEN_HYBRID_GATE_VALIDATION_PASS")
 
 
 if __name__ == "__main__":
