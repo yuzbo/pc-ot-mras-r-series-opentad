@@ -62,6 +62,10 @@ raw decode saving, runtime, metric, deploy, and paper claims remain locked.
 - Local Windows `bash -n` was not accepted because the available `bash.exe` is
   the Windows system/WSL shim and did not resolve the worktree-relative script
   path. Shell syntax will be checked on the Linux remote before PRECHECK_ONLY.
+- First N16R4 dry invocation found an environment-source ordering issue:
+  `set -u` was active before `/etc/profile` and caused the launcher to exit
+  before logging. The launcher was fixed to match existing N16R4 scripts:
+  `set -eo pipefail`, source profile, then `set -u`.
 
 ## Evidence To Fill After Execution
 

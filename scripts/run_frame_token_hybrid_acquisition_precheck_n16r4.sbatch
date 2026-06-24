@@ -4,9 +4,10 @@
 #SBATCH -J ft_hybrid_pre
 #SBATCH -o logs/%x-%j.out
 
-set -euo pipefail
+set -eo pipefail
 
 source /etc/profile >/dev/null 2>&1 || true
+set -u
 if command -v module >/dev/null 2>&1; then
   module load cuda/11.8
   module load miniforge3/24.11
