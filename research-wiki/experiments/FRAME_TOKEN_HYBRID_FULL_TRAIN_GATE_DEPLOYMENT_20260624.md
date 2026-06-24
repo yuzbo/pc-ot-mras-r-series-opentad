@@ -83,3 +83,79 @@ Launch decision after local gate:
 - Allowed next action: deploy route-owned repo update, generate a fixed RUN_TAG
   precheck manifest and matching full-train gate JSON on N16R4, validate both
   gate actions, and submit one Slurm full-train candidate if validation passes.
+
+## Remote Deployment And Full-Train Submission
+
+Timestamp: 2026-06-24T20:45:00+08:00
+
+Local commit and push:
+
+- Implementation commit:
+  `c1d41a86527acd9d80762f012ac12fe4aa8b7b92`
+  (`Add frame token full train gate launcher`)
+- Push target:
+  `origin/codex/frame-token-precheck-deploy-20260624`
+- Push result: `7dcb6ae..c1d41a8`, successful.
+
+Remote route-owned repo update:
+
+- Remote path:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_FrameToken_PrecheckDeploy_20260624_ecb7c27`
+- Sync method: direct remote `git fetch origin
+  codex/frame-token-precheck-deploy-20260624` plus `git merge --ff-only
+  FETCH_HEAD`.
+- Bundle/format-patch fallback was not used because GitHub fetch/push succeeded.
+- Remote HEAD before: `7dcb6aec5fccab0b022df7d018c70853b450a7cf`
+- Remote HEAD after: `c1d41a86527acd9d80762f012ac12fe4aa8b7b92`
+- Remote tracked status before update: clean.
+
+Fixed RUN_TAG gate artifacts:
+
+- RUN_TAG: `frame_token_hybrid_full_train_gate_20260624_204304`
+- Precheck/gate run root:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_FrameToken_PrecheckDeploy_20260624_ecb7c27/logs/frame_token_hybrid_full_train_gate_20260624_204304`
+- Precheck log:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_FrameToken_PrecheckDeploy_20260624_ecb7c27/logs/frame_token_hybrid_full_train_gate_20260624_204304/frame_token_hybrid_full_train_gate_20260624_204304.log`
+- Active manifest:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_FrameToken_PrecheckDeploy_20260624_ecb7c27/logs/frame_token_hybrid_full_train_gate_20260624_204304/active_sha256_manifest.txt`
+- active_manifest_sha:
+  `44de7c9474eee45b96ea618ec4f33a2903123a9f47b85d289493034fa07730ba`
+- resolved_config_sha:
+  `f67c3bfa33e6cfbc3b416cc7823ed27b1c68baea03a5f3607aae083aa0c3b2cc`
+- Full-train gate JSON:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_FrameToken_PrecheckDeploy_20260624_ecb7c27/logs/frame_token_hybrid_full_train_gate_20260624_204304/frame_token_hybrid_full_train_gate.json`
+- full_train_gate_sha:
+  `3dcfeddd4eaa84d85754db33c79daba337aaddd847673d8f165701db58afb5a2`
+
+Remote validator results:
+
+```text
+FRAME_TOKEN_HYBRID_RESOLVED_CONFIG_PRECHECK_PASS
+FRAME_TOKEN_HYBRID_GATE_VALIDATION_PASS
+13 passed in 4.36s
+FRAME_TOKEN_HYBRID_PRECHECK_ONLY_PASS_NO_TRAIN
+FRAME_TOKEN_HYBRID_GATE_VALIDATION_PASS
+FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_VALIDATION_PASS
+```
+
+Submitted Slurm full-train candidate:
+
+```text
+sbatch --export=ALL,PRECHECK_ONLY=0,ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN=1,RUN_TAG=frame_token_hybrid_full_train_gate_20260624_204304,FRAME_TOKEN_HYBRID_REPO=/data/home/sczc063/run/yuzibo/OpenTAD_FrameToken_PrecheckDeploy_20260624_ecb7c27,FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_JSON=/data/home/sczc063/run/yuzibo/OpenTAD_FrameToken_PrecheckDeploy_20260624_ecb7c27/logs/frame_token_hybrid_full_train_gate_20260624_204304/frame_token_hybrid_full_train_gate.json,FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_SHA256=3dcfeddd4eaa84d85754db33c79daba337aaddd847673d8f165701db58afb5a2,FRAME_TOKEN_HYBRID_CONFIG=configs/adatad/thumos/frame_token_hybrid_acquisition_full_train_candidate_n16r4.py,FRAME_TOKEN_HYBRID_TRAIN_ID=0 scripts/run_frame_token_hybrid_acquisition_full_train_n16r4.sbatch
+```
+
+- Slurm job id: `1117996`.
+- Slurm job name: `ft_hybrid_full`.
+- Queue status at first check: `PENDING`.
+- Reason at first check: `None` as printed by `parajobs`.
+- Slurm stdout path:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_FrameToken_PrecheckDeploy_20260624_ecb7c27/logs/ft_hybrid_full-1117996.out`
+- Log-head check: file not created yet while pending.
+- No other Slurm jobs were cancelled or modified.
+
+Deployment decision:
+
+- Remote gate status: `PASS`.
+- Full-train submission status: `SUBMITTED_PENDING`.
+- Next action: do not poll repeatedly; wait for normal long-duration monitor or
+  next material status change.
