@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -131,6 +132,22 @@ REQUIRED_SCOPE_FALSE_KEYS = (
     "paper_claim_allowed",
 )
 
+FULL_TRAIN_GATE_ALLOWED_KEYS = frozenset(
+    {
+        "gate_type",
+        "route_label",
+        "action",
+        "allow_full_train",
+        "launch_gate_passed",
+        "allowed_entrypoints",
+        "decision",
+        "config",
+        "config_stage",
+        "review_status",
+        "timestamp",
+    }
+)
+
 
 class EventSurpriseGateError(RuntimeError):
     pass
@@ -251,16 +268,94 @@ def validate_config(config_path: str | Path) -> dict[str, Any]:
         "stage": gate.get("stage"),
         "selector": selector["type"],
         "input_layout": selector["input_layout"],
+        "allow_precheck_only": bool(gate.get("allow_precheck_only", False)),
+        "formal_train_candidate": bool(gate.get("formal_train_candidate", False)),
+        "full_train_candidate": bool(gate.get("full_train_candidate", False)),
         "allowed_entrypoints": list(gate.get("allowed_entrypoints", ())),
         "forbidden_true_key_count": len(tuple(gate["entrypoint_gate_context"]["forbidden_true_keys"])),
     }
 
 
+def _normalize_action(action: str | None) -> str | None:
+    if action is None:
+        return None
+    return str(action).strip().lower().replace("-", "_")
+
+
+def _read_json_mapping(path: str | Path) -> Mapping[str, Any]:
+    gate_path = Path(path)
+    try:
+        payload = json.loads(gate_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise EventSurpriseGateError(f"failed to read gate json {gate_path}: {exc}") from exc
+    _require(isinstance(payload, Mapping), "gate json must be a mapping")
+    return _as_plain(payload)
+
+
+def validate_full_train_gate_payload(payload: Mapping[str, Any]) -> bool:
+    payload = _as_plain(payload)
+    unexpected = sorted(set(payload) - FULL_TRAIN_GATE_ALLOWED_KEYS)
+    _require(not unexpected, f"launch gate has unexpected key(s): {unexpected}")
+    _require(_get(payload, "gate_type") == "event_surprise_launch_gate", "launch gate type mismatch")
+    _require(_get(payload, "route_label") == ROUTE_LABEL, "launch gate route_label mismatch")
+    _require(_normalize_action(_get(payload, "action")) == "full_train", "launch gate action mismatch")
+    _require(_get(payload, "launch_gate_passed") is True, "launch gate must be passed")
+    _require(_get(payload, "allow_full_train") is True, "launch gate must allow full_train")
+    _require("full_train" in tuple(_get(payload, "allowed_entrypoints", ())), "full_train must be allowed entrypoint")
+    return True
+
+
+def validate_launch_action(
+    config_path: str | Path,
+    *,
+    action: str,
+    gate_json: str | Path | None = None,
+) -> dict[str, Any]:
+    action_name = _normalize_action(action)
+    summary = validate_config(config_path)
+    result = dict(summary)
+    result["launch_action"] = action_name
+    result["launch_allowed"] = False
+    result["train_command_allowed"] = False
+
+    if action_name in {"precheck", "precheck_only"}:
+        _require(summary["stage"] == "local_precheck_only", "precheck_only launch requires local_precheck_only stage")
+        _require(summary["allow_precheck_only"] is True, "precheck_only launch is not allowed by config gate")
+        result["launch_action"] = "precheck_only"
+        result["launch_allowed"] = True
+        return result
+
+    if action_name == "full_train":
+        _require(summary["full_train_candidate"] is True, "full_train launch requires full_train_candidate config")
+        _require(gate_json is not None, "full_train launch requires --gate-json")
+        payload = _read_json_mapping(gate_json)
+        validate_full_train_gate_payload(payload)
+        result["launch_allowed"] = True
+        result["train_command_allowed"] = True
+        result["gate_json"] = str(gate_json)
+        return result
+
+    raise EventSurpriseGateError(f"unsupported launch action: {action}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate Event-Surprise fail-closed gate config.")
     parser.add_argument("--config", required=True, help="Path to Event-Surprise config file.")
+    parser.add_argument(
+        "--action",
+        choices=("precheck-only", "precheck", "full-train"),
+        help="Optional fail-closed launcher action to validate before any command runs.",
+    )
+    parser.add_argument("--gate-json", help="Explicit external launch gate JSON for locked full-train actions.")
     args = parser.parse_args(argv)
-    payload = validate_config(args.config)
+    try:
+        if args.action:
+            payload = validate_launch_action(args.config, action=args.action, gate_json=args.gate_json)
+        else:
+            payload = validate_config(args.config)
+    except EventSurpriseGateError as exc:
+        print(f"EventSurpriseGateError: {exc}", file=sys.stderr)
+        return 2
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 

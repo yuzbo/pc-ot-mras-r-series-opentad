@@ -201,6 +201,50 @@ def test_actionformer_keyword_path_returns_selected_inputs_masks_metas_and_remap
         assert meta["irregular_selected_positions"] == [float(x) for x in meta["event_surprise_selected_dense_indices"]]
 
 
+def test_remap_gt_filters_segments_and_labels_with_one_keep_mask():
+    module, _registry = _load_event_module()
+    selector = module.EventSurpriseTemporalAcquisitionSelector(
+        in_dim=4,
+        target_len=6,
+        max_gap=3,
+        coverage_anchor_count=3,
+        remap_gt_to_selected_axis=True,
+    )
+    selected_dense_indices = torch.tensor([[0, 2, 4, 6, 8, 10]], dtype=torch.long)
+    selected_mask = torch.ones((1, 6), dtype=torch.bool)
+    gt_segments = [torch.tensor([[1.0, 5.0], [6.0, 6.0], [7.0, 9.0]], dtype=torch.float32)]
+    gt_labels = [[3, 4, 5]]
+
+    mapped_segments, mapped_labels = selector._remap_gt_batch(
+        gt_segments,
+        gt_labels,
+        selected_dense_indices,
+        selected_mask,
+    )
+
+    assert mapped_segments[0].shape == (2, 2)
+    assert mapped_labels[0] == [3, 5]
+
+
+def test_remap_gt_rejects_segment_label_count_mismatch_before_mapping():
+    module, _registry = _load_event_module()
+    selector = module.EventSurpriseTemporalAcquisitionSelector(
+        in_dim=4,
+        target_len=6,
+        max_gap=3,
+        coverage_anchor_count=3,
+        remap_gt_to_selected_axis=True,
+    )
+
+    with pytest.raises(ValueError, match="gt segment/label count mismatch"):
+        selector._remap_gt_batch(
+            [torch.tensor([[1.0, 5.0], [7.0, 9.0]], dtype=torch.float32)],
+            [torch.tensor([3], dtype=torch.long)],
+            torch.tensor([[0, 2, 4, 6, 8, 10]], dtype=torch.long),
+            torch.ones((1, 6), dtype=torch.bool),
+        )
+
+
 def test_event_surprise_route_is_exported_without_other_new_route_requirements():
     text = INIT_PATH.read_text(encoding="utf-8")
 
@@ -225,3 +269,41 @@ def test_forward_test_rejects_forbidden_test_meta_payloads(bad_meta):
 
     with pytest.raises(ValueError, match="forbidden deploy meta"):
         selector.forward_test(features, valid, metas=[bad_meta])
+
+
+def test_forward_test_rejects_unknown_test_meta_key_even_without_forbidden_words():
+    module, _registry = _load_event_module()
+    selector = module.EventSurpriseTemporalAcquisitionSelector(in_dim=4, target_len=6)
+    features, valid = _features()
+
+    with pytest.raises(ValueError, match="unexpected deploy meta key"):
+        selector.forward_test(features, valid, metas=[{"video_id": "safe", "harmless_extra": 1}])
+
+
+def test_forward_test_accepts_allowlisted_deploy_visible_meta_keys():
+    module, _registry = _load_event_module()
+    selector = module.EventSurpriseTemporalAcquisitionSelector(in_dim=4, target_len=6)
+    features, valid = _features()
+
+    out = selector.forward_test(
+        features,
+        valid,
+        metas=[
+            {
+                "video_name": "video_test_000001",
+                "video_id": "video_test_000001",
+                "sample_id": "sample-1",
+                "data_path": "thumos14/test/video_test_000001.mp4",
+                "fps": 30.0,
+                "duration": 120.0,
+                "snippet_stride": 4.0,
+                "window_start_frame": 0.0,
+                "resize_length": 768,
+                "window_size": 768,
+                "offset_frames": 0.0,
+            },
+            {"video_id": "video_test_000002"},
+        ],
+    )
+
+    assert out["route_label"] == "DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3"

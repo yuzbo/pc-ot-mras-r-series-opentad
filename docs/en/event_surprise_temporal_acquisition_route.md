@@ -33,7 +33,15 @@ The selector supports two entry styles:
 
 For ActionFormer-style selected-axis training, the route can remap training GT
 segments to the selected axis. Test-time inputs reject GT, oracle, teacher,
-cache, checkpoint, raw-prediction, and result metadata.
+cache, checkpoint, raw-prediction, and result metadata. Runtime/test metadata
+now uses a strict allowlist: only deploy-visible dataset identifiers, temporal
+scale fields, and Event-Surprise selector fields are accepted. Unexpected keys
+fail closed even when their names do not match a forbidden token.
+
+Training GT remap filters segments and labels with the same keep mask after
+checking that each batch item has aligned segment and label counts. Mismatched
+counts fail before mapping, and non-tensor label sequences are filtered without
+silently preserving labels for removed segments.
 
 ## Current Gate State
 
@@ -47,6 +55,15 @@ Remote sync, Slurm, detector training, detector mAP, long/full training,
 raw-prediction cache use, runtime/deploy claims, metric claims, and paper claims
 remain locked until an explicit later gate changes that state.
 
+Launcher enforcement is handled by `tools/bata/validate_event_surprise_gate.py`.
+The config validator alone is not a training permission. Any entrypoint must
+also pass an explicit action check:
+
+- `--action precheck-only` is allowed only for the local precheck config;
+- `--action full-train` fails closed unless a separate Event-Surprise launch
+  gate JSON supplies the matching route label, action, allow flag, passed gate,
+  and `full_train` entrypoint.
+
 ## Validation
 
 Use:
@@ -55,5 +72,6 @@ Use:
 python -m pytest tests/test_event_surprise_acquisition_route.py tests/test_event_surprise_config_gate.py
 python tools/bata/validate_event_surprise_gate.py --config configs/adatad/thumos/event_surprise_temporal_acquisition_local_precheck.py
 python tools/bata/validate_event_surprise_gate.py --config configs/adatad/thumos/event_surprise_temporal_acquisition_full_train_candidate_n16r4.py
+python tools/bata/validate_event_surprise_gate.py --config configs/adatad/thumos/event_surprise_temporal_acquisition_local_precheck.py --action precheck-only
+python tools/bata/validate_event_surprise_gate.py --config configs/adatad/thumos/event_surprise_temporal_acquisition_full_train_candidate_n16r4.py --action full-train
 ```
-

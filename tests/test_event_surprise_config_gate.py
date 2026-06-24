@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import importlib.util
 import subprocess
 import sys
@@ -123,6 +124,122 @@ def test_event_surprise_gate_validator_cli_accepts_locked_configs():
         assert result.returncode == 0, result.stderr
         assert '"pass": true' in result.stdout
         assert "EventSurpriseTemporalAcquisitionSelector" in result.stdout
+
+
+def test_event_surprise_launch_action_precheck_allows_local_precheck_only():
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--config", str(LOCAL_CONFIG), "--action", "precheck-only"],
+        cwd=str(ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["launch_action"] == "precheck_only"
+    assert payload["launch_allowed"] is True
+    assert payload["train_command_allowed"] is False
+
+
+def test_event_surprise_launch_action_full_train_fails_without_gate_json():
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--config", str(FULL_CONFIG), "--action", "full-train"],
+        cwd=str(ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "full_train launch requires --gate-json" in result.stderr
+
+
+def test_event_surprise_launch_action_full_train_accepts_explicit_gate_json(tmp_path):
+    gate_json = tmp_path / "event_surprise_full_train_gate.json"
+    gate_json.write_text(
+        json.dumps(
+            {
+                "gate_type": "event_surprise_launch_gate",
+                "route_label": "DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3",
+                "action": "full_train",
+                "allow_full_train": True,
+                "launch_gate_passed": True,
+                "allowed_entrypoints": ["full_train"],
+                "decision": "ALLOW_EVENT_SURPRISE_FULL_TRAIN_CANDIDATE",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(VALIDATOR),
+            "--config",
+            str(FULL_CONFIG),
+            "--action",
+            "full-train",
+            "--gate-json",
+            str(gate_json),
+        ],
+        cwd=str(ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["launch_action"] == "full_train"
+    assert payload["launch_allowed"] is True
+    assert payload["train_command_allowed"] is True
+    assert payload["gate_json"] == str(gate_json)
+
+
+def test_event_surprise_launch_action_full_train_rejects_wrong_route_gate_json(tmp_path):
+    gate_json = tmp_path / "wrong_route_gate.json"
+    gate_json.write_text(
+        json.dumps(
+            {
+                "gate_type": "event_surprise_launch_gate",
+                "route_label": "C3_RS_NOT_EVENT_SURPRISE",
+                "action": "full_train",
+                "allow_full_train": True,
+                "launch_gate_passed": True,
+                "allowed_entrypoints": ["full_train"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(VALIDATOR),
+            "--config",
+            str(FULL_CONFIG),
+            "--action",
+            "full-train",
+            "--gate-json",
+            str(gate_json),
+        ],
+        cwd=str(ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "launch gate route_label mismatch" in result.stderr
 
 
 def test_event_surprise_gate_validator_rejects_unlocked_payload():

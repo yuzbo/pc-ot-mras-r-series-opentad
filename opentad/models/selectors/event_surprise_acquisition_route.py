@@ -14,6 +14,87 @@ from ..builder import SELECTORS
 EVENT_SURPRISE_ROUTE_LABEL = "DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3"
 EVENT_SURPRISE_META_KEY = "event_surprise_acquisition_plan"
 
+_DEPLOY_META_LEAF_KEYS = frozenset(
+    {
+        "video_name",
+        "video_id",
+        "sample_id",
+        "data_path",
+        "fps",
+        "duration",
+        "snippet_stride",
+        "window_start_frame",
+        "resize_length",
+        "window_size",
+        "offset_frames",
+        "feature_start_idx",
+        "feature_end_idx",
+        "feature_stride",
+        "feat_stride",
+        "feats_len_ori",
+        "frame_count",
+        "num_frames",
+        "subset",
+        "irregular_selected_positions",
+        "irregular_selected_valid_len",
+        "irregular_selected_output_valid_len",
+        "irregular_native_axis",
+        "event_surprise_selected_dense_indices",
+        "event_surprise_selected_times",
+        "event_surprise_remap_gt_to_selected_axis",
+    }
+)
+_EVENT_SURPRISE_SCORE_KEYS = frozenset(
+    {
+        "selection_score",
+        "temporal_surprise_score",
+        "motion_score",
+        "uncertainty_score",
+        "redundancy_score",
+    }
+)
+_EVENT_SURPRISE_PROTOCOL_FLAG_KEYS = frozenset(
+    {
+        "uses_deploy_visible_inputs_only",
+        "uses_test_gt",
+        "uses_oracle",
+        "uses_teacher",
+        "uses_raw_prediction_cache",
+        "route_isolated_from_c3",
+    }
+)
+_EVENT_SURPRISE_PLAN_KEYS = frozenset(
+    {
+        "route_label",
+        "meta_key",
+        "selection_policy",
+        "selected_count",
+        "target_len",
+        "max_gap",
+        "coverage_anchor_count",
+        "remap_gt_to_selected_axis",
+        "uses_deploy_visible_inputs_only",
+        "uses_test_gt",
+        "uses_oracle",
+        "uses_teacher",
+        "uses_raw_prediction_cache",
+    }
+)
+_DEPLOY_META_NESTED_KEY_ALLOWLIST = {
+    "event_surprise_selected_scores": _EVENT_SURPRISE_SCORE_KEYS,
+    "event_surprise_protocol_flags": _EVENT_SURPRISE_PROTOCOL_FLAG_KEYS,
+    EVENT_SURPRISE_META_KEY: _EVENT_SURPRISE_PLAN_KEYS,
+}
+_ALLOWED_DEPLOY_META_KEYS = _DEPLOY_META_LEAF_KEYS | frozenset(_DEPLOY_META_NESTED_KEY_ALLOWLIST)
+_DEPLOY_FALSE_FLAG_KEYS = frozenset(
+    {
+        "uses_test_gt",
+        "uses_oracle",
+        "uses_teacher",
+        "uses_raw_prediction_cache",
+    }
+)
+
 _FORBIDDEN_DEPLOY_META_TOKENS = frozenset(
     {
         "gt",
@@ -107,20 +188,49 @@ def _contains_forbidden_deploy_fragment(value: object) -> bool:
     return any(token != "gt" and token in compact for token in _FORBIDDEN_DEPLOY_META_TOKENS)
 
 
-def _validate_deploy_visible_meta(value: object, *, location: str = "metas") -> None:
+def _validate_deploy_leaf_value(value: object, *, location: str) -> None:
     if isinstance(value, Mapping):
-        for key, item in value.items():
-            key_text = str(key or "")
-            if _contains_forbidden_deploy_fragment(key_text):
-                raise ValueError(f"{location}.{key_text} contains forbidden deploy meta")
-            _validate_deploy_visible_meta(item, location=f"{location}.{key_text}")
-        return
+        raise ValueError(f"{location} must not contain nested deploy metadata")
     if isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
-            _validate_deploy_visible_meta(item, location=f"{location}[{index}]")
+            _validate_deploy_leaf_value(item, location=f"{location}[{index}]")
         return
     if isinstance(value, str) and _contains_forbidden_deploy_fragment(value):
         raise ValueError(f"{location} contains forbidden deploy meta")
+
+
+def _validate_deploy_visible_meta(
+    value: object,
+    *,
+    location: str = "metas",
+    allowed_keys: frozenset[str] = _ALLOWED_DEPLOY_META_KEYS,
+) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            key_text = str(key or "")
+            if key_text not in allowed_keys:
+                if _contains_forbidden_deploy_fragment(key_text):
+                    raise ValueError(f"{location}.{key_text} contains forbidden deploy meta")
+                raise ValueError(f"{location}.{key_text} unexpected deploy meta key")
+            if key_text in _DEPLOY_FALSE_FLAG_KEYS and item is not False:
+                raise ValueError(f"{location}.{key_text} must be false for deploy-visible metadata")
+            nested_allowed = _DEPLOY_META_NESTED_KEY_ALLOWLIST.get(key_text)
+            if nested_allowed is None:
+                _validate_deploy_leaf_value(item, location=f"{location}.{key_text}")
+            else:
+                if not isinstance(item, Mapping):
+                    raise ValueError(f"{location}.{key_text} must be a deploy metadata mapping")
+                _validate_deploy_visible_meta(
+                    item,
+                    location=f"{location}.{key_text}",
+                    allowed_keys=nested_allowed,
+                )
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _validate_deploy_visible_meta(item, location=f"{location}[{index}]", allowed_keys=allowed_keys)
+        return
+    _validate_deploy_leaf_value(value, location=location)
 
 
 def _coverage_anchors(valid_len: int, count: int) -> list[int]:
@@ -559,12 +669,44 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
         mapped_segments = []
         mapped_labels = []
         for batch_idx, (segments, labels) in enumerate(zip(segments_iter, labels_iter)):
+            if not torch.is_tensor(segments):
+                raise TypeError("gt_segments items must be tensors")
+            if segments.ndim != 2 or int(segments.shape[-1]) != 2:
+                raise ValueError("gt_segments items must be [N,2]")
+            label_count = self._label_count(labels)
+            if int(segments.shape[0]) != label_count:
+                raise ValueError(
+                    "gt segment/label count mismatch: "
+                    f"segments={int(segments.shape[0])}, labels={label_count}"
+                )
             count = int(selected_mask[batch_idx].long().sum().item())
             positions = selected_dense_indices[batch_idx, :count].to(device=segments.device, dtype=torch.float32)
             remapped, kept = self._remap_one_gt(segments, positions)
             mapped_segments.append(remapped.to(dtype=segments.dtype))
-            mapped_labels.append(labels[kept] if torch.is_tensor(labels) else labels)
+            mapped_labels.append(self._filter_labels(labels, kept))
         return mapped_segments, mapped_labels
+
+    @staticmethod
+    def _label_count(labels: object) -> int:
+        if torch.is_tensor(labels):
+            if labels.ndim == 0:
+                raise ValueError("gt_labels items must have a label axis")
+            return int(labels.shape[0])
+        if isinstance(labels, Sequence) and not isinstance(labels, (str, bytes)):
+            return len(labels)
+        raise TypeError("gt_labels items must be tensors or non-string sequences")
+
+    @staticmethod
+    def _filter_labels(labels: object, keep: torch.Tensor) -> object:
+        if torch.is_tensor(labels):
+            return labels[keep.to(device=labels.device)]
+        if isinstance(labels, tuple):
+            keep_list = [bool(item) for item in keep.detach().cpu().tolist()]
+            return tuple(label for label, keep_item in zip(labels, keep_list) if keep_item)
+        if isinstance(labels, list):
+            keep_list = [bool(item) for item in keep.detach().cpu().tolist()]
+            return [label for label, keep_item in zip(labels, keep_list) if keep_item]
+        raise TypeError("gt_labels items must be tensors or non-string sequences")
 
     @staticmethod
     def _remap_one_gt(segments: torch.Tensor, selected_positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
