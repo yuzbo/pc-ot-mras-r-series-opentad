@@ -22,22 +22,13 @@ def _assert_loss_dict_finite(losses, *, stage):
         raise FloatingPointError(f"{stage} produced non-finite cost")
 
 
-def _assert_grad_norm_finite(model):
-    total_sq = None
-    for parameter in model.parameters():
+def _find_first_nonfinite_grad(model):
+    for name, parameter in model.named_parameters():
         if parameter.grad is None:
             continue
-        grad = parameter.grad.detach()
-        if not bool(torch.isfinite(grad).all().item()):
-            raise FloatingPointError("training produced non-finite parameter gradient")
-        grad_norm = grad.float().norm(2)
-        total_sq = grad_norm.pow(2) if total_sq is None else total_sq + grad_norm.pow(2)
-    if total_sq is None:
-        return None
-    total_norm = total_sq.sqrt()
-    if not bool(torch.isfinite(total_norm).all().item()):
-        raise FloatingPointError("training produced non-finite gradient norm")
-    return total_norm
+        if not bool(torch.isfinite(parameter.grad.detach()).all().item()):
+            return name
+    return None
 
 
 def train_one_epoch(
@@ -64,6 +55,7 @@ def train_one_epoch(
             raise ValueError("max_train_iters must be positive when provided")
         num_iters = min(num_iters, max_train_iters)
     use_amp = False if scaler is None else True
+    nonfinite_grad_skip_count = 0
 
     model.train()
     for iter_idx, data_dict in enumerate(train_loader):
@@ -87,13 +79,38 @@ def train_one_epoch(
             scaler.unscale_(optimizer)
         else:
             losses["cost"].backward()
-        _assert_grad_norm_finite(model)
+        bad_param_name = _find_first_nonfinite_grad(model)
+        if bad_param_name is not None:
+            nonfinite_grad_skip_count += 1
+            logger.warning(
+                "[Train]: non-finite parameter gradient detected at epoch=%d iter=%d "
+                "param=%s; skip optimizer step; nonfinite_grad_skip_count=%d",
+                curr_epoch,
+                iter_idx,
+                bad_param_name,
+                nonfinite_grad_skip_count,
+            )
+            optimizer.zero_grad(set_to_none=True)
+            if use_amp:
+                scaler.update()
+            continue
 
         # gradient clipping (to stabilize training if necessary)
         if clip_grad_l2norm > 0.0:
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_l2norm)
             if not bool(torch.isfinite(grad_norm.detach()).all().item()):
-                raise FloatingPointError("training produced non-finite clipped gradient norm")
+                nonfinite_grad_skip_count += 1
+                logger.warning(
+                    "[Train]: non-finite clipped gradient norm detected at epoch=%d iter=%d; "
+                    "skip optimizer step; nonfinite_grad_skip_count=%d",
+                    curr_epoch,
+                    iter_idx,
+                    nonfinite_grad_skip_count,
+                )
+                optimizer.zero_grad(set_to_none=True)
+                if use_amp:
+                    scaler.update()
+                continue
 
         # update parameters
         if use_amp:
@@ -130,6 +147,13 @@ def train_one_epoch(
         if max_train_iters is not None and (iter_idx + 1) >= max_train_iters:
             logger.info("[Train]: max_train_iters=%d reached; ending smoke epoch early", max_train_iters)
             break
+    if nonfinite_grad_skip_count > 0:
+        logger.warning(
+            "[Train]: Epoch %d completed with nonfinite_grad_skip_count=%d; "
+            "early isolated skips are tolerated, monitor for repeated growth",
+            curr_epoch,
+            nonfinite_grad_skip_count,
+        )
 
 
 def val_one_epoch(
