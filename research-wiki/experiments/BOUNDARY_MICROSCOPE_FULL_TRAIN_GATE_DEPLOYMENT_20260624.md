@@ -90,22 +90,47 @@ metric_claim_allowed=false
 paper_claim_allowed=false
 ```
 
-Commit, push, remote deployment, gate JSON, and Slurm fields are recorded below after execution.
+Commit, push, remote deployment, gate JSON, and Slurm fields are recorded below.
 
 ## Remote Deployment Fields
 
-- Final implementation commit: pending.
-- Push result: pending.
-- Remote path: pending.
-- Sync method: pending.
-- Remote code commit used for full-train launcher: pending.
-- `RUN_TAG`: pending.
-- Gate JSON path: pending.
-- Gate JSON SHA256: pending.
-- Resolved config SHA256: pending.
-- Active manifest SHA256: pending.
-- Validator action result: pending.
-- Slurm job id/status/log path: pending.
+- Final implementation commit: `1e286e702dfe111becc5f367263834d06250812f`
+- Push result:
+  `b2a6a6a..1e286e7 codex/boundary-microscope-precheck-deploy-20260624 -> codex/boundary-microscope-precheck-deploy-20260624`
+- Remote path:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_BoundaryMicroscope_PrecheckDeploy_20260624_db33baf`
+- Sync method:
+  GitHub `git fetch` reached `origin/codex/boundary-microscope-precheck-deploy-20260624`.
+  `git pull --ff-only` hit `GnuTLS recv error (-110)`. The deployment used a
+  non-zip git-native fallback: `git merge --ff-only origin/codex/boundary-microscope-precheck-deploy-20260624`.
+- Remote code commit used for full-train launcher:
+  `1e286e702dfe111becc5f367263834d06250812f`
+- Fixed `RUN_TAG`:
+  `boundary_microscope_full_train_candidate_20260624_1e286e7`
+- Precheck manifest command:
+  `ALLOW_LOGIN_NODE_DEBUG=1 PRECHECK_ONLY=1 RUN_TAG=boundary_microscope_full_train_candidate_20260624_1e286e7 bash scripts/run_boundary_microscope_full_train_n16r4.sbatch`
+- Precheck manifest result:
+  `BOUNDARY_MICROSCOPE_PRECHECK_ONLY_PASS_NO_TRAIN`, `13 passed in 3.41s`
+- Gate JSON path:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_BoundaryMicroscope_PrecheckDeploy_20260624_db33baf/logs/boundary_microscope_full_train_candidate_20260624_1e286e7/boundary_microscope_full_train_gate.json`
+- Gate JSON SHA256:
+  `d33ca02a9f94dc2ea3f0e8a133941bca7c16d8549543d5316801223e4a9fec70`
+- Resolved config SHA256:
+  `35008d241952bad31bc05c329ffacdf86f887fe7f9f300c17445f85e59e1094d`
+- Active manifest SHA256:
+  `70e53ac4eb87165e4d10bdc79967652f7a3c8bed90a7e0852321304c0b7d7afa`
+- Validator action result:
+  `BOUNDARY_MICROSCOPE_FULL_TRAIN_GATE_VALIDATION_PASS`
+- Slurm submission command:
+  `sbatch --export=ALL,PRECHECK_ONLY=0,ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN=1,RUN_TAG=boundary_microscope_full_train_candidate_20260624_1e286e7,BOUNDARY_MICROSCOPE_FULL_TRAIN_GATE_JSON=logs/boundary_microscope_full_train_candidate_20260624_1e286e7/boundary_microscope_full_train_gate.json,BOUNDARY_MICROSCOPE_FULL_TRAIN_GATE_SHA256=d33ca02a9f94dc2ea3f0e8a133941bca7c16d8549543d5316801223e4a9fec70,TRAIN_ID=0 scripts/run_boundary_microscope_full_train_n16r4.sbatch`
+- Slurm job id/status:
+  `1117987`, `PENDING`, reason `Priority`
+- Slurm stdout path:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_BoundaryMicroscope_PrecheckDeploy_20260624_db33baf/logs/bm_fulltrain-1117987.out`
+- Slurm stdout head:
+  not created yet at first post-submit check because the job was still pending.
+- Run log path:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_BoundaryMicroscope_PrecheckDeploy_20260624_db33baf/logs/boundary_microscope_full_train_candidate_20260624_1e286e7/boundary_microscope_full_train_candidate_20260624_1e286e7.log`
 
 ## Decisions
 
