@@ -69,8 +69,26 @@ raw decode saving, runtime, metric, deploy, and paper claims remain locked.
 
 ## Evidence To Fill After Execution
 
-- Commit and push: pending.
-- Remote path: pending.
-- Remote sync method: pending.
-- Remote PRECHECK_ONLY command/log: pending.
-- Final deployment-precheck decision: pending.
+- Commit and push:
+  - `ecb7c27a303c06cdb7c216e5be7e6ce713751ca3`
+    (`Add frame token hybrid N16R4 precheck launcher`) pushed to
+    `origin/codex/frame-token-precheck-deploy-20260624`.
+  - `3df6597` (`Fix frame token precheck profile sourcing`) pushed to the same
+    branch after N16R4 showed `/etc/profile` must be sourced before `set -u`.
+- Remote sync method:
+  - GitHub branch clone/fetch only; no zip/scp fallback used.
+- Remote path:
+  - Initial route-owned clone succeeded at
+    `/data/home/sczc063/run/yuzibo/OpenTAD_FrameToken_PrecheckDeploy_20260624_ecb7c27`
+    with HEAD `ecb7c27a303c06cdb7c216e5be7e6ce713751ca3`.
+  - Final intended route-owned clone path
+    `/data/home/sczc063/run/yuzibo/OpenTAD_FrameToken_PrecheckDeploy_20260624_3df6597`
+    did not complete because GitHub TLS fetch/clone failed.
+- Remote PRECHECK_ONLY command/log:
+  - Not executed on final commit `3df6597`.
+  - `bash -n` on the initial clone's launcher passed, but direct execution of
+    the initial launcher failed before logging because of the fixed
+    `/etc/profile`/`set -u` ordering issue.
+- Final deployment-precheck decision at 2026-06-24T20:12:58+08:00:
+  `BLOCKED_REMOTE_GITHUB_TLS_UNREACHABLE_AFTER_PUSH`; full train remains
+  locked.
