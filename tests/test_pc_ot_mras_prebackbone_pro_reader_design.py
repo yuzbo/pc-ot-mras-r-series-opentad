@@ -176,6 +176,28 @@ class _ConflictingSlotAndFrameScoreReader:
         }
 
 
+class _InvalidPaddingHighScoreReader:
+    def __call__(self, lowcost_features, valid_mask, time_coords=None):
+        batch, time, _dim = lowcost_features.shape
+        slots = 4
+        slot_logits = lowcost_features.new_zeros((batch, slots, time))
+        frame_scores = lowcost_features.new_full((batch, time), -20.0)
+        frame_scores[:, :4] = lowcost_features.new_tensor([4.0, 3.0, 2.0, 1.0])
+        if time > 6:
+            frame_scores[:, 6:] = 100.0
+        return {
+            "slot_logits": slot_logits,
+            "acquisition_matrix": slot_logits.softmax(dim=-1),
+            "frame_selection_logits": frame_scores,
+            "actionness_logits": frame_scores,
+            "start_logits": frame_scores,
+            "end_logits": frame_scores,
+            "uncertainty_logits": lowcost_features.new_zeros((batch, time)),
+            "redundancy_logits": lowcost_features.new_zeros((batch, time)),
+            "regularizers": {"total_regularizer": lowcost_features.sum() * 0.0},
+        }
+
+
 class _TrainableFrameScoreReader:
     def __init__(self, torch):
         self.frame_logits = torch.nn.Parameter(
@@ -268,6 +290,52 @@ def test_frame_score_first_selector_ignores_conflicting_slot_logits_for_hard_sel
     assert outputs["metas"][0]["pc_ot_mras_prebackbone_selection_strategy"] == "frame_score_topk"
     assert outputs["metas"][0]["pc_ot_mras_prebackbone_hard_selection_source"] == "frame_selection_logits"
     assert outputs["metas"][0]["pc_ot_mras_prebackbone_slot_not_hard_source"] is True
+
+
+def test_frame_score_first_train_and_eval_hard_indices_are_identical():
+    torch = _import_torch_or_skip()
+    module = _load_prebackbone_selector_module(_ConflictingSlotAndFrameScoreReader())
+    selector = module.PCOTMRASPreBackboneFrameSelector(
+        reader={"type": "ConflictReader"},
+        target_len=4,
+        dense_window_size=8,
+        descriptor_dim=12,
+        selection_strategy="frame_score_topk",
+        protected_uniform_count=0,
+        coverage_guard_count=0,
+        max_gap=0,
+    )
+    inputs, masks, _metas = _make_time_index_inputs(torch, dense_len=8)
+
+    train_outputs = selector.forward_train(inputs, masks, [{"split": "train"}], gt_segments=None, gt_labels=None)
+    test_outputs = selector.forward_test(inputs, masks, [{"split": "test"}])
+
+    train_selected = train_outputs["metas"][0]["pc_ot_mras_prebackbone_selected_dense_indices"]
+    test_selected = test_outputs["metas"][0]["pc_ot_mras_prebackbone_selected_dense_indices"]
+    assert train_selected == test_selected == [0, 1, 2, 3]
+
+
+def test_frame_score_first_masks_invalid_padding_even_when_invalid_scores_are_high():
+    torch = _import_torch_or_skip()
+    module = _load_prebackbone_selector_module(_InvalidPaddingHighScoreReader())
+    selector = module.PCOTMRASPreBackboneFrameSelector(
+        reader={"type": "InvalidPaddingHighScoreReader"},
+        target_len=4,
+        dense_window_size=8,
+        descriptor_dim=12,
+        selection_strategy="frame_score_topk",
+        protected_uniform_count=0,
+        coverage_guard_count=0,
+        max_gap=0,
+    )
+    inputs, masks, metas = _make_time_index_inputs(torch, dense_len=8)
+    masks[:, 6:] = False
+
+    outputs = selector.forward_test(inputs, masks, metas)
+
+    selected = outputs["metas"][0]["pc_ot_mras_prebackbone_selected_dense_indices"]
+    assert selected == [0, 1, 2, 3]
+    assert max(selected) < 6
 
 
 def test_frame_score_first_st_surrogate_backpropagates_detector_loss_to_frame_logits():

@@ -23,7 +23,7 @@ if [ ! -d "$REPO" ]; then
 fi
 cd "$REPO"
 
-READER_VARIANT="${READER_VARIANT:-cnn_lite}"
+READER_VARIANT="${READER_VARIANT:-pro_boundary}"
 case "$READER_VARIANT" in
   cnn_lite)
     CONFIG="configs/adatad/thumos/pc_ot_mras_prebackbone_c3_cnn_lite_reader_full_train_candidate_n16r4.py"
