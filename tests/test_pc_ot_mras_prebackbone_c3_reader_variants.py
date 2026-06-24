@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import json
 import subprocess
 import sys
 import types
@@ -407,3 +408,153 @@ def test_c3_reader_variant_configs_forbid_eval_cache_claims_and_keep_original_ac
         assert gate.paper_claim_allowed is False, path.name
         assert gate.deploy_claim_allowed is False, path.name
         assert gate.runtime_flops_claim_allowed is False, path.name
+
+
+def test_c3_pro_boundary_full_train_config_saves_current_result_detection_json():
+    mmengine_config = pytest.importorskip("mmengine.config")
+    path = CONFIG_DIR / "pc_ot_mras_prebackbone_c3_pro_boundary_reader_full_train_candidate_n16r4.py"
+    cfg = mmengine_config.Config.fromfile(str(path))
+
+    assert cfg.post_processing.save_dict is True
+    assert cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate.formal_train_candidate is True
+    assert cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate.allow_tools_test is False
+
+
+def test_c3_selector_metadata_env_hook_writes_analyzer_ready_current_batch_jsonl(tmp_path, monkeypatch):
+    torch = _import_torch_or_skip()
+    module = _load_prebackbone_selector_module()
+    selector_cls = module.PCOTMRASPreBackboneFrameSelector
+    selector = selector_cls.__new__(selector_cls)
+    selector.target_len = 4
+    selector.selection_unit = 1
+    selector.remap_gt_to_selected_axis = True
+    selector.residual_count = None
+    selector.residual_slot_role = "learned_residual"
+    selector.selector_support_status = "supported"
+    selector.selection_strategy = "frame_score_topk"
+    selector.frame_score_st_surrogate = "local_softmax"
+    selector.frame_score_st_logit_clamp = 12.0
+    selector.frame_score_st_gradient_scale = 0.05
+    selector.frame_score_aux_logit_clamp = 12.0
+    selector.dynamic_budget = None
+    selector.max_dense_gap = 0
+    selector.max_gap_guard_count = 0
+    selector.meta_source = "pc_ot_mras_prebackbone_e2e_frame_selector"
+    selector.scout_feature_source = "compressed_pixels"
+    selector.scout_spatial_size = (32, 32)
+    selector._metadata_dump_count = 0
+
+    dump_path = tmp_path / "selector_metadata.jsonl"
+    monkeypatch.setenv("PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_JSONL", str(dump_path))
+    monkeypatch.setenv("PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_MAX_ROWS", "8")
+
+    selected_positions = torch.tensor([[0.0, 2.0, 4.0, 6.0]], dtype=torch.float32)
+    valid_lengths = torch.tensor([8], dtype=torch.long)
+    selected_output_valid_lengths = torch.tensor([4], dtype=torch.long)
+    reader_outputs = {
+        "frame_selection_logits": torch.tensor([[0.1, 0.5, 0.2, 0.7, 0.3, 0.9, 0.4, 0.8]], dtype=torch.float32),
+        "boundary_logits": torch.tensor([[0.1, 0.2, 0.7, 0.6, 0.3, 0.2, 0.9, 0.4]], dtype=torch.float32),
+    }
+    candidate_valid = torch.tensor([[True, True, True, True, True, True, True, True]], dtype=torch.bool)
+    candidate_dense_indices = torch.arange(8, dtype=torch.long).unsqueeze(0)
+    metas = [{"video_name": "video_a", "window_start_frame": 0}]
+    gt_segments = [torch.tensor([[1.0, 5.0]], dtype=torch.float32)]
+
+    selector._write_selected_axis_meta(
+        metas=metas,
+        selected_positions=selected_positions,
+        valid_lengths=valid_lengths,
+        selected_output_valid_lengths=selected_output_valid_lengths,
+        selected_roles=[["coverage", "boundary", "interior", "boundary"]],
+        raw_slot_dense_indices=[[0, 2, 2, 4]],
+        raw_slot_duplicate_rates=[0.25],
+        raw_slot_unique_counts=[3],
+        reader_fill_counts=[1],
+        st_active_row_counts=[4],
+        reader_outputs=reader_outputs,
+        candidate_valid=candidate_valid,
+        candidate_dense_indices=candidate_dense_indices,
+        gt_segments=gt_segments,
+        training=True,
+    )
+
+    rows = [json.loads(line) for line in dump_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["sample_id"] == "video_a|window_start_frame=0"
+    assert row["phase"] == "train"
+    assert row["selected_dense_indices"] == [0, 2, 4, 6]
+    assert row["valid_len"] == 8
+    assert row["gt_segments"] == [[1.0, 5.0]]
+    assert row["selector_scores"] == pytest.approx([0.1, 0.5, 0.2, 0.7, 0.3, 0.9, 0.4, 0.8])
+    assert row["pc_ot_mras_prebackbone_raw_slot_dense_indices"] == [0, 2, 2, 4]
+    assert row["pc_ot_mras_prebackbone_reader_fill_count"] == 1
+    assert row["pc_ot_mras_prebackbone_st_active_row_count"] == 4
+    assert row["irregular_selected_positions"] == [0.0, 2.0, 4.0, 6.0]
+    assert row["irregular_dense_valid_len"] == 8
+    assert row["irregular_selected_valid_len"] == 8
+
+    monkeypatch.delenv("PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_JSONL", raising=False)
+    monkeypatch.delenv("PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_MAX_ROWS", raising=False)
+
+
+def test_c3_reader_full_train_launcher_prechecks_formal_selector_and_ranking_diagnostics():
+    launcher = ROOT / "scripts" / "run_pc_ot_mras_prebackbone_c3_reader_full_train_n16r4.sbatch"
+    text = launcher.read_text(encoding="utf-8")
+
+    assert "codex/c3-pro-boundary-stability-20260624" in text
+    assert "validate_pc_ot_mras_c3_diagnostic_gate.py" in text
+    assert "analyze_pc_ot_mras_selector_posttrain_diagnostics.py" in text
+    assert "analyze_p2_proposal_localization.py" in text
+    assert "analyze_actionformer_post_nms_overload.py" in text
+    assert "test_pc_ot_mras_prebackbone_nan_guards.py" in text
+    assert "test_pc_ot_mras_prebackbone_c3_pro_stability.py" in text
+    assert "test_pc_ot_mras_selector_posttrain_diagnostics.py" in text
+    assert "test_pc_ot_mras_c3_diagnostic_gate.py" in text
+    assert "tools/bata/validate_pc_ot_mras_c3_diagnostic_gate.py" in text
+    assert "tools/bata/analyze_pc_ot_mras_selector_posttrain_diagnostics.py" in text
+    assert "tools/bata/analyze_p2_proposal_localization.py" in text
+    assert "tools/bata/analyze_actionformer_post_nms_overload.py" in text
+    assert "PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_JSONL" in text
+    assert "C3_SELECTOR_METADATA_JSONL" in text
+    assert "converted_result_detection_proposals.jsonl" in text
+
+
+def test_c3_reader_full_train_launcher_requires_slurm_for_full_train_and_postrun_gate():
+    launcher = ROOT / "scripts" / "run_pc_ot_mras_prebackbone_c3_reader_full_train_n16r4.sbatch"
+    text = launcher.read_text(encoding="utf-8")
+
+    assert "ALLOW_LOGIN_NODE_DEBUG=1 only permits PRECHECK_ONLY=1" in text
+    assert 'if [ "$PRECHECK_ONLY" = "0" ] && [ -z "${SLURM_JOB_ID:-}" ]; then' in text
+    assert "POSTTRAIN_DIAGNOSTIC_GATE_REQUIRED" in text
+    assert "C3_SELECTOR_SUMMARY_JSON" in text
+    assert "C3_PROPOSAL_SUMMARY_JSON" in text
+    assert "C3_OVERLOAD_SUMMARY_JSON" in text
+    assert "C3_DIAGNOSTIC_GATE_JSON" in text
+    assert "tools/bata/validate_pc_ot_mras_c3_diagnostic_gate.py" in text
+    assert "PREBACKBONE_C3_READER_FULL_TRAIN_PASS_WITH_DIAGNOSTIC_GATE" in text
+    assert "running C3 selector diagnostic producer" in text
+    assert "running C3 result_detection-to-proposal converter" in text
+    assert "running C3 proposal localization diagnostic producer" in text
+    assert "running C3 post-NMS overload diagnostic producer" in text
+    assert "POSTTRAIN_DIAGNOSTIC_GATE_REQUIRED=1 but C3_SELECTOR_METADATA_JSONL is missing" in text
+    assert "full training requires POSTTRAIN_DIAGNOSTIC_GATE_REQUIRED=1" in text
+    assert "POSTTRAIN_DIAGNOSTIC_GATE_REQUIRED=0; run is not attribution-ready" not in text
+    assert 'C3_SELECTOR_METADATA_JSONL="$RUN_ROOT/selector_metadata.jsonl"' in text
+    assert "${C3_SELECTOR_METADATA_JSONL:-" not in text
+    assert 'C3_RESULT_DETECTION_PROPOSALS_JSONL="$C3_RESULT_DETECTION_GEOMETRY_DIR/converted_result_detection_proposals.jsonl"' in text
+    assert "${C3_RESULT_DETECTION_PROPOSALS_JSONL:-" not in text
+    assert 'C3_RESULT_DETECTION_JSON="$FINAL_WORK_DIR/result_detection.json"' in text
+    assert "${C3_RESULT_DETECTION_JSON:-" not in text
+    assert 'rm -f "$C3_SELECTOR_METADATA_JSONL"' in text
+    assert 'grep -Eiq "nan|\\\\binf\\\\b' not in text
+    assert "train stdout contains raw prediction/cache marker" in text
+    assert "C3_RESULT_DETECTION_JSON" in text
+    assert "--provenance-run-root \"$RUN_ROOT\"" in text
+    assert "--provenance-work-dir \"$FINAL_WORK_DIR\"" in text
+    assert "--provenance-train-stdout \"$TRAIN_STDOUT\"" in text
+    assert "--provenance-result-detection-json \"$C3_RESULT_DETECTION_JSON\"" in text
+    assert "--expected-run-root \"$RUN_ROOT\"" in text
+    assert "--expected-work-dir \"$FINAL_WORK_DIR\"" in text
+    assert "--expected-train-stdout \"$TRAIN_STDOUT\"" in text
+    assert "--expected-result-detection-json \"$C3_RESULT_DETECTION_JSON\"" in text

@@ -656,6 +656,7 @@ def run_localization_attribution(
     require_seconds: bool = True,
     include_ambiguous: bool = False,
     limit_rows: int | None = None,
+    provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     inferred = infer_dataset_paths_from_config(config, dataset_split_key) if config is not None else {}
     ann_path = resolve_maybe_relative(annotation, config) if annotation is not None else inferred.get("annotation")
@@ -728,6 +729,8 @@ def run_localization_attribution(
         "metric_claim_allowed": False,
         "paper_claim_allowed": False,
     }
+    if provenance is not None:
+        summary["provenance"] = strict_json_value(dict(provenance))
     write_json(summary_path, summary)
     return summary
 
@@ -760,7 +763,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--allow-missing-seconds", action="store_true")
     parser.add_argument("--include-ambiguous", action="store_true")
     parser.add_argument("--limit-rows", type=int)
+    parser.add_argument("--provenance-run-root")
+    parser.add_argument("--provenance-work-dir")
+    parser.add_argument("--provenance-train-stdout")
+    parser.add_argument("--provenance-result-detection-json")
     args = parser.parse_args(argv)
+    provenance = {
+        key: value
+        for key, value in {
+            "run_root": args.provenance_run_root,
+            "work_dir": args.provenance_work_dir,
+            "train_stdout": args.provenance_train_stdout,
+            "result_detection_json": args.provenance_result_detection_json,
+        }.items()
+        if value is not None
+    }
 
     try:
         summary = run_localization_attribution(
@@ -778,6 +795,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             require_seconds=not bool(args.allow_missing_seconds),
             include_ambiguous=bool(args.include_ambiguous),
             limit_rows=args.limit_rows,
+            provenance=provenance or None,
         )
     except Exception as exc:  # pragma: no cover - CLI guard
         print(json.dumps(strict_json_value(error_payload(exc)), sort_keys=True))

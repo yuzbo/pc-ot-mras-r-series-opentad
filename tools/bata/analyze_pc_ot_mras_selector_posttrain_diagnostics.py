@@ -1069,6 +1069,7 @@ def analyze_selector_payload(
     source_path: str | None = None,
     boundary_radius: float = 2.0,
     synthetic_smoke: bool = False,
+    provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     non_finite_count, non_finite_examples = _find_non_finite(payload)
     expanded = _expand_samples(payload)
@@ -1079,7 +1080,7 @@ def analyze_selector_payload(
     aggregate = _aggregate(sample_summaries)
     warning_count = int(non_finite_count) + int(aggregate["metadata_consistency"]["inconsistent_sample_count"])
     decision = READY_WITH_WARNINGS if warning_count else READY
-    return {
+    summary = {
         "schema_version": SCHEMA_VERSION,
         "decision": decision,
         "input": {"format": str(source_format), "path": source_path},
@@ -1108,6 +1109,9 @@ def analyze_selector_payload(
             "deploy_claim_allowed": False,
         },
     }
+    if provenance is not None:
+        summary["provenance"] = strict_json_value(dict(provenance))
+    return summary
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -1152,6 +1156,7 @@ def run_selector_posttrain_diagnostics(
     output_json: str | Path | None = None,
     boundary_radius: float = 2.0,
     use_synthetic: bool = False,
+    provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if use_synthetic:
         payload = synthetic_payload()
@@ -1168,6 +1173,7 @@ def run_selector_posttrain_diagnostics(
         source_path=source_text,
         boundary_radius=float(boundary_radius),
         synthetic_smoke=bool(use_synthetic),
+        provenance=provenance,
     )
     if output_json is not None:
         write_json(output_json, summary)
@@ -1182,7 +1188,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output", help="Optional summary JSON output path.")
     parser.add_argument("--boundary-radius", type=float, default=2.0)
     parser.add_argument("--synthetic-smoke", action="store_true", help="Run a built-in synthetic smoke payload.")
+    parser.add_argument("--provenance-run-root")
+    parser.add_argument("--provenance-work-dir")
+    parser.add_argument("--provenance-train-stdout")
+    parser.add_argument("--provenance-result-detection-json")
     args = parser.parse_args(argv)
+    provenance = {
+        key: value
+        for key, value in {
+            "run_root": args.provenance_run_root,
+            "work_dir": args.provenance_work_dir,
+            "train_stdout": args.provenance_train_stdout,
+            "result_detection_json": args.provenance_result_detection_json,
+        }.items()
+        if value is not None
+    }
 
     try:
         summary = run_selector_posttrain_diagnostics(
@@ -1190,6 +1210,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_json=args.output,
             boundary_radius=float(args.boundary_radius),
             use_synthetic=bool(args.synthetic_smoke),
+            provenance=provenance or None,
         )
     except Exception as exc:  # pragma: no cover - CLI guard
         print(json.dumps({"schema_version": SCHEMA_VERSION, "decision": NO_GO, "error": str(exc)}))

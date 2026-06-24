@@ -55,6 +55,13 @@ def _non_null(value: Any) -> bool:
     return value is not None
 
 
+def _norm_path(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).replace("\\", "/").rstrip("/")
+    return text or None
+
+
 def _histogram_count(histogram: Mapping[str, Any], key: int) -> int | None:
     raw = histogram.get(str(int(key)))
     if raw is None:
@@ -280,20 +287,95 @@ def _proposal_cap_gate(overload_summary: Mapping[str, Any] | None) -> dict[str, 
     return {"status": _status(missing), "missing": missing, "observed": observed}
 
 
+def _provenance_gate(
+    *,
+    selector_summary: Mapping[str, Any],
+    proposal_summary: Mapping[str, Any] | None,
+    overload_summary: Mapping[str, Any] | None,
+    expected_run_root: str | None = None,
+    expected_work_dir: str | None = None,
+    expected_train_stdout: str | None = None,
+    expected_result_detection_json: str | None = None,
+) -> dict[str, Any]:
+    expected = {
+        "run_root": _norm_path(expected_run_root),
+        "work_dir": _norm_path(expected_work_dir),
+        "train_stdout": _norm_path(expected_train_stdout),
+        "result_detection_json": _norm_path(expected_result_detection_json),
+    }
+    expected = {key: value for key, value in expected.items() if value is not None}
+    if not expected:
+        return {"status": "PASS", "missing": [], "observed": {"expected": {}}}
+
+    missing: list[str] = []
+    observed: dict[str, Any] = {"expected": expected, "summaries": {}}
+    summaries: tuple[tuple[str, Mapping[str, Any] | None], ...] = (
+        ("selector", selector_summary),
+        ("proposal", proposal_summary),
+        ("overload", overload_summary),
+    )
+    for name, summary in summaries:
+        if summary is None:
+            missing.append(f"{name} summary provenance")
+            continue
+        provenance = summary.get("provenance")
+        if not isinstance(provenance, Mapping):
+            missing.append(f"{name} summary provenance")
+            observed["summaries"][name] = None
+            continue
+        normalized = {key: _norm_path(provenance.get(key)) for key in expected}
+        observed["summaries"][name] = normalized
+        for key, expected_value in expected.items():
+            if normalized.get(key) != expected_value:
+                if key == "run_root":
+                    missing.append("run_root must match current C3 run")
+                elif key == "result_detection_json":
+                    missing.append("result_detection_json must match current C3 result file")
+                else:
+                    missing.append(f"{key} must match current C3 run")
+
+    if expected.get("result_detection_json") is not None and isinstance(overload_summary, Mapping):
+        result_detection_json = _nested(
+            overload_summary,
+            ("summary", "result_detection_counts", "result_detection_json"),
+        )
+        observed["overload_result_detection_json"] = _norm_path(result_detection_json)
+        if _norm_path(result_detection_json) != expected["result_detection_json"]:
+            missing.append("result_detection_json must match current C3 result file")
+
+    # Keep the report compact when the same missing item is found in all three summaries.
+    deduped_missing = list(dict.fromkeys(missing))
+    return {"status": _status(deduped_missing), "missing": deduped_missing, "observed": observed}
+
+
 def validate_c3_diagnostic_gate_payloads(
     *,
     selector_summary: Mapping[str, Any],
     proposal_summary: Mapping[str, Any] | None,
     overload_summary: Mapping[str, Any] | None,
     min_selector_samples: int = 1,
+    expected_run_root: str | None = None,
+    expected_work_dir: str | None = None,
+    expected_train_stdout: str | None = None,
+    expected_result_detection_json: str | None = None,
 ) -> dict[str, Any]:
     selector_gate = _selector_dump_gate(selector_summary, min_selector_samples=int(min_selector_samples))
     proposal_gate = _proposal_ranking_gate(proposal_summary)
     cap_gate = _proposal_cap_gate(overload_summary)
+    provenance_gate = _provenance_gate(
+        selector_summary=selector_summary,
+        proposal_summary=proposal_summary,
+        overload_summary=overload_summary,
+        expected_run_root=expected_run_root,
+        expected_work_dir=expected_work_dir,
+        expected_train_stdout=expected_train_stdout,
+        expected_result_detection_json=expected_result_detection_json,
+    )
     gates = {
         "selector_dump": selector_gate,
         "proposal_ranking": proposal_gate,
         "proposal_cap": cap_gate,
+        "provenance": provenance_gate,
     }
     blockers = [
         f"{name}: {', '.join(item['missing'])}"
@@ -334,12 +416,20 @@ def run_c3_diagnostic_gate(
     overload_summary_path: str | Path | None = None,
     output_json: str | Path | None = None,
     min_selector_samples: int = 1,
+    expected_run_root: str | None = None,
+    expected_work_dir: str | None = None,
+    expected_train_stdout: str | None = None,
+    expected_result_detection_json: str | None = None,
 ) -> dict[str, Any]:
     payload = validate_c3_diagnostic_gate_payloads(
         selector_summary=_load_json(selector_summary_path),
         proposal_summary=_load_json(proposal_summary_path) if proposal_summary_path is not None else None,
         overload_summary=_load_json(overload_summary_path) if overload_summary_path is not None else None,
         min_selector_samples=int(min_selector_samples),
+        expected_run_root=expected_run_root,
+        expected_work_dir=expected_work_dir,
+        expected_train_stdout=expected_train_stdout,
+        expected_result_detection_json=expected_result_detection_json,
     )
     if output_json is not None:
         write_json(output_json, payload)
@@ -355,6 +445,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--overload-summary")
     parser.add_argument("--output")
     parser.add_argument("--min-selector-samples", type=int, default=1)
+    parser.add_argument("--expected-run-root")
+    parser.add_argument("--expected-work-dir")
+    parser.add_argument("--expected-train-stdout")
+    parser.add_argument("--expected-result-detection-json")
     args = parser.parse_args(argv)
     try:
         payload = run_c3_diagnostic_gate(
@@ -363,6 +457,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             overload_summary_path=args.overload_summary,
             output_json=args.output,
             min_selector_samples=int(args.min_selector_samples),
+            expected_run_root=args.expected_run_root,
+            expected_work_dir=args.expected_work_dir,
+            expected_train_stdout=args.expected_train_stdout,
+            expected_result_detection_json=args.expected_result_detection_json,
         )
     except Exception as exc:
         payload = {"schema_version": SCHEMA_VERSION, "decision": NO_GO, "error": str(exc)}

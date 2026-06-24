@@ -34,24 +34,46 @@ def _format_nonfinite_grad(name, grad):
     )
 
 
-def _assert_grad_norm_finite(model):
+def _inspect_grad_norm(model):
     total_sq = None
+    nonfinite_details = []
     named_parameters = model.named_parameters() if hasattr(model, "named_parameters") else []
     for name, parameter in named_parameters:
         if parameter.grad is None:
             continue
         grad = parameter.grad.detach()
         if not bool(torch.isfinite(grad).all().item()):
-            detail = _format_nonfinite_grad(name, grad)
-            raise FloatingPointError(f"training produced non-finite parameter gradient: {detail}")
+            nonfinite_details.append(_format_nonfinite_grad(name, grad))
+            continue
         grad_norm = grad.float().norm(2)
         total_sq = grad_norm.pow(2) if total_sq is None else total_sq + grad_norm.pow(2)
     if total_sq is None:
-        return None
+        return None, nonfinite_details
     total_norm = total_sq.sqrt()
     if not bool(torch.isfinite(total_norm).all().item()):
-        raise FloatingPointError("training produced non-finite gradient norm")
-    return total_norm
+        nonfinite_details.append("total_gradient_norm: non-finite")
+    return total_norm, nonfinite_details
+
+
+def _zero_grad_for_skip(optimizer):
+    try:
+        optimizer.zero_grad(set_to_none=True)
+    except TypeError:
+        optimizer.zero_grad()
+
+
+def _log_nonfinite_grad_skip(logger, *, curr_epoch, iter_idx, skip_count, details):
+    sample = "; ".join(details[:3])
+    if len(details) > 3:
+        sample += f"; ... {len(details) - 3} more"
+    message = (
+        "[Train]: NONFINITE_GRAD_SKIP epoch=%d iter=%d count=%d details=%s"
+        % (curr_epoch, iter_idx, skip_count, sample)
+    )
+    if hasattr(logger, "warning"):
+        logger.warning(message)
+    else:
+        logger.info(message)
 
 
 def train_one_epoch(
@@ -80,6 +102,7 @@ def train_one_epoch(
     use_amp = False if scaler is None else True
 
     model.train()
+    nonfinite_grad_skip_count = 0
     for iter_idx, data_dict in enumerate(train_loader):
         optimizer.zero_grad()
 
@@ -101,13 +124,43 @@ def train_one_epoch(
             scaler.unscale_(optimizer)
         else:
             losses["cost"].backward()
-        _assert_grad_norm_finite(model)
+        _grad_norm, nonfinite_grad_details = _inspect_grad_norm(model)
+        if nonfinite_grad_details:
+            nonfinite_grad_skip_count += 1
+            _log_nonfinite_grad_skip(
+                logger,
+                curr_epoch=curr_epoch,
+                iter_idx=iter_idx,
+                skip_count=nonfinite_grad_skip_count,
+                details=nonfinite_grad_details,
+            )
+            _zero_grad_for_skip(optimizer)
+            if use_amp:
+                scaler.update()
+            if max_train_iters is not None and (iter_idx + 1) >= max_train_iters:
+                logger.info("[Train]: max_train_iters=%d reached; ending smoke epoch early", max_train_iters)
+                break
+            continue
 
         # gradient clipping (to stabilize training if necessary)
         if clip_grad_l2norm > 0.0:
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_l2norm)
             if not bool(torch.isfinite(grad_norm.detach()).all().item()):
-                raise FloatingPointError("training produced non-finite clipped gradient norm")
+                nonfinite_grad_skip_count += 1
+                _log_nonfinite_grad_skip(
+                    logger,
+                    curr_epoch=curr_epoch,
+                    iter_idx=iter_idx,
+                    skip_count=nonfinite_grad_skip_count,
+                    details=[f"clipped_gradient_norm: {grad_norm.detach().item()}"],
+                )
+                _zero_grad_for_skip(optimizer)
+                if use_amp:
+                    scaler.update()
+                if max_train_iters is not None and (iter_idx + 1) >= max_train_iters:
+                    logger.info("[Train]: max_train_iters=%d reached; ending smoke epoch early", max_train_iters)
+                    break
+                continue
 
         # update parameters
         if use_amp:
@@ -144,6 +197,8 @@ def train_one_epoch(
         if max_train_iters is not None and (iter_idx + 1) >= max_train_iters:
             logger.info("[Train]: max_train_iters=%d reached; ending smoke epoch early", max_train_iters)
             break
+    if nonfinite_grad_skip_count:
+        logger.info("[Train]: NONFINITE_GRAD_SKIP_TOTAL epoch=%d count=%d", curr_epoch, nonfinite_grad_skip_count)
 
 
 def val_one_epoch(

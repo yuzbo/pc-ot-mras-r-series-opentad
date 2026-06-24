@@ -71,4 +71,6 @@ model = dict(
     )
 )
 
+post_processing = dict(save_dict=True)
+
 work_dir = "exps/thumos/adatad/pc_ot_mras_prebackbone_c3_pro_boundary_reader_full_train_candidate_n16r4"

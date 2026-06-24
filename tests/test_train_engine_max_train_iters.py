@@ -1,4 +1,5 @@
 import importlib.util
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -212,8 +213,35 @@ def test_train_one_epoch_rejects_non_positive_max_train_iters(monkeypatch, max_t
     assert scheduler.steps == 0
 
 
-def test_grad_finite_error_reports_parameter_name():
-    torch = pytest.importorskip("torch")
+def test_train_one_epoch_tracks_nonfinite_gradients_without_hard_error_text():
+    text = TRAIN_ENGINE_PATH.read_text(encoding="utf-8")
+
+    assert "NONFINITE_GRAD_SKIP" in text
+    assert "_zero_grad_for_skip(optimizer)" in text
+    assert "training produced non-finite parameter gradient" not in text
+
+
+def _import_torch_or_skip():
+    probe = subprocess.run(
+        [sys.executable, "-c", "import torch"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if probe.returncode != 0:
+        detail = probe.stderr.strip().splitlines()[-1] if probe.stderr.strip() else f"exit {probe.returncode}"
+        pytest.skip(f"torch unavailable in this process: {detail}")
+    try:
+        import torch
+    except Exception as exc:  # pragma: no cover - depends on local DLL state.
+        pytest.skip(f"torch unavailable in this process: {exc}")
+    return torch
+
+
+def test_grad_nonfinite_inspection_reports_parameter_name_without_throwing():
+    torch = _import_torch_or_skip()
     sys.modules.pop("train_engine_real_runtime_under_test", None)
     spec = importlib.util.spec_from_file_location("train_engine_real_runtime_under_test", TRAIN_ENGINE_PATH)
     train_engine = importlib.util.module_from_spec(spec)
@@ -223,5 +251,7 @@ def test_grad_finite_error_reports_parameter_name():
     model.weight.grad = torch.tensor([[float("nan"), float("inf")]])
     model.bias.grad = torch.zeros_like(model.bias)
 
-    with pytest.raises(FloatingPointError, match=r"weight: shape=\(1, 2\).*nan=1 inf=1"):
-        train_engine._assert_grad_norm_finite(model)
+    total_norm, details = train_engine._inspect_grad_norm(model)
+
+    assert torch.isfinite(total_norm).all()
+    assert any("weight: shape=(1, 2)" in detail and "nan=1 inf=1" in detail for detail in details)

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import math
+import os
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import torch
@@ -1049,9 +1052,10 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         self.interval_candidate_topk = int(interval_candidate_topk)
         self.dynamic_budget = self._normalize_dynamic_budget_config(dynamic_budget)
         self.meta_source = str(meta_source)
+        self._metadata_dump_count = 0
 
     def forward_train(self, inputs, masks, metas, gt_segments, gt_labels):
-        outputs = self._select(inputs=inputs, masks=masks, metas=metas, training=True)
+        outputs = self._select(inputs=inputs, masks=masks, metas=metas, gt_segments=gt_segments, training=True)
         new_gt_segments, new_gt_labels = self._remap_gt_batch(
             gt_segments=gt_segments,
             gt_labels=gt_labels,
@@ -1082,7 +1086,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             "metas": outputs["metas"],
         }
 
-    def _select(self, inputs, masks, metas, *, training: bool) -> dict[str, Any]:
+    def _select(self, inputs, masks, metas, *, training: bool, gt_segments=None) -> dict[str, Any]:
         batch, dense_len = self._input_batch_and_time(inputs)
         if dense_len != int(self.dense_window_size):
             raise ValueError(f"expected dense_window_size={self.dense_window_size}, got {dense_len}")
@@ -1145,6 +1149,8 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             reader_outputs=reader_outputs,
             candidate_valid=candidate_valid,
             candidate_dense_indices=candidate_dense_indices,
+            gt_segments=gt_segments,
+            training=training,
         )
         return {
             "inputs": selected_inputs,
@@ -2663,6 +2669,8 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         reader_outputs: Mapping[str, torch.Tensor] | None = None,
         candidate_valid: torch.Tensor | None = None,
         candidate_dense_indices: torch.Tensor | None = None,
+        gt_segments=None,
+        training: bool = False,
     ) -> list[dict[str, Any]]:
         if metas is None:
             metas = [{} for _ in range(selected_positions.shape[0])]
@@ -2824,7 +2832,205 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 "score_rank_hook": "not_computed_in_selector_forward",
             }
             meta["pc_ot_mras_prebackbone_selector_source"] = self.meta_source
+            self._append_metadata_dump_row(
+                meta=meta,
+                batch_idx=idx,
+                selected_dense_indices=prefix_indices,
+                valid_len=int(valid_cpu[idx]),
+                gt_segments=gt_segments,
+                reader_outputs=reader_outputs,
+                candidate_valid=candidate_valid,
+                candidate_dense_indices=candidate_dense_indices,
+                training=training,
+            )
         return metas
+
+    def _append_metadata_dump_row(
+        self,
+        *,
+        meta: Mapping[str, Any],
+        batch_idx: int,
+        selected_dense_indices: Sequence[int],
+        valid_len: int,
+        gt_segments,
+        reader_outputs: Mapping[str, torch.Tensor] | None,
+        candidate_valid: torch.Tensor | None,
+        candidate_dense_indices: torch.Tensor | None,
+        training: bool,
+    ) -> None:
+        dump_path = os.environ.get("PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_JSONL") or os.environ.get(
+            "C3_SELECTOR_METADATA_JSONL"
+        )
+        if not dump_path:
+            return
+        if str(os.environ.get("RANK", "0")) != "0":
+            return
+        max_rows = self._metadata_dump_max_rows()
+        written = int(getattr(self, "_metadata_dump_count", 0))
+        if max_rows is not None and written >= max_rows:
+            return
+
+        row = {
+            "schema_version": "pc_ot_mras_prebackbone_selector_metadata_dump_v0",
+            "phase": "train" if training else "eval",
+            "sample_id": self._metadata_dump_sample_id(meta, batch_idx),
+            "video_name": meta.get("video_name"),
+            "window_start_frame": meta.get("window_start_frame"),
+            "selected_dense_indices": [int(item) for item in selected_dense_indices],
+            "valid_len": int(valid_len),
+            "gt_segments": self._metadata_dump_segments(gt_segments, batch_idx),
+            "selector_scores": self._metadata_dump_scores(
+                reader_outputs=reader_outputs,
+                candidate_valid=candidate_valid,
+                candidate_dense_indices=candidate_dense_indices,
+                batch_idx=batch_idx,
+                valid_len=int(valid_len),
+            ),
+            "packet_roles": list(meta.get("pc_ot_mras_prebackbone_selected_roles", [])),
+            "irregular_selected_positions": list(meta.get("irregular_selected_positions", [])),
+            "irregular_dense_valid_len": int(valid_len),
+            "irregular_selected_valid_len": int(valid_len),
+            "irregular_selected_output_valid_len": meta.get("irregular_selected_output_valid_len"),
+            "irregular_native_axis": meta.get("irregular_native_axis"),
+            "pc_ot_mras_prebackbone_raw_slot_dense_indices": meta.get(
+                "pc_ot_mras_prebackbone_raw_slot_dense_indices",
+                [],
+            ),
+            "pc_ot_mras_prebackbone_raw_slot_duplicate_rate": meta.get(
+                "pc_ot_mras_prebackbone_raw_slot_duplicate_rate"
+            ),
+            "pc_ot_mras_prebackbone_raw_slot_unique_count": meta.get("pc_ot_mras_prebackbone_raw_slot_unique_count"),
+            "pc_ot_mras_prebackbone_reader_fill_count": meta.get("pc_ot_mras_prebackbone_reader_fill_count"),
+            "pc_ot_mras_prebackbone_st_active_row_count": meta.get("pc_ot_mras_prebackbone_st_active_row_count"),
+            "pc_ot_mras_prebackbone_selection_strategy": meta.get("pc_ot_mras_prebackbone_selection_strategy"),
+            "pc_ot_mras_prebackbone_hard_selection_source": meta.get(
+                "pc_ot_mras_prebackbone_hard_selection_source"
+            ),
+            "pc_ot_mras_prebackbone_dynamic_budget": meta.get("pc_ot_mras_prebackbone_dynamic_budget"),
+            "pc_ot_mras_prebackbone_protocol_flags": meta.get("pc_ot_mras_prebackbone_protocol_flags"),
+            "pc_ot_mras_prebackbone_selector_source": meta.get("pc_ot_mras_prebackbone_selector_source"),
+        }
+        path = Path(dump_path).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(self._metadata_dump_jsonable(row), sort_keys=True, allow_nan=False) + "\n")
+        self._metadata_dump_count = written + 1
+
+    @staticmethod
+    def _metadata_dump_max_rows() -> int | None:
+        raw = os.environ.get("PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_MAX_ROWS")
+        if raw is None or str(raw).strip() == "":
+            return None
+        max_rows = int(raw)
+        if max_rows < 0:
+            raise ValueError("PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_MAX_ROWS must be non-negative")
+        return max_rows
+
+    @staticmethod
+    def _metadata_dump_sample_id(meta: Mapping[str, Any], batch_idx: int) -> str:
+        explicit = meta.get("sample_id")
+        if explicit:
+            return str(explicit)
+        video_name = meta.get("video_name", meta.get("video_id", f"sample_{batch_idx}"))
+        if "window_start_frame" in meta:
+            window = meta["window_start_frame"]
+            if isinstance(window, float) and float(window).is_integer():
+                window = int(window)
+            return f"{video_name}|window_start_frame={window}"
+        return str(video_name)
+
+    @staticmethod
+    def _metadata_dump_segments(gt_segments, batch_idx: int) -> list[list[float]]:
+        if gt_segments is None:
+            return []
+        if torch.is_tensor(gt_segments):
+            value = gt_segments[batch_idx] if gt_segments.ndim >= 3 else gt_segments
+        elif isinstance(gt_segments, Sequence) and not isinstance(gt_segments, (str, bytes)):
+            if batch_idx >= len(gt_segments):
+                return []
+            value = gt_segments[batch_idx]
+        else:
+            return []
+        data = PCOTMRASPreBackboneFrameSelector._metadata_dump_jsonable(value)
+        if not isinstance(data, list):
+            return []
+        if len(data) == 2 and all(isinstance(item, (int, float)) for item in data):
+            data = [data]
+        out: list[list[float]] = []
+        for item in data:
+            if not isinstance(item, list) or len(item) < 2:
+                continue
+            try:
+                start = float(item[0])
+                end = float(item[1])
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(start) or not math.isfinite(end):
+                continue
+            out.append([start, end])
+        return out
+
+    @staticmethod
+    def _metadata_dump_scores(
+        *,
+        reader_outputs: Mapping[str, torch.Tensor] | None,
+        candidate_valid: torch.Tensor | None,
+        candidate_dense_indices: torch.Tensor | None,
+        batch_idx: int,
+        valid_len: int,
+    ) -> list[float]:
+        if reader_outputs is None:
+            return []
+        for name in (
+            "frame_selection_logits",
+            "actionness_logits",
+            "action_logits",
+            "value_logits",
+            "boundary_logits",
+            "risk_logits",
+        ):
+            tensor = reader_outputs.get(name)
+            if not torch.is_tensor(tensor) or tensor.ndim != 2 or int(tensor.shape[0]) <= int(batch_idx):
+                continue
+            scores = tensor[batch_idx].detach().float().cpu()
+            if (
+                candidate_valid is not None
+                and candidate_dense_indices is not None
+                and candidate_valid.ndim == 2
+                and candidate_dense_indices.ndim == 2
+                and int(candidate_valid.shape[0]) > int(batch_idx)
+                and int(candidate_dense_indices.shape[0]) > int(batch_idx)
+                and int(candidate_valid.shape[1]) == int(scores.numel())
+                and int(candidate_dense_indices.shape[1]) == int(scores.numel())
+            ):
+                dense_scores = [0.0 for _ in range(max(0, int(valid_len)))]
+                valid_mask = candidate_valid[batch_idx].detach().cpu().bool()
+                dense_indices = candidate_dense_indices[batch_idx].detach().cpu().long()
+                for score, is_valid, pos in zip(scores.tolist(), valid_mask.tolist(), dense_indices.tolist()):
+                    if is_valid and 0 <= int(pos) < len(dense_scores):
+                        dense_scores[int(pos)] = float(score)
+                return dense_scores
+            return [float(item) for item in scores.tolist()]
+        return []
+
+    @staticmethod
+    def _metadata_dump_jsonable(value: Any) -> Any:
+        if torch.is_tensor(value):
+            return PCOTMRASPreBackboneFrameSelector._metadata_dump_jsonable(value.detach().cpu().tolist())
+        if hasattr(value, "item") and not isinstance(value, (str, bytes)):
+            try:
+                return PCOTMRASPreBackboneFrameSelector._metadata_dump_jsonable(value.item())
+            except (TypeError, ValueError):
+                pass
+        if isinstance(value, Mapping):
+            return {str(key): PCOTMRASPreBackboneFrameSelector._metadata_dump_jsonable(item) for key, item in value.items()}
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            return [PCOTMRASPreBackboneFrameSelector._metadata_dump_jsonable(item) for item in value]
+        if isinstance(value, float):
+            return float(value) if math.isfinite(value) else None
+        if isinstance(value, (bool, int, str)) or value is None:
+            return value
+        return str(value)
 
     @staticmethod
     def _reader_head_diagnostics_for_sample(

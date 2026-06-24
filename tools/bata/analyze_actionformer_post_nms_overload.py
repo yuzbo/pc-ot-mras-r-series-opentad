@@ -253,6 +253,7 @@ def run_post_nms_overload_audit(
     result_detection_json: str | Path | None = None,
     split: str = "validation",
     references: Mapping[str, int] | None = None,
+    provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     log_metrics = parse_log_metrics(train_log)
     annotation_stats = load_validation_annotation_stats(annotation, split=split)
@@ -295,6 +296,8 @@ def run_post_nms_overload_audit(
             "runtime_or_deployment_claim_allowed": False,
         },
     }
+    if provenance is not None:
+        payload["provenance"] = dict(provenance)
     write_json(out_dir / "summary.json", payload)
     write_json(out_dir / "log_metrics.json", {"rows": list(log_metrics)})
     return payload
@@ -328,7 +331,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=[],
         help="Reference prediction count in name=count format; can be repeated.",
     )
+    parser.add_argument("--provenance-run-root")
+    parser.add_argument("--provenance-work-dir")
+    parser.add_argument("--provenance-train-stdout")
+    parser.add_argument("--provenance-result-detection-json")
     args = parser.parse_args(argv)
+    provenance = {
+        key: value
+        for key, value in {
+            "run_root": args.provenance_run_root,
+            "work_dir": args.provenance_work_dir,
+            "train_stdout": args.provenance_train_stdout,
+            "result_detection_json": args.provenance_result_detection_json,
+        }.items()
+        if value is not None
+    }
 
     try:
         summary = run_post_nms_overload_audit(
@@ -339,6 +356,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             result_detection_json=args.result_detection_json,
             split=args.split,
             references=parse_reference_counts(args.reference_count),
+            provenance=provenance or None,
         )
     except Exception as exc:  # pragma: no cover - CLI guard
         print(json.dumps(error_payload(exc), sort_keys=True))
