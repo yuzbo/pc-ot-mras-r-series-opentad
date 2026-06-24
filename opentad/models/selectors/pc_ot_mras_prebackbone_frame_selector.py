@@ -476,6 +476,7 @@ class PCOTMRASBoundaryDifficultyTemporalFrameScout(nn.Module):
         soft_order_regularizer_weight: float = 1.0,
         duplicate_mass_regularizer_weight: float = 0.2,
         duplicate_mass_cap_factor: float = 4.0,
+        budget_bin_count: int = 3,
         local_global_fusion: str = "boundary_difficulty_temporal_cnn_slot_attention",
     ) -> None:
         super().__init__()
@@ -497,6 +498,8 @@ class PCOTMRASBoundaryDifficultyTemporalFrameScout(nn.Module):
             raise ValueError("duplicate_mass_regularizer_weight must be non-negative")
         if float(duplicate_mass_cap_factor) <= 0.0:
             raise ValueError("duplicate_mass_cap_factor must be positive")
+        if int(budget_bin_count) <= 0:
+            raise ValueError("budget_bin_count must be positive")
         if str(local_global_fusion) != "boundary_difficulty_temporal_cnn_slot_attention":
             raise ValueError(
                 "PCOTMRASBoundaryDifficultyTemporalFrameScout supports only "
@@ -544,6 +547,7 @@ class PCOTMRASBoundaryDifficultyTemporalFrameScout(nn.Module):
         self.uncertainty_head = nn.Linear(int(hidden_dim), 1)
         self.redundancy_head = nn.Linear(int(hidden_dim), 1)
         self.role_head = nn.Linear(int(hidden_dim), 5)
+        self.budget_head = nn.Linear(int(hidden_dim), int(budget_bin_count))
 
     def _geometry_bias(self, time_coords: torch.Tensor) -> torch.Tensor:
         width = max(float(self.geometry_width), 1.0 / float(max(1, self.num_slots * 4)))
@@ -578,6 +582,9 @@ class PCOTMRASBoundaryDifficultyTemporalFrameScout(nn.Module):
         )
         role_logits = self.role_head(encoded).float().masked_fill(~valid.unsqueeze(-1), 0.0)
         _require_finite(role_logits, "role_logits", error_type=ValueError)
+        pooled = encoded.sum(dim=1) / valid.float().sum(dim=1, keepdim=True).clamp_min(1.0)
+        budget_logits = self.budget_head(pooled).float()
+        _require_finite(budget_logits, "budget_logits", error_type=ValueError)
 
         frame_selection_logits = (
             self.action_bias_weight * action_logits
@@ -629,6 +636,7 @@ class PCOTMRASBoundaryDifficultyTemporalFrameScout(nn.Module):
             "uncertainty_logits": uncertainty_logits,
             "redundancy_logits": redundancy_logits,
             "role_logits": role_logits,
+            "budget_logits": budget_logits,
             "frame_selection_logits": frame_selection_logits,
             "regularizers": {
                 "soft_order_regularizer": order_regularizer,
@@ -1104,6 +1112,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         )
         output_axis = torch.arange(self.target_len, device=masks.device)[None, :]
         selected_masks = output_axis < plan["selected_output_valid_lengths"][:, None].to(device=masks.device)
+        selected_inputs = self._zero_invalid_selected_tail(selected_inputs, selected_masks)
         metas = self._write_selected_axis_meta(
             metas=metas,
             selected_positions=plan["selected_positions"],
@@ -2221,8 +2230,57 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         if not bool(cfg.get("enabled", False)):
             return None
         protocol = str(cfg.get("protocol", "marginal_utility_v0"))
-        if protocol != "marginal_utility_v0":
-            raise ValueError("dynamic_budget.protocol must be 'marginal_utility_v0'")
+        if protocol not in {"marginal_utility_v0", "learned_dynamic_budget"}:
+            raise ValueError("dynamic_budget.protocol must be 'marginal_utility_v0' or 'learned_dynamic_budget'")
+        if protocol == "learned_dynamic_budget":
+            bins_raw = cfg.get("budget_bins", cfg.get("bins", None))
+            if bins_raw is None:
+                min_budget = int(cfg.get("min_budget", cfg.get("min", self.target_len)))
+                target_budget = int(cfg.get("target_budget", cfg.get("target", self.target_len)))
+                max_budget = int(cfg.get("max_budget", cfg.get("max", self.target_len)))
+                bins = [min_budget, target_budget, max_budget]
+            else:
+                bins = [int(item) for item in bins_raw]
+            if len(bins) < 2:
+                raise ValueError("learned_dynamic_budget requires at least two budget_bins")
+            if any(item <= 0 for item in bins):
+                raise ValueError("learned_dynamic_budget budget_bins must be positive")
+            bins = sorted(dict.fromkeys(bins))
+            if bins[-1] > self.target_len:
+                raise ValueError("learned_dynamic_budget max budget bin must be <= target_len")
+            target_budget = int(cfg.get("target_budget", cfg.get("target", bins[len(bins) // 2])))
+            average_budget = int(cfg.get("average_budget", cfg.get("average", target_budget)))
+            if target_budget not in bins:
+                raise ValueError("learned_dynamic_budget target_budget must be one of budget_bins")
+            if not (bins[0] <= average_budget <= bins[-1]):
+                raise ValueError("learned_dynamic_budget average_budget must be inside budget_bins range")
+            temperature = float(cfg.get("budget_temperature", cfg.get("temperature", 1.0)))
+            if temperature <= 0.0:
+                raise ValueError("learned_dynamic_budget budget_temperature must be positive")
+            return {
+                "enabled": True,
+                "protocol": protocol,
+                "budget_bins": bins,
+                "min_budget": bins[0],
+                "target_budget": target_budget,
+                "max_budget": bins[-1],
+                "average_budget": average_budget,
+                "budget_logit_key": str(cfg.get("budget_logit_key", "budget_logits")),
+                "budget_temperature": temperature,
+                "hard_budget": bool(cfg.get("hard_budget", True)),
+                "train_test_same_hard_budget": bool(cfg.get("train_test_same_hard_budget", True)),
+                "budget_average_loss_weight": float(cfg.get("budget_average_loss_weight", 0.0)),
+                "budget_entropy_loss_weight": float(cfg.get("budget_entropy_loss_weight", 0.0)),
+                "budget_difficulty_target_loss_weight": float(
+                    cfg.get("budget_difficulty_target_loss_weight", 0.0)
+                ),
+                "budget_target_temperature": float(cfg.get("budget_target_temperature", 64.0)),
+                "budget_actionness_weight": float(cfg.get("budget_actionness_weight", 1.0)),
+                "budget_boundary_weight": float(cfg.get("budget_boundary_weight", 0.5)),
+                "budget_uncertainty_weight": float(cfg.get("budget_uncertainty_weight", 0.25)),
+                "budget_redundancy_weight": float(cfg.get("budget_redundancy_weight", 0.25)),
+                "budget_valid_len_weight": float(cfg.get("budget_valid_len_weight", 0.0)),
+            }
         min_budget = int(cfg.get("min_budget", cfg.get("min", self.target_len)))
         target_budget = int(cfg.get("target_budget", cfg.get("target", self.target_len)))
         max_budget = int(cfg.get("max_budget", cfg.get("max", self.target_len)))
@@ -2267,6 +2325,12 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             key_text = str(key).lower()
             if any(token in key_text for token in ("gt", "teacher", "cache", "raw_prediction", "oracle", "target")):
                 raise ValueError(f"dynamic_budget received forbidden deploy-time payload: {key}")
+        if str(cfg.get("protocol")) == "learned_dynamic_budget":
+            return self._learned_dynamic_budget_plan(
+                reader_outputs=reader_outputs,
+                candidate_valid=candidate_valid,
+                cfg=cfg,
+            )
 
         action_score = self._dynamic_budget_head_mean(
             reader_outputs=reader_outputs,
@@ -2368,6 +2432,203 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 }
             )
         return {"budgets": budgets, "metadata": metadata}
+
+    def _learned_dynamic_budget_plan(
+        self,
+        *,
+        reader_outputs: Mapping[str, torch.Tensor],
+        candidate_valid: torch.Tensor,
+        cfg: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        logit_key = str(cfg.get("budget_logit_key", "budget_logits"))
+        logits = reader_outputs.get(logit_key)
+        if not torch.is_tensor(logits):
+            raise ValueError(f"learned_dynamic_budget requires reader output {logit_key}")
+        if logits.ndim != 2:
+            raise ValueError(f"learned_dynamic_budget {logit_key} must be [B,num_budget_bins]")
+        bins = [int(item) for item in cfg["budget_bins"]]
+        if int(logits.shape[0]) != int(candidate_valid.shape[0]) or int(logits.shape[1]) != len(bins):
+            raise ValueError(
+                f"learned_dynamic_budget {logit_key} shape must be [B,{len(bins)}], got {tuple(logits.shape)}"
+            )
+        _require_finite(logits, f"learned_dynamic_budget {logit_key}", error_type=ValueError)
+        temperature = float(cfg.get("budget_temperature", 1.0))
+        probs = F.softmax(logits.float() / temperature, dim=-1)
+        _require_finite(probs, "learned_dynamic_budget probabilities", error_type=ValueError)
+        selected_bin = probs.argmax(dim=-1)
+        budget_tensor = torch.tensor(bins, dtype=torch.long, device=logits.device)
+        predicted_budgets = budget_tensor.gather(0, selected_bin)
+        valid_counts = candidate_valid.long().sum(dim=1).to(device=logits.device)
+        budgets = torch.minimum(predicted_budgets, valid_counts)
+        entropy = -(probs * probs.clamp_min(torch.finfo(torch.float32).tiny).log()).sum(dim=-1)
+
+        metadata: list[dict[str, Any]] = []
+        for batch_idx, budget in enumerate(budgets.detach().cpu().tolist()):
+            predicted_budget = int(predicted_budgets[batch_idx].detach().cpu().item())
+            metadata.append(
+                {
+                    "enabled": True,
+                    "protocol": str(cfg["protocol"]),
+                    "budget": int(budget),
+                    "predicted_budget": predicted_budget,
+                    "selected_budget_index": int(selected_bin[batch_idx].detach().cpu().item()),
+                    "budget_bins": bins,
+                    "budget_probs": [
+                        float(item)
+                        for item in probs[batch_idx].detach().cpu().tolist()
+                    ],
+                    "budget_entropy": float(entropy[batch_idx].detach().cpu().item()),
+                    "budget_logit_key": logit_key,
+                    "min_budget": int(cfg["min_budget"]),
+                    "target_budget": int(cfg["target_budget"]),
+                    "max_budget": int(cfg["max_budget"]),
+                    "average_budget": int(cfg["average_budget"]),
+                    "hard_budget": bool(cfg.get("hard_budget", True)),
+                    "train_test_same_hard_budget": bool(cfg.get("train_test_same_hard_budget", True)),
+                    "valid_len": int(valid_counts[batch_idx].detach().cpu().item()),
+                    "deploy_time_signals": [
+                        "budget_logits",
+                        "frame_selection_logits",
+                        "actionness_logits",
+                        "boundary_logits",
+                        "uncertainty_logits",
+                        "redundancy_logits",
+                        "valid_len",
+                    ],
+                    "uses_gt": False,
+                    "uses_teacher": False,
+                    "uses_raw_prediction_cache": False,
+                    "uses_p2": False,
+                    "safety_gate_only": False,
+                    "dynamic_budget_validation": False,
+                    "metric_claim_allowed": False,
+                    "paper_claim_allowed": False,
+                }
+            )
+        return {"budgets": budgets, "metadata": metadata}
+
+    def _learned_dynamic_budget_aux_losses(
+        self,
+        *,
+        reader_outputs: Mapping[str, torch.Tensor],
+        valid_mask: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        cfg = getattr(self, "dynamic_budget", None)
+        if not cfg or str(cfg.get("protocol")) != "learned_dynamic_budget":
+            return {}
+        logit_key = str(cfg.get("budget_logit_key", "budget_logits"))
+        logits = reader_outputs.get(logit_key)
+        if not torch.is_tensor(logits):
+            return {}
+        bins = [int(item) for item in cfg["budget_bins"]]
+        if logits.ndim != 2 or int(logits.shape[1]) != len(bins):
+            raise ValueError(f"learned_dynamic_budget {logit_key} must be [B,{len(bins)}] for aux loss")
+        if int(logits.shape[0]) != int(valid_mask.shape[0]):
+            raise ValueError("learned_dynamic_budget logits batch must match valid_mask")
+        _require_finite(logits, f"learned_dynamic_budget aux {logit_key}", error_type=ValueError)
+        if valid_mask.ndim != 2:
+            raise ValueError("learned_dynamic_budget valid_mask must be [B,T] for aux loss")
+        valid = valid_mask.to(device=logits.device).bool()
+        if bool((valid.long().sum(dim=1) <= 0).any().item()):
+            raise ValueError("learned_dynamic_budget aux loss requires at least one valid candidate per sample")
+
+        temperature = float(cfg.get("budget_temperature", 1.0))
+        probs = F.softmax(logits.float() / temperature, dim=-1)
+        log_probs = F.log_softmax(logits.float() / temperature, dim=-1)
+        _require_finite(probs, "learned_dynamic_budget aux probabilities", error_type=ValueError)
+        bin_values = torch.tensor(bins, dtype=probs.dtype, device=probs.device)
+        expected_budget = (probs * bin_values[None, :]).sum(dim=-1)
+        _require_finite(expected_budget, "learned_dynamic_budget expected budget", error_type=ValueError)
+
+        losses: dict[str, torch.Tensor] = {}
+        average_weight = float(cfg.get("budget_average_loss_weight", 0.0))
+        if average_weight > 0.0:
+            target = logits.new_tensor(float(cfg["average_budget"]))
+            scale = max(1.0, float(cfg["max_budget"]))
+            loss = (expected_budget.mean() - target).square() / (scale * scale)
+            loss = loss * average_weight
+            _require_finite(loss, "learned_dynamic_budget average budget loss")
+            losses["selector_budget_average_loss"] = loss
+
+        entropy_weight = float(cfg.get("budget_entropy_loss_weight", 0.0))
+        if entropy_weight > 0.0:
+            entropy = -(probs * probs.clamp_min(torch.finfo(torch.float32).tiny).log()).sum(dim=-1)
+            loss = -entropy.mean() * entropy_weight
+            _require_finite(loss, "learned_dynamic_budget entropy loss")
+            losses["selector_budget_entropy_loss"] = loss
+
+        target_weight = float(cfg.get("budget_difficulty_target_loss_weight", 0.0))
+        if target_weight > 0.0:
+            difficulty = self._learned_budget_deploy_visible_difficulty(
+                reader_outputs=reader_outputs,
+                valid=valid,
+                cfg=cfg,
+            ).detach()
+            min_budget = float(cfg["min_budget"])
+            max_budget = float(cfg["max_budget"])
+            target_budget = min_budget + difficulty * (max_budget - min_budget)
+            target_temperature = float(cfg.get("budget_target_temperature", 64.0))
+            if target_temperature <= 0.0:
+                raise ValueError("learned_dynamic_budget budget_target_temperature must be positive")
+            target_logits = -((bin_values[None, :] - target_budget[:, None]) / target_temperature).square()
+            target_probs = F.softmax(target_logits, dim=-1).detach()
+            _require_finite(target_probs, "learned_dynamic_budget soft budget target", error_type=ValueError)
+            loss = -(target_probs * log_probs).sum(dim=-1).mean() * target_weight
+            _require_finite(loss, "learned_dynamic_budget difficulty target loss")
+            losses["selector_budget_difficulty_target_loss"] = loss
+        return losses
+
+    def _learned_budget_deploy_visible_difficulty(
+        self,
+        *,
+        reader_outputs: Mapping[str, torch.Tensor],
+        valid: torch.Tensor,
+        cfg: Mapping[str, Any],
+    ) -> torch.Tensor:
+        action_score = self._dynamic_budget_head_mean(
+            reader_outputs=reader_outputs,
+            candidate_valid=valid,
+            names=("frame_selection_logits", "actionness_logits", "action_logits", "value_logits"),
+            fallback=None,
+        )
+        boundary_score = self._dynamic_budget_head_mean(
+            reader_outputs=reader_outputs,
+            candidate_valid=valid,
+            names=("boundary_logits", "start_logits", "end_logits", "risk_logits"),
+            fallback=None,
+        )
+        uncertainty_score = self._dynamic_budget_head_mean(
+            reader_outputs=reader_outputs,
+            candidate_valid=valid,
+            names=("uncertainty_logits",),
+            fallback=None,
+        )
+        redundancy_score = self._dynamic_budget_head_mean(
+            reader_outputs=reader_outputs,
+            candidate_valid=valid,
+            names=("redundancy_logits",),
+            fallback=None,
+        )
+        valid_len_score = valid.float().mean(dim=1)
+        weights = (
+            abs(float(cfg.get("budget_actionness_weight", 1.0)))
+            + abs(float(cfg.get("budget_boundary_weight", 0.5)))
+            + abs(float(cfg.get("budget_uncertainty_weight", 0.25)))
+            + abs(float(cfg.get("budget_redundancy_weight", 0.25)))
+            + abs(float(cfg.get("budget_valid_len_weight", 0.0)))
+        )
+        if weights <= 0.0:
+            raise ValueError("learned_dynamic_budget difficulty target requires at least one non-zero weight")
+        difficulty = (
+            float(cfg.get("budget_actionness_weight", 1.0)) * action_score
+            + float(cfg.get("budget_boundary_weight", 0.5)) * boundary_score
+            + float(cfg.get("budget_uncertainty_weight", 0.25)) * uncertainty_score
+            - float(cfg.get("budget_redundancy_weight", 0.25)) * redundancy_score
+            + float(cfg.get("budget_valid_len_weight", 0.0)) * valid_len_score
+        ) / weights
+        difficulty = difficulty.clamp(0.0, 1.0)
+        _require_finite(difficulty, "learned_dynamic_budget deploy-visible difficulty", error_type=ValueError)
+        return difficulty
 
     @staticmethod
     def _dynamic_budget_head_mean(
@@ -2535,6 +2796,18 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         _require_finite(restored, "sparse transport output")
         return restored
 
+    @staticmethod
+    def _zero_invalid_selected_tail(inputs: torch.Tensor, selected_masks: torch.Tensor) -> torch.Tensor:
+        if selected_masks.dtype != torch.bool:
+            selected_masks = selected_masks.bool()
+        if inputs.ndim == 6:
+            mask = selected_masks[:, None, None, :, None, None].to(device=inputs.device)
+        elif inputs.ndim == 5:
+            mask = selected_masks[:, None, :, None, None].to(device=inputs.device)
+        else:
+            raise ValueError(f"unsupported selected input shape: {tuple(inputs.shape)}")
+        return inputs.masked_fill(~mask, 0.0)
+
     def _write_selected_axis_meta(
         self,
         metas: Sequence[dict[str, Any]] | None,
@@ -2576,9 +2849,13 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             meta["irregular_native_axis"] = False
             meta["pc_ot_mras_prebackbone_selected_dense_indices"] = dense_indices
             meta["pc_ot_mras_prebackbone_valid_len"] = int(valid_cpu[idx])
+            meta["pc_ot_mras_prebackbone_selected_valid_len"] = selected_count
             meta["pc_ot_mras_prebackbone_gap"] = [
                 int(right - left) for left, right in zip(prefix_indices[:-1], prefix_indices[1:])
             ]
+            meta["pc_ot_mras_prebackbone_max_gap"] = (
+                max(meta["pc_ot_mras_prebackbone_gap"]) if meta["pc_ot_mras_prebackbone_gap"] else 0
+            )
             unique_count = len(set(prefix_indices))
             meta["pc_ot_mras_prebackbone_duplicate_rate"] = 1.0 - float(unique_count) / float(max(1, len(prefix_indices)))
             meta["pc_ot_mras_prebackbone_selection_unit"] = int(self.selection_unit)
@@ -2703,8 +2980,13 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 else head_diagnostics.get("status"),
                 "boundary_selected_mean": head_diagnostics.get("selected_mean", {}).get("boundary_logits"),
                 "boundary_valid_mean": head_diagnostics.get("valid_mean", {}).get("boundary_logits"),
+                "boundary_near_rate": None,
+                "boundary_near_rate_source": "collector_or_train_gt_diagnostic",
                 "score_rank_hook": "not_computed_in_selector_forward",
             }
+            meta["pc_ot_mras_prebackbone_boundary_near_rate"] = meta[
+                "pc_ot_mras_prebackbone_boundary_diagnostics"
+            ]["boundary_near_rate"]
             meta["pc_ot_mras_prebackbone_selector_source"] = self.meta_source
             self._append_metadata_dump_row(
                 meta=meta,
@@ -2752,6 +3034,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             "window_start_frame": meta.get("window_start_frame"),
             "selected_dense_indices": [int(item) for item in selected_dense_indices],
             "valid_len": int(valid_len),
+            "selected_valid_len": int(meta.get("pc_ot_mras_prebackbone_selected_valid_len", len(selected_dense_indices))),
             "gt_segments": self._metadata_dump_segments(gt_segments, batch_idx),
             "selector_scores": self._metadata_dump_scores(
                 reader_outputs=reader_outputs,
@@ -2761,6 +3044,10 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 valid_len=int(valid_len),
             ),
             "packet_roles": list(meta.get("pc_ot_mras_prebackbone_selected_roles", [])),
+            "gap": list(meta.get("pc_ot_mras_prebackbone_gap", [])),
+            "max_gap": meta.get("pc_ot_mras_prebackbone_max_gap"),
+            "duplicate_rate": meta.get("pc_ot_mras_prebackbone_duplicate_rate"),
+            "boundary_near_rate": meta.get("pc_ot_mras_prebackbone_boundary_near_rate"),
             "irregular_selected_positions": list(meta.get("irregular_selected_positions", [])),
             "irregular_dense_valid_len": int(valid_len),
             "irregular_selected_valid_len": int(valid_len),
@@ -2781,6 +3068,21 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 "pc_ot_mras_prebackbone_hard_selection_source"
             ),
             "pc_ot_mras_prebackbone_dynamic_budget": meta.get("pc_ot_mras_prebackbone_dynamic_budget"),
+            "predicted_budget": (
+                meta.get("pc_ot_mras_prebackbone_dynamic_budget", {}).get("predicted_budget")
+                if isinstance(meta.get("pc_ot_mras_prebackbone_dynamic_budget"), Mapping)
+                else None
+            ),
+            "budget_probs": (
+                meta.get("pc_ot_mras_prebackbone_dynamic_budget", {}).get("budget_probs")
+                if isinstance(meta.get("pc_ot_mras_prebackbone_dynamic_budget"), Mapping)
+                else None
+            ),
+            "budget_entropy": (
+                meta.get("pc_ot_mras_prebackbone_dynamic_budget", {}).get("budget_entropy")
+                if isinstance(meta.get("pc_ot_mras_prebackbone_dynamic_budget"), Mapping)
+                else None
+            ),
             "pc_ot_mras_prebackbone_protocol_flags": meta.get("pc_ot_mras_prebackbone_protocol_flags"),
             "pc_ot_mras_prebackbone_selector_source": meta.get("pc_ot_mras_prebackbone_selector_source"),
         }
@@ -3095,6 +3397,12 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             regularizer_loss = regularizers["total_regularizer"] * self.reader_regularizer_loss_weight
             _require_finite(regularizer_loss, "selector reader regularizer loss")
             losses["selector_reader_regularizer_loss"] = regularizer_loss
+        losses.update(
+            self._learned_dynamic_budget_aux_losses(
+                reader_outputs=reader_outputs,
+                valid_mask=valid_mask,
+            )
+        )
         if gt_segments is None:
             return losses
         matrix = reader_outputs.get("acquisition_matrix")
