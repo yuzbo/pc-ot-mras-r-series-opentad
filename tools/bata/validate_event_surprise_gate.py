@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections.abc import Mapping
@@ -135,8 +136,12 @@ REQUIRED_SCOPE_FALSE_KEYS = (
 FULL_TRAIN_GATE_ALLOWED_KEYS = frozenset(
     {
         "gate_type",
+        "route",
         "route_label",
         "action",
+        "run_tag",
+        "user",
+        "coordinator_override_statement",
         "allow_full_train",
         "launch_gate_passed",
         "allowed_entrypoints",
@@ -145,7 +150,109 @@ FULL_TRAIN_GATE_ALLOWED_KEYS = frozenset(
         "config_stage",
         "review_status",
         "timestamp",
+        "active_sha256_manifest_sha256",
+        "expected_active_sha256_manifest_sha256",
+        "resolved_config_sha256",
+        "expected_resolved_config_sha256",
+        "allow_slurm",
+        "allow_gpu",
+        "allow_tools_train",
+        "allow_detector_training",
+        "allow_train_validation_map",
+        "allow_long_training",
+        "tools_test",
+        "allow_tools_test",
+        "detector_map",
+        "allow_detector_map",
+        "formal_eval",
+        "allow_formal_eval",
+        "checkpoint_load",
+        "allow_checkpoint_load",
+        "resume",
+        "allow_resume",
+        "raw_prediction",
+        "allow_raw_prediction",
+        "raw_predictions",
+        "allow_raw_predictions",
+        "raw_prediction_cache",
+        "allow_raw_prediction_cache",
+        "prediction_cache",
+        "allow_prediction_cache",
+        "load_from_raw_predictions",
+        "allow_load_from_raw_predictions",
+        "save_raw_prediction",
+        "allow_save_raw_prediction",
+        "save_raw_predictions",
+        "allow_save_raw_predictions",
+        "uses_teacher",
+        "uses_oracle",
+        "uses_test_gt",
+        "uses_raw_prediction",
+        "metric_claim",
+        "allow_metric_claim",
+        "metric_claim_allowed",
+        "paper_claim",
+        "allow_paper_claim",
+        "paper_claim_allowed",
+        "runtime_flops_claim",
+        "runtime_flops_claim_allowed",
+        "deploy_claim",
+        "deploy_claim_allowed",
     }
+)
+
+FULL_TRAIN_DECISION = "ALLOW_EVENT_SURPRISE_FULL_TRAIN_CANDIDATE"
+FULL_TRAIN_COORDINATOR_OVERRIDE_STATEMENT = "USER_REQUESTED_FAST_EVENT_SURPRISE_FULL_TRAIN_CANDIDATE_NO_PRO_BLOCKER"
+FULL_TRAIN_CONFIG = "configs/adatad/thumos/event_surprise_temporal_acquisition_full_train_candidate_n16r4.py"
+FULL_TRAIN_REQUIRED_TRUE_KEYS = (
+    "allow_slurm",
+    "allow_gpu",
+    "allow_tools_train",
+    "allow_detector_training",
+    "allow_train_validation_map",
+    "allow_long_training",
+    "allow_full_train",
+    "launch_gate_passed",
+)
+FULL_TRAIN_REQUIRED_FALSE_KEYS = (
+    "tools_test",
+    "allow_tools_test",
+    "detector_map",
+    "allow_detector_map",
+    "formal_eval",
+    "allow_formal_eval",
+    "checkpoint_load",
+    "allow_checkpoint_load",
+    "resume",
+    "allow_resume",
+    "raw_prediction",
+    "allow_raw_prediction",
+    "raw_predictions",
+    "allow_raw_predictions",
+    "raw_prediction_cache",
+    "allow_raw_prediction_cache",
+    "prediction_cache",
+    "allow_prediction_cache",
+    "load_from_raw_predictions",
+    "allow_load_from_raw_predictions",
+    "save_raw_prediction",
+    "allow_save_raw_prediction",
+    "save_raw_predictions",
+    "allow_save_raw_predictions",
+    "uses_teacher",
+    "uses_oracle",
+    "uses_test_gt",
+    "uses_raw_prediction",
+    "metric_claim",
+    "allow_metric_claim",
+    "metric_claim_allowed",
+    "paper_claim",
+    "allow_paper_claim",
+    "paper_claim_allowed",
+    "runtime_flops_claim",
+    "runtime_flops_claim_allowed",
+    "deploy_claim",
+    "deploy_claim_allowed",
 )
 
 
@@ -172,22 +279,37 @@ def _require(condition: bool, message: str) -> None:
         raise EventSurpriseGateError(message)
 
 
+def _sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _is_truthy(value: Any) -> bool:
     return bool(value) if value is not None else False
 
 
-def _walk_forbidden_true(value: Any, *, location: str = "gate") -> list[str]:
+def _walk_forbidden_true(
+    value: Any,
+    *,
+    location: str = "gate",
+    forbidden_keys: tuple[str, ...] = FORBIDDEN_TRUE_KEYS,
+) -> list[str]:
     offenders: list[str] = []
     if isinstance(value, Mapping):
         for key, item in value.items():
             key_text = str(key)
             next_location = f"{location}.{key_text}"
-            if key_text in FORBIDDEN_TRUE_KEYS and _is_truthy(item):
+            if key_text in forbidden_keys and _is_truthy(item):
                 offenders.append(next_location)
-            offenders.extend(_walk_forbidden_true(item, location=next_location))
+            offenders.extend(_walk_forbidden_true(item, location=next_location, forbidden_keys=forbidden_keys))
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
-            offenders.extend(_walk_forbidden_true(item, location=f"{location}[{index}]"))
+            offenders.extend(
+                _walk_forbidden_true(item, location=f"{location}[{index}]", forbidden_keys=forbidden_keys)
+            )
     return offenders
 
 
@@ -216,6 +338,79 @@ def validate_gate_payload(payload: Mapping[str, Any]) -> bool:
     return True
 
 
+def validate_full_train_config_gate_payload(payload: Mapping[str, Any]) -> bool:
+    payload = _as_plain(payload)
+    _require(isinstance(payload, Mapping), "gate payload must be a mapping")
+    _require(_get(payload, "route") == ROUTE, "route mismatch")
+    _require(_get(payload, "route_label") == ROUTE_LABEL, "route_label mismatch")
+    _require(_get(payload, "stage") == "full_train_candidate_locked", "stage mismatch")
+    _require(_get(payload, "default_off") is True, "default_off must be true")
+    _require(_get(payload, "formal_train_candidate") is True, "formal_train_candidate must be true")
+    _require(_get(payload, "full_train_candidate") is True, "full_train_candidate must be true")
+    _require(_get(payload, "allow_detector_training") is True, "allow_detector_training must be true")
+    _require(_get(payload, "allow_slurm") is True, "allow_slurm must be true")
+    _require(_get(payload, "allow_gpu") is True, "allow_gpu must be true")
+    _require(_get(payload, "allow_tools_train") is True, "allow_tools_train must be true")
+    _require(_get(payload, "allow_train_validation_map") is True, "allow_train_validation_map must be true")
+    _require(_get(payload, "allow_long_training") is True, "allow_long_training must be true")
+    _require(_get(payload, "allow_full_train") is True, "allow_full_train must be true")
+    _require(_get(payload, "requires_launch_gate") is True, "requires_launch_gate must be true")
+    _require(_get(payload, "launch_gate_passed") is True, "launch_gate_passed must be true")
+    _require(tuple(_get(payload, "allowed_entrypoints", ())) == ("tools/train.py",), "allowed_entrypoints mismatch")
+
+    for key in FULL_TRAIN_REQUIRED_FALSE_KEYS:
+        _require(_get(payload, key) is False, f"{key} must be false")
+
+    context = _get(payload, "entrypoint_gate_context")
+    _require(isinstance(context, Mapping), "entrypoint_gate_context must be present")
+    _require(_get(context, "required") is True, "entrypoint_gate_context.required must be true")
+    _require(_get(context, "gate_json_env") == "EVENT_SURPRISE_ENTRYPOINT_GATE_JSON", "gate_json_env mismatch")
+    _require(_get(context, "gate_sha256_env") == "EVENT_SURPRISE_ENTRYPOINT_GATE_SHA256", "gate_sha256_env mismatch")
+    _require(
+        _get(context, "active_manifest_sha256_env") == "EVENT_SURPRISE_ACTIVE_MANIFEST_SHA256",
+        "active_manifest_sha256_env mismatch",
+    )
+    _require(
+        _get(context, "resolved_config_sha256_env") == "EVENT_SURPRISE_RESOLVED_CONFIG_SHA256",
+        "resolved_config_sha256_env mismatch",
+    )
+    _require(_get(context, "require_resolved_config_sha256") is True, "resolved config sha256 must be required")
+    _require(tuple(_get(context, "allowed_decisions", ())) == (FULL_TRAIN_DECISION,), "allowed_decisions mismatch")
+    _require(_get(context, "strict_payload_validation") is True, "strict payload validation must be true")
+    _require(
+        _get(context, "unknown_key_policy") == "reject_unknown_except_explicit_harmless_metadata",
+        "unknown key policy mismatch",
+    )
+    _require(
+        tuple(_get(context, "required_true_keys", ())) == FULL_TRAIN_REQUIRED_TRUE_KEYS,
+        "required_true_keys mismatch",
+    )
+    _require(
+        tuple(_get(context, "required_false_keys", ())) == FULL_TRAIN_REQUIRED_FALSE_KEYS,
+        "required_false_keys mismatch",
+    )
+
+    exact = _get(context, "required_exact_values")
+    _require(isinstance(exact, Mapping), "required_exact_values must be present")
+    _require(_get(exact, "gate_type") == "event_surprise_launch_gate", "gate_type exact value mismatch")
+    _require(_get(exact, "route") == ROUTE, "route exact value mismatch")
+    _require(_get(exact, "route_label") == ROUTE_LABEL, "route_label exact value mismatch")
+    _require(_get(exact, "action") == "full_train", "action exact value mismatch")
+    _require(_get(exact, "config") == FULL_TRAIN_CONFIG, "config exact value mismatch")
+    _require(_get(exact, "config_stage") == "full_train_candidate_locked", "config_stage exact value mismatch")
+    _require(
+        _get(exact, "coordinator_override_statement") == FULL_TRAIN_COORDINATOR_OVERRIDE_STATEMENT,
+        "coordinator override exact value mismatch",
+    )
+
+    forbidden = tuple(_get(context, "forbidden_true_keys", ()))
+    missing = [key for key in FULL_TRAIN_REQUIRED_FALSE_KEYS if key not in forbidden]
+    _require(not missing, f"full-train forbidden_true_keys missing: {missing}")
+    offenders = _walk_forbidden_true(payload, forbidden_keys=FULL_TRAIN_REQUIRED_FALSE_KEYS)
+    _require(not offenders, f"forbidden true key(s): {', '.join(offenders)}")
+    return True
+
+
 def validate_config(config_path: str | Path) -> dict[str, Any]:
     try:
         from mmengine.config import Config
@@ -226,7 +421,10 @@ def validate_config(config_path: str | Path) -> dict[str, Any]:
     if not hasattr(cfg, GATE_NAME):
         raise EventSurpriseGateError(f"config missing {GATE_NAME}")
     gate = _as_plain(getattr(cfg, GATE_NAME))
-    validate_gate_payload(gate)
+    if _get(gate, "full_train_candidate") is True:
+        validate_full_train_config_gate_payload(gate)
+    else:
+        validate_gate_payload(gate)
     scope = _as_plain(getattr(cfg, "experiment_scope", {}))
     _require(isinstance(scope, Mapping), "experiment_scope must be present")
     _require(_get(scope, "route") == ROUTE, "experiment_scope.route mismatch")
@@ -292,16 +490,59 @@ def _read_json_mapping(path: str | Path) -> Mapping[str, Any]:
     return _as_plain(payload)
 
 
-def validate_full_train_gate_payload(payload: Mapping[str, Any]) -> bool:
+def validate_full_train_gate_payload(
+    payload: Mapping[str, Any],
+    *,
+    active_manifest_sha256: str | None = None,
+    resolved_config_sha256: str | None = None,
+    run_tag: str | None = None,
+) -> bool:
     payload = _as_plain(payload)
     unexpected = sorted(set(payload) - FULL_TRAIN_GATE_ALLOWED_KEYS)
     _require(not unexpected, f"launch gate has unexpected key(s): {unexpected}")
     _require(_get(payload, "gate_type") == "event_surprise_launch_gate", "launch gate type mismatch")
+    _require(_get(payload, "route") == ROUTE, "launch gate route mismatch")
     _require(_get(payload, "route_label") == ROUTE_LABEL, "launch gate route_label mismatch")
     _require(_normalize_action(_get(payload, "action")) == "full_train", "launch gate action mismatch")
+    _require(_get(payload, "decision") == FULL_TRAIN_DECISION, "launch gate decision mismatch")
+    _require(_get(payload, "config") == FULL_TRAIN_CONFIG, "launch gate config mismatch")
+    _require(_get(payload, "config_stage") == "full_train_candidate_locked", "launch gate config_stage mismatch")
+    _require(isinstance(_get(payload, "user"), str) and bool(_get(payload, "user").strip()), "launch gate user missing")
+    _require(
+        _get(payload, "coordinator_override_statement") == FULL_TRAIN_COORDINATOR_OVERRIDE_STATEMENT,
+        "launch gate coordinator override statement mismatch",
+    )
+    _require(isinstance(_get(payload, "run_tag"), str) and bool(_get(payload, "run_tag").strip()), "run_tag missing")
+    _require("/" not in _get(payload, "run_tag") and "\\" not in _get(payload, "run_tag"), "run_tag must be path-safe")
     _require(_get(payload, "launch_gate_passed") is True, "launch gate must be passed")
     _require(_get(payload, "allow_full_train") is True, "launch gate must allow full_train")
-    _require("full_train" in tuple(_get(payload, "allowed_entrypoints", ())), "full_train must be allowed entrypoint")
+    entrypoints = tuple(_get(payload, "allowed_entrypoints", ()))
+    _require("full_train" in entrypoints, "full_train must be allowed entrypoint")
+    _require("tools/train.py" in entrypoints, "tools/train.py must be allowed entrypoint")
+
+    for key in FULL_TRAIN_REQUIRED_TRUE_KEYS:
+        _require(_get(payload, key) is True, f"{key} must be true")
+    for key in FULL_TRAIN_REQUIRED_FALSE_KEYS:
+        _require(_get(payload, key) is False, f"{key} must be false")
+
+    expected_manifest = _get(payload, "active_sha256_manifest_sha256") or _get(
+        payload, "expected_active_sha256_manifest_sha256"
+    )
+    expected_resolved = _get(payload, "resolved_config_sha256") or _get(payload, "expected_resolved_config_sha256")
+    _require(expected_manifest is not None, "launch gate missing active_sha256_manifest_sha256")
+    _require(expected_resolved is not None, "launch gate missing resolved_config_sha256")
+    if active_manifest_sha256 is not None:
+        _require(
+            expected_manifest == active_manifest_sha256,
+            f"active_sha256_manifest_sha256 mismatch: expected {expected_manifest} got {active_manifest_sha256}",
+        )
+    if resolved_config_sha256 is not None:
+        _require(
+            expected_resolved == resolved_config_sha256,
+            f"resolved_config_sha256 mismatch: expected {expected_resolved} got {resolved_config_sha256}",
+        )
+    if run_tag is not None:
+        _require(_get(payload, "run_tag") == run_tag, f"run_tag mismatch: expected {_get(payload, 'run_tag')} got {run_tag}")
     return True
 
 
@@ -310,6 +551,10 @@ def validate_launch_action(
     *,
     action: str,
     gate_json: str | Path | None = None,
+    gate_sha256: str | None = None,
+    active_manifest_sha256: str | None = None,
+    resolved_config_sha256: str | None = None,
+    run_tag: str | None = None,
 ) -> dict[str, Any]:
     action_name = _normalize_action(action)
     summary = validate_config(config_path)
@@ -328,11 +573,27 @@ def validate_launch_action(
     if action_name == "full_train":
         _require(summary["full_train_candidate"] is True, "full_train launch requires full_train_candidate config")
         _require(gate_json is not None, "full_train launch requires --gate-json")
+        if gate_sha256 is not None:
+            actual_gate_sha256 = _sha256_file(gate_json)
+            _require(
+                actual_gate_sha256 == gate_sha256,
+                f"gate json sha256 mismatch: expected {gate_sha256} got {actual_gate_sha256}",
+            )
         payload = _read_json_mapping(gate_json)
-        validate_full_train_gate_payload(payload)
+        validate_full_train_gate_payload(
+            payload,
+            active_manifest_sha256=active_manifest_sha256,
+            resolved_config_sha256=resolved_config_sha256,
+            run_tag=run_tag,
+        )
         result["launch_allowed"] = True
         result["train_command_allowed"] = True
         result["gate_json"] = str(gate_json)
+        if gate_sha256 is not None:
+            result["gate_sha256"] = gate_sha256
+        result["active_sha256_manifest_sha256"] = _get(payload, "active_sha256_manifest_sha256")
+        result["resolved_config_sha256"] = _get(payload, "resolved_config_sha256")
+        result["run_tag"] = _get(payload, "run_tag")
         return result
 
     raise EventSurpriseGateError(f"unsupported launch action: {action}")
@@ -347,10 +608,28 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional fail-closed launcher action to validate before any command runs.",
     )
     parser.add_argument("--gate-json", help="Explicit external launch gate JSON for locked full-train actions.")
+    parser.add_argument("--gate-sha256", help="Expected SHA256 of --gate-json for full-train actions.")
+    parser.add_argument(
+        "--active-manifest-sha256",
+        help="Expected active SHA256 manifest digest that must match the full-train gate JSON.",
+    )
+    parser.add_argument(
+        "--resolved-config-sha256",
+        help="Expected resolved config digest that must match the full-train gate JSON.",
+    )
+    parser.add_argument("--run-tag", help="Expected fixed RUN_TAG that must match the full-train gate JSON.")
     args = parser.parse_args(argv)
     try:
         if args.action:
-            payload = validate_launch_action(args.config, action=args.action, gate_json=args.gate_json)
+            payload = validate_launch_action(
+                args.config,
+                action=args.action,
+                gate_json=args.gate_json,
+                gate_sha256=args.gate_sha256,
+                active_manifest_sha256=args.active_manifest_sha256,
+                resolved_config_sha256=args.resolved_config_sha256,
+                run_tag=args.run_tag,
+            )
         else:
             payload = validate_config(args.config)
     except EventSurpriseGateError as exc:
