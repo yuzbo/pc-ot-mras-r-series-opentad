@@ -423,6 +423,7 @@ class BoundaryMicroscopeAcquisitionRoute(nn.Module):
             item["irregular_selected_valid_len"] = float(plan["valid_len"])
             item["irregular_dense_valid_len"] = float(plan["valid_len"])
             item["irregular_selected_count"] = int(len(indices))
+            item["irregular_temporal_grid_contract"] = "selected_observations_on_original_dense_axis"
             item[self.meta_key] = {
                 "route_label": self.route_label,
                 "meta_key": self.meta_key,
@@ -444,6 +445,9 @@ class BoundaryMicroscopeAcquisitionRoute(nn.Module):
                 "max_gap_satisfied": bool(plan["max_gap_satisfied"]),
                 "start_hazard_positions": [int(pos) for pos in plan["start_hazard_positions"]],
                 "end_hazard_positions": [int(pos) for pos in plan["end_hazard_positions"]],
+                "coordinate_contract": "head_points_use_irregular_selected_positions_as_original_dense_time",
+                "post_processing_contract": "physical_grid_actionformer_marks_irregular_native_axis_true_before_seconds_decode",
+                "selected_axis_remap_gt": False,
                 "uses_gt": False,
                 "uses_teacher": False,
                 "uses_raw_prediction_cache": False,

@@ -64,7 +64,20 @@ model = dict(
         max_start_hazards=4,
         max_end_hazards=4,
         action_threshold=0.15,
-    )
+    ),
+    rpn_head=dict(
+        temporal_grid_mode="physical",
+        physical_grid_actionformer=True,
+        temporal_grid=dict(
+            enabled=True,
+            mode="physical",
+            decode_axis="dense",
+            positions_key="irregular_selected_positions",
+            valid_len_key="irregular_selected_valid_len",
+            required=True,
+            strict=True,
+        ),
+    ),
 )
 
 inference = dict(load_from_raw_predictions=False, save_raw_prediction=False)

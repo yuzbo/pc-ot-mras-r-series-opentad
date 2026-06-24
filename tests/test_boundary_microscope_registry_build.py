@@ -23,6 +23,59 @@ def test_boundary_microscope_lightweight_registry_export_is_visible_without_heav
     assert ROUTE_LABEL in route_text
 
 
+def test_boundary_microscope_selector_package_import_is_route_isolated(monkeypatch):
+    import importlib
+    import sys
+    import types
+
+    sentinel = object()
+    restore_names = ("opentad", "opentad.models", "opentad.models.builder")
+    previous = {name: sys.modules.get(name, sentinel) for name in restore_names}
+
+    class Registry:
+        def register_module(self):
+            def decorator(cls):
+                return cls
+
+            return decorator
+
+    try:
+        for name in tuple(sys.modules):
+            if name == "opentad.models.selectors" or name.startswith("opentad.models.selectors."):
+                sys.modules.pop(name, None)
+        for name in ("opentad", "opentad.models"):
+            module = types.ModuleType(name)
+            module.__path__ = [str(ROOT / name.replace(".", "/"))]
+            monkeypatch.setitem(sys.modules, name, module)
+
+        builder = types.ModuleType("opentad.models.builder")
+        builder.SELECTORS = Registry()
+        monkeypatch.setitem(sys.modules, "opentad.models.builder", builder)
+
+        selectors = importlib.import_module("opentad.models.selectors")
+
+        assert selectors.BOUNDARY_MICROSCOPE_ROUTE_LABEL == ROUTE_LABEL
+        assert selectors.BoundaryMicroscopeAcquisitionRoute.__name__ == "BoundaryMicroscopeAcquisitionRoute"
+        exported = set(selectors.__all__)
+        assert "BoundaryMicroscopeAcquisitionRoute" in exported
+        for forbidden in (
+            "EventSurpriseTemporalAcquisitionSelector",
+            "PCOTMRASPreBackboneFrameSelector",
+            "PCOTMRASReader",
+            "ProcessConditionedOrderedTransportMRASReader",
+        ):
+            assert forbidden not in exported
+    finally:
+        for name in tuple(sys.modules):
+            if name == "opentad.models.selectors" or name.startswith("opentad.models.selectors."):
+                sys.modules.pop(name, None)
+        for name, module in previous.items():
+            if module is sentinel:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+
 def test_boundary_microscope_canonical_build_detector_when_runtime_deps_available():
     pytest.importorskip("mmengine", reason="canonical OpenTAD registry build requires mmengine")
     torch = pytest.importorskip("torch", reason="canonical OpenTAD registry build requires torch")

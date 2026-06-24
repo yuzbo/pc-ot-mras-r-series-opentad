@@ -45,6 +45,13 @@ def test_boundary_microscope_local_config_is_parseable_and_fail_closed():
     assert cfg.route_id == "boundary_microscope_acquisition"
     assert cfg.model.frame_selector.type == "BoundaryMicroscopeAcquisitionRoute"
     assert cfg.model.frame_selector.meta_key == "boundary_microscope_acquisition_plan"
+    assert cfg.model.rpn_head.physical_grid_actionformer is True
+    assert cfg.model.rpn_head.temporal_grid.mode == "physical"
+    assert cfg.model.rpn_head.temporal_grid.decode_axis == "dense"
+    assert cfg.model.rpn_head.temporal_grid.positions_key == "irregular_selected_positions"
+    assert cfg.model.rpn_head.temporal_grid.valid_len_key == "irregular_selected_valid_len"
+    assert cfg.model.rpn_head.temporal_grid.required is True
+    assert cfg.model.rpn_head.temporal_grid.strict is True
     assert cfg.boundary_microscope_gate.allow_precheck_only is True
     assert cfg.boundary_microscope_gate.allow_tools_train is False
     assert cfg.boundary_microscope_gate.allow_tools_test is False
@@ -81,6 +88,11 @@ def test_boundary_microscope_full_train_candidate_config_is_still_fail_closed_un
     assert cfg.workflow.val_eval_interval == 2
     assert cfg.model.frame_selector.max_dense_gap <= 8
     assert cfg.model.frame_selector.target_len == 384
+    assert cfg.model.rpn_head.physical_grid_actionformer is True
+    assert cfg.model.rpn_head.temporal_grid.mode == "physical"
+    assert cfg.model.rpn_head.temporal_grid.decode_axis == "dense"
+    assert cfg.model.rpn_head.temporal_grid.positions_key == "irregular_selected_positions"
+    assert cfg.model.rpn_head.temporal_grid.valid_len_key == "irregular_selected_valid_len"
 
 
 def test_boundary_microscope_gate_validator_rejects_open_train_or_claims(tmp_path):
