@@ -69,6 +69,7 @@ model = dict(
         require_preview_signal=True,
         preview_signal_meta_key="frame_token_hybrid_preview_signal",
         preview_positions_meta_key="frame_token_hybrid_preview_positions",
+        preview_source_meta_key="frame_token_hybrid_preview_source",
     )
 )
 

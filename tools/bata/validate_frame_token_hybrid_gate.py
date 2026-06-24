@@ -354,6 +354,7 @@ def _config_gate_payload(config_path):
         "frame_selector_require_preview_signal": frame_selector.get("require_preview_signal"),
         "preview_signal_meta_key": frame_selector.get("preview_signal_meta_key"),
         "preview_positions_meta_key": frame_selector.get("preview_positions_meta_key"),
+        "preview_source_meta_key": frame_selector.get("preview_source_meta_key"),
     }
     validate_config_payload(payload)
     return payload
@@ -370,6 +371,8 @@ def validate_config_payload(payload):
         raise ValueError("Frame/token hybrid config must use FrameTokenHybridAcquisitionRoute")
     if payload.get("frame_selector_require_preview_signal") is not True:
         raise ValueError("Frame/token hybrid config must require deploy-visible preview/probe signal")
+    if payload.get("preview_source_meta_key") != "frame_token_hybrid_preview_source":
+        raise ValueError("Frame/token hybrid config must expose frame_token_hybrid_preview_source")
 
     for key in CONFIG_REQUIRED_TRUE_KEYS:
         if payload.get(key) is not True:

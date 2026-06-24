@@ -164,3 +164,20 @@ Summary decision:
 - Full train remains locked: `true`.
 - `tools_train=false`, `tools_test=false`.
 - `metric_claim_allowed=false`, `paper_claim_allowed=false`.
+
+## 2026-06-25 Pro-Finding Fix Superseding Note
+
+Status:
+`FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO`
+
+The current Frame/Token owner fix is in
+`E:/DeskTop/TAD/temrefuse-tad/OpenTAD_FrameToken_ProFix_Worktree_20260625` on
+branch `codex/frame-token-pro-fix-20260625`. It adds a normal-pipeline
+`FrameTokenHybridPreviewProbe` metadata source, preserves the
+raw-observation/span-token/dense-completion bridge, narrows route imports away
+from PC-OT/MRAS/C3, and keeps decode/runtime/mAP/deploy/paper/full-train claims
+locked until follow-up Pro review.
+
+Canonical current self-check and verification evidence are recorded in
+`research-wiki/experiments/FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_DEPLOYMENT_20260624.md`
+under `Pro-Finding Fix Superseding Status`.

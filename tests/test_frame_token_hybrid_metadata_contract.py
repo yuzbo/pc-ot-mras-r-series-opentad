@@ -11,6 +11,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 ROUTE_PATH = ROOT / "opentad" / "models" / "selectors" / "frame_token_hybrid_acquisition_route.py"
+PREVIEW_TRANSFORM_PATH = ROOT / "opentad" / "datasets" / "transforms" / "frame_token_hybrid.py"
 
 
 class _Registry:
@@ -66,6 +67,25 @@ def _load_route_module():
     return module
 
 
+def _load_preview_transform_module():
+    sys.modules.pop("opentad.datasets.transforms.frame_token_hybrid", None)
+    _ensure_package("opentad", ROOT / "opentad")
+    _ensure_package("opentad.datasets", ROOT / "opentad" / "datasets")
+    _ensure_package("opentad.datasets.transforms", ROOT / "opentad" / "datasets" / "transforms")
+    builder = types.ModuleType("opentad.datasets.builder")
+    builder.PIPELINES = _Registry()
+    sys.modules["opentad.datasets.builder"] = builder
+
+    spec = importlib.util.spec_from_file_location(
+        "opentad.datasets.transforms.frame_token_hybrid",
+        PREVIEW_TRANSFORM_PATH,
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_preview_probe_metadata_drives_selection_instead_of_dense_input_signal():
     torch = _import_torch_or_skip()
     module = _load_route_module()
@@ -88,6 +108,7 @@ def test_preview_probe_metadata_drives_selection_instead_of_dense_input_signal()
             "sample_id": "preview-probe-contract",
             "frame_token_hybrid_preview_signal": [0.0] * 16,
             "frame_token_hybrid_preview_positions": list(range(16)),
+            "frame_token_hybrid_preview_source": "frame_inds_temporal_gap_preview_probe",
         }
     ]
 
@@ -101,6 +122,8 @@ def test_preview_probe_metadata_drives_selection_instead_of_dense_input_signal()
     assert 4 not in meta["frame_token_hybrid_observed_raw_positions"]
     assert plan["preview_probe"]["signal_meta_key"] == "frame_token_hybrid_preview_signal"
     assert plan["preview_probe"]["positions_meta_key"] == "frame_token_hybrid_preview_positions"
+    assert plan["preview_probe"]["source_meta_key"] == "frame_token_hybrid_preview_source"
+    assert plan["preview_probe"]["source"] == "frame_inds_temporal_gap_preview_probe"
     assert plan["preview_probe"]["observation_count"] == 16
 
     observed_mask = meta["frame_token_hybrid_observed_raw_mask"]
@@ -124,6 +147,39 @@ def test_preview_probe_metadata_drives_selection_instead_of_dense_input_signal()
     assert accounting["actual_decode_saving_in_current_actionformer_pipeline"] is False
     assert accounting["raw_decode_saving_claim_allowed"] is False
     assert accounting["pre_decode_loader_hook_reviewed"] is False
+
+
+def test_low_cost_preview_probe_transform_writes_deploy_visible_metadata_without_decode_or_leakage():
+    transform_module = _load_preview_transform_module()
+    transform = transform_module.FrameTokenHybridPreviewProbe(
+        signal_meta_key="frame_token_hybrid_preview_signal",
+        positions_meta_key="frame_token_hybrid_preview_positions",
+        source_meta_key="frame_token_hybrid_preview_source",
+    )
+    results = {
+        "video_name": "video_validation_0000051",
+        "frame_inds": [[0], [8], [16], [24], [80], [88], [96], [104]],
+        "masks": [1, 1, 1, 1, 1, 1, 0, 0],
+        "gt_segments": [[1.0, 2.0]],
+    }
+
+    output = transform(results)
+
+    assert output["frame_token_hybrid_preview_positions"] == [0, 1, 2, 3, 4, 5]
+    assert len(output["frame_token_hybrid_preview_signal"]) == 6
+    assert output["frame_token_hybrid_preview_source"] == "frame_inds_temporal_gap_preview_probe"
+    assert "frame_token_hybrid_preview_uses_gt" not in output
+    assert "frame_token_hybrid_preview_uses_teacher" not in output
+    assert "frame_token_hybrid_preview_uses_cache" not in output
+    text = repr(
+        [
+            output["frame_token_hybrid_preview_signal"],
+            output["frame_token_hybrid_preview_positions"],
+            output["frame_token_hybrid_preview_source"],
+        ]
+    ).lower()
+    for forbidden in ("gt", "teacher", "oracle", "cache", "prediction", "result", "checkpoint"):
+        assert forbidden not in text
 
 
 def test_require_preview_probe_signal_fails_closed_without_deploy_visible_signal():

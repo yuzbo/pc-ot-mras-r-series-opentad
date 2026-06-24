@@ -1,6 +1,7 @@
 from .loading import LoadFeats, SlidingWindowTrunc, RandomTrunc
 from .formatting import Collect, ConvertToTensor, Rearrange, Reduce, Padding, ChannelReduction
 from .end_to_end import PrepareVideoInfo, LoadSnippetFrames, LoadFrames
+from .frame_token_hybrid import FrameTokenHybridPreviewProbe
 
 __all__ = [
     "LoadFeats",
@@ -15,4 +16,5 @@ __all__ = [
     "PrepareVideoInfo",
     "LoadSnippetFrames",
     "LoadFrames",
+    "FrameTokenHybridPreviewProbe",
 ]

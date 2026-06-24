@@ -159,3 +159,117 @@ Deployment decision:
 - Full-train submission status: `SUBMITTED_PENDING`.
 - Next action: do not poll repeatedly; wait for normal long-duration monitor or
   next material status change.
+
+## Pro-Finding Fix Superseding Status
+
+Timestamp: 2026-06-25T00:57:13+08:00
+
+Status:
+`FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO`
+
+Current owner/worktree:
+
+- Owned worktree:
+  `E:/DeskTop/TAD/temrefuse-tad/OpenTAD_FrameToken_ProFix_Worktree_20260625`
+- Owned branch:
+  `codex/frame-token-pro-fix-20260625`
+- Route label:
+  `DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3`
+
+Superseding decision:
+
+- The earlier full-train gate/submission notes above are historical evidence
+  only.
+- Current full-train candidate is locked again until a follow-up Pro review
+  accepts this fix.
+- No remote sync, Slurm, long training, `tools/test.py`, mAP, runtime/FLOPs,
+  deploy, raw-decode-saving, or paper claim is allowed from this local fix.
+
+Fixes implemented for the Frame/Token Pro findings:
+
+- Added deploy-visible preview metadata source:
+  `FrameTokenHybridPreviewProbe` writes
+  `frame_token_hybrid_preview_signal`,
+  `frame_token_hybrid_preview_positions`, and
+  `frame_token_hybrid_preview_source` from `LoadFrames` `frame_inds` and
+  prefix masks before decode/augmentation. It does not read GT, teacher,
+  oracle, detector outputs, result JSON, checkpoints, or raw-prediction caches.
+- Wired the preview hook into the normal train/val/test pipelines of the
+  Frame/Token configs and added the preview keys to `Collect.meta_keys`.
+- Extended the selector preview contract so `preview_probe` records
+  `source_meta_key` and `source`.
+- Preserved the raw-observation/span-token bridge contract:
+  observed raw positions are copied exactly; stable gaps remain span tokens
+  with `span_start`, `span_end`, `role`, `visibility`, and
+  `compression_confidence`; dense completion masks distinguish observed,
+  span-derived, and completed positions.
+- Kept raw decode/runtime claims locked:
+  `actual_decode_saving_in_current_actionformer_pipeline=False`,
+  `raw_decode_saving_claim_allowed=False`,
+  `pre_decode_loader_hook_reviewed=False`.
+- Kept full training fail-closed in config:
+  `ALLOW_FRAME_TOKEN_HYBRID_PRECHECK_ONLY`, `allow_tools_train=False`,
+  `allow_slurm=False`, `allow_gpu=False`, `allow_full_train=False`,
+  `metric_claim_allowed=False`, `paper_claim_allowed=False`.
+- Narrowed `opentad/models/selectors/__init__.py` in this route worktree so
+  the Frame/Token package import no longer imports PC-OT/MRAS/C3 route classes.
+
+Changed files:
+
+- `opentad/models/selectors/frame_token_hybrid_acquisition_route.py`
+- `opentad/models/selectors/__init__.py`
+- `opentad/datasets/transforms/frame_token_hybrid.py`
+- `opentad/datasets/transforms/__init__.py`
+- `configs/adatad/thumos/frame_token_hybrid_acquisition_local_precheck.py`
+- `configs/adatad/thumos/frame_token_hybrid_acquisition_full_train_candidate_n16r4.py`
+- `tools/bata/validate_frame_token_hybrid_gate.py`
+- `tools/bata/frame_token_hybrid_build_forward_smoke.py`
+- `tests/test_frame_token_hybrid_metadata_contract.py`
+- `tests/test_frame_token_hybrid_config_gate.py`
+- `tests/test_frame_token_hybrid_build_forward_smoke.py`
+
+Local verification:
+
+```text
+python -m py_compile opentad/models/selectors/frame_token_hybrid_acquisition_route.py opentad/models/selectors/__init__.py opentad/datasets/transforms/frame_token_hybrid.py opentad/datasets/transforms/__init__.py configs/adatad/thumos/frame_token_hybrid_acquisition_local_precheck.py configs/adatad/thumos/frame_token_hybrid_acquisition_full_train_candidate_n16r4.py tools/bata/validate_frame_token_hybrid_gate.py tools/bata/frame_token_hybrid_build_forward_smoke.py tests/test_frame_token_hybrid_metadata_contract.py tests/test_frame_token_hybrid_config_gate.py tests/test_frame_token_hybrid_build_forward_smoke.py tests/test_frame_token_hybrid_actionformer_integration.py tests/test_frame_token_hybrid_acquisition_route.py
+PASS
+
+python tools/bata/validate_frame_token_hybrid_gate.py configs/adatad/thumos/frame_token_hybrid_acquisition_full_train_candidate_n16r4.py --json
+PASS: emitted fail-closed precheck-only JSON with preview_source_meta_key and all train/Slurm/claim flags false.
+
+C:/Users/skywalker/.conda/envs/torch_1/python.exe -m pytest tests/test_frame_token_hybrid*.py -q
+PASS: 31 passed, 1 skipped in 44.07s.
+
+C:/Users/skywalker/.conda/envs/torch_1/python.exe tools/bata/frame_token_hybrid_build_forward_smoke.py
+PASS: FRAME_TOKEN_HYBRID_BUILD_FORWARD_SMOKE_PASS.
+```
+
+Self-check:
+
+- Strict random-fixed 50% contract: not a random-fixed selector. The current
+  contract is up to 384 raw observations plus stable-gap span tokens from a
+  768-step dense window, reconstructed to a 768-step ActionFormer-compatible
+  axis.
+- GT/teacher/oracle/cache risk: test-time selector rejects forbidden metadata
+  and the preview hook uses only deploy-visible `frame_inds`/mask geometry.
+- Tensor and mask reasoning: selector requires 5D `[B,C,T,H,W]`, prefix
+  contiguous `[B,T]` masks, preserves observed positions, zeroes invalid mask
+  suffixes, and returns dense `[B,C,768,H,W]` plus `[B,768]` masks.
+- Changed surface: input sampling/controller metadata, token-compression span
+  schema, pre-backbone dense completion bridge, fail-closed config/gate, tests,
+  and local smoke tooling. It does not modify Adapter internals, detector head,
+  loss/assignment, or post-processing.
+- Attribution: any future metric gain would be attributable to Frame/Token
+  preview-driven acquisition and span-conditioned dense completion only after
+  follow-up Pro and full review gates pass. It is not attributable to C3.
+
+Allowed next action:
+
+- Follow-up Pro review with this complete fix context.
+- Local static/smoke tests only.
+
+Still locked:
+
+- Remote sync, Slurm, long training, `tools/train.py`, `tools/test.py`, mAP,
+  runtime/FLOPs, deploy/raw-decode-saving, paper claims, and any C3/combo
+  attribution.

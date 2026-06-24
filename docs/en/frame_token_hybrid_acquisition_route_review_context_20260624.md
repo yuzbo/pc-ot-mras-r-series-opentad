@@ -108,3 +108,72 @@ N16R4 precheck launcher
 `scripts/run_frame_token_hybrid_acquisition_precheck_n16r4.sbatch`. This does
 not unlock full training, Slurm training, metric claims, runtime claims, deploy
 claims, or paper claims.
+
+## 2026-06-25 Pro-Finding Fix Status
+
+Status:
+`FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO`
+
+The current Frame/Token fix supplies a deploy-visible preview metadata source
+for the normal train/val/test pipeline by adding
+`FrameTokenHybridPreviewProbe` after `LoadFrames` and before decode. The hook
+uses only planned `frame_inds` plus prefix masks and writes:
+
+- `frame_token_hybrid_preview_signal`
+- `frame_token_hybrid_preview_positions`
+- `frame_token_hybrid_preview_source`
+
+The Frame/Token configs collect these keys into `metas`, and the selector now
+records the source in `plan["preview_probe"]`. This closes the local metadata
+contract that the Pro review flagged: `require_preview_signal=True` can be
+satisfied by the normal config path without GT, teacher, oracle, detector
+outputs, raw-prediction caches, result JSON, or checkpoints.
+
+The raw-observation/span-token/dense-bridge path remains buildable and locally
+smoke-tested:
+
+- observed raw positions are preserved exactly;
+- stable gaps are represented as span tokens with `span_start`, `span_end`,
+  `role`, `visibility`, and `compression_confidence`;
+- dense completion uses masks that distinguish observed, span-derived, and
+  completed valid positions;
+- invalid mask suffix positions are zeroed;
+- ActionFormer receives the selector-rewritten dense bridge and metadata.
+
+Claim boundary remains locked:
+
+- `actual_decode_saving_in_current_actionformer_pipeline=False`
+- `raw_decode_saving_claim_allowed=False`
+- `pre_decode_loader_hook_reviewed=False`
+- `allow_tools_train=False`
+- `allow_slurm=False`
+- `allow_gpu=False`
+- `allow_full_train=False`
+- `metric_claim_allowed=False`
+- `paper_claim_allowed=False`
+
+The selector package import was narrowed in this route worktree so it no longer
+imports PC-OT/MRAS/C3 route classes. This is a route-isolation measure for
+`DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3`, not a C3
+change.
+
+Local verification recorded in the route report:
+
+```text
+python -m py_compile ...
+PASS
+
+python tools/bata/validate_frame_token_hybrid_gate.py configs/adatad/thumos/frame_token_hybrid_acquisition_full_train_candidate_n16r4.py --json
+PASS: fail-closed precheck-only JSON.
+
+C:/Users/skywalker/.conda/envs/torch_1/python.exe -m pytest tests/test_frame_token_hybrid*.py -q
+PASS: 31 passed, 1 skipped.
+
+C:/Users/skywalker/.conda/envs/torch_1/python.exe tools/bata/frame_token_hybrid_build_forward_smoke.py
+PASS: FRAME_TOKEN_HYBRID_BUILD_FORWARD_SMOKE_PASS.
+```
+
+Allowed next action is follow-up Pro review plus local static/smoke checks.
+Remote sync, Slurm, long training, `tools/train.py`, `tools/test.py`, mAP,
+runtime/FLOPs, deploy/raw-decode-saving, paper claims, and C3/combo attribution
+remain locked.

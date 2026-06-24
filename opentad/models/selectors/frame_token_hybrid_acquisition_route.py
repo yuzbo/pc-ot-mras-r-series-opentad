@@ -13,6 +13,7 @@ ROUTE_LABEL = "DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3"
 DEFAULT_META_KEY = "frame_token_hybrid_acquisition_plan"
 DEFAULT_PREVIEW_SIGNAL_META_KEY = "frame_token_hybrid_preview_signal"
 DEFAULT_PREVIEW_POSITIONS_META_KEY = "frame_token_hybrid_preview_positions"
+DEFAULT_PREVIEW_SOURCE_META_KEY = "frame_token_hybrid_preview_source"
 FORBIDDEN_TEST_META_TOKENS = (
     "gt",
     "ground_truth",
@@ -114,6 +115,7 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
         require_preview_signal: bool = False,
         preview_signal_meta_key: str = DEFAULT_PREVIEW_SIGNAL_META_KEY,
         preview_positions_meta_key: str = DEFAULT_PREVIEW_POSITIONS_META_KEY,
+        preview_source_meta_key: str = DEFAULT_PREVIEW_SOURCE_META_KEY,
     ) -> None:
         super().__init__()
         if int(target_len) <= 0:
@@ -144,6 +146,7 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
         self.require_preview_signal = bool(require_preview_signal)
         self.preview_signal_meta_key = str(preview_signal_meta_key)
         self.preview_positions_meta_key = str(preview_positions_meta_key)
+        self.preview_source_meta_key = str(preview_source_meta_key)
 
     def forward_train(self, inputs, masks, metas, gt_segments, gt_labels):
         outputs = self._forward_impl(inputs, masks, metas, reject_forbidden_meta=False)
@@ -236,6 +239,8 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
                     "required": self.require_preview_signal,
                     "signal_meta_key": self.preview_signal_meta_key,
                     "positions_meta_key": self.preview_positions_meta_key,
+                    "source_meta_key": self.preview_source_meta_key,
+                    "source": str(meta.get(self.preview_source_meta_key, "unspecified_deploy_preview_probe")),
                     "observation_count": len(signal),
                     "covers_full_valid_axis": len(set(positions)) == int(valid_len),
                 },
@@ -249,6 +254,8 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
                 "required": self.require_preview_signal,
                 "signal_meta_key": self.preview_signal_meta_key,
                 "positions_meta_key": self.preview_positions_meta_key,
+                "source_meta_key": self.preview_source_meta_key,
+                "source": "post_decode_dense_tensor_fallback",
                 "observation_count": 0,
                 "covers_full_valid_axis": False,
             },

@@ -78,6 +78,7 @@ def test_frame_token_hybrid_local_config_is_parseable_and_fail_closed():
     assert cfg.model.frame_selector.target_dense_len == 768
     assert cfg.model.frame_selector.require_preview_signal is True
     assert cfg.model.frame_selector.preview_signal_meta_key == "frame_token_hybrid_preview_signal"
+    assert cfg.model.frame_selector.preview_source_meta_key == "frame_token_hybrid_preview_source"
     assert cfg.frame_token_hybrid_gate.allow_precheck_only is True
     assert cfg.frame_token_hybrid_gate.allow_tools_train is False
     assert cfg.frame_token_hybrid_gate.allow_tools_test is False
@@ -98,6 +99,21 @@ def test_frame_token_hybrid_selector_is_exported_from_selector_package():
     assert "FrameTokenHybridAcquisitionRoute" in selector_init
     assert "FRAME_TOKEN_HYBRID_ROUTE_LABEL" in selector_init
     assert "FRAME_TOKEN_HYBRID_META_KEY" in selector_init
+
+
+def test_frame_token_hybrid_selector_package_does_not_import_c3_or_pc_ot_route_classes():
+    selector_init = SELECTOR_INIT.read_text(encoding="utf-8")
+
+    forbidden = (
+        "pc_ot_mras",
+        "PCOTMRAS",
+        "ProcessConditionedOrderedTransportMRAS",
+        "C3",
+        "global_rank",
+        "interval",
+    )
+    for token in forbidden:
+        assert token not in selector_init
 
 
 def test_frame_token_hybrid_full_train_candidate_config_is_still_fail_closed_until_gate():
@@ -122,7 +138,25 @@ def test_frame_token_hybrid_full_train_candidate_config_is_still_fail_closed_unt
     assert cfg.workflow.val_eval_interval == 2
     assert cfg.model.frame_selector.target_dense_len == 768
     assert cfg.model.frame_selector.require_preview_signal is True
+    assert cfg.model.frame_selector.preview_source_meta_key == "frame_token_hybrid_preview_source"
     assert cfg.model.frame_selector.stable_gap_min_len >= 6
+
+
+def test_frame_token_hybrid_configs_attach_preview_probe_hook_to_all_normal_pipelines():
+    preview_keys = {
+        "frame_token_hybrid_preview_signal",
+        "frame_token_hybrid_preview_positions",
+        "frame_token_hybrid_preview_source",
+    }
+    for cfg_path in (LOCAL_CONFIG, FULL_CONFIG):
+        cfg = _load_config_or_skip(cfg_path)
+        for split in ("train", "val", "test"):
+            pipeline = list(cfg.dataset[split].pipeline)
+            types = [step["type"] for step in pipeline]
+            assert "FrameTokenHybridPreviewProbe" in types, (cfg_path, split, types)
+            assert types.index("LoadFrames") < types.index("FrameTokenHybridPreviewProbe") < types.index("Collect")
+            collect = next(step for step in pipeline if step["type"] == "Collect")
+            assert preview_keys <= set(collect.get("meta_keys", [])), (cfg_path, split, collect)
 
 
 def test_frame_token_hybrid_gate_validator_rejects_open_train_remote_or_claims(tmp_path):
@@ -370,6 +404,7 @@ def test_frame_token_hybrid_validator_cli_json_config_precheck_is_fail_closed():
     assert payload["raw_decode_saving_claim_allowed"] is False
     assert payload["pre_decode_loader_hook_reviewed"] is False
     assert payload["requires_deploy_preview_probe_signal"] is True
+    assert payload["preview_source_meta_key"] == "frame_token_hybrid_preview_source"
 
 
 def test_frame_token_hybrid_validator_accepts_windows_utf8_bom_gate_json(tmp_path):

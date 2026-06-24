@@ -8,6 +8,29 @@ variant_id = "Frame-Token-Hybrid-Acquisition-Local-Precheck"
 window_size = 768
 target_len = 384
 target_dense_len = 768
+scale_factor = 1
+
+frame_token_hybrid_preview_probe = dict(
+    type="FrameTokenHybridPreviewProbe",
+    signal_meta_key="frame_token_hybrid_preview_signal",
+    positions_meta_key="frame_token_hybrid_preview_positions",
+    source_meta_key="frame_token_hybrid_preview_source",
+)
+
+frame_token_hybrid_meta_keys = [
+    "video_name",
+    "data_path",
+    "fps",
+    "duration",
+    "snippet_stride",
+    "window_start_frame",
+    "resize_length",
+    "window_size",
+    "offset_frames",
+    "frame_token_hybrid_preview_signal",
+    "frame_token_hybrid_preview_positions",
+    "frame_token_hybrid_preview_source",
+]
 
 experiment_scope = dict(
     route=route_id,
@@ -56,6 +79,75 @@ frame_token_hybrid_gate = dict(
     forbidden_entrypoints=("tools/train.py", "tools/test.py"),
 )
 
+dataset = dict(
+    train=dict(
+        pipeline=[
+            dict(type="PrepareVideoInfo", format="mp4"),
+            dict(type="mmaction.DecordInit", num_threads=4),
+            dict(
+                type="LoadFrames",
+                num_clips=1,
+                method="random_trunc",
+                trunc_len=window_size,
+                trunc_thresh=0.75,
+                crop_ratio=[0.9, 1.0],
+                scale_factor=scale_factor,
+            ),
+            frame_token_hybrid_preview_probe,
+            dict(type="mmaction.DecordDecode"),
+            dict(type="mmaction.Resize", scale=(-1, 182)),
+            dict(type="mmaction.RandomResizedCrop"),
+            dict(type="mmaction.Resize", scale=(160, 160), keep_ratio=False),
+            dict(type="mmaction.Flip", flip_ratio=0.5),
+            dict(type="mmaction.ImgAug", transforms="default"),
+            dict(type="mmaction.ColorJitter"),
+            dict(type="mmaction.FormatShape", input_format="NCTHW"),
+            dict(type="ConvertToTensor", keys=["imgs", "gt_segments", "gt_labels"]),
+            dict(
+                type="Collect",
+                inputs="imgs",
+                keys=["masks", "gt_segments", "gt_labels"],
+                meta_keys=frame_token_hybrid_meta_keys,
+            ),
+        ],
+    ),
+    val=dict(
+        window_size=window_size,
+        pipeline=[
+            dict(type="PrepareVideoInfo", format="mp4"),
+            dict(type="mmaction.DecordInit", num_threads=4),
+            dict(type="LoadFrames", num_clips=1, method="sliding_window", scale_factor=scale_factor),
+            frame_token_hybrid_preview_probe,
+            dict(type="mmaction.DecordDecode"),
+            dict(type="mmaction.Resize", scale=(-1, 160)),
+            dict(type="mmaction.CenterCrop", crop_size=160),
+            dict(type="mmaction.FormatShape", input_format="NCTHW"),
+            dict(type="ConvertToTensor", keys=["imgs", "gt_segments", "gt_labels"]),
+            dict(
+                type="Collect",
+                inputs="imgs",
+                keys=["masks", "gt_segments", "gt_labels"],
+                meta_keys=frame_token_hybrid_meta_keys,
+            ),
+        ],
+    ),
+    test=dict(
+        window_size=window_size,
+        pipeline=[
+            dict(type="PrepareVideoInfo", format="mp4"),
+            dict(type="mmaction.DecordInit", num_threads=4),
+            dict(type="LoadFrames", num_clips=1, method="sliding_window", scale_factor=scale_factor),
+            frame_token_hybrid_preview_probe,
+            dict(type="mmaction.DecordDecode"),
+            dict(type="mmaction.Resize", scale=(-1, 160)),
+            dict(type="mmaction.CenterCrop", crop_size=160),
+            dict(type="mmaction.FormatShape", input_format="NCTHW"),
+            dict(type="ConvertToTensor", keys=["imgs"]),
+            dict(type="Collect", inputs="imgs", keys=["masks"], meta_keys=frame_token_hybrid_meta_keys),
+        ],
+    ),
+)
+
 model = dict(
     frame_selector=dict(
         type="FrameTokenHybridAcquisitionRoute",
@@ -73,6 +165,7 @@ model = dict(
         require_preview_signal=True,
         preview_signal_meta_key="frame_token_hybrid_preview_signal",
         preview_positions_meta_key="frame_token_hybrid_preview_positions",
+        preview_source_meta_key="frame_token_hybrid_preview_source",
     )
 )
 
