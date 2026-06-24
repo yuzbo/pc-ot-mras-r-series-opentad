@@ -871,6 +871,10 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         frame_score_st_temperature: float = 1.0,
         frame_score_st_local_width: float = 8.0,
         frame_score_st_local_bias_weight: float = 1.0,
+        frame_score_st_surrogate: str = "local_softmax",
+        interval_boundary_budget_ratio: float = 0.5,
+        interval_candidate_topk: int = 16,
+        dynamic_budget: Mapping[str, Any] | None = None,
         meta_source: str = "pc_ot_mras_prebackbone_e2e_frame_selector",
     ) -> None:
         super().__init__()
@@ -964,14 +968,22 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             raise ValueError("max_dense_gap must be non-negative")
         if int(max_gap_guard_count) < 0:
             raise ValueError("max_gap_guard_count must be non-negative")
-        if str(selection_strategy) not in ("slot_transport", "frame_score_topk"):
-            raise ValueError("selection_strategy must be 'slot_transport' or 'frame_score_topk'")
+        if str(selection_strategy) not in ("slot_transport", "frame_score_topk", "interval_boundary_packet"):
+            raise ValueError(
+                "selection_strategy must be 'slot_transport', 'frame_score_topk', or 'interval_boundary_packet'"
+            )
         if float(frame_score_st_temperature) <= 0.0:
             raise ValueError("frame_score_st_temperature must be positive")
         if float(frame_score_st_local_width) <= 0.0:
             raise ValueError("frame_score_st_local_width must be positive")
         if float(frame_score_st_local_bias_weight) < 0.0:
             raise ValueError("frame_score_st_local_bias_weight must be non-negative")
+        if str(frame_score_st_surrogate) not in ("local_softmax", "global_softmax"):
+            raise ValueError("frame_score_st_surrogate must be 'local_softmax' or 'global_softmax'")
+        if not 0.0 <= float(interval_boundary_budget_ratio) <= 1.0:
+            raise ValueError("interval_boundary_budget_ratio must be in [0, 1]")
+        if int(interval_candidate_topk) <= 0:
+            raise ValueError("interval_candidate_topk must be positive")
         self.st_surrogate_mode = str(st_surrogate_mode)
         self.scout_pixel_normalize = bool(scout_pixel_normalize)
         self.scout_pixel_clamp = float(scout_pixel_clamp)
@@ -981,6 +993,10 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         self.frame_score_st_temperature = float(frame_score_st_temperature)
         self.frame_score_st_local_width = float(frame_score_st_local_width)
         self.frame_score_st_local_bias_weight = float(frame_score_st_local_bias_weight)
+        self.frame_score_st_surrogate = str(frame_score_st_surrogate)
+        self.interval_boundary_budget_ratio = float(interval_boundary_budget_ratio)
+        self.interval_candidate_topk = int(interval_candidate_topk)
+        self.dynamic_budget = self._normalize_dynamic_budget_config(dynamic_budget)
         self.meta_source = str(meta_source)
 
     def forward_train(self, inputs, masks, metas, gt_segments, gt_labels):
@@ -1072,6 +1088,9 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             raw_slot_unique_counts=plan.get("raw_slot_unique_counts"),
             reader_fill_counts=plan.get("reader_fill_counts"),
             st_active_row_counts=plan.get("st_active_row_counts"),
+            dynamic_budget_meta=plan.get("dynamic_budget_meta"),
+            max_gap_guard_meta=plan.get("max_gap_guard_meta"),
+            interval_packet_metadata=plan.get("interval_packet_metadata"),
             reader_outputs=reader_outputs,
             candidate_valid=candidate_valid,
             candidate_dense_indices=candidate_dense_indices,
@@ -1264,6 +1283,14 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
     ) -> dict[str, torch.Tensor]:
         if getattr(self, "selection_strategy", "slot_transport") == "frame_score_topk":
             return self._frame_score_transport_plan(
+                reader_outputs=reader_outputs,
+                valid=valid,
+                candidate_valid=candidate_valid,
+                candidate_dense_indices=candidate_dense_indices,
+                training=training,
+            )
+        if getattr(self, "selection_strategy", "slot_transport") == "interval_boundary_packet":
+            return self._interval_boundary_packet_transport_plan(
                 reader_outputs=reader_outputs,
                 valid=valid,
                 candidate_valid=candidate_valid,
@@ -1474,6 +1501,471 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             "st_active_row_counts": st_active_row_counts,
         }
 
+    def _dense_head_or_zeros(
+        self,
+        *,
+        reader_outputs: Mapping[str, torch.Tensor],
+        candidate_valid: torch.Tensor,
+        names: Sequence[str],
+        device: torch.device,
+    ) -> tuple[torch.Tensor, str]:
+        for name in names:
+            tensor = reader_outputs.get(name)
+            if tensor is None:
+                continue
+            if not torch.is_tensor(tensor):
+                raise TypeError(f"selector dense head {name} must be a tensor")
+            if tuple(tensor.shape) != tuple(candidate_valid.shape):
+                raise ValueError(
+                    f"selector dense head {name} must match candidate axis; "
+                    f"got {tuple(tensor.shape)}, expected {tuple(candidate_valid.shape)}"
+                )
+            _require_finite(tensor, f"selector dense head {name}", error_type=ValueError)
+            return tensor.to(device=device).float(), name
+        return torch.zeros(candidate_valid.shape, dtype=torch.float32, device=device), "zeros"
+
+    def _rank_transport_candidate_distribution(
+        self,
+        *,
+        scores: torch.Tensor,
+        candidate_valid: torch.Tensor,
+        candidate_dense_indices: torch.Tensor,
+        candidate_idx: int | None,
+        name: str,
+    ) -> torch.Tensor:
+        if scores.ndim != 1 or candidate_valid.ndim != 1 or candidate_dense_indices.ndim != 1:
+            raise ValueError("rank transport distribution expects one-dimensional per-sample tensors")
+        if tuple(scores.shape) != tuple(candidate_valid.shape) or tuple(scores.shape) != tuple(candidate_dense_indices.shape):
+            raise ValueError("rank transport score, valid, and dense-index axes must match")
+        _require_finite(scores, f"{name} rank transport scores", error_type=ValueError)
+        temperature = float(getattr(self, "frame_score_st_temperature", 1.0))
+        min_score = torch.finfo(torch.float32).min
+        logits = scores.float() / temperature
+        surrogate = getattr(self, "frame_score_st_surrogate", "local_softmax")
+        if surrogate == "local_softmax":
+            if candidate_idx is None:
+                raise ValueError("local_softmax rank transport requires a hard candidate index")
+            local_width = float(getattr(self, "frame_score_st_local_width", 8.0))
+            local_bias_weight = float(getattr(self, "frame_score_st_local_bias_weight", 1.0))
+            center = candidate_dense_indices[int(candidate_idx)].to(dtype=torch.float32)
+            distances = candidate_dense_indices.to(dtype=torch.float32) - center
+            logits = logits + (-0.5 * (distances / local_width).square() * local_bias_weight)
+        elif surrogate == "global_softmax":
+            pass
+        else:
+            raise ValueError(f"unknown frame_score_st_surrogate={surrogate}")
+        logits = logits.masked_fill(~candidate_valid.bool(), min_score)
+        _require_finite(logits, f"{name} rank transport logits")
+        soft_candidate = F.softmax(logits, dim=0).masked_fill(~candidate_valid.bool(), 0.0)
+        soft_candidate = soft_candidate / soft_candidate.sum().clamp_min(torch.finfo(torch.float32).eps)
+        _require_finite(soft_candidate, f"{name} rank transport distribution")
+        return soft_candidate
+
+    def _scatter_candidate_distribution_to_dense(
+        self,
+        *,
+        candidate_distribution: torch.Tensor,
+        candidate_dense_indices: torch.Tensor,
+        dense_len: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        soft_dense = torch.zeros((int(dense_len),), dtype=torch.float32, device=device)
+        soft_dense.scatter_add_(0, candidate_dense_indices.to(device=device), candidate_distribution)
+        _require_finite(soft_dense, "rank transport dense distribution")
+        return soft_dense
+
+    def _interval_boundary_packet_transport_plan(
+        self,
+        *,
+        reader_outputs: Mapping[str, torch.Tensor],
+        valid: torch.Tensor,
+        candidate_valid: torch.Tensor,
+        candidate_dense_indices: torch.Tensor,
+        training: bool,
+    ) -> dict[str, Any]:
+        if tuple(candidate_dense_indices.shape) != tuple(candidate_valid.shape):
+            raise ValueError("candidate_dense_indices must match candidate_valid")
+        device = candidate_dense_indices.device
+        candidate_valid = candidate_valid.to(device=device).bool()
+        candidate_dense_indices = candidate_dense_indices.to(device=device)
+        valid = valid.to(device=device).bool()
+        if bool((candidate_valid.long().sum(dim=1) <= 0).any().item()):
+            raise ValueError("each sample must contain at least one interval_boundary_packet candidate")
+
+        action_scores, action_source = self._dense_head_or_zeros(
+            reader_outputs=reader_outputs,
+            candidate_valid=candidate_valid,
+            names=("actionness_logits", "action_logits", "value_logits", "frame_selection_logits"),
+            device=device,
+        )
+        start_scores, start_source = self._dense_head_or_zeros(
+            reader_outputs=reader_outputs,
+            candidate_valid=candidate_valid,
+            names=("start_logits",),
+            device=device,
+        )
+        end_scores, end_source = self._dense_head_or_zeros(
+            reader_outputs=reader_outputs,
+            candidate_valid=candidate_valid,
+            names=("end_logits",),
+            device=device,
+        )
+        boundary_scores, boundary_source = self._dense_head_or_zeros(
+            reader_outputs=reader_outputs,
+            candidate_valid=candidate_valid,
+            names=("boundary_logits", "risk_logits"),
+            device=device,
+        )
+        uncertainty_scores, uncertainty_source = self._dense_head_or_zeros(
+            reader_outputs=reader_outputs,
+            candidate_valid=candidate_valid,
+            names=("uncertainty_logits",),
+            device=device,
+        )
+        redundancy_scores, redundancy_source = self._dense_head_or_zeros(
+            reader_outputs=reader_outputs,
+            candidate_valid=candidate_valid,
+            names=("redundancy_logits",),
+            device=device,
+        )
+        source_heads = [
+            action_source,
+            start_source,
+            end_source,
+            boundary_source,
+            uncertainty_source,
+            redundancy_source,
+        ]
+        dense_len = int(valid.shape[1])
+        batch = int(candidate_valid.shape[0])
+        topk = 1
+        fixed_indices = torch.empty((batch, self.target_len, topk), dtype=torch.long, device=device)
+        fixed_weights = torch.ones((batch, self.target_len, topk), dtype=torch.float32, device=device)
+        fixed_positions = torch.empty((batch, self.target_len), dtype=torch.float32, device=device)
+        transport_weights = torch.zeros((batch, self.target_len, dense_len), dtype=torch.float32, device=device)
+        selected_output_valid_lengths = torch.empty((batch,), dtype=torch.long, device=device)
+        selected_roles: list[list[str]] = []
+        raw_dense_indices: list[list[int]] = []
+        raw_duplicate_rates: list[float] = []
+        raw_unique_counts: list[int] = []
+        reader_fill_counts: list[int] = []
+        st_active_row_counts: list[int] = []
+        interval_packet_metadata: list[dict[str, Any]] = []
+        min_score = torch.finfo(torch.float32).min
+
+        boundary_rank_scores = (
+            start_scores + end_scores + boundary_scores + 0.25 * uncertainty_scores - 0.25 * redundancy_scores
+        ).masked_fill(~candidate_valid, min_score)
+        interior_rank_scores = (
+            action_scores + 0.25 * boundary_scores + 0.25 * uncertainty_scores - 0.50 * redundancy_scores
+        ).masked_fill(~candidate_valid, min_score)
+        start_rank_scores = (
+            start_scores + 0.50 * boundary_scores + 0.25 * uncertainty_scores - 0.25 * redundancy_scores
+        ).masked_fill(~candidate_valid, min_score)
+        end_rank_scores = (
+            end_scores + 0.50 * boundary_scores + 0.25 * uncertainty_scores - 0.25 * redundancy_scores
+        ).masked_fill(~candidate_valid, min_score)
+        _require_finite(boundary_rank_scores, "interval boundary rank scores")
+        _require_finite(interior_rank_scores, "interval interior rank scores")
+
+        for batch_idx in range(batch):
+            valid_candidate_indices = torch.nonzero(candidate_valid[batch_idx], as_tuple=False).flatten()
+            output_valid_len = min(int(valid_candidate_indices.numel()), self.target_len)
+            selected_output_valid_lengths[batch_idx] = output_valid_len
+            if output_valid_len <= 0:
+                raise ValueError("interval_boundary_packet found no valid candidates for a sample")
+            if output_valid_len < self.target_len:
+                batch_roles = []
+                valid_positions = candidate_dense_indices[batch_idx][valid_candidate_indices]
+                pad_pos = int(valid_positions[-1].item())
+                for out_idx in range(self.target_len):
+                    if out_idx < int(valid_positions.numel()):
+                        pos = int(valid_positions[out_idx].item())
+                        role = "valid_prefix"
+                    else:
+                        pos = pad_pos
+                        role = "pad_repeat"
+                    fixed_positions[batch_idx, out_idx] = float(pos)
+                    fixed_indices[batch_idx, out_idx, 0] = pos
+                    transport_weights[batch_idx, out_idx, pos] = 1.0
+                    batch_roles.append(role)
+                selected_roles.append(batch_roles)
+                raw_positions = [int(pos) for pos in valid_positions.detach().cpu().tolist()]
+                raw_dense_indices.append(raw_positions)
+                raw_unique_counts.append(len(set(raw_positions)))
+                raw_duplicate_rates.append(1.0 - float(len(set(raw_positions))) / float(max(1, len(raw_positions))))
+                reader_fill_counts.append(0)
+                st_active_row_counts.append(0)
+                interval_packet_metadata.append(
+                    {
+                        "enabled": True,
+                        "status": "short_valid_prefix",
+                        "boundary_budget": 0,
+                        "interior_budget": 0,
+                        "boundary_positions": [],
+                        "interior_positions": [],
+                        "interval_candidate_topk": int(self.interval_candidate_topk),
+                        "interval_pair_limit": int(valid_candidate_indices.numel()),
+                        "interval_record_count": 0,
+                        "interior_candidate_count": 0,
+                        "source_heads": source_heads,
+                    }
+                )
+                continue
+
+            boundary_budget = int(round(float(output_valid_len) * float(self.interval_boundary_budget_ratio)))
+            if output_valid_len >= 2:
+                boundary_budget = max(2, boundary_budget)
+            boundary_budget = min(output_valid_len, boundary_budget)
+            interior_budget = max(0, output_valid_len - boundary_budget)
+
+            start_ranked = torch.argsort(start_rank_scores[batch_idx], descending=True, stable=True)
+            start_ranked = start_ranked[candidate_valid[batch_idx].gather(0, start_ranked)]
+            end_ranked = torch.argsort(end_rank_scores[batch_idx], descending=True, stable=True)
+            end_ranked = end_ranked[candidate_valid[batch_idx].gather(0, end_ranked)]
+            pair_limit = min(
+                int(valid_candidate_indices.numel()),
+                int(self.interval_candidate_topk),
+            )
+            pair_limit = max(1, pair_limit)
+            interval_records: list[dict[str, Any]] = []
+            prefix_action = torch.cat(
+                [
+                    action_scores.new_zeros((1,)),
+                    torch.cumsum(action_scores[batch_idx].masked_fill(~candidate_valid[batch_idx], 0.0), dim=0),
+                ],
+                dim=0,
+            )
+            prefix_redundancy = torch.cat(
+                [
+                    redundancy_scores.new_zeros((1,)),
+                    torch.cumsum(redundancy_scores[batch_idx].masked_fill(~candidate_valid[batch_idx], 0.0), dim=0),
+                ],
+                dim=0,
+            )
+            for start_tensor in start_ranked[:pair_limit]:
+                start_idx = int(start_tensor.item())
+                for end_tensor in end_ranked[:pair_limit]:
+                    end_idx = int(end_tensor.item())
+                    if end_idx < start_idx:
+                        continue
+                    span_count = max(1, end_idx - start_idx + 1)
+                    action_mean = (prefix_action[end_idx + 1] - prefix_action[start_idx]) / float(span_count)
+                    redundancy_mean = (prefix_redundancy[end_idx + 1] - prefix_redundancy[start_idx]) / float(span_count)
+                    score = (
+                        start_scores[batch_idx, start_idx]
+                        + end_scores[batch_idx, end_idx]
+                        + 0.50 * (boundary_scores[batch_idx, start_idx] + boundary_scores[batch_idx, end_idx])
+                        + action_mean
+                        + 0.25
+                        * (uncertainty_scores[batch_idx, start_idx] + uncertainty_scores[batch_idx, end_idx])
+                        - 0.25
+                        * (redundancy_scores[batch_idx, start_idx] + redundancy_scores[batch_idx, end_idx])
+                        - 0.25 * redundancy_mean
+                    )
+                    interval_records.append(
+                        {
+                            "score": float(score.detach().cpu().item()),
+                            "start_idx": start_idx,
+                            "end_idx": end_idx,
+                            "start_pos": int(candidate_dense_indices[batch_idx, start_idx].item()),
+                            "end_pos": int(candidate_dense_indices[batch_idx, end_idx].item()),
+                        }
+                    )
+            if not interval_records:
+                first_idx = int(valid_candidate_indices[0].item())
+                interval_records.append(
+                    {
+                        "score": 0.0,
+                        "start_idx": first_idx,
+                        "end_idx": first_idx,
+                        "start_pos": int(candidate_dense_indices[batch_idx, first_idx].item()),
+                        "end_pos": int(candidate_dense_indices[batch_idx, first_idx].item()),
+                    }
+                )
+            interval_records.sort(key=lambda item: item["score"], reverse=True)
+
+            used: set[int] = set()
+            rows: list[tuple[int, int | None, str]] = []
+            boundary_positions: list[int] = []
+            interior_positions: list[int] = []
+
+            def _try_add(candidate_idx: int | None, role: str) -> bool:
+                if candidate_idx is None:
+                    return False
+                pos = int(candidate_dense_indices[batch_idx, int(candidate_idx)].item())
+                if pos in used or not bool(valid[batch_idx, pos].item()):
+                    return False
+                used.add(pos)
+                rows.append((pos, int(candidate_idx), role))
+                if role == "boundary_packet":
+                    boundary_positions.append(pos)
+                elif role == "interior_action_packet":
+                    interior_positions.append(pos)
+                return True
+
+            for record in interval_records:
+                for candidate_idx in (int(record["start_idx"]), int(record["end_idx"])):
+                    if len(boundary_positions) >= boundary_budget:
+                        break
+                    _try_add(candidate_idx, "boundary_packet")
+                if len(boundary_positions) >= boundary_budget:
+                    break
+            if len(boundary_positions) < boundary_budget:
+                ranked_boundary = torch.argsort(boundary_rank_scores[batch_idx], descending=True, stable=True)
+                for candidate_tensor in ranked_boundary:
+                    if not bool(candidate_valid[batch_idx, candidate_tensor].item()):
+                        continue
+                    if _try_add(int(candidate_tensor.item()), "boundary_packet") and len(boundary_positions) >= boundary_budget:
+                        break
+
+            interior_candidate_scores: dict[int, float] = {}
+            for record in interval_records:
+                for candidate_idx in range(int(record["start_idx"]), int(record["end_idx"]) + 1):
+                    if not bool(candidate_valid[batch_idx, candidate_idx].item()):
+                        continue
+                    pos = int(candidate_dense_indices[batch_idx, candidate_idx].item())
+                    if pos in used:
+                        continue
+                    score = float(interior_rank_scores[batch_idx, candidate_idx].detach().cpu().item())
+                    previous = interior_candidate_scores.get(candidate_idx)
+                    if previous is None or score > previous:
+                        interior_candidate_scores[candidate_idx] = score
+            interior_candidates = [
+                (score, candidate_idx) for candidate_idx, score in interior_candidate_scores.items()
+            ]
+            interior_candidates.sort(key=lambda item: item[0], reverse=True)
+            for _score, candidate_idx in interior_candidates:
+                if len(interior_positions) >= interior_budget:
+                    break
+                _try_add(candidate_idx, "interior_action_packet")
+
+            if len(interior_positions) < interior_budget:
+                ranked_action = torch.argsort(interior_rank_scores[batch_idx], descending=True, stable=True)
+                for candidate_tensor in ranked_action:
+                    if not bool(candidate_valid[batch_idx, candidate_tensor].item()):
+                        continue
+                    if _try_add(int(candidate_tensor.item()), "interior_action_packet") and len(interior_positions) >= interior_budget:
+                        break
+
+            if len(rows) < output_valid_len:
+                combined_scores = torch.maximum(boundary_rank_scores[batch_idx], interior_rank_scores[batch_idx])
+                ranked_fill = torch.argsort(combined_scores, descending=True, stable=True)
+                for candidate_tensor in ranked_fill:
+                    if not bool(candidate_valid[batch_idx, candidate_tensor].item()):
+                        continue
+                    if _try_add(int(candidate_tensor.item()), "interval_rank_fill") and len(rows) >= output_valid_len:
+                        break
+
+            if len(rows) < output_valid_len:
+                for candidate_tensor in valid_candidate_indices:
+                    if _try_add(int(candidate_tensor.item()), "dense_fill") and len(rows) >= output_valid_len:
+                        break
+
+            if len(rows) != output_valid_len:
+                raise ValueError(
+                    "failed to resolve interval_boundary_packet plan: "
+                    f"rows={len(rows)}, output_valid_len={output_valid_len}, target_len={self.target_len}"
+                )
+
+            raw_positions = [pos for pos, _candidate_idx, _role in rows]
+            raw_dense_indices.append(raw_positions)
+            raw_unique_count = len(set(raw_positions))
+            raw_unique_counts.append(raw_unique_count)
+            raw_duplicate_rates.append(1.0 - float(raw_unique_count) / float(max(1, len(raw_positions))))
+            rows.sort(key=lambda item: item[0])
+            batch_roles: list[str] = []
+            active_st_rows = 0
+            for out_idx in range(self.target_len):
+                if out_idx < output_valid_len:
+                    pos, candidate_idx, role = rows[out_idx]
+                else:
+                    pos = rows[-1][0]
+                    candidate_idx = rows[-1][1]
+                    role = "pad_repeat"
+                fixed_positions[batch_idx, out_idx] = float(pos)
+                fixed_indices[batch_idx, out_idx, 0] = pos
+                fixed_weights[batch_idx, out_idx, 0] = 1.0
+                batch_roles.append(role)
+                hard = torch.zeros((dense_len,), dtype=torch.float32, device=device)
+                hard[pos] = 1.0
+                if (
+                    self.straight_through_detector_loss
+                    and training
+                    and candidate_idx is not None
+                    and role in ("boundary_packet", "interior_action_packet", "interval_rank_fill")
+                ):
+                    rank_scores = (
+                        boundary_rank_scores[batch_idx]
+                        if role == "boundary_packet"
+                        else interior_rank_scores[batch_idx]
+                    )
+                    soft_candidate = self._rank_transport_candidate_distribution(
+                        scores=rank_scores,
+                        candidate_valid=candidate_valid[batch_idx],
+                        candidate_dense_indices=candidate_dense_indices[batch_idx],
+                        candidate_idx=int(candidate_idx),
+                        name=f"interval_boundary_packet/{role}",
+                    )
+                    soft_dense = self._scatter_candidate_distribution_to_dense(
+                        candidate_distribution=soft_candidate,
+                        candidate_dense_indices=candidate_dense_indices[batch_idx],
+                        dense_len=dense_len,
+                        device=device,
+                    )
+                    transport_weights[batch_idx, out_idx] = hard + soft_dense - soft_dense.detach()
+                    active_st_rows += 1
+                else:
+                    transport_weights[batch_idx, out_idx] = hard
+            selected_roles.append(batch_roles)
+            reader_fill_counts.append(sum(1 for _pos, _candidate_idx, role in rows if role == "interval_rank_fill"))
+            st_active_row_counts.append(active_st_rows if training and self.straight_through_detector_loss else 0)
+            interval_packet_metadata.append(
+                {
+                    "enabled": True,
+                    "status": "interval_score_first",
+                    "boundary_budget": int(boundary_budget),
+                    "interior_budget": int(interior_budget),
+                    "boundary_positions": sorted(int(pos) for pos in boundary_positions),
+                    "interior_positions": sorted(int(pos) for pos in interior_positions),
+                    "interval_candidate_topk": int(self.interval_candidate_topk),
+                    "interval_pair_limit": int(pair_limit),
+                    "interval_record_count": int(len(interval_records)),
+                    "interior_candidate_count": int(len(interior_candidates)),
+                    "top_intervals": [
+                        {
+                            "start": int(record["start_pos"]),
+                            "end": int(record["end_pos"]),
+                            "score": float(record["score"]),
+                        }
+                        for record in interval_records[: min(4, len(interval_records))]
+                    ],
+                    "source_heads": source_heads,
+                    "uses_gt": False,
+                    "uses_teacher": False,
+                    "uses_raw_prediction_cache": False,
+                    "uses_p2": False,
+                }
+            )
+
+        _require_finite(fixed_weights, "interval_boundary_packet fixed weights")
+        _require_finite(fixed_positions, "interval_boundary_packet selected positions")
+        _require_finite(transport_weights, "interval_boundary_packet sparse transport weights")
+        return {
+            "indices": fixed_indices,
+            "weights": fixed_weights,
+            "transport_weights": transport_weights,
+            "selected_positions": fixed_positions,
+            "selected_output_valid_lengths": selected_output_valid_lengths,
+            "selected_roles": selected_roles,
+            "raw_slot_dense_indices": raw_dense_indices,
+            "raw_slot_duplicate_rates": raw_duplicate_rates,
+            "raw_slot_unique_counts": raw_unique_counts,
+            "reader_fill_counts": reader_fill_counts,
+            "st_active_row_counts": st_active_row_counts,
+            "interval_packet_metadata": interval_packet_metadata,
+        }
+
     def _frame_score_transport_plan(
         self,
         *,
@@ -1521,17 +2013,25 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         raw_unique_counts: list[int] = []
         reader_fill_counts: list[int] = []
         st_active_row_counts: list[int] = []
+        max_gap_guard_meta: list[dict[str, Any]] = []
 
         min_score = torch.finfo(torch.float32).min
         masked_scores = frame_scores.masked_fill(~candidate_valid, min_score)
         _require_finite(masked_scores, "frame_score_topk masked scores")
-        temperature = float(getattr(self, "frame_score_st_temperature", 1.0))
-        local_width = float(getattr(self, "frame_score_st_local_width", 8.0))
-        local_bias_weight = float(getattr(self, "frame_score_st_local_bias_weight", 1.0))
+        dynamic_budget_plan = self._dynamic_budget_plan(
+            reader_outputs=reader_outputs,
+            frame_scores=frame_scores,
+            candidate_valid=candidate_valid,
+        )
+        dynamic_budgets = dynamic_budget_plan["budgets"] if dynamic_budget_plan is not None else None
+        dynamic_budget_meta = dynamic_budget_plan["metadata"] if dynamic_budget_plan is not None else None
 
         for batch_idx in range(batch):
             valid_candidate_indices = torch.nonzero(candidate_valid[batch_idx], as_tuple=False).flatten()
-            output_valid_len = min(int(valid_candidate_indices.numel()), self.target_len)
+            configured_budget = (
+                int(dynamic_budgets[batch_idx].item()) if torch.is_tensor(dynamic_budgets) else self.target_len
+            )
+            output_valid_len = min(int(valid_candidate_indices.numel()), configured_budget, self.target_len)
             selected_output_valid_lengths[batch_idx] = output_valid_len
             if output_valid_len <= 0:
                 raise ValueError("frame_score_topk found no valid candidates for a sample")
@@ -1540,12 +2040,6 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             ranked_candidate_indices = ranked_candidate_indices[
                 candidate_valid[batch_idx].gather(0, ranked_candidate_indices)
             ]
-            selected_candidate_indices = ranked_candidate_indices[:output_valid_len]
-            selected_dense_positions = candidate_dense_indices[batch_idx].gather(0, selected_candidate_indices)
-            order = torch.argsort(selected_dense_positions, stable=True)
-            selected_candidate_indices = selected_candidate_indices.gather(0, order)
-            selected_dense_positions = selected_dense_positions.gather(0, order)
-
             raw_topk_positions = [
                 int(pos)
                 for pos in candidate_dense_indices[batch_idx]
@@ -1561,15 +2055,72 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 1.0 - float(raw_unique_count) / float(max(1, len(raw_topk_positions)))
             )
 
+            valid_positions = candidate_dense_indices[batch_idx][candidate_valid[batch_idx]]
+            rows: list[tuple[int, int | None, str]] = []
+            used: set[int] = set()
+            guard_enabled = bool(getattr(self, "max_dense_gap", 0) > 0 and getattr(self, "max_gap_guard_count", 0) > 0)
+            max_gap_positions = self._max_gap_guard_positions(
+                valid_positions=valid_positions,
+                count=min(int(getattr(self, "max_gap_guard_count", 0)), output_valid_len),
+                max_gap=int(getattr(self, "max_dense_gap", 0)),
+            )
+            for pos_tensor in max_gap_positions:
+                pos = int(pos_tensor.item())
+                if pos in used or not bool(valid[batch_idx, pos].item()):
+                    continue
+                used.add(pos)
+                rows.append((pos, None, "max_gap_guard"))
+                if len(rows) >= output_valid_len:
+                    break
+
+            if len(rows) < output_valid_len:
+                for candidate_tensor in ranked_candidate_indices:
+                    candidate_idx = int(candidate_tensor.item())
+                    pos = int(candidate_dense_indices[batch_idx, candidate_idx].item())
+                    if pos in used or not bool(valid[batch_idx, pos].item()):
+                        continue
+                    used.add(pos)
+                    rows.append((pos, candidate_idx, "frame_score_topk"))
+                    if len(rows) >= output_valid_len:
+                        break
+
+            if len(rows) < output_valid_len:
+                for candidate_tensor in valid_candidate_indices:
+                    candidate_idx = int(candidate_tensor.item())
+                    pos = int(candidate_dense_indices[batch_idx, candidate_idx].item())
+                    if pos in used or not bool(valid[batch_idx, pos].item()):
+                        continue
+                    used.add(pos)
+                    rows.append((pos, None, "dense_fill"))
+                    if len(rows) >= output_valid_len:
+                        break
+
+            if len(rows) != output_valid_len:
+                raise ValueError(
+                    "failed to resolve frame_score_topk dynamic budget plan: "
+                    f"rows={len(rows)}, output_valid_len={output_valid_len}, target_len={self.target_len}"
+                )
+            rows.sort(key=lambda item: item[0])
+            prefix_positions = [pos for pos, _candidate_idx, _role in rows]
+            prefix_gaps = [right - left for left, right in zip(prefix_positions[:-1], prefix_positions[1:])]
+            max_gap_guard_meta.append(
+                {
+                    "enabled": guard_enabled,
+                    "max_dense_gap": int(getattr(self, "max_dense_gap", 0)),
+                    "max_gap_guard_count": int(getattr(self, "max_gap_guard_count", 0)),
+                    "applied_count": sum(1 for _pos, _candidate_idx, role in rows if role == "max_gap_guard"),
+                    "max_gap_after": max(prefix_gaps) if prefix_gaps else 0,
+                    "safety_gate_only": True,
+                }
+            )
+
             batch_roles: list[str] = []
             for out_idx in range(self.target_len):
                 if out_idx < output_valid_len:
-                    candidate_idx = int(selected_candidate_indices[out_idx].item())
-                    pos = int(selected_dense_positions[out_idx].item())
-                    role = "frame_score_topk"
+                    pos, candidate_idx, role = rows[out_idx]
                 else:
-                    candidate_idx = int(selected_candidate_indices[-1].item())
-                    pos = int(selected_dense_positions[-1].item())
+                    pos = rows[-1][0]
+                    candidate_idx = rows[-1][1]
                     role = "pad_repeat"
 
                 fixed_positions[batch_idx, out_idx] = float(pos)
@@ -1579,26 +2130,35 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
 
                 hard = torch.zeros((dense_len,), dtype=torch.float32, device=device)
                 hard[pos] = 1.0
-                if self.straight_through_detector_loss and training and role == "frame_score_topk":
-                    center = candidate_dense_indices[batch_idx, candidate_idx].to(dtype=torch.float32)
-                    distances = candidate_dense_indices[batch_idx].to(dtype=torch.float32) - center
-                    local_bias = -0.5 * (distances / local_width).square() * local_bias_weight
-                    soft_logits = (frame_scores[batch_idx] / temperature + local_bias).masked_fill(
-                        ~candidate_valid[batch_idx],
-                        min_score,
+                if (
+                    self.straight_through_detector_loss
+                    and training
+                    and role == "frame_score_topk"
+                    and candidate_idx is not None
+                ):
+                    soft_candidate = self._rank_transport_candidate_distribution(
+                        scores=frame_scores[batch_idx],
+                        candidate_valid=candidate_valid[batch_idx],
+                        candidate_dense_indices=candidate_dense_indices[batch_idx],
+                        candidate_idx=int(candidate_idx),
+                        name="frame_score_topk",
                     )
-                    _require_finite(soft_logits, "frame_score_topk straight-through logits")
-                    soft_candidate = F.softmax(soft_logits, dim=0).masked_fill(~candidate_valid[batch_idx], 0.0)
-                    soft_candidate = soft_candidate / soft_candidate.sum().clamp_min(torch.finfo(torch.float32).eps)
-                    _require_finite(soft_candidate, "frame_score_topk straight-through distribution")
-                    soft_dense = torch.zeros((dense_len,), dtype=torch.float32, device=device)
-                    soft_dense.scatter_add_(0, candidate_dense_indices[batch_idx], soft_candidate)
+                    soft_dense = self._scatter_candidate_distribution_to_dense(
+                        candidate_distribution=soft_candidate,
+                        candidate_dense_indices=candidate_dense_indices[batch_idx],
+                        dense_len=dense_len,
+                        device=device,
+                    )
                     transport_weights[batch_idx, out_idx] = hard + soft_dense - soft_dense.detach()
                 else:
                     transport_weights[batch_idx, out_idx] = hard
             selected_roles.append(batch_roles)
             reader_fill_counts.append(0)
-            st_active_row_counts.append(output_valid_len if training and self.straight_through_detector_loss else 0)
+            st_active_row_counts.append(
+                sum(1 for _pos, candidate_idx, role in rows if training and role == "frame_score_topk" and candidate_idx is not None)
+                if self.straight_through_detector_loss
+                else 0
+            )
 
         _require_finite(fixed_weights, "frame_score_topk fixed weights")
         _require_finite(fixed_positions, "frame_score_topk selected positions")
@@ -1615,7 +2175,196 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             "raw_slot_unique_counts": raw_unique_counts,
             "reader_fill_counts": reader_fill_counts,
             "st_active_row_counts": st_active_row_counts,
+            "dynamic_budget_meta": dynamic_budget_meta,
+            "max_gap_guard_meta": max_gap_guard_meta,
         }
+
+    def _normalize_dynamic_budget_config(self, cfg: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        if cfg is None:
+            return None
+        cfg = dict(cfg)
+        if not bool(cfg.get("enabled", False)):
+            return None
+        protocol = str(cfg.get("protocol", "marginal_utility_v0"))
+        if protocol != "marginal_utility_v0":
+            raise ValueError("dynamic_budget.protocol must be 'marginal_utility_v0'")
+        min_budget = int(cfg.get("min_budget", cfg.get("min", self.target_len)))
+        target_budget = int(cfg.get("target_budget", cfg.get("target", self.target_len)))
+        max_budget = int(cfg.get("max_budget", cfg.get("max", self.target_len)))
+        average_budget = int(cfg.get("average_budget", cfg.get("average", target_budget)))
+        budget_step = int(cfg.get("budget_step", 1))
+        if budget_step <= 0:
+            raise ValueError("dynamic_budget.budget_step must be positive")
+        if not (0 < min_budget <= target_budget <= max_budget <= self.target_len):
+            raise ValueError("dynamic_budget requires 0 < min <= target <= max <= target_len")
+        if not (min_budget <= average_budget <= max_budget):
+            raise ValueError("dynamic_budget.average_budget must be inside [min_budget, max_budget]")
+        midpoint = float(cfg.get("score_midpoint", 0.5))
+        if not (0.0 < midpoint < 1.0):
+            raise ValueError("dynamic_budget.score_midpoint must lie inside (0, 1)")
+        return {
+            "enabled": True,
+            "protocol": protocol,
+            "min_budget": min_budget,
+            "target_budget": target_budget,
+            "max_budget": max_budget,
+            "average_budget": average_budget,
+            "budget_step": budget_step,
+            "score_midpoint": midpoint,
+            "actionness_weight": float(cfg.get("actionness_weight", 1.0)),
+            "boundary_weight": float(cfg.get("boundary_weight", 0.35)),
+            "uncertainty_weight": float(cfg.get("uncertainty_weight", 0.20)),
+            "redundancy_weight": float(cfg.get("redundancy_weight", 0.35)),
+            "valid_len_weight": float(cfg.get("valid_len_weight", 0.0)),
+        }
+
+    def _dynamic_budget_plan(
+        self,
+        *,
+        reader_outputs: Mapping[str, torch.Tensor],
+        frame_scores: torch.Tensor,
+        candidate_valid: torch.Tensor,
+    ) -> dict[str, Any] | None:
+        cfg = getattr(self, "dynamic_budget", None)
+        if not cfg:
+            return None
+        for key in reader_outputs.keys():
+            key_text = str(key).lower()
+            if any(token in key_text for token in ("gt", "teacher", "cache", "raw_prediction", "oracle", "target")):
+                raise ValueError(f"dynamic_budget received forbidden deploy-time payload: {key}")
+
+        action_score = self._dynamic_budget_head_mean(
+            reader_outputs=reader_outputs,
+            candidate_valid=candidate_valid,
+            names=("frame_selection_logits", "actionness_logits", "action_logits", "value_logits"),
+            fallback=frame_scores,
+        )
+        boundary_score = self._dynamic_budget_head_mean(
+            reader_outputs=reader_outputs,
+            candidate_valid=candidate_valid,
+            names=("boundary_logits", "start_logits", "end_logits", "risk_logits"),
+            fallback=None,
+        )
+        uncertainty_score = self._dynamic_budget_head_mean(
+            reader_outputs=reader_outputs,
+            candidate_valid=candidate_valid,
+            names=("uncertainty_logits",),
+            fallback=None,
+        )
+        redundancy_score = self._dynamic_budget_head_mean(
+            reader_outputs=reader_outputs,
+            candidate_valid=candidate_valid,
+            names=("redundancy_logits",),
+            fallback=None,
+        )
+        valid_len_score = candidate_valid.float().mean(dim=1)
+        utility = (
+            float(cfg["actionness_weight"]) * action_score
+            + float(cfg["boundary_weight"]) * boundary_score
+            + float(cfg["uncertainty_weight"]) * uncertainty_score
+            - float(cfg["redundancy_weight"]) * redundancy_score
+            + float(cfg["valid_len_weight"]) * valid_len_score
+        )
+        normalizer = (
+            abs(float(cfg["actionness_weight"]))
+            + abs(float(cfg["boundary_weight"]))
+            + abs(float(cfg["uncertainty_weight"]))
+            + abs(float(cfg["redundancy_weight"]))
+            + abs(float(cfg["valid_len_weight"]))
+        )
+        if normalizer <= 0.0:
+            raise ValueError("dynamic_budget requires at least one non-zero utility weight")
+        utility_score = (utility / normalizer).clamp(0.0, 1.0)
+
+        min_budget = int(cfg["min_budget"])
+        target_budget = int(cfg["target_budget"])
+        max_budget = int(cfg["max_budget"])
+        midpoint = float(cfg["score_midpoint"])
+        below = utility_score < midpoint
+        lower_span = max(1, target_budget - min_budget)
+        upper_span = max(1, max_budget - target_budget)
+        lower_ratio = (utility_score / midpoint).clamp(0.0, 1.0)
+        upper_ratio = ((utility_score - midpoint) / (1.0 - midpoint)).clamp(0.0, 1.0)
+        budget_float = torch.where(
+            below,
+            float(min_budget) + lower_ratio * float(lower_span),
+            float(target_budget) + upper_ratio * float(upper_span),
+        )
+        step = int(cfg["budget_step"])
+        budgets = torch.round(budget_float / float(step)).to(dtype=torch.long) * step
+        budgets = budgets.clamp(min=min_budget, max=max_budget)
+        valid_counts = candidate_valid.long().sum(dim=1)
+        budgets = torch.minimum(budgets.to(device=valid_counts.device), valid_counts)
+
+        metadata: list[dict[str, Any]] = []
+        for batch_idx, budget in enumerate(budgets.detach().cpu().tolist()):
+            metadata.append(
+                {
+                    "enabled": True,
+                    "protocol": str(cfg["protocol"]),
+                    "budget": int(budget),
+                    "min_budget": min_budget,
+                    "target_budget": target_budget,
+                    "max_budget": max_budget,
+                    "average_budget": int(cfg["average_budget"]),
+                    "budget_step": step,
+                    "utility_score": float(utility_score[batch_idx].detach().cpu().item()),
+                    "actionness_score": float(action_score[batch_idx].detach().cpu().item()),
+                    "boundary_score": float(boundary_score[batch_idx].detach().cpu().item()),
+                    "uncertainty_score": float(uncertainty_score[batch_idx].detach().cpu().item()),
+                    "redundancy_score": float(redundancy_score[batch_idx].detach().cpu().item()),
+                    "valid_len": int(valid_counts[batch_idx].detach().cpu().item()),
+                    "deploy_time_signals": [
+                        "frame_selection_logits",
+                        "actionness_logits",
+                        "boundary_logits",
+                        "uncertainty_logits",
+                        "redundancy_logits",
+                        "valid_len",
+                    ],
+                    "uses_gt": False,
+                    "uses_teacher": False,
+                    "uses_raw_prediction_cache": False,
+                    "uses_p2": False,
+                    "safety_gate_only": False,
+                    "dynamic_budget_validation": False,
+                    "metric_claim_allowed": False,
+                    "paper_claim_allowed": False,
+                }
+            )
+        return {"budgets": budgets, "metadata": metadata}
+
+    @staticmethod
+    def _dynamic_budget_head_mean(
+        *,
+        reader_outputs: Mapping[str, torch.Tensor],
+        candidate_valid: torch.Tensor,
+        names: Sequence[str],
+        fallback: torch.Tensor | None,
+    ) -> torch.Tensor:
+        tensors = []
+        for name in names:
+            value = reader_outputs.get(name)
+            if not torch.is_tensor(value):
+                continue
+            if tuple(value.shape) != tuple(candidate_valid.shape):
+                raise ValueError(f"dynamic_budget reader output {name} must match candidate_valid shape")
+            _require_finite(value, f"dynamic_budget reader output {name}", error_type=ValueError)
+            tensors.append(torch.sigmoid(value.float()))
+        if not tensors and fallback is not None:
+            if tuple(fallback.shape) != tuple(candidate_valid.shape):
+                raise ValueError("dynamic_budget fallback scores must match candidate_valid shape")
+            _require_finite(fallback, "dynamic_budget fallback scores", error_type=ValueError)
+            tensors.append(torch.sigmoid(fallback.float()))
+        if not tensors:
+            return torch.zeros(
+                (candidate_valid.shape[0],),
+                dtype=torch.float32,
+                device=candidate_valid.device,
+            )
+        stacked = torch.stack(tensors, dim=0).mean(dim=0).masked_fill(~candidate_valid, 0.0)
+        denom = candidate_valid.to(dtype=torch.float32).sum(dim=1).clamp_min(1.0)
+        return stacked.sum(dim=1) / denom
 
     @staticmethod
     def _uniform_anchor_positions(*, valid_positions: torch.Tensor, count: int) -> torch.Tensor:
@@ -1763,6 +2512,9 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         raw_slot_unique_counts: Sequence[int] | None = None,
         reader_fill_counts: Sequence[int] | None = None,
         st_active_row_counts: Sequence[int] | None = None,
+        dynamic_budget_meta: Sequence[Mapping[str, Any]] | None = None,
+        max_gap_guard_meta: Sequence[Mapping[str, Any]] | None = None,
+        interval_packet_metadata: Sequence[Mapping[str, Any]] | None = None,
         reader_outputs: Mapping[str, torch.Tensor] | None = None,
         candidate_valid: torch.Tensor | None = None,
         candidate_dense_indices: torch.Tensor | None = None,
@@ -1793,6 +2545,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             unique_count = len(set(prefix_indices))
             meta["pc_ot_mras_prebackbone_duplicate_rate"] = 1.0 - float(unique_count) / float(max(1, len(prefix_indices)))
             meta["pc_ot_mras_prebackbone_selection_unit"] = int(self.selection_unit)
+            meta["pc_ot_mras_prebackbone_remap_gt_to_selected_axis"] = bool(self.remap_gt_to_selected_axis)
             meta["pc_ot_mras_prebackbone_residual_count"] = (
                 int(self.residual_count) if self.residual_count is not None else None
             )
@@ -1800,10 +2553,20 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             meta["pc_ot_mras_prebackbone_selector_support_status"] = self.selector_support_status
             selection_strategy = getattr(self, "selection_strategy", "slot_transport")
             meta["pc_ot_mras_prebackbone_selection_strategy"] = selection_strategy
-            meta["pc_ot_mras_prebackbone_hard_selection_source"] = (
-                "frame_selection_logits" if selection_strategy == "frame_score_topk" else "slot_transport"
+            hard_source_by_strategy = {
+                "frame_score_topk": "frame_selection_logits",
+                "interval_boundary_packet": "interval_boundary_packet",
+            }
+            meta["pc_ot_mras_prebackbone_hard_selection_source"] = hard_source_by_strategy.get(
+                selection_strategy,
+                "slot_transport",
             )
-            meta["pc_ot_mras_prebackbone_slot_not_hard_source"] = selection_strategy == "frame_score_topk"
+            meta["pc_ot_mras_prebackbone_slot_not_hard_source"] = selection_strategy != "slot_transport"
+            meta["pc_ot_mras_prebackbone_frame_score_st_surrogate"] = getattr(
+                self,
+                "frame_score_st_surrogate",
+                "local_softmax",
+            )
             meta["pc_ot_mras_prebackbone_selected_roles"] = roles
             meta["pc_ot_mras_prebackbone_raw_slot_dense_indices"] = (
                 [int(pos) for pos in raw_slot_dense_indices[idx]] if raw_slot_dense_indices is not None else []
@@ -1819,6 +2582,54 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             )
             meta["pc_ot_mras_prebackbone_st_active_row_count"] = (
                 int(st_active_row_counts[idx]) if st_active_row_counts is not None else 0
+            )
+            meta["pc_ot_mras_prebackbone_dynamic_budget"] = (
+                dict(dynamic_budget_meta[idx])
+                if dynamic_budget_meta is not None
+                else {
+                    "enabled": False,
+                    "protocol": "fixed",
+                    "budget": selected_count,
+                    "min_budget": self.target_len,
+                    "target_budget": self.target_len,
+                    "max_budget": self.target_len,
+                    "average_budget": self.target_len,
+                    "uses_gt": False,
+                    "uses_teacher": False,
+                    "uses_raw_prediction_cache": False,
+                    "uses_p2": False,
+                }
+            )
+            meta["pc_ot_mras_prebackbone_max_gap_guard"] = (
+                dict(max_gap_guard_meta[idx])
+                if max_gap_guard_meta is not None
+                else {
+                    "enabled": bool(getattr(self, "max_dense_gap", 0) > 0 and getattr(self, "max_gap_guard_count", 0) > 0),
+                    "max_dense_gap": int(getattr(self, "max_dense_gap", 0)),
+                    "max_gap_guard_count": int(getattr(self, "max_gap_guard_count", 0)),
+                    "applied_count": 0,
+                    "max_gap_after": max(meta["pc_ot_mras_prebackbone_gap"])
+                    if meta["pc_ot_mras_prebackbone_gap"]
+                    else 0,
+                    "safety_gate_only": True,
+                }
+            )
+            meta["pc_ot_mras_prebackbone_interval_packet_metadata"] = (
+                dict(interval_packet_metadata[idx])
+                if interval_packet_metadata is not None
+                else {
+                    "enabled": False,
+                    "status": "not_interval_boundary_packet",
+                    "boundary_budget": 0,
+                    "interior_budget": 0,
+                    "boundary_positions": [],
+                    "interior_positions": [],
+                    "source_heads": [],
+                    "uses_gt": False,
+                    "uses_teacher": False,
+                    "uses_raw_prediction_cache": False,
+                    "uses_p2": False,
+                }
             )
             head_diagnostics = self._reader_head_diagnostics_for_sample(
                 reader_outputs=reader_outputs,

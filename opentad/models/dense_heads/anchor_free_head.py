@@ -1,10 +1,13 @@
 import math
+from collections.abc import Mapping
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
 from ..builder import HEADS, build_prior_generator, build_loss
 from ..bricks import ConvModule, Scale
+from ..utils.temporal_grid import downsample_temporal_grid, temporal_grid_from_metas, validate_temporal_grid_alignment
 
 
 @HEADS.register_module()
@@ -25,6 +28,9 @@ class AnchorFreeHead(nn.Module):
         cls_prior_prob=0.01,
         loss_weight=1.0,
         filter_similar_gt=True,
+        temporal_grid=None,
+        temporal_grid_mode="selected_index",
+        physical_grid_actionformer=False,
     ):
         super(AnchorFreeHead, self).__init__()
 
@@ -35,6 +41,11 @@ class AnchorFreeHead(nn.Module):
         self.cls_prior_prob = cls_prior_prob
         self.label_smoothing = label_smoothing
         self.filter_similar_gt = filter_similar_gt
+        self._init_temporal_grid_config(
+            temporal_grid=temporal_grid,
+            temporal_grid_mode=temporal_grid_mode,
+            physical_grid_actionformer=physical_grid_actionformer,
+        )
 
         self.loss_weight = loss_weight
         self.center_sample = center_sample
@@ -100,7 +111,7 @@ class AnchorFreeHead(nn.Module):
             bias_value = -(math.log((1 - self.cls_prior_prob) / self.cls_prior_prob))
             nn.init.constant_(self.cls_head.bias, bias_value)
 
-    def forward_train(self, feat_list, mask_list, gt_segments, gt_labels, **kwargs):
+    def forward_train(self, feat_list, mask_list, gt_segments, gt_labels, metas=None, **kwargs):
         cls_pred = []
         reg_pred = []
 
@@ -115,12 +126,12 @@ class AnchorFreeHead(nn.Module):
             cls_pred.append(self.cls_head(cls_feat))
             reg_pred.append(F.relu(self.scale[l](self.reg_head(reg_feat))))
 
-        points = self.prior_generator(feat_list)
+        points = self._points_for_feature_geometry(feat_list, mask_list, metas=metas, mark_native_axis=True)
 
         losses = self.losses(cls_pred, reg_pred, mask_list, points, gt_segments, gt_labels)
         return losses
 
-    def forward_test(self, feat_list, mask_list, **kwargs):
+    def forward_test(self, feat_list, mask_list, metas=None, **kwargs):
         cls_pred = []
         reg_pred = []
 
@@ -135,18 +146,25 @@ class AnchorFreeHead(nn.Module):
             cls_pred.append(self.cls_head(cls_feat))
             reg_pred.append(F.relu(self.scale[l](self.reg_head(reg_feat))))
 
-        points = self.prior_generator(feat_list)
+        points = self._points_for_feature_geometry(feat_list, mask_list, metas=metas, mark_native_axis=True)
 
         # get refined proposals and scores
         proposals, scores = self.get_valid_proposals_scores(points, reg_pred, cls_pred, mask_list)  # list [T,2]
         return proposals, scores
 
     def get_refined_proposals(self, points, reg_pred):
-        points = torch.cat(points, dim=0)  # [T,4]
         reg_pred = torch.cat(reg_pred, dim=-1).permute(0, 2, 1)  # [B,T,2]
 
-        start = points[:, 0][None] - reg_pred[:, :, 0] * points[:, 3][None]
-        end = points[:, 0][None] + reg_pred[:, :, 1] * points[:, 3][None]
+        if self._points_are_batched(points):
+            points = torch.cat(points, dim=1)  # [B,T,4]
+            if points.shape[0] != reg_pred.shape[0] or points.shape[1] != reg_pred.shape[1]:
+                raise ValueError("batched physical points must align with regression predictions.")
+            start = points[:, :, 0] - reg_pred[:, :, 0] * points[:, :, 3]
+            end = points[:, :, 0] + reg_pred[:, :, 1] * points[:, :, 3]
+        else:
+            points = torch.cat(points, dim=0)  # [T,4]
+            start = points[:, 0][None] - reg_pred[:, :, 0] * points[:, 3][None]
+            end = points[:, 0][None] + reg_pred[:, :, 1] * points[:, 3][None]
         proposals = torch.stack((start, end), dim=-1)  # [B,T,2]
         return proposals
 
@@ -216,11 +234,19 @@ class AnchorFreeHead(nn.Module):
 
     @torch.no_grad()
     def prepare_targets(self, points, gt_segments, gt_labels):
-        concat_points = torch.cat(points, dim=0)
-        num_pts = concat_points.shape[0]
+        batched_points = self._points_are_batched(points)
+        if batched_points:
+            num_pts = sum(level_points.shape[1] for level_points in points)
+        else:
+            shared_points = torch.cat(points, dim=0)
+            num_pts = shared_points.shape[0]
         gt_cls, gt_reg = [], []
 
-        for gt_segment, gt_label in zip(gt_segments, gt_labels):
+        for batch_idx, (gt_segment, gt_label) in enumerate(zip(gt_segments, gt_labels)):
+            if batched_points:
+                concat_points = torch.cat([level_points[batch_idx] for level_points in points], dim=0)
+            else:
+                concat_points = shared_points
             num_gts = gt_segment.shape[0]
 
             # corner case where current sample does not have actions
@@ -296,3 +322,106 @@ class AnchorFreeHead(nn.Module):
             gt_cls.append(cls_targets)
             gt_reg.append(reg_targets)
         return gt_cls, gt_reg
+
+    def _init_temporal_grid_config(self, temporal_grid, temporal_grid_mode, physical_grid_actionformer):
+        cfg = dict(temporal_grid or {})
+        cfg_mode = cfg.get("temporal_grid_mode", cfg.get("mode", temporal_grid_mode))
+        self.temporal_grid_mode = str(cfg_mode or "selected_index")
+        mode_key = self.temporal_grid_mode.lower()
+        physical_modes = {"physical", "dense", "physical_dense", "dense_physical"}
+        explicitly_enabled = bool(physical_grid_actionformer or cfg.get("enabled", False))
+        self.physical_grid_actionformer = explicitly_enabled or mode_key in physical_modes
+        if not self.physical_grid_actionformer:
+            return
+        if mode_key not in physical_modes and mode_key != "selected_index":
+            raise ValueError(f"unsupported temporal_grid_mode for ActionFormerHead: {self.temporal_grid_mode}")
+        decode_axis = cfg.get("decode_axis", "dense")
+        if str(decode_axis) != "dense":
+            raise ValueError("physical-grid ActionFormerHead requires temporal_grid.decode_axis='dense'.")
+        self.temporal_grid_mode = "physical"
+        self.temporal_grid_positions_key = cfg.get("positions_key", "irregular_selected_positions")
+        self.temporal_grid_valid_len_key = cfg.get("valid_len_key", "irregular_selected_valid_len")
+        self.temporal_grid_required = bool(cfg.get("required", True))
+        self.temporal_grid_strict = bool(cfg.get("strict", True))
+
+    def _points_for_feature_geometry(self, feat_list, mask_list, metas=None, mark_native_axis=False):
+        if not self.physical_grid_actionformer:
+            return self.prior_generator(feat_list)
+
+        if not isinstance(feat_list, (tuple, list)) or not isinstance(mask_list, (tuple, list)):
+            raise ValueError("physical-grid ActionFormerHead expects feature and mask lists.")
+        if len(feat_list) != len(mask_list):
+            raise ValueError("physical-grid ActionFormerHead feature/mask level count mismatch.")
+        if len(feat_list) == 0:
+            raise ValueError("physical-grid ActionFormerHead requires at least one feature level.")
+
+        current_grid = temporal_grid_from_metas(
+            metas,
+            mask_list[0],
+            positions_key=self.temporal_grid_positions_key,
+            valid_len_key=self.temporal_grid_valid_len_key,
+            required=self.temporal_grid_required,
+            strict=self.temporal_grid_strict,
+        )
+        self._ensure_dense_gt_axis_contract(metas)
+
+        points = []
+        for level, (feat, mask) in enumerate(zip(feat_list, mask_list)):
+            if level > 0:
+                current_grid = downsample_temporal_grid(current_grid)
+            validate_temporal_grid_alignment(
+                current_grid,
+                mask,
+                context=f"actionformer_physical_grid_level{level}",
+            )
+            points.append(self._physical_points_for_level(current_grid, feat, level))
+
+        if mark_native_axis:
+            self._mark_physical_grid_native_axis(metas)
+        return points
+
+    def _physical_points_for_level(self, temporal_grid, feat, level):
+        center = temporal_grid["center"].to(device=feat.device, dtype=torch.float32)
+        batch, time = center.shape
+        if time != feat.shape[-1]:
+            raise ValueError(
+                f"physical-grid level {level} length mismatch: grid={time}, feature={feat.shape[-1]}."
+            )
+        reg_range = torch.as_tensor(
+            self.prior_generator.regression_range[level],
+            device=feat.device,
+            dtype=torch.float32,
+        )[None, None, :].expand(batch, time, 2)
+        level_scale = temporal_grid["level_scale"].to(device=feat.device, dtype=torch.float32)
+        stride = level_scale[:, None, None].expand(batch, time, 1).clamp_min(1.0e-4)
+        return torch.cat((center[:, :, None], reg_range, stride), dim=2)
+
+    def _mark_physical_grid_native_axis(self, metas):
+        if metas is None:
+            return
+        if not isinstance(metas, (list, tuple)):
+            raise ValueError("physical-grid ActionFormerHead expects metas as a list/tuple.")
+        for idx, meta in enumerate(metas):
+            if not isinstance(meta, Mapping):
+                raise ValueError(f"physical-grid ActionFormerHead metas[{idx}] must be a mapping.")
+            meta["irregular_native_axis"] = True
+            meta["physical_grid_actionformer"] = True
+            meta["temporal_grid_mode"] = "physical"
+
+    def _ensure_dense_gt_axis_contract(self, metas):
+        if metas is None:
+            return
+        if not isinstance(metas, (list, tuple)):
+            raise ValueError("physical-grid ActionFormerHead expects metas as a list/tuple.")
+        for idx, meta in enumerate(metas):
+            if not isinstance(meta, Mapping):
+                raise ValueError(f"physical-grid ActionFormerHead metas[{idx}] must be a mapping.")
+            if bool(meta.get("pc_ot_mras_prebackbone_remap_gt_to_selected_axis", False)):
+                raise ValueError(
+                    "physical-grid ActionFormerHead requires dense-axis GT. "
+                    "Set frame_selector.remap_gt_to_selected_axis=False for physical-grid configs."
+                )
+
+    @staticmethod
+    def _points_are_batched(points):
+        return len(points) > 0 and points[0].ndim == 3
