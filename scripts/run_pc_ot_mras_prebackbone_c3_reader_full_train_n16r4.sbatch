@@ -37,6 +37,10 @@ case "$READER_VARIANT" in
     CONFIG="configs/adatad/thumos/pc_ot_mras_prebackbone_c3_hybrid_reader_full_train_candidate_n16r4.py"
     READER_TYPE="PCOTMRASHybridFrameScout"
     ;;
+  pro_boundary)
+    CONFIG="configs/adatad/thumos/pc_ot_mras_prebackbone_c3_pro_boundary_reader_full_train_candidate_n16r4.py"
+    READER_TYPE="PCOTMRASBoundaryDifficultyTemporalFrameScout"
+    ;;
   *)
     echo "[pcot-c3-reader-full] $(date -Is) ERROR unknown READER_VARIANT=$READER_VARIANT" >&2
     exit 2
@@ -253,7 +257,10 @@ ACTIVE_MANIFEST_SHA256="$(sha256sum "$SHA_MANIFEST" | awk '{print $1}')"
 log "active_sha256_manifest_sha256=$ACTIVE_MANIFEST_SHA256"
 
 python -m py_compile "$CONFIG" opentad/models/selectors/pc_ot_mras_prebackbone_frame_selector.py
-python -m pytest tests/test_pc_ot_mras_prebackbone_c3_reader_variants.py -q
+python -m pytest \
+  tests/test_pc_ot_mras_prebackbone_c3_reader_variants.py \
+  tests/test_pc_ot_mras_prebackbone_pro_reader_design.py \
+  -q
 
 if [ "$PRECHECK_ONLY" = "1" ]; then
   write_summary "PASS" "PREBACKBONE_C3_READER_FULL_TRAIN_PRECHECK_ONLY_PASS_NO_TRAIN" "PRECHECK_ONLY=1; no tools/train.py execution"

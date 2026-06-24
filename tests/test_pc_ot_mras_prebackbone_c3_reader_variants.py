@@ -247,6 +247,7 @@ _C3_CONFIG_VARIANTS = (
     ("C3-CNN-Lite", "PCOTMRASCNNFrameScout", ("c3", "cnn", "lite")),
     ("C3-Motion-TCN", "PCOTMRASMotionTCNFrameScout", ("c3", "motion", "tcn")),
     ("C3-Hybrid", "PCOTMRASHybridFrameScout", ("c3", "hybrid")),
+    ("C3-Pro-BoundaryDifficulty", "PCOTMRASBoundaryDifficultyTemporalFrameScout", ("c3", "pro", "boundary")),
 )
 
 
@@ -321,6 +322,16 @@ def test_c3_reader_variant_configs_load_with_fixed_768_to_384_prebackbone_contra
         assert int(source_frames) == 768, path.name
         assert int(target_frames) == 384, path.name
         assert int(frame_selector.selection_unit) == 1, path.name
+        if expected_reader == "PCOTMRASBoundaryDifficultyTemporalFrameScout":
+            assert frame_selector.selection_strategy == "frame_score_topk", path.name
+            assert int(frame_selector.max_dense_gap) == 0, path.name
+            assert int(frame_selector.max_gap_guard_count) == 0, path.name
+            assert float(frame_selector.frame_score_st_temperature) > 0.0, path.name
+            assert float(frame_selector.frame_score_st_local_width) > 0.0, path.name
+            assert float(frame_selector.reader_regularizer_loss_weight) == 0.0, path.name
+            assert float(frame_selector.reader.soft_order_regularizer_weight) > 0.0, path.name
+            assert float(frame_selector.reader.duplicate_mass_regularizer_weight) > 0.0, path.name
+            assert float(frame_selector.reader.duplicate_mass_cap_factor) >= 1.0, path.name
         assert int(_pipeline_step(cfg.dataset.train.pipeline, "LoadFrames").trunc_len) == 768, path.name
         assert int(cfg.dataset.val.window_size) == 768, path.name
         assert int(cfg.dataset.test.window_size) == 768, path.name
@@ -338,6 +349,16 @@ def test_c3_reader_variant_configs_load_with_fixed_768_to_384_prebackbone_contra
         outputs = reader(features, valid, time_coords=time_coords)
         assert outputs["slot_logits"].shape == (1, 384, 6), path.name
         assert outputs["acquisition_matrix"].shape == (1, 384, 6), path.name
+        if expected_reader == "PCOTMRASBoundaryDifficultyTemporalFrameScout":
+            for head_name in (
+                "actionness_logits",
+                "start_logits",
+                "end_logits",
+                "uncertainty_logits",
+                "redundancy_logits",
+                "frame_selection_logits",
+            ):
+                assert outputs[head_name].shape == (1, 6), f"{path.name} missing {head_name}"
         assert torch.all(outputs["acquisition_matrix"][..., 4:] == 0.0), path.name
         row_sums = outputs["acquisition_matrix"].sum(dim=-1)
         assert torch.allclose(row_sums, torch.ones_like(row_sums), atol=1.0e-5), path.name
