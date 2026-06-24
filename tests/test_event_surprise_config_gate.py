@@ -66,20 +66,25 @@ def _full_train_gate_payload(
         "action": "full_train",
         "run_tag": run_tag,
         "user": "skywalker",
-        "coordinator_override_statement": "USER_REQUESTED_FAST_EVENT_SURPRISE_FULL_TRAIN_CANDIDATE_NO_PRO_BLOCKER",
+        "coordinator_override_statement": "USER_REQUESTED_NORMAL_SPEED_EVENT_SURPRISE_FOLLOWUP_PRO_REQUIRED",
         "decision": "ALLOW_EVENT_SURPRISE_FULL_TRAIN_CANDIDATE",
         "config": "configs/adatad/thumos/event_surprise_temporal_acquisition_full_train_candidate_n16r4.py",
         "config_stage": "full_train_candidate_locked",
+        "review_status": "FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO",
+        "reviewed_impl_commit": "FOLLOWUP_PRO_REQUIRED",
+        "selector_type": "EventSurpriseTemporalAcquisitionSelector",
+        "no_c3_mixing": True,
+        "no_gt_teacher_cache_leakage": True,
         "active_sha256_manifest_sha256": active_manifest_sha256,
         "resolved_config_sha256": resolved_config_sha256,
-        "allow_slurm": True,
-        "allow_gpu": True,
-        "allow_tools_train": True,
-        "allow_detector_training": True,
-        "allow_train_validation_map": True,
-        "allow_long_training": True,
-        "allow_full_train": True,
-        "launch_gate_passed": True,
+        "allow_slurm": False,
+        "allow_gpu": False,
+        "allow_tools_train": False,
+        "allow_detector_training": False,
+        "allow_train_validation_map": False,
+        "allow_long_training": False,
+        "allow_full_train": False,
+        "launch_gate_passed": False,
         "allowed_entrypoints": ["tools/train.py", "full_train"],
         "tools_test": False,
         "allow_tools_test": False,
@@ -132,6 +137,12 @@ def test_event_surprise_configs_are_fail_closed_and_do_not_contain_old_c3_tokens
     assert cfg.experiment_scope.meta_key == "event_surprise_acquisition_plan"
     assert cfg.experiment_scope.protocol_family == "event_surprise_sparse_acquisition_contract"
     assert cfg.experiment_scope.uses_pc_ot_mras_detector_bridge is False
+    assert cfg.experiment_scope.route_isolation == "no_c3_mixing"
+    assert cfg.experiment_scope.review_status == "FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO"
+    assert cfg.experiment_scope.selected_axis_inference_mapping == "selector_selected_axis_to_dense_window_axis"
+    assert cfg.experiment_scope.preview_feature_status == "loaded_dense_detector_input_prototype"
+    assert cfg.experiment_scope.runtime_flops_claim_allowed is False
+    assert cfg.experiment_scope.deploy_claim_allowed is False
     assert cfg.model.frame_selector.type == "EventSurpriseTemporalAcquisitionSelector"
     assert cfg.model.frame_selector.meta_key == "event_surprise_acquisition_plan"
     assert cfg.model.frame_selector.input_layout == "bct"
@@ -154,15 +165,21 @@ def test_event_surprise_configs_are_fail_closed_and_do_not_contain_old_c3_tokens
     else:
         assert gate.full_train_candidate is True
         assert gate.requires_launch_gate is True
-        assert gate.launch_gate_passed is True
-        assert gate.allow_slurm is True
-        assert gate.allow_gpu is True
-        assert gate.allow_tools_train is True
-        assert gate.allow_detector_training is True
-        assert gate.allow_train_validation_map is True
-        assert gate.allow_long_training is True
-        assert gate.allow_full_train is True
-        assert tuple(gate.allowed_entrypoints) == ("tools/train.py",)
+        assert gate.launch_gate_passed is False
+        assert gate.allow_slurm is False
+        assert gate.allow_gpu is False
+        assert gate.allow_tools_train is False
+        assert gate.allow_detector_training is False
+        assert gate.allow_train_validation_map is False
+        assert gate.allow_long_training is False
+        assert gate.allow_full_train is False
+        assert tuple(gate.allowed_entrypoints) == ()
+        assert gate.review_status == "FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO"
+        assert gate.reviewed_impl_commit == "FOLLOWUP_PRO_REQUIRED"
+        assert gate.selector_type == "EventSurpriseTemporalAcquisitionSelector"
+        assert gate.no_c3_mixing is True
+        assert gate.no_gt_teacher_cache_leakage is True
+        assert gate.requires_followup_pro_review is True
         assert context.gate_json_env == "EVENT_SURPRISE_ENTRYPOINT_GATE_JSON"
         assert context.gate_sha256_env == "EVENT_SURPRISE_ENTRYPOINT_GATE_SHA256"
         assert context.active_manifest_sha256_env == "EVENT_SURPRISE_ACTIVE_MANIFEST_SHA256"
@@ -208,11 +225,11 @@ def test_event_surprise_gate_validator_accepts_locked_configs():
     for config_path in (LOCAL_CONFIG, FULL_CONFIG):
         payload = validator.validate_config(config_path)
         assert payload["pass"] is True
-        expected_entrypoints = [] if config_path == LOCAL_CONFIG else ["tools/train.py"]
-        assert payload["allowed_entrypoints"] == expected_entrypoints
+        assert payload["allowed_entrypoints"] == []
         assert payload["route_label"] == "DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3"
         assert payload["selector"] == "EventSurpriseTemporalAcquisitionSelector"
         assert payload["input_layout"] == "bct"
+        assert payload["review_status"] == "FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO"
 
 
 def test_event_surprise_gate_validator_cli_accepts_locked_configs():
@@ -262,10 +279,10 @@ def test_event_surprise_launch_action_full_train_fails_without_gate_json():
     )
 
     assert result.returncode != 0
-    assert "full_train launch requires --gate-json" in result.stderr
+    assert "full_train remains locked pending follow-up Pro review" in result.stderr
 
 
-def test_event_surprise_launch_action_full_train_accepts_explicit_gate_json(tmp_path):
+def test_event_surprise_launch_action_full_train_rejects_even_with_explicit_gate_json(tmp_path):
     gate_json = tmp_path / "event_surprise_full_train_gate.json"
     gate_json.write_text(json.dumps(_full_train_gate_payload()), encoding="utf-8")
     gate_sha = hashlib.sha256(gate_json.read_bytes()).hexdigest()
@@ -297,15 +314,8 @@ def test_event_surprise_launch_action_full_train_accepts_explicit_gate_json(tmp_
         check=False,
     )
 
-    assert result.returncode == 0, result.stderr
-    payload = json.loads(result.stdout)
-    assert payload["launch_action"] == "full_train"
-    assert payload["launch_allowed"] is True
-    assert payload["train_command_allowed"] is True
-    assert payload["gate_json"] == str(gate_json)
-    assert payload["active_sha256_manifest_sha256"] == "manifest-sha"
-    assert payload["resolved_config_sha256"] == "resolved-sha"
-    assert payload["run_tag"] == "event_surprise_full_train_candidate_gate_test"
+    assert result.returncode != 0
+    assert "full_train remains locked pending follow-up Pro review" in result.stderr
 
 
 def test_event_surprise_launch_action_full_train_rejects_gate_missing_hash_bindings(tmp_path):
@@ -344,7 +354,7 @@ def test_event_surprise_launch_action_full_train_rejects_gate_missing_hash_bindi
     )
 
     assert result.returncode != 0
-    assert "active_sha256_manifest_sha256" in result.stderr
+    assert "full_train remains locked pending follow-up Pro review" in result.stderr
 
 
 def test_event_surprise_launch_action_full_train_rejects_wrong_route_gate_json(tmp_path):
@@ -382,7 +392,7 @@ def test_event_surprise_launch_action_full_train_rejects_wrong_route_gate_json(t
     )
 
     assert result.returncode != 0
-    assert "launch gate route_label mismatch" in result.stderr
+    assert "full_train remains locked pending follow-up Pro review" in result.stderr
 
 
 def test_event_surprise_full_train_config_is_guarded_by_external_entrypoint_gate(tmp_path, monkeypatch):
@@ -391,15 +401,16 @@ def test_event_surprise_full_train_config_is_guarded_by_external_entrypoint_gate
 
     gate = cfg.event_surprise_acquisition_gate
     assert gate.full_train_candidate is True
-    assert gate.allow_detector_training is True
-    assert gate.allow_tools_train is True
+    assert gate.allow_detector_training is False
+    assert gate.allow_tools_train is False
     assert gate.allow_tools_test is False
     assert gate.requires_launch_gate is True
     assert gate.entrypoint_gate_context.required is True
-    assert gate.entrypoint_gate_context.allowed_decisions == ("ALLOW_EVENT_SURPRISE_FULL_TRAIN_CANDIDATE",)
-    assert tuple(gate.allowed_entrypoints) == ("tools/train.py",)
+    assert gate.entrypoint_gate_context.allowed_decisions == ()
+    assert tuple(gate.allowed_entrypoints) == ()
+    assert gate.requires_followup_pro_review is True
 
-    with pytest.raises(RuntimeError, match="missing required entrypoint gate env EVENT_SURPRISE_ENTRYPOINT_GATE_JSON"):
+    with pytest.raises(RuntimeError, match="allow_detector_training=False"):
         training_guard.assert_detector_training_allowed(cfg, entrypoint="tools/train.py")
 
     gate_json = tmp_path / "event_surprise_full_train_gate.json"
@@ -410,8 +421,9 @@ def test_event_surprise_full_train_config_is_guarded_by_external_entrypoint_gate
     monkeypatch.setenv("EVENT_SURPRISE_ACTIVE_MANIFEST_SHA256", "manifest-sha")
     monkeypatch.setenv("EVENT_SURPRISE_RESOLVED_CONFIG_SHA256", "resolved-sha")
 
-    assert training_guard.assert_detector_training_allowed(cfg, entrypoint="tools/train.py") is None
-    with pytest.raises(RuntimeError, match="allow_tools_test=False"):
+    with pytest.raises(RuntimeError, match="allow_detector_training=False"):
+        training_guard.assert_detector_training_allowed(cfg, entrypoint="tools/train.py")
+    with pytest.raises(RuntimeError, match="allow_detector_training=False"):
         training_guard.assert_detector_training_allowed(cfg, entrypoint="tools/test.py")
 
 

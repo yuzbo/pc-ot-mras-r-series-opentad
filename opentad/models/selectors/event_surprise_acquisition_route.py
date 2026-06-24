@@ -61,6 +61,18 @@ _EVENT_SURPRISE_PROTOCOL_FLAG_KEYS = frozenset(
         "uses_teacher",
         "uses_raw_prediction_cache",
         "route_isolated_from_c3",
+        "preview_feature_source",
+        "decode_saving_claim_allowed",
+        "runtime_flops_claim_allowed",
+    }
+)
+_EVENT_SURPRISE_INFERENCE_MAPPING_KEYS = frozenset(
+    {
+        "selected_axis_to_dense_axis",
+        "input_axis",
+        "output_axis",
+        "interpolation",
+        "mapping_applied",
     }
 )
 _EVENT_SURPRISE_PLAN_KEYS = frozenset(
@@ -78,11 +90,15 @@ _EVENT_SURPRISE_PLAN_KEYS = frozenset(
         "uses_oracle",
         "uses_teacher",
         "uses_raw_prediction_cache",
+        "selected_axis_to_dense_axis_inference",
+        "decode_saving_claim_allowed",
+        "runtime_flops_claim_allowed",
     }
 )
 _DEPLOY_META_NESTED_KEY_ALLOWLIST = {
     "event_surprise_selected_scores": _EVENT_SURPRISE_SCORE_KEYS,
     "event_surprise_protocol_flags": _EVENT_SURPRISE_PROTOCOL_FLAG_KEYS,
+    "event_surprise_inference_mapping": _EVENT_SURPRISE_INFERENCE_MAPPING_KEYS,
     EVENT_SURPRISE_META_KEY: _EVENT_SURPRISE_PLAN_KEYS,
 }
 _ALLOWED_DEPLOY_META_KEYS = _DEPLOY_META_LEAF_KEYS | frozenset(_DEPLOY_META_NESTED_KEY_ALLOWLIST)
@@ -188,6 +204,19 @@ def _contains_forbidden_deploy_fragment(value: object) -> bool:
     return any(token != "gt" and token in compact for token in _FORBIDDEN_DEPLOY_META_TOKENS)
 
 
+def _contains_forbidden_deploy_meta(value: object) -> bool:
+    if isinstance(value, Mapping):
+        return any(
+            _contains_forbidden_deploy_fragment(key) or _contains_forbidden_deploy_meta(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_forbidden_deploy_meta(item) for item in value)
+    if isinstance(value, str):
+        return _contains_forbidden_deploy_fragment(value)
+    return False
+
+
 def _validate_deploy_leaf_value(value: object, *, location: str) -> None:
     if isinstance(value, Mapping):
         raise ValueError(f"{location} must not contain nested deploy metadata")
@@ -209,7 +238,7 @@ def _validate_deploy_visible_meta(
         for key, item in value.items():
             key_text = str(key or "")
             if key_text not in allowed_keys:
-                if _contains_forbidden_deploy_fragment(key_text):
+                if _contains_forbidden_deploy_fragment(key_text) or _contains_forbidden_deploy_meta(item):
                     raise ValueError(f"{location}.{key_text} contains forbidden deploy meta")
                 raise ValueError(f"{location}.{key_text} unexpected deploy meta key")
             if key_text in _DEPLOY_FALSE_FLAG_KEYS and item is not False:
@@ -594,6 +623,8 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
         self,
         metas: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None,
         selector_outputs: Mapping[str, Any],
+        *,
+        preview_feature_source: str,
     ) -> list[dict[str, Any]]:
         indices = selector_outputs["selected_dense_indices"].detach().cpu()
         selected_mask = selector_outputs["selected_mask"].detach().cpu()
@@ -636,6 +667,16 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
                 "uses_teacher": False,
                 "uses_raw_prediction_cache": False,
                 "route_isolated_from_c3": True,
+                "preview_feature_source": preview_feature_source,
+                "decode_saving_claim_allowed": False,
+                "runtime_flops_claim_allowed": False,
+            }
+            meta["event_surprise_inference_mapping"] = {
+                "selected_axis_to_dense_axis": True,
+                "input_axis": "selected_detector_axis",
+                "output_axis": "dense_window",
+                "interpolation": "piecewise_linear_selected_slots_to_dense_indices",
+                "mapping_applied": False,
             }
             meta[self.meta_key] = {
                 "route_label": self.route_label,
@@ -650,6 +691,9 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
                 "uses_oracle": False,
                 "uses_teacher": False,
                 "uses_raw_prediction_cache": False,
+                "selected_axis_to_dense_axis_inference": True,
+                "decode_saving_claim_allowed": False,
+                "runtime_flops_claim_allowed": False,
             }
         return out
 
@@ -732,6 +776,73 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
         keep = mapped[:, 1] > mapped[:, 0] + 1.0e-4
         return mapped[keep], keep
 
+    @staticmethod
+    def selected_axis_segments_to_dense_axis(
+        segments: torch.Tensor,
+        selected_positions: torch.Tensor,
+    ) -> torch.Tensor:
+        """Map selected-axis proposal coordinates back to dense window indices."""
+        if not torch.is_tensor(segments):
+            raise TypeError("segments must be a tensor")
+        if not torch.is_tensor(selected_positions):
+            raise TypeError("selected_positions must be a tensor")
+        if segments.numel() == 0:
+            return segments.reshape(0, 2)
+        if segments.ndim != 2 or int(segments.shape[-1]) != 2:
+            raise ValueError("segments must be [N,2]")
+        if selected_positions.ndim != 1:
+            raise ValueError("selected_positions must be [K]")
+        if selected_positions.numel() <= 0:
+            raise ValueError("selected_positions must be non-empty")
+        positions = selected_positions.to(device=segments.device, dtype=torch.float32)
+        if positions.numel() == 1:
+            return segments.new_full(segments.shape, float(positions[0].item()))
+        if not bool((positions[1:] > positions[:-1]).all().item()):
+            raise ValueError("selected_positions must be strictly increasing")
+        axis = torch.arange(positions.numel(), device=segments.device, dtype=torch.float32)
+        endpoints = segments.to(dtype=torch.float32).reshape(-1).clamp(min=0.0, max=float(axis[-1].item()))
+        right = torch.searchsorted(axis, endpoints, right=False).clamp(min=1, max=positions.numel() - 1)
+        left = right - 1
+        denom = (axis[right] - axis[left]).clamp_min(1.0e-6)
+        alpha = (endpoints - axis[left]) / denom
+        mapped = positions[left] + alpha * (positions[right] - positions[left])
+        return mapped.reshape_as(segments).to(dtype=segments.dtype)
+
+    def map_selected_axis_predictions_to_dense_axis(
+        self,
+        proposals: Sequence[torch.Tensor],
+        selector_outputs: Mapping[str, Any],
+        metas: Sequence[Mapping[str, Any]] | None = None,
+    ) -> list[torch.Tensor]:
+        if not isinstance(proposals, (list, tuple)):
+            raise TypeError("proposals must be a list/tuple of tensors")
+        indices = selector_outputs.get("selected_dense_indices")
+        selected_mask = selector_outputs.get("selected_mask")
+        if not torch.is_tensor(indices) or not torch.is_tensor(selected_mask):
+            raise ValueError("selector_outputs must contain selected_dense_indices and selected_mask tensors")
+        if len(proposals) != int(indices.shape[0]):
+            raise ValueError("proposal batch size must match selector outputs")
+        if metas is not None and len(metas) != len(proposals):
+            raise ValueError("metas batch size must match proposals")
+
+        mapped: list[torch.Tensor] = []
+        for batch_idx, proposal in enumerate(proposals):
+            count = int(selected_mask[batch_idx].long().sum().item())
+            if count <= 0:
+                mapped.append(proposal.reshape(0, 2))
+                continue
+            selected_positions = indices[batch_idx, :count].to(device=proposal.device, dtype=torch.float32)
+            mapped_proposal = self.selected_axis_segments_to_dense_axis(proposal, selected_positions)
+            mapped.append(mapped_proposal)
+            if metas is not None:
+                meta = metas[batch_idx]
+                if not isinstance(meta, Mapping):
+                    raise ValueError(f"metas[{batch_idx}] must be a mapping")
+                mapping = meta.get("event_surprise_inference_mapping")
+                if isinstance(mapping, dict):
+                    mapping["mapping_applied"] = True
+        return mapped
+
     def _forward_detector(
         self,
         *,
@@ -746,6 +857,9 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
         if str(mode) in {"test", "predict", "eval"} and metas is not None:
             _validate_deploy_visible_meta(metas)
         features, layout = self._detector_preview_features(inputs)
+        preview_feature_source = (
+            "loaded_dense_detector_input_prototype" if layout == "bcthw" else "deploy_visible_detector_feature_tensor"
+        )
         valid, coords = self._validate_inputs(features, masks.to(device=features.device), time_coords)
         scores = self._event_scores(features, valid)
         selector_outputs = self._build_outputs(features, valid, coords, scores)
@@ -755,7 +869,11 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
             selector_outputs["selected_mask"],
             layout,
         )
-        output_metas = self._write_detector_metas(metas, selector_outputs)
+        output_metas = self._write_detector_metas(
+            metas,
+            selector_outputs,
+            preview_feature_source=preview_feature_source,
+        )
         detector_outputs: dict[str, Any] = {
             "inputs": selected_inputs,
             "masks": selector_outputs["selected_mask"].to(device=masks.device),
