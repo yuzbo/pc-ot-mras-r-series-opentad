@@ -340,9 +340,13 @@ def test_forward_test_rejects_gt_teacher_or_raw_prediction_meta_payloads():
     bad_metas = [
         {"sample_id": "bad-gt", "gt_segments": [[1.0, 2.0]]},
         {"sample_id": "bad-teacher", "teacher_logits": [0.1]},
+        {"sample_id": "bad-oracle", "oracle_boundary_scores": [1.0]},
+        {"sample_id": "bad-cache", "prediction_cache": "forbidden"},
+        {"sample_id": "bad-raw-prediction", "raw_predictions": [0.1]},
     ]
-    with pytest.raises(ValueError, match="forbidden deploy/test-time payload"):
-        selector.forward_test(inputs, masks, bad_metas)
+    for bad_meta in bad_metas:
+        with pytest.raises(ValueError, match="forbidden deploy/test-time payload"):
+            selector.forward_test(inputs, masks, [bad_meta, {"sample_id": "ok"}])
 
     bridge = module.PCOTMRASBoundaryHazardSparseToDenseBridge(dense_window_size=16, target_len=16)
     good_outputs = selector.forward_test(inputs, masks, metas)

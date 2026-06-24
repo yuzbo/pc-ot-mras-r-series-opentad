@@ -17,7 +17,8 @@ ROUTE_LABEL = "DIVERGENT_INNOVATION_BH_SDC_DO_NOT_MERGE_WITH_C3"
 FULL_STAGE = "bh_sdc_boundary_hazard_sparse_dense_full_train_candidate_n16r4"
 LOCAL_STAGE = "bh_sdc_boundary_hazard_sparse_dense_local_precheck"
 LAUNCH_DECISION = "ALLOW_BH_SDC_N16R4_SYNC_AND_FULL_TRAIN_CANDIDATE_V1"
-REVIEWED_IMPL_COMMIT = "ae4354307d903f537e2be78723c39a3e19787f9b"
+FOLLOWUP_PRO_STATUS = "FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO"
+REVIEWED_IMPL_COMMIT = "FOLLOWUP_PRO_REQUIRED_AFTER_BH_SDC_PRO_FIX"
 SELECTOR_TYPE = "PCOTMRASBoundaryHazardSparseDenseFrameSelector"
 COMPLETION_TYPE = "PCOTMRASBoundaryHazardSparseToDenseBridge"
 REMOTE_WORKSPACE = "~/run/yuzibo/OpenTAD_Back_check"
@@ -62,6 +63,7 @@ LOCKED_FALSE_OR_ABSENT_GATE_KEYS = (
     "allow_detector_map",
     "allow_train_validation_map",
     "allow_long_training",
+    "allow_full_train",
     "allow_dataset_access",
     "allow_pretrained_initialization",
     "allow_checkpoint_write",
@@ -374,28 +376,30 @@ def _validate_local_locked_gate(gate: dict[str, Any]) -> None:
 
 
 def _validate_full_candidate_gate(gate: dict[str, Any]) -> None:
-    _require(gate.get("launch_gate_passed") is True, "full candidate must be entrypoint-gated with launch_gate_passed=True")
+    _require(gate.get("launch_gate_passed") is False, "full candidate must remain locked pending follow-up Pro review")
     _require(gate.get("static_authorization") is False, "full candidate must not be statically authorized")
-    _require(gate.get("external_payload_required") is True, "full candidate must require an external payload")
+    _require(gate.get("external_payload_required") is False, "full candidate must not accept launch payloads yet")
     _require(gate.get("launch_gate_commit_review_required") is True, "launch gate commit must require Pro review")
-    _require(gate.get("launch_decision") == LAUNCH_DECISION, f"launch_decision must be {LAUNCH_DECISION}")
+    _require(gate.get("launch_decision") == FOLLOWUP_PRO_STATUS, f"launch_decision must be {FOLLOWUP_PRO_STATUS}")
     _require(gate.get("reviewed_impl_commit") == REVIEWED_IMPL_COMMIT, "reviewed_impl_commit mismatch")
-    _require(gate.get("allow_tools_train") is True, "full candidate must allow tools/train.py only through payload")
+    _require(gate.get("allow_tools_train") is False, "full candidate must not allow tools/train.py before follow-up Pro")
     _require(gate.get("allow_tools_test") is False, "full candidate must reject tools/test.py")
     _require(gate.get("allow_detector_map") is False, "full candidate must reject direct detector mAP claims")
-    _require(gate.get("allow_train_validation_map") is True, "full training may emit train-time validation only")
-    _require(gate.get("allow_long_training") is True, "full candidate must mark long training as payload gated")
-    _require(gate.get("allow_remote_sync") is True, "full candidate must expose payload-gated remote sync")
-    _require(gate.get("allow_slurm") is True, "full candidate must expose payload-gated Slurm")
-    _require(gate.get("allow_gpu") is True, "full candidate must expose payload-gated GPU use")
-    _require(gate.get("allow_full_train") is True, "full candidate must expose payload-gated full train")
-    _require(gate.get("allow_precheck_only") is False, "full candidate must not reuse the precheck-only gate")
+    _require(gate.get("allow_train_validation_map") is False, "full candidate must not allow train-time validation mAP")
+    _require(gate.get("allow_long_training") is False, "full candidate must not allow long training")
+    _require(gate.get("allow_remote_sync") is False, "full candidate must not allow remote sync")
+    _require(gate.get("allow_slurm") is False, "full candidate must not allow Slurm")
+    _require(gate.get("allow_gpu") is False, "full candidate must not allow GPU use")
+    _require(gate.get("allow_full_train") is False, "full candidate must not allow full train")
+    _require(gate.get("allow_precheck_only") is True, "full candidate should allow local/static/smoke precheck only")
+    _require(gate.get("allow_dataset_access") is False, "full candidate must not allow dataset access")
+    _require(gate.get("allow_checkpoint_write") is False, "full candidate must not allow checkpoint writes")
     _require(gate.get("allow_checkpoint_load") is False, "checkpoint load must remain disabled")
     _require(gate.get("allow_pretrained_initialization") is False, "pretrained initialization must remain disabled")
     _require(gate.get("allow_resume") is False, "resume must remain disabled")
     _require(gate.get("allow_raw_prediction_cache") is False, "raw prediction cache must remain disabled")
-    _require(_as_list(gate.get("allowed_entrypoints")) == ["tools/train.py"], "full candidate allows only tools/train.py")
-    _require(_as_list(gate.get("command_whitelist")) == COMMAND_WHITELIST, "config command_whitelist mismatch")
+    _require(_as_list(gate.get("allowed_entrypoints")) == [], "full candidate allowed_entrypoints must be empty")
+    _require(_as_list(gate.get("command_whitelist")) == [], "full candidate command_whitelist must be empty")
     _require(gate.get("remote_workspace") == REMOTE_WORKSPACE, "remote workspace must be N16R4 ~/run/yuzibo path")
     _require(gate.get("slurm_script") == SLURM_SCRIPT, "slurm script mismatch")
     _require(gate.get("train_command") == TRAIN_COMMAND, "train command mismatch")
@@ -403,7 +407,7 @@ def _validate_full_candidate_gate(gate: dict[str, Any]) -> None:
     context = gate.get("entrypoint_gate_context")
     _require(isinstance(context, dict), "entrypoint_gate_context must be a dict")
     _require(context.get("required") is True, "entrypoint gate context must be required")
-    _require(LAUNCH_DECISION in _as_list(context.get("allowed_decisions")), "launch decision is not allowed")
+    _require(_as_list(context.get("allowed_decisions")) == [], "full candidate must not allow launch decisions yet")
     _require(context.get("gate_json_env") == "OPENTAD_BH_SDC_GATE_JSON", "gate JSON env mismatch")
     _require(context.get("gate_sha256_env") == "OPENTAD_BH_SDC_GATE_SHA256", "gate SHA env mismatch")
     _require(context.get("active_manifest_sha256_env") == "OPENTAD_BH_SDC_ACTIVE_MANIFEST_SHA256", "manifest env mismatch")
@@ -444,6 +448,7 @@ def validate_static_config(path: Path) -> dict[str, Any]:
         "allow_tools_test": gate.get("allow_tools_test", False),
         "allow_long_training": gate.get("allow_long_training", False),
         "launch_decision": gate.get("launch_decision"),
+        "reviewed_impl_commit": gate.get("reviewed_impl_commit"),
         "static_authorization": gate.get("static_authorization", False),
         "command_whitelist": _as_list(gate.get("command_whitelist", ())),
         "remote_workspace": gate.get("remote_workspace"),
@@ -492,6 +497,10 @@ def validate_launch_gate_payload(
 ) -> dict[str, Any]:
     static = validate_static_config(config_path)
     _require(static["stage"] == FULL_STAGE, "launch payload is only valid for the BH-SDC full-train candidate config")
+    raise ValueError(
+        "BH-SDC full train remains locked pending follow-up Pro review; "
+        "no payload authorizes remote sync, Slurm, tools/train.py, checkpoint writes, or mAP claims."
+    )
     _validate_payload_schema(payload)
 
     _require_exact(payload, "schema_version", 1)
@@ -589,7 +598,7 @@ def _failure_result(config: Path, reason: str, static: dict[str, Any] | None = N
         "reason": reason,
         "route": ROUTE,
         "route_label": ROUTE_LABEL,
-        "launch_decision": LAUNCH_DECISION,
+        "launch_decision": static.get("launch_decision") if static else FOLLOWUP_PRO_STATUS,
     }
     if static:
         result.update(
@@ -619,6 +628,11 @@ def main() -> int:
     static: dict[str, Any] | None = None
     try:
         static = validate_static_config(args.config)
+        if static.get("stage") == FULL_STAGE and static.get("launch_decision") == FOLLOWUP_PRO_STATUS:
+            raise ValueError(
+                "BH-SDC full train remains locked pending follow-up Pro review; "
+                "no payload authorizes remote sync, Slurm, tools/train.py, checkpoint writes, or mAP claims."
+            )
         gate_json = args.gate_json or os.environ.get("OPENTAD_BH_SDC_GATE_JSON")
         gate_sha256 = args.gate_sha256 or os.environ.get("OPENTAD_BH_SDC_GATE_SHA256")
         active_manifest = args.active_manifest_sha256 or os.environ.get("OPENTAD_BH_SDC_ACTIVE_MANIFEST_SHA256")

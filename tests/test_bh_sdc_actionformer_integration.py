@@ -113,6 +113,7 @@ def _install_runtime():
     builder.PROJECTIONS = builder.MODELS
     builder.HEADS = builder.MODELS
     builder.NECKS = builder.MODELS
+    builder.build_detector = lambda cfg: builder.DETECTORS.build(cfg)
     builder.build_backbone = lambda cfg: builder.MODELS.build(cfg)
     builder.build_projection = lambda cfg: builder.PROJECTIONS.build(cfg)
     builder.build_selector = lambda cfg: builder.SELECTORS.build(cfg)
@@ -180,10 +181,10 @@ def _install_runtime():
         "opentad.models.detectors.actionformer",
         ROOT / "opentad" / "models" / "detectors" / "actionformer.py",
     )
-    return actionformer_module.ActionFormer, selector_module
+    return actionformer_module.ActionFormer, selector_module, builder
 
 
-ActionFormer, bh_sdc_module = _install_runtime()
+ActionFormer, bh_sdc_module, runtime_builder = _install_runtime()
 
 
 class _ValueScout(nn.Module):
@@ -216,7 +217,8 @@ class _FixedBudget(nn.Module):
 
 
 def _bh_sdc_model():
-    model = ActionFormer(
+    cfg = dict(
+        type="ActionFormer",
         backbone=dict(type="TailSensitiveTemporalMixingBackbone", channels=1),
         projection=dict(type="IdentityProjection", max_seq_len=8),
         rpn_head=dict(type="CapturingHead"),
@@ -246,9 +248,32 @@ def _bh_sdc_model():
             smoothness_loss_weight=0.0,
         ),
     )
+    model = runtime_builder.build_detector(cfg)
     model.frame_selector.scout = _ValueScout()
     model.frame_selector.budget_controller = _FixedBudget()
     return model
+
+
+def test_bh_sdc_build_detector_constructs_selector_bridge_projection_and_head_smoke():
+    model = _bh_sdc_model()
+
+    assert type(model.frame_selector).__name__ == "PCOTMRASBoundaryHazardSparseDenseFrameSelector"
+    assert type(model.token_compressor).__name__ == "PCOTMRASBoundaryHazardSparseToDenseBridge"
+    assert type(model.projection).__name__ == "IdentityProjection"
+    assert type(model.rpn_head).__name__ == "CapturingHead"
+
+    inputs = torch.arange(8, dtype=torch.float32).view(1, 1, 8)
+    masks = torch.ones(1, 8, dtype=torch.bool)
+    metas = [{"sample_id": "bh-sdc-build-detector"}]
+    gt_segments = [torch.tensor([[1.0, 6.0]])]
+    gt_labels = [torch.tensor([1])]
+
+    losses = model.forward_train(inputs, masks, metas=metas, gt_segments=gt_segments, gt_labels=gt_labels)
+
+    assert torch.isfinite(losses["cost"])
+    assert model.backbone.calls == [(4, [[True, True, True, True]])]
+    assert model.rpn_head.last_features.shape[-1] == 8
+    assert model.rpn_head.last_metas[0]["bh_sdc_completion"]["route_label"] == BH_SDC_ROUTE_LABEL
 
 
 def test_bh_sdc_actionformer_compacts_before_temporal_mixing_backbone_and_preserves_metadata():

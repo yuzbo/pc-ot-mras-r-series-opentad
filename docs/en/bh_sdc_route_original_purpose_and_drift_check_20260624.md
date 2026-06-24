@@ -62,45 +62,44 @@ This implementation is a full candidate model for the route, but the launch gate
 - `tests/test_bh_sdc_launcher_gate.py`
 - `docs/en/bh_sdc_n16r4_launch_gate_review_context_20260624.md`
 
-## N16R4 Launch-Gate Candidate Update
+## 2026-06-25 Owner Fix Status
 
-This branch now contains a separate launch-gate candidate commit for the same
-BH-SDC route. The base implementation commit
-`ae4354307d903f537e2be78723c39a3e19787f9b` passed the second GPT-5.5 Pro
-implementation review and the final read-only implementation review, but that
-base commit intentionally did not authorize remote sync, Slurm, GPU full
-training, direct detector evaluation, raw prediction cache use, or metric/paper
-claims.
+The 2026-06-24 Pro review rejected BH-SDC full training because the reviewed
+commit and gate provenance did not match, and because the sparse-to-dense bridge
+build path had not been proven at model-build level. This owner-fix branch now
+sets the route status to:
 
-The previous BH-SDC full-train candidate could not sync or train because its
-config, validator, and sbatch script were deliberately static-precheck only:
-`launch_gate_passed=false`, `allowed_entrypoints=()`, remote sync and Slurm
-flags were false, and the launcher requested no GPU and never called the train
-entrypoint. That state was correct for implementation review, but it was not an
-execution request.
+`FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO`
 
-The new launch-gate candidate introduces the decision string
-`ALLOW_BH_SDC_N16R4_SYNC_AND_FULL_TRAIN_CANDIDATE_V1`. It does not silently reuse
-the old implementation/precheck decision. The full-train config is now an
-entrypoint-gated train candidate: `tools/train.py` is the only allowed detector
-entrypoint, but `entrypoint_gate_context.required=true` means training still
-fails closed unless a separate launch gate JSON, JSON SHA256, active manifest
-SHA256, and resolved config SHA256 are all supplied and validated.
+The full-train candidate config is intentionally fail-closed again:
 
-The validator now rejects missing payloads, old precheck-only payloads, unknown
-keys, missing Pro/final review evidence, non-exact command whitelists, direct
-evaluation entrypoints, raw prediction caches, checkpoint/pretrain/resume
-shortcuts, and paper/runtime/deploy/metric claims before real results exist. A
-valid payload may authorize only these exact reviewed actions:
+- `launch_gate_passed=false`
+- `allowed_entrypoints=()`
+- `command_whitelist=()`
+- `allow_remote_sync=false`
+- `allow_slurm=false`
+- `allow_gpu=false`
+- `allow_tools_train=false`
+- `allow_full_train=false`
+- `allow_train_validation_map=false`
+- `allow_checkpoint_write=false`
+- `allow_precheck_only=true`
+- `reviewed_impl_commit=FOLLOWUP_PRO_REQUIRED_AFTER_BH_SDC_PRO_FIX`
 
-- `REMOTE_SYNC_TO_N16R4:~/run/yuzibo/OpenTAD_Back_check`
-- `sbatch scripts/run_bh_sdc_full_train_n16r4.sbatch`
-- `python tools/train.py configs/adatad/thumos/bh_sdc_boundary_hazard_sparse_dense_full_train_candidate_n16r4.py --id 0`
+`tools/bata/validate_bh_sdc_full_train_gate.py` now rejects every launch payload
+before payload-schema validation with a pending follow-up Pro error. No JSON
+payload, command whitelist, environment variable, or old review verdict can
+authorize remote sync, Slurm, `tools/train.py`, checkpoint writes, detector mAP,
+runtime/FLOPs claims, deploy claims, or paper claims from this state.
 
-This launch-gate commit itself still requires a new GPT-5 Pro / GPT-5.5 Pro
-review before any real N16R4 sync, Slurm submission, or full training. The
-required review context is summarized in
-`docs/en/bh_sdc_n16r4_launch_gate_review_context_20260624.md`.
+The real bridge build path is preserved through the unified OpenTAD model
+registry: `PCOTMRASBoundaryHazardSparseToDenseBridge` is implemented and
+registered in `opentad/models/selectors/bh_sdc_frame_selector.py`, imported by
+`opentad/models/selectors/__init__.py`, and built by ActionFormer through
+`build_token_compressor`. The focused build/forward smoke now constructs the
+full chain through `build_detector(dict(type="ActionFormer", ...))` and runs one
+no-data synthetic forward over selector, compact backbone, sparse-to-dense
+bridge, projection, and head.
 
 ## Owner-Fix Pro Blocking Repairs
 
@@ -165,13 +164,25 @@ The first Pro review returned `FIX_BEFORE_SUBAGENT_REVIEW`. The accepted blocker
 
 ## Local Verification Evidence
 
-Owner-fix verification:
+2026-06-25 owner-fix verification:
 
 ```powershell
-conda run -n torch_1 python -m pytest tests/test_bh_sdc_core.py tests/test_bh_sdc_config_gate.py tests/test_bh_sdc_actionformer_integration.py tests/test_bh_sdc_metadata_contract.py tests/test_bh_sdc_launcher_gate.py -q
+conda run -n torch_1 python -m pytest tests\test_bh_sdc_config_gate.py tests\test_bh_sdc_actionformer_integration.py tests\test_bh_sdc_core.py tests\test_bh_sdc_metadata_contract.py -q
 ```
 
-Result: `18 passed`.
+Result: `26 passed`.
+
+```powershell
+$files = Get-ChildItem -LiteralPath tests -Filter 'test_bh_sdc*.py' | ForEach-Object { $_.FullName }; conda run -n torch_1 python -m pytest @files -q
+```
+
+Result: `29 passed`.
+
+```powershell
+conda run -n torch_1 python -m pytest tests\test_bh_sdc_actionformer_integration.py::test_bh_sdc_build_detector_constructs_selector_bridge_projection_and_head_smoke -q
+```
+
+Result: `1 passed`.
 
 The validator and compile checks must be rerun on the exact final commit before
 second Pro review handoff.
