@@ -70,7 +70,7 @@ Key result:
 
 Timestamp: 2026-06-25 Asia/Shanghai
 
-Route: `DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3`
+Route: Event-Surprise urgent full-train inheritance fix.
 
 Status label: `FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO`
 
@@ -252,3 +252,69 @@ Green evidence collected during implementation:
 
 Final verification commands are recorded in the commit/task response for this
 stage. No metric or paper claim is derived from these local gates.
+
+## 2026-06-25 Full-Train Config Inheritance Blocker Fix
+
+Timestamp: 2026-06-25 18:22 +08:00
+
+Route: `DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3`
+
+Owned worktree:
+`E:\DeskTop\TAD\temrefuse-tad\OpenTAD_EventSurprise_ProFix_Worktree_20260625`
+
+Branch: `codex/event-surprise-pro-fix-20260625`
+
+Observed blocker:
+`tools/train.py configs/adatad/thumos/event_surprise_temporal_acquisition_full_train_candidate_n16r4.py`
+crashed on N16R4 with `AttributeError: 'ConfigDict' object has no attribute
+'dataset'` because the full-train candidate config only carried the
+Event-Surprise route/gate/model delta and did not inherit the THUMOS14
+AdaTAD/ActionFormer Adapter base.
+
+Fix:
+
+- `event_surprise_temporal_acquisition_local_precheck.py` now inherits
+  `./e2e_thumos_videomae_s_768x1_160_adapter.py`.
+- `event_surprise_temporal_acquisition_full_train_candidate_n16r4.py` now
+  inherits `./event_surprise_temporal_acquisition_local_precheck.py`.
+- The validator now requires the full-train candidate to resolve
+  `dataset.train/val/test`, `solver.train/val/test`, `model.type=ActionFormer`,
+  `VisionTransformerAdapter`, `ActionFormerHead`, and the Event-Surprise
+  `model.frame_selector`.
+- Local tests now assert the inheritance chain, base dataset/solver presence,
+  base Adapter/ActionFormer detector stack, route label, and selected length.
+- Event-Surprise launch manifests now include the inherited local/base
+  configs so the resolved full-train config hash is bound to the base stack.
+
+Protocol boundary:
+No non-Event divergent-route implementation token was added outside the
+existing forbidden-token check lists. No Pro, external advisory model, browser
+automation, remote sync, Slurm, training, evaluation, raw-prediction cache,
+mAP/runtime/deploy claim, or paper claim was invoked.
+
+Local verification:
+
+- `python -m pytest tests/test_event_surprise_config_gate.py -q`
+  -> `18 passed in 24.20s`.
+- `python tools/bata/validate_event_surprise_gate.py --config configs/adatad/thumos/event_surprise_temporal_acquisition_full_train_candidate_n16r4.py`
+  -> PASS.
+- `python -c "... Config.fromfile(...full_train_candidate...) ..."`
+  -> `Config.fromfile full Event-Surprise inheritance assertion PASS`.
+- `python tools/bata/validate_event_surprise_gate.py --config configs/adatad/thumos/event_surprise_temporal_acquisition_local_precheck.py`
+  -> PASS.
+- `python -m pytest tests/test_event_surprise_acquisition_route.py -q -rs`
+  -> skipped in default env because `torch` import was unavailable.
+- `conda run -n torch_1 python -m pytest tests/test_event_surprise_config_gate.py -q`
+  -> `18 passed in 29.28s`.
+- `conda run -n torch_1 python -m pytest tests/test_event_surprise_acquisition_route.py -q`
+  -> `16 passed in 8.21s`.
+- `conda run -n torch_1 python -c "... Config.fromfile(...full_train_candidate...) ..."`
+  -> `torch_1 Config.fromfile full Event-Surprise inheritance assertion PASS`.
+- `git diff --check`
+  -> PASS; only line-ending warnings from Windows Git were reported.
+
+Remaining risk:
+This is a local config/gate fix only. It does not prove remote dataset paths,
+GPU runtime, training stability, detector accuracy, runtime/FLOPs, deploy
+safety, or paper claims. Full training remains controlled by the existing
+external Event-Surprise full-train gate and coordinator/user launch procedure.

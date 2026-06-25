@@ -179,6 +179,10 @@ log "resolved_config_sha256=$RESOLVED_CONFIG_SHA256"
 log "writing active SHA256 manifest=$SHA_MANIFEST"
 sha256sum \
   "$FULL_CONFIG" \
+  configs/adatad/thumos/event_surprise_temporal_acquisition_local_precheck.py \
+  configs/adatad/thumos/e2e_thumos_videomae_s_768x1_160_adapter.py \
+  configs/_base_/datasets/thumos-14/e2e_train_trunc_test_sw_256x224x224.py \
+  configs/_base_/models/actionformer.py \
   "$VALIDATOR" \
   "$FULL_LAUNCHER" \
   "$PRECHECK_LAUNCHER" \

@@ -527,6 +527,27 @@ def validate_config(config_path: str | Path) -> dict[str, Any]:
     neck = _get(model, "neck")
     if isinstance(neck, Mapping):
         _require(_get(neck, "type") != "PCOTMRASDetectorBridge", "Event-Surprise route must not require PCOTMRASDetectorBridge")
+    if _get(gate, "full_train_candidate") is True:
+        dataset = _as_plain(getattr(cfg, "dataset", {}))
+        solver = _as_plain(getattr(cfg, "solver", {}))
+        _require(isinstance(dataset, Mapping), "full-train config must resolve dataset")
+        _require(isinstance(solver, Mapping), "full-train config must resolve solver")
+        for split in ("train", "val", "test"):
+            _require(isinstance(_get(dataset, split), Mapping), f"full-train dataset.{split} must be present")
+            _require(isinstance(_get(solver, split), Mapping), f"full-train solver.{split} must be present")
+        _require(_get(model, "type") == "ActionFormer", "full-train model must inherit ActionFormer")
+        _require(isinstance(_get(model, "backbone"), Mapping), "full-train model.backbone must be present")
+        backbone = _get(model, "backbone")
+        _require(_get(backbone, "type") == "mmaction.Recognizer3D", "full-train backbone wrapper mismatch")
+        backbone_inner = _get(backbone, "backbone")
+        _require(isinstance(backbone_inner, Mapping), "full-train adapter backbone must be present")
+        _require(
+            _get(backbone_inner, "type") == "VisionTransformerAdapter",
+            "full-train config must inherit the THUMOS AdaTAD VideoMAE Adapter backbone",
+        )
+        rpn_head = _get(model, "rpn_head")
+        _require(isinstance(rpn_head, Mapping), "full-train model.rpn_head must be present")
+        _require(_get(rpn_head, "type") == "ActionFormerHead", "full-train detector head must remain ActionFormerHead")
 
     inference = _as_plain(getattr(cfg, "inference", {}))
     _require(_get(inference, "load_from_raw_predictions") is False, "load_from_raw_predictions must be false")

@@ -1,3 +1,5 @@
+_base_ = ["./e2e_thumos_videomae_s_768x1_160_adapter.py"]
+
 variant_id = "EventSurpriseTemporalAcquisition-LocalPrecheck"
 route_label = "DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3"
 meta_key = "event_surprise_acquisition_plan"

@@ -230,6 +230,9 @@ log "writing active SHA256 manifest=$SHA_MANIFEST"
 sha256sum \
   "$PRECHECK_CONFIG" \
   "$FULL_CONFIG" \
+  configs/adatad/thumos/e2e_thumos_videomae_s_768x1_160_adapter.py \
+  configs/_base_/datasets/thumos-14/e2e_train_trunc_test_sw_256x224x224.py \
+  configs/_base_/models/actionformer.py \
   "$VALIDATOR" \
   scripts/run_event_surprise_temporal_acquisition_precheck_n16r4.sbatch \
   opentad/models/selectors/event_surprise_acquisition_route.py \

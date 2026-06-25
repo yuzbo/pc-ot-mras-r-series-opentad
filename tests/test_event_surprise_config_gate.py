@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT / "configs" / "adatad" / "thumos"
 LOCAL_CONFIG = CONFIG_DIR / "event_surprise_temporal_acquisition_local_precheck.py"
 FULL_CONFIG = CONFIG_DIR / "event_surprise_temporal_acquisition_full_train_candidate_n16r4.py"
+BASE_ADAPTER_CONFIG = CONFIG_DIR / "e2e_thumos_videomae_s_768x1_160_adapter.py"
 VALIDATOR = ROOT / "tools" / "bata" / "validate_event_surprise_gate.py"
 LAUNCHER = ROOT / "scripts" / "run_event_surprise_temporal_acquisition_precheck_n16r4.sbatch"
 FULL_LAUNCHER = ROOT / "scripts" / "run_event_surprise_temporal_acquisition_full_train_n16r4.sbatch"
@@ -152,7 +153,11 @@ def test_event_surprise_configs_are_fail_closed_and_do_not_contain_old_c3_tokens
     assert cfg.model.frame_selector.meta_key == "event_surprise_acquisition_plan"
     assert cfg.model.frame_selector.input_layout == "bct"
     assert cfg.model.frame_selector.remap_gt_to_selected_axis is True
-    assert "neck" not in cfg.model
+    assert cfg.model.type == "ActionFormer"
+    assert cfg.model.backbone.type == "mmaction.Recognizer3D"
+    assert cfg.model.backbone.backbone.type == "VisionTransformerAdapter"
+    assert cfg.model.rpn_head.type == "ActionFormerHead"
+    assert cfg.model.get("neck", {}).get("type") != "PCOTMRASDetectorBridge"
 
     assert gate.default_off is True
     assert gate.allow_remote_sync is False
@@ -229,6 +234,36 @@ def test_event_surprise_configs_are_fail_closed_and_do_not_contain_old_c3_tokens
     for token in FORBIDDEN_C3_TOKENS:
         assert token not in text
         assert token not in resolved_text
+
+
+def test_event_surprise_full_train_resolves_base_dataset_solver_and_selector():
+    local_text = LOCAL_CONFIG.read_text(encoding="utf-8")
+    full_text = FULL_CONFIG.read_text(encoding="utf-8")
+
+    assert '_base_ = ["./e2e_thumos_videomae_s_768x1_160_adapter.py"]' in local_text
+    assert '_base_ = ["./event_surprise_temporal_acquisition_local_precheck.py"]' in full_text
+
+    cfg = mmengine_config.Config.fromfile(str(FULL_CONFIG))
+    base_cfg = mmengine_config.Config.fromfile(str(BASE_ADAPTER_CONFIG))
+
+    for split in ("train", "val", "test"):
+        assert split in cfg.dataset
+        assert split in cfg.solver
+        assert cfg.dataset[split].pipeline
+        assert cfg.dataset[split].pipeline == base_cfg.dataset[split].pipeline
+
+    assert cfg.solver.train.batch_size == base_cfg.solver.train.batch_size
+    assert cfg.solver.val.batch_size == base_cfg.solver.val.batch_size
+    assert cfg.solver.test.batch_size == base_cfg.solver.test.batch_size
+    assert cfg.model.type == "ActionFormer"
+    assert cfg.model.backbone.backbone.type == "VisionTransformerAdapter"
+    assert cfg.model.rpn_head.type == "ActionFormerHead"
+    assert cfg.model.frame_selector.type == "EventSurpriseTemporalAcquisitionSelector"
+    assert cfg.model.frame_selector.route_label == "DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3"
+    assert cfg.model.frame_selector.target_len == 384
+    assert cfg.event_surprise_acquisition_gate.route_label == "DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3"
+    assert cfg.event_surprise_acquisition_gate.allow_tools_train is True
+    assert cfg.event_surprise_acquisition_gate.allow_tools_test is False
 
 
 def test_event_surprise_gate_validator_accepts_locked_configs():

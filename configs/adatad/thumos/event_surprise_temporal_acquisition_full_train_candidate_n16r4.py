@@ -1,3 +1,5 @@
+_base_ = ["./event_surprise_temporal_acquisition_local_precheck.py"]
+
 variant_id = "EventSurpriseTemporalAcquisition-FailClosedFullTrainCandidate"
 route_label = "DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3"
 route_id = "event_surprise_temporal_acquisition_full_train_candidate_n16r4"
