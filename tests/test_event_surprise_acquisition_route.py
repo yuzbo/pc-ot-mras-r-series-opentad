@@ -430,7 +430,7 @@ def test_5d_preview_is_marked_as_loaded_dense_prototype_without_compute_saving_c
     assert flags["runtime_flops_claim_allowed"] is False
 
 
-def test_6d_single_clip_raw_inputs_preserve_temporal_axis_and_metadata():
+def test_6d_single_clip_raw_inputs_keep_dense_backbone_temporal_contract_and_metadata():
     module, _registry = _load_event_module()
     selector = module.EventSurpriseTemporalAcquisitionSelector(
         in_dim=3,
@@ -464,19 +464,45 @@ def test_6d_single_clip_raw_inputs_preserve_temporal_axis_and_metadata():
         gt_labels=gt_labels,
     )
 
-    assert out["inputs"].shape == (2, 1, 3, 6, 2, 2)
-    assert out["masks"].shape == (2, 6)
+    assert out["inputs"].shape == inputs.shape
+    assert torch.equal(out["inputs"], inputs)
+    assert torch.equal(out["masks"], masks)
     assert out["masks"].dtype == torch.bool
-    assert out["gt_segments"][0].shape == (1, 2)
+    assert torch.equal(out["gt_segments"][0], gt_segments[0])
+    assert torch.equal(out["gt_segments"][1], gt_segments[1])
+    assert torch.equal(out["gt_labels"][0], gt_labels[0])
+    assert torch.equal(out["gt_labels"][1], gt_labels[1])
+    assert out["event_surprise_selector_outputs"]["detector_input_axis"] == "dense_window"
+    assert out["event_surprise_selector_outputs"]["selected_axis_predictions_require_mapping"] is False
     for batch_idx, meta in enumerate(out["metas"]):
         selected = out["event_surprise_selector_outputs"]["selected_dense_indices"][batch_idx]
         count = int(out["event_surprise_selector_outputs"]["selected_mask"][batch_idx].sum().item())
         selected_prefix = selected[:count]
-        assert torch.equal(out["inputs"][batch_idx, 0, 0, :count, 0, 0], selected_prefix.to(dtype=inputs.dtype))
         assert meta["event_surprise_selected_dense_indices"] == selected_prefix.tolist()
         assert meta["irregular_selected_positions"] == [float(item) for item in selected_prefix.tolist()]
+        assert meta["event_surprise_remap_gt_to_selected_axis"] is False
         assert meta["event_surprise_protocol_flags"]["preview_feature_source"] == "loaded_dense_detector_input_prototype"
+        assert meta["event_surprise_protocol_flags"]["detector_input_axis"] == "dense_window"
+        assert meta["event_surprise_inference_mapping"]["selected_axis_to_dense_axis"] is False
+        assert meta["event_surprise_inference_mapping"]["input_axis"] == "dense_window"
         assert meta["event_surprise_acquisition_plan"]["selected_count"] == count
+        assert meta["event_surprise_acquisition_plan"]["remap_gt_to_selected_axis"] is False
+
+    dense_axis_proposals = [
+        torch.tensor([[1.0, 3.0], [4.0, 8.0]], dtype=torch.float32),
+        torch.tensor([[0.5, 6.0]], dtype=torch.float32),
+    ]
+    mapped = selector.map_selected_axis_predictions_to_dense_axis(
+        dense_axis_proposals,
+        out["event_surprise_selector_outputs"],
+        out["metas"],
+    )
+
+    for original, mapped_proposal in zip(dense_axis_proposals, mapped):
+        assert torch.equal(mapped_proposal, original)
+    for meta in out["metas"]:
+        assert meta["event_surprise_inference_mapping"]["mapping_applied"] is False
+        assert meta["event_surprise_inference_mapping"]["mapping_skipped_reason"] == "dense_detector_axis"
 
 
 def test_6d_multi_clip_raw_inputs_fail_closed_until_flattening_semantics_are_defined():

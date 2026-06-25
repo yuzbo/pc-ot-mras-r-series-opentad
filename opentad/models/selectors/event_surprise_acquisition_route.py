@@ -649,6 +649,8 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
         selector_outputs: Mapping[str, Any],
         *,
         preview_feature_source: str,
+        detector_input_axis: str = "selected_detector_axis",
+        selected_axis_predictions_require_mapping: bool = True,
     ) -> list[dict[str, Any]]:
         indices = selector_outputs["selected_dense_indices"].detach().cpu()
         selected_mask = selector_outputs["selected_mask"].detach().cpu()
@@ -667,6 +669,7 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
             count = int(selected_mask[batch_idx].long().sum().item())
             prefix_indices = [int(item) for item in indices[batch_idx, :count].tolist()]
             prefix_times = [float(item) for item in selected_times[batch_idx, :count].tolist()]
+            remap_gt_to_selected_axis = bool(self.remap_gt_to_selected_axis and selected_axis_predictions_require_mapping)
             score_payload = {}
             for key in score_keys:
                 dense_scores = selector_outputs.get(key)
@@ -683,7 +686,7 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
             meta["event_surprise_selected_dense_indices"] = prefix_indices
             meta["event_surprise_selected_times"] = prefix_times
             meta["event_surprise_selected_scores"] = score_payload
-            meta["event_surprise_remap_gt_to_selected_axis"] = bool(self.remap_gt_to_selected_axis)
+            meta["event_surprise_remap_gt_to_selected_axis"] = remap_gt_to_selected_axis
             meta["event_surprise_protocol_flags"] = {
                 "uses_deploy_visible_inputs_only": True,
                 "uses_test_gt": False,
@@ -692,14 +695,19 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
                 "uses_raw_prediction_cache": False,
                 "route_isolated_from_c3": True,
                 "preview_feature_source": preview_feature_source,
+                "detector_input_axis": detector_input_axis,
                 "decode_saving_claim_allowed": False,
                 "runtime_flops_claim_allowed": False,
             }
             meta["event_surprise_inference_mapping"] = {
-                "selected_axis_to_dense_axis": True,
-                "input_axis": "selected_detector_axis",
+                "selected_axis_to_dense_axis": bool(selected_axis_predictions_require_mapping),
+                "input_axis": detector_input_axis,
                 "output_axis": "dense_window",
-                "interpolation": "piecewise_linear_selected_slots_to_dense_indices",
+                "interpolation": (
+                    "piecewise_linear_selected_slots_to_dense_indices"
+                    if selected_axis_predictions_require_mapping
+                    else "none_dense_detector_axis"
+                ),
                 "mapping_applied": False,
             }
             meta[self.meta_key] = {
@@ -710,12 +718,13 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
                 "target_len": self.target_len,
                 "max_gap": self.max_gap,
                 "coverage_anchor_count": self.coverage_anchor_count,
-                "remap_gt_to_selected_axis": bool(self.remap_gt_to_selected_axis),
+                "remap_gt_to_selected_axis": remap_gt_to_selected_axis,
                 "uses_test_gt": False,
                 "uses_oracle": False,
                 "uses_teacher": False,
                 "uses_raw_prediction_cache": False,
-                "selected_axis_to_dense_axis_inference": True,
+                "detector_input_axis": detector_input_axis,
+                "selected_axis_to_dense_axis_inference": bool(selected_axis_predictions_require_mapping),
                 "decode_saving_claim_allowed": False,
                 "runtime_flops_claim_allowed": False,
             }
@@ -840,14 +849,25 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
     ) -> list[torch.Tensor]:
         if not isinstance(proposals, (list, tuple)):
             raise TypeError("proposals must be a list/tuple of tensors")
+        if metas is not None and len(metas) != len(proposals):
+            raise ValueError("metas batch size must match proposals")
+        mapping_required = bool(selector_outputs.get("selected_axis_predictions_require_mapping", True))
+        if not mapping_required:
+            if metas is not None:
+                for batch_idx, meta in enumerate(metas):
+                    if not isinstance(meta, Mapping):
+                        raise ValueError(f"metas[{batch_idx}] must be a mapping")
+                    mapping = meta.get("event_surprise_inference_mapping")
+                    if isinstance(mapping, dict):
+                        mapping["mapping_applied"] = False
+                        mapping["mapping_skipped_reason"] = "dense_detector_axis"
+            return list(proposals)
         indices = selector_outputs.get("selected_dense_indices")
         selected_mask = selector_outputs.get("selected_mask")
         if not torch.is_tensor(indices) or not torch.is_tensor(selected_mask):
             raise ValueError("selector_outputs must contain selected_dense_indices and selected_mask tensors")
         if len(proposals) != int(indices.shape[0]):
             raise ValueError("proposal batch size must match selector outputs")
-        if metas is not None and len(metas) != len(proposals):
-            raise ValueError("metas batch size must match proposals")
 
         mapped: list[torch.Tensor] = []
         for batch_idx, proposal in enumerate(proposals):
@@ -889,31 +909,45 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
         valid, coords = self._validate_inputs(features, masks.to(device=features.device), time_coords)
         scores = self._event_scores(features, valid)
         selector_outputs = self._build_outputs(features, valid, coords, scores)
-        selected_inputs = self._gather_detector_inputs(
-            inputs,
-            selector_outputs["selected_dense_indices"],
-            selector_outputs["selected_mask"],
-            layout,
-        )
+        dense_raw_backbone_handoff = layout == "bncthw"
+        selected_axis_predictions_require_mapping = not dense_raw_backbone_handoff
+        selector_outputs["detector_input_axis"] = "dense_window" if dense_raw_backbone_handoff else "selected_detector_axis"
+        selector_outputs["selected_axis_predictions_require_mapping"] = selected_axis_predictions_require_mapping
+        if dense_raw_backbone_handoff:
+            selected_inputs = inputs
+            detector_masks = valid.to(device=masks.device)
+        else:
+            selected_inputs = self._gather_detector_inputs(
+                inputs,
+                selector_outputs["selected_dense_indices"],
+                selector_outputs["selected_mask"],
+                layout,
+            )
+            detector_masks = selector_outputs["selected_mask"].to(device=masks.device)
         output_metas = self._write_detector_metas(
             metas,
             selector_outputs,
             preview_feature_source=preview_feature_source,
+            detector_input_axis=selector_outputs["detector_input_axis"],
+            selected_axis_predictions_require_mapping=selected_axis_predictions_require_mapping,
         )
         detector_outputs: dict[str, Any] = {
             "inputs": selected_inputs,
-            "masks": selector_outputs["selected_mask"].to(device=masks.device),
+            "masks": detector_masks,
             "metas": output_metas,
             "losses": {},
             "event_surprise_selector_outputs": selector_outputs,
         }
         if str(mode) not in {"test", "predict", "eval"}:
-            new_gt_segments, new_gt_labels = self._remap_gt_batch(
-                gt_segments,
-                gt_labels,
-                selector_outputs["selected_dense_indices"],
-                selector_outputs["selected_mask"],
-            )
+            if selected_axis_predictions_require_mapping:
+                new_gt_segments, new_gt_labels = self._remap_gt_batch(
+                    gt_segments,
+                    gt_labels,
+                    selector_outputs["selected_dense_indices"],
+                    selector_outputs["selected_mask"],
+                )
+            else:
+                new_gt_segments, new_gt_labels = gt_segments, gt_labels
             detector_outputs["gt_segments"] = new_gt_segments
             detector_outputs["gt_labels"] = new_gt_labels
         return detector_outputs
