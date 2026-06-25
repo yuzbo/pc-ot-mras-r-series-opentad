@@ -299,6 +299,9 @@ class ActionFormer(SingleStageDetector):
                 elif pn.endswith("query_embed"):
                     # learned slot/query embeddings should not receive weight decay
                     no_decay.add(fpn)
+                elif pn.endswith("slot_queries"):
+                    # pre-backbone selector reader slot queries are learned embeddings
+                    no_decay.add(fpn)
 
         # validate that we considered every parameter
         param_dict = {pn: p for pn, p in self.named_parameters() if not pn.startswith("backbone") and p.requires_grad}

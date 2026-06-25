@@ -161,6 +161,7 @@ def test_physical_grid_full_train_selector_runtime_builds_when_torch_is_availabl
 def test_physical_grid_full_train_config_identity_and_guard_contract(tmp_path, monkeypatch):
     mmengine_config = pytest.importorskip("mmengine.config")
     guard = _load_module(GUARD, "training_guard_for_c3_physical_grid_full_train_test")
+    monkeypatch.delenv("PC_OT_MRAS_PREBACKBONE_C3_PRETRAINED_PATH", raising=False)
     cfg = mmengine_config.Config.fromfile(str(CONFIG))
 
     assert cfg.variant_id == VARIANT_ID
@@ -338,6 +339,14 @@ def test_physical_grid_full_train_launcher_and_validator_static_no_forbidden_rou
         "save_raw_prediction=True",
     ):
         assert token not in lower
+
+
+def test_actionformer_optimizer_groups_cover_prebackbone_slot_queries():
+    text = (ROOT / "opentad" / "models" / "detectors" / "actionformer.py").read_text(encoding="utf-8")
+
+    assert 'pn.endswith("query_embed")' in text
+    assert 'pn.endswith("slot_queries")' in text
+    assert "pre-backbone selector reader slot queries" in text
 
 
 def test_physical_grid_full_train_runtime_dependencies_are_present_and_c3_mainline_only():
