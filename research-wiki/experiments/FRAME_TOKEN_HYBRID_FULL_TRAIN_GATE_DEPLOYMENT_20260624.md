@@ -354,3 +354,94 @@ PASS: 33 passed, 1 skipped in 42.04s.
 C:/Users/skywalker/.conda/envs/torch_1/python.exe -m pytest tests/test_pc_ot_mras_p2_quality_formal_train_candidate.py tests/test_pc_ot_mras_p2_quality_short_smoke_execution_candidate.py tests/test_pc_ot_mras_r17_formal_train_config.py tests/test_pc_ot_mras_r18_aux_formal_train_config.py tests/test_pc_ot_mras_r35_actionformer_head_formal_train_config.py tests/test_pc_ot_mras_r17_r18_post_train_eval_gate.py tests/test_pc_ot_mras_local_lowmem_eval_config.py -q
 PASS: 74 passed in 6.15s.
 ```
+
+## Full-Train Launcher Env Isolation Fix
+
+Timestamp: 2026-06-25T10:58:24+08:00
+
+Status:
+`FIXED_LOCALLY_PENDING_MAIN_PROCESS_SYNC_REDEPLOY`
+
+Scope:
+
+- Owned worktree:
+  `E:/DeskTop/TAD/temrefuse-tad/OpenTAD_FrameToken_ProFix_Worktree_20260625`
+- Owned branch:
+  `codex/frame-token-pro-fix-20260625`
+- Route label:
+  `DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3`
+- External Pro/Gemini/Claude review was not run per explicit user instruction
+  for this narrow launcher repair.
+- No C3, BH-SDC, shared-worktree, remote sync, Slurm, or `tools/test.py` action
+  was performed.
+
+Root cause:
+
+- The full-train launcher generated and exported/used formal full-train gate
+  context in the same process that later ran
+  `tests/test_frame_token_hybrid_config_gate.py`.
+- When the Slurm submission supplied
+  `FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_JSON`,
+  `FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_SHA256`, and `RUN_TAG`, the pytest
+  subprocess inherited those variables.
+- The unit case that must prove "missing gate env fails closed" was therefore
+  polluted and failed with `Failed: DID NOT RAISE RuntimeError`; training never
+  reached iteration.
+
+Fix:
+
+- `scripts/run_frame_token_hybrid_acquisition_full_train_n16r4.sbatch` now runs
+  its focused config-gate pytest through an isolated `env -u` subprocess.
+- The isolated self-test clears:
+  `ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN`,
+  `FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_JSON`,
+  `FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_SHA256`,
+  `FRAME_TOKEN_HYBRID_ACTIVE_MANIFEST_SHA256`,
+  `FRAME_TOKEN_HYBRID_RESOLVED_CONFIG_SHA256`, and `RUN_TAG`.
+- The parent launcher process does not unset those variables, so after
+  full-train gate validation it still exports the gate JSON/SHA and launches
+  `tools/train.py` with the bound gate context.
+- `tests/test_frame_token_hybrid_config_gate.py` now contains explicit launcher
+  coverage that the self-test is env-isolated before train while the train
+  invocation remains after the gate exports.
+
+Changed files in this repair:
+
+- `scripts/run_frame_token_hybrid_acquisition_full_train_n16r4.sbatch`
+- `tests/test_frame_token_hybrid_config_gate.py`
+- `research-wiki/experiments/FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_DEPLOYMENT_20260624.md`
+
+Verification:
+
+```text
+python -m pytest tests/test_frame_token_hybrid_config_gate.py::test_frame_token_hybrid_full_train_launcher_isolates_self_test_env_before_train -q
+RED before launcher fix: failed on missing `env -u` isolation.
+
+python -m pytest tests/test_frame_token_hybrid_config_gate.py::test_frame_token_hybrid_full_train_launcher_isolates_self_test_env_before_train -q
+PASS: 1 passed in 0.01s.
+
+python -m pytest tests/test_frame_token_hybrid_config_gate.py -q
+PASS: 18 passed in 2.67s.
+
+python -m pytest tests/test_frame_token_hybrid_config_gate.py tests/test_frame_token_hybrid_acquisition_route.py tests/test_frame_token_hybrid_actionformer_integration.py tests/test_frame_token_hybrid_metadata_contract.py tests/test_frame_token_hybrid_build_forward_smoke.py -q
+PASS: 19 passed, 16 skipped in 27.21s.
+NOTE: local Windows torch DLL initialization printed a fatal-exception trace
+inside a skipped/smoke path, but pytest exited 0.
+
+python -m py_compile tests/test_frame_token_hybrid_config_gate.py tools/bata/validate_frame_token_hybrid_gate.py configs/adatad/thumos/frame_token_hybrid_acquisition_local_precheck.py configs/adatad/thumos/frame_token_hybrid_acquisition_full_train_candidate_n16r4.py opentad/models/selectors/frame_token_hybrid_acquisition_route.py
+PASS.
+
+(Get-Content -Raw scripts/run_frame_token_hybrid_acquisition_full_train_n16r4.sbatch) -replace "`r`n", "`n" | bash -n -
+PASS.
+
+git diff --check
+PASS.
+```
+
+Launch decision:
+
+- Local fix status: `PASS`.
+- Allowed next action: main process may push/sync/redeploy this branch's commit
+  for the Frame/Token Hybrid full-train launcher repair.
+- Still locked in this owner turn: no direct push, no remote sync, no Slurm
+  submission, no `tools/test.py`, no mAP/runtime/FLOPs/paper claim.

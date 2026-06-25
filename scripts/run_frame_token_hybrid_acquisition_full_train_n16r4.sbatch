@@ -292,7 +292,15 @@ PRECHECK_GATE_SHA256="$(sha256sum "$PRECHECK_GATE_JSON" | awk '{print $1}')"
   --dense-window-size 768 \
   --target-dense-len 768
 
-"$PYTHON" -m pytest "$CONFIG_TEST" -q
+log "running focused config-gate pytest with full-train gate env isolated"
+env \
+  -u ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN \
+  -u FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_JSON \
+  -u FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_SHA256 \
+  -u FRAME_TOKEN_HYBRID_ACTIVE_MANIFEST_SHA256 \
+  -u FRAME_TOKEN_HYBRID_RESOLVED_CONFIG_SHA256 \
+  -u RUN_TAG \
+  "$PYTHON" -m pytest "$CONFIG_TEST" -q
 
 if [ "$PRECHECK_ONLY" = "1" ]; then
   write_summary "PASS" "FRAME_TOKEN_HYBRID_PRECHECK_ONLY_PASS_NO_TRAIN" "PRECHECK_ONLY=1; manifest/config/gate/tests passed; no training command executed"

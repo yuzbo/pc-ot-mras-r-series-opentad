@@ -595,3 +595,26 @@ def test_frame_token_hybrid_n16r4_full_train_launcher_is_locked_by_default_and_g
     assert "tools/train.py" in text
     assert "PRECHECK_ONLY=0 requires ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN=1" in text
     assert "tools/test.py" not in text
+
+
+def test_frame_token_hybrid_full_train_launcher_isolates_self_test_env_before_train():
+    text = N16R4_FULL_TRAIN_LAUNCHER.read_text(encoding="utf-8")
+
+    pytest_idx = text.index('-m pytest "$CONFIG_TEST" -q')
+    train_idx = text.index('"$PYTHON" tools/train.py "$CONFIG" --id "$TRAIN_ID"')
+    full_gate_export_idx = text.index("export FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_JSON")
+    run_tag_export_idx = text.index("export RUN_TAG")
+
+    assert pytest_idx < train_idx
+    assert full_gate_export_idx < train_idx
+    assert run_tag_export_idx < train_idx
+    assert 'env \\' in text[: pytest_idx + 200]
+    for env_name in (
+        "ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN",
+        "FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_JSON",
+        "FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_SHA256",
+        "FRAME_TOKEN_HYBRID_ACTIVE_MANIFEST_SHA256",
+        "FRAME_TOKEN_HYBRID_RESOLVED_CONFIG_SHA256",
+        "RUN_TAG",
+    ):
+        assert f"-u {env_name}" in text[: pytest_idx + 2000]
