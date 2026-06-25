@@ -181,6 +181,7 @@ class AnchorFreeHead(nn.Module):
             for level_idx, base_point in enumerate(points):
                 point = base_point.clone()
                 selected_center = point[:, 0].to(dtype=base_dtype, device=base_device)
+                slot_ordinal = torch.arange(point.shape[0], dtype=base_dtype, device=base_device)
                 nominal_stride = point[:, 3].to(dtype=base_dtype, device=base_device).clamp(min=self.physical_grid_eps)
                 physical_center = self._selected_axis_to_physical_axis(selected_center, positions, dense_valid_len)
                 physical_prev = self._selected_axis_to_physical_axis(
@@ -204,7 +205,7 @@ class AnchorFreeHead(nn.Module):
                 if kept.any():
                     kept_centers = physical_center[kept]
                     debug_centers.append(kept_centers.detach())
-                    debug_axis_delta.append((kept_centers - selected_center[kept]).abs().detach())
+                    debug_axis_delta.append((kept_centers - slot_ordinal[kept]).abs().detach())
                     valid_points_total += int(kept.sum().item())
 
         physical_points = [torch.stack(level_points, dim=0) for level_points in physical_points]
@@ -218,6 +219,7 @@ class AnchorFreeHead(nn.Module):
                 "physical_grid_actionformer_dense_valid_len_max": float(debug_dense_valid_len),
                 "physical_grid_actionformer_center_min": float(centers.min().item()),
                 "physical_grid_actionformer_center_max": float(centers.max().item()),
+                "physical_grid_actionformer_axis_delta_reference": "selected_slot_ordinal",
                 "physical_grid_actionformer_axis_delta_mean": float(axis_delta.mean().item()),
                 "physical_grid_actionformer_axis_delta_max": float(axis_delta.max().item()),
             }

@@ -316,6 +316,7 @@ def test_physical_grid_training_assignment_uses_physical_dense_centers():
     assert debug["physical_grid_actionformer_valid_points"] == 3
     assert debug["physical_grid_actionformer_center_min"] == 0.0
     assert debug["physical_grid_actionformer_center_max"] == 5.0
+    assert debug["physical_grid_actionformer_axis_delta_reference"] == "selected_slot_ordinal"
     assert debug["physical_grid_actionformer_axis_delta_max"] == 3.0
 
 
@@ -477,6 +478,9 @@ def test_c3_physical_grid_static_source_contracts_when_torch_is_unavailable():
     assert "slot_index = torch.arange(point.shape[0], device=base_device)" in head
     assert "level_valid = slot_index < int(selected_count)" in head
     assert "level_valid = physical_center <" not in head
+    assert '"physical_grid_actionformer_axis_delta_reference": "selected_slot_ordinal"' in head
+    assert "debug_axis_delta.append((kept_centers - selected_center[kept]).abs().detach())" not in head
+    assert "debug_axis_delta.append((kept_centers - slot_ordinal[kept]).abs().detach())" in head
     selected_count_fn = head.split("def _physical_selected_count_from_meta", 1)[1].split(
         "def _physical_positions_from_meta", 1
     )[0]
