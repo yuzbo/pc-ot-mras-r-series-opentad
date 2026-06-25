@@ -867,6 +867,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         straight_through_downstream: bool | None = None,
         remap_gt_to_selected_axis: bool = True,
         aux_gt_acquisition_loss_weight: float = 0.05,
+        aux_frame_score_boundary_loss_weight: float = 0.0,
         aux_duplicate_cap_loss_weight: float = 0.001,
         aux_duplicate_column_cap: float = 1.5,
         aux_value_loss_weight: float = 0.0,
@@ -972,6 +973,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         self.straight_through_detector_loss = self.straight_through_downstream
         self.remap_gt_to_selected_axis = bool(remap_gt_to_selected_axis)
         self.aux_gt_acquisition_loss_weight = float(aux_gt_acquisition_loss_weight)
+        self.aux_frame_score_boundary_loss_weight = float(aux_frame_score_boundary_loss_weight)
         self.aux_duplicate_cap_loss_weight = float(aux_duplicate_cap_loss_weight)
         self.aux_duplicate_column_cap = float(aux_duplicate_column_cap)
         self.aux_value_loss_weight = float(aux_value_loss_weight)
@@ -1016,6 +1018,8 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             raise ValueError("frame_score_st_gradient_scale must be in [0, 1]")
         if float(frame_score_aux_logit_clamp) < 0.0:
             raise ValueError("frame_score_aux_logit_clamp must be non-negative")
+        if float(aux_frame_score_boundary_loss_weight) < 0.0:
+            raise ValueError("aux_frame_score_boundary_loss_weight must be non-negative")
         if global_rank_st_temperature is None:
             global_rank_st_temperature = float(frame_score_st_temperature)
         if float(global_rank_st_temperature) <= 0.0:
@@ -3290,7 +3294,33 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             )
             _require_finite(frame_score_loss, "selector gt frame score loss")
             losses["selector_gt_frame_score_loss"] = frame_score_loss
-        elif matrix is not None and self.aux_gt_acquisition_loss_weight > 0.0 and bool(valid.any().item()):
+        if (
+            getattr(self, "selection_strategy", "slot_transport") in (
+                "frame_score_topk",
+                "frame_score_global_rank_st",
+            )
+            and frame_selection_logits is not None
+            and getattr(self, "aux_frame_score_boundary_loss_weight", 0.0) > 0.0
+            and bool(valid.any().item())
+        ):
+            aux_frame_boundary_logits = _smooth_clamp_logits(
+                frame_selection_logits.float(),
+                float(getattr(self, "frame_score_aux_logit_clamp", 0.0)),
+                "selector gt frame boundary score logits",
+            )
+            frame_boundary_loss = (
+                F.binary_cross_entropy_with_logits(aux_frame_boundary_logits[valid], boundary_target[valid])
+                * self.aux_frame_score_boundary_loss_weight
+            )
+            _require_finite(frame_boundary_loss, "selector gt frame boundary score loss")
+            losses["selector_gt_frame_boundary_score_loss"] = frame_boundary_loss
+        if (
+            matrix is not None
+            and getattr(self, "selection_strategy", "slot_transport")
+            not in ("frame_score_topk", "frame_score_global_rank_st")
+            and self.aux_gt_acquisition_loss_weight > 0.0
+            and bool(valid.any().item())
+        ):
             slot_prob = matrix.float().masked_fill(~valid[:, None, :], 0.0).clamp(min=0.0, max=1.0)
             _require_finite(slot_prob, "selector acquisition probabilities")
             eps = 1.0e-6
