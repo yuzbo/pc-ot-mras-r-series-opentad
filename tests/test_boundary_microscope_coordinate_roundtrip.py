@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -21,7 +22,22 @@ class _Registry:
 
 
 def _import_torch_or_skip():
-    return pytest.importorskip("torch", reason="Boundary microscope coordinate smoke requires torch")
+    probe = subprocess.run(
+        [sys.executable, "-c", "import torch"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if probe.returncode != 0:
+        detail = probe.stderr.strip().splitlines()[-1] if probe.stderr.strip() else f"exit {probe.returncode}"
+        pytest.skip(f"torch unavailable in this process: {detail}")
+    try:
+        import torch
+    except Exception as exc:  # pragma: no cover - depends on local DLL state.
+        pytest.skip(f"torch unavailable in this process: {exc}")
+    return torch
 
 
 def _ensure_package(name: str, path: Path):
@@ -136,6 +152,11 @@ def test_boundary_microscope_physical_grid_head_uses_selected_dense_positions_fo
     selected_mask = selected_outputs["masks"]
     selected_len = int(selected_mask.sum().item())
     assert selected_len == selected_positions.numel()
+    assert selected_len <= selected_outputs["selected_positions"].shape[1]
+    assert selected_meta["boundary_microscope_detector_input_positions"] == selected_outputs[
+        "selected_positions"
+    ][0].tolist()
+    assert selected_meta["boundary_microscope_true_observation_positions"] == selected_positions.tolist()
     assert 8.0 in selected_positions.tolist()
     assert 22.0 in selected_positions.tolist()
 
@@ -147,17 +168,27 @@ def test_boundary_microscope_physical_grid_head_uses_selected_dense_positions_fo
     head.temporal_grid_strict = True
     head.prior_generator = types.SimpleNamespace(regression_range=[(0, 10000)])
 
-    feat_list = (torch.zeros((1, 4, selected_len), dtype=torch.float32),)
+    output_len = int(selected_outputs["inputs"].shape[2])
+    assert output_len == 32
+    assert selected_mask.shape == (1, output_len)
+    assert selected_mask[0, :selected_len].all()
+    assert not selected_mask[0, selected_len:].any()
+
+    feat_list = (torch.zeros((1, 4, output_len), dtype=torch.float32),)
     mask_list = (selected_mask,)
     points = head._points_for_feature_geometry(feat_list, mask_list, metas=selected_outputs["metas"], mark_native_axis=True)
 
     assert selected_meta["irregular_native_axis"] is True
     assert selected_meta["physical_grid_actionformer"] is True
-    assert torch.equal(points[0][0, :, 0], selected_positions)
+    assert torch.equal(points[0][0, :selected_len, 0], selected_positions)
+    assert torch.equal(
+        points[0][0, selected_len:, 0],
+        torch.full((output_len - selected_len,), float(selected_positions[-1])),
+    )
 
     start_slot = int((selected_positions == 8.0).nonzero(as_tuple=True)[0][0].item())
     stride = points[0][0, start_slot, 3].clamp_min(1.0e-4)
-    reg_pred = [torch.zeros((1, 2, selected_len), dtype=torch.float32)]
+    reg_pred = [torch.zeros((1, 2, output_len), dtype=torch.float32)]
     reg_pred[0][0, 1, start_slot] = (22.0 - 8.0) / stride
     proposals = head.get_refined_proposals(points, reg_pred)
 

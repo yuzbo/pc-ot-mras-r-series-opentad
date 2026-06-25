@@ -204,13 +204,13 @@ class BoundaryMicroscopeAcquisitionRoute(nn.Module):
             )
             for idx in range(layout.batch)
         ]
-        max_selected = max(len(plan["indices"]) for plan in plans)
-        gather_indices = torch.zeros((layout.batch, max_selected), dtype=torch.long, device=inputs.device)
-        selected_masks = torch.zeros((layout.batch, max_selected), dtype=torch.bool, device=inputs.device)
+        gather_len = self.target_len
+        gather_indices = torch.zeros((layout.batch, gather_len), dtype=torch.long, device=inputs.device)
+        selected_masks = torch.zeros((layout.batch, gather_len), dtype=torch.bool, device=inputs.device)
         for idx, plan in enumerate(plans):
             selected = torch.tensor(plan["indices"], dtype=torch.long, device=inputs.device)
             gather_indices[idx, : selected.numel()] = selected
-            if selected.numel() < max_selected:
+            if selected.numel() < gather_len:
                 gather_indices[idx, selected.numel() :] = selected[-1]
             selected_masks[idx, : selected.numel()] = True
 
@@ -416,8 +416,15 @@ class BoundaryMicroscopeAcquisitionRoute(nn.Module):
             item = dict(meta)
             indices = [int(pos) for pos in plan["indices"]]
             roles = [str(role) for role in plan["roles"]]
+            padded_indices = indices + [indices[-1]] * (int(self.target_len) - len(indices))
             item["boundary_microscope_selected_dense_indices"] = indices
             item["boundary_microscope_selected_roles"] = roles
+            item["boundary_microscope_raw_input_temporal_len"] = int(self.target_len)
+            item["boundary_microscope_padding_count"] = int(self.target_len - len(indices))
+            item["boundary_microscope_padding_dense_index"] = int(indices[-1])
+            item["boundary_microscope_padding_slots_are_invalid"] = True
+            item["boundary_microscope_true_observation_positions"] = [float(pos) for pos in indices]
+            item["boundary_microscope_detector_input_positions"] = [float(pos) for pos in padded_indices]
             item["irregular_selected_positions"] = [float(pos) for pos in indices]
             item["irregular_selected_output_valid_len"] = float(len(indices))
             item["irregular_selected_valid_len"] = float(plan["valid_len"])
@@ -434,8 +441,16 @@ class BoundaryMicroscopeAcquisitionRoute(nn.Module):
                 "acquisition_unit": "frame",
                 "strategy": "cheap_global_boundary_scanner_dense_microscope_packets_sparse_anchors",
                 "budget": len(indices),
-                "budget_contract": "up_to_target_len_fail_closed_max_gap",
+                "budget_contract": "fixed_raw_target_len_with_prefix_true_observation_mask",
                 "target_len": self.target_len,
+                "raw_input_temporal_len": int(self.target_len),
+                "true_observation_count": int(len(indices)),
+                "padding_count": int(self.target_len - len(indices)),
+                "padding_dense_index": int(indices[-1]),
+                "padding_slots_are_invalid": True,
+                "padding_not_gt_teacher_or_cache": True,
+                "detector_input_positions_len": int(len(padded_indices)),
+                "irregular_meta_positions_are_true_observation_prefix": True,
                 "dense_window_size": self.dense_window_size,
                 "microscope_radius": self.microscope_radius,
                 "microscope_stride": self.microscope_stride,

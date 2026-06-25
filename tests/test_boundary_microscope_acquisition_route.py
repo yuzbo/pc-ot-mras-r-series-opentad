@@ -127,9 +127,12 @@ def test_boundary_microscope_selects_dense_packets_around_scanned_hazards():
 
     selected = outputs["metas"][0]["boundary_microscope_selected_dense_indices"]
     plan = outputs["metas"][0]["boundary_microscope_acquisition_plan"]
-    assert outputs["inputs"].shape == (2, 3, len(selected), 3, 3)
+    assert outputs["inputs"].shape == (2, 3, 32, 3, 3)
+    assert outputs["masks"].shape == (2, 32)
     assert outputs["masks"].dtype == torch.bool
-    assert outputs["masks"].all()
+    assert outputs["masks"][0, : len(selected)].all()
+    assert not outputs["masks"][0, len(selected) :].any()
+    assert int(outputs["masks"][0].sum().item()) == len(selected)
     assert selected == sorted(set(selected))
     assert len(selected) <= 32
     for boundary in (8, 22, 39, 50):
@@ -141,6 +144,10 @@ def test_boundary_microscope_selects_dense_packets_around_scanned_hazards():
     assert plan["uses_raw_prediction_cache"] is False
     assert "start_hazard_positions" in plan
     assert "end_hazard_positions" in plan
+    assert plan["raw_input_temporal_len"] == 32
+    assert plan["true_observation_count"] == len(selected)
+    assert plan["padding_count"] == 32 - len(selected)
+    assert plan["padding_slots_are_invalid"] is True
 
 
 def test_boundary_microscope_supports_videomae_6d_raw_layout_and_temporal_geometry():
@@ -160,24 +167,40 @@ def test_boundary_microscope_supports_videomae_6d_raw_layout_and_temporal_geomet
 
     selected = outputs["metas"][0]["boundary_microscope_selected_dense_indices"]
     selected_len = len(selected)
-    assert outputs["inputs"].shape == (2, 2, 3, selected_len, 3, 3)
-    assert outputs["masks"].shape == (2, selected_len)
+    assert outputs["inputs"].shape == (2, 2, 3, 32, 3, 3)
+    assert outputs["masks"].shape == (2, 32)
     assert outputs["masks"].dtype == torch.bool
-    assert outputs["masks"].all()
-    assert outputs["selected_positions"].shape == (2, selected_len)
-    assert outputs["irregular_selected_positions"].shape == (2, selected_len)
+    assert outputs["masks"][:, :selected_len].all()
+    assert not outputs["masks"][:, selected_len:].any()
+    assert outputs["selected_positions"].shape == (2, 32)
+    assert outputs["irregular_selected_positions"].shape == (2, 32)
     assert torch.equal(outputs["selected_positions"], outputs["irregular_selected_positions"])
     assert torch.equal(outputs["selected_output_valid_lengths"], torch.tensor([selected_len, selected_len]))
     assert torch.equal(outputs["irregular_selected_output_valid_len"], outputs["selected_output_valid_lengths"])
     assert torch.equal(outputs["irregular_selected_valid_len"], torch.tensor([64, 64]))
+    assert outputs["selected_positions"][0, :selected_len].tolist() == [float(pos) for pos in selected]
+    assert outputs["selected_positions"][0, selected_len:].tolist() == [float(selected[-1])] * (32 - selected_len)
     assert outputs["metas"][0]["irregular_selected_positions"] == [float(pos) for pos in selected]
+    assert outputs["metas"][0]["boundary_microscope_true_observation_positions"] == [float(pos) for pos in selected]
+    assert outputs["metas"][0]["boundary_microscope_detector_input_positions"] == outputs[
+        "selected_positions"
+    ][0].tolist()
     assert outputs["metas"][0]["irregular_selected_output_valid_len"] == float(selected_len)
     assert outputs["metas"][0]["irregular_selected_valid_len"] == 64.0
+    assert outputs["metas"][0]["boundary_microscope_raw_input_temporal_len"] == 32
+    assert outputs["metas"][0]["boundary_microscope_padding_count"] == 32 - selected_len
+    assert outputs["metas"][0]["boundary_microscope_padding_slots_are_invalid"] is True
     plan = outputs["metas"][0]["boundary_microscope_acquisition_plan"]
     assert plan["input_layout"] == "[B,N,C,T,H,W]"
     assert plan["input_temporal_axis"] == 3
+    assert plan["budget_contract"] == "fixed_raw_target_len_with_prefix_true_observation_mask"
+    assert plan["padding_not_gt_teacher_or_cache"] is True
+    assert plan["detector_input_positions_len"] == 32
+    assert plan["irregular_meta_positions_are_true_observation_prefix"] is True
+    assert int(outputs["selected_output_valid_lengths"][0].item()) <= outputs["selected_positions"].shape[1]
+    gather = outputs["selected_positions"].long()
     expected = torch.stack(
-        [inputs[batch_idx, :, :, selected, :, :] for batch_idx in range(inputs.shape[0])],
+        [inputs[batch_idx, :, :, gather[batch_idx], :, :] for batch_idx in range(inputs.shape[0])],
         dim=0,
     )
     assert torch.equal(outputs["inputs"], expected)
@@ -227,12 +250,80 @@ def test_boundary_microscope_forward_train_and_test_shapes_match_prefix_masks():
     test_outputs = selector.forward_test(inputs, masks, [{"sample_id": "shape-test"}])
 
     assert train_outputs["inputs"].shape[:2] == (1, 3)
-    assert train_outputs["inputs"].shape[2] == int(train_outputs["masks"].sum().item())
+    assert train_outputs["inputs"].shape[2] == 36
+    assert train_outputs["masks"].shape == (1, 36)
+    assert int(train_outputs["masks"].sum().item()) == len(
+        train_outputs["metas"][0]["boundary_microscope_selected_dense_indices"]
+    )
     assert test_outputs["inputs"].shape[:2] == (1, 3)
-    assert test_outputs["inputs"].shape[2] == int(test_outputs["masks"].sum().item())
+    assert test_outputs["inputs"].shape[2] == 36
+    assert test_outputs["masks"].shape == (1, 36)
+    assert int(test_outputs["masks"].sum().item()) == len(
+        test_outputs["metas"][0]["boundary_microscope_selected_dense_indices"]
+    )
     assert train_outputs["gt_segments"] is gt_segments
     assert train_outputs["gt_labels"] is gt_labels
     assert "boundary_microscope_acquisition_plan" in train_outputs["metas"][0]
+
+
+def test_boundary_microscope_raw_videomae_path_pads_to_fixed_target_len_for_768_window():
+    torch = _import_torch_or_skip()
+    module = _load_route_module()
+    selector = module.BoundaryMicroscopeAcquisitionRoute(
+        target_len=384,
+        dense_window_size=768,
+        microscope_radius=3,
+        microscope_stride=1,
+        anchor_stride=24,
+        max_dense_gap=8,
+        max_start_hazards=4,
+        max_end_hazards=4,
+    )
+    dense_len = 768
+    signal = torch.zeros(dense_len, dtype=torch.float32)
+    signal[96:160] = 2.0
+    signal[420:480] = 3.0
+    batch_offsets = torch.arange(2, dtype=torch.float32).view(2, 1, 1, 1, 1, 1) * 1000.0
+    inputs = signal.view(1, 1, 1, dense_len, 1, 1).expand(2, 1, 3, dense_len, 2, 2).contiguous()
+    inputs = inputs + batch_offsets
+    masks = torch.ones((2, dense_len), dtype=torch.bool)
+    metas = [{"sample_id": f"fixed-raw-len-{idx}"} for idx in range(2)]
+
+    outputs = selector.forward_test(inputs, masks, metas)
+
+    selected = outputs["metas"][0]["boundary_microscope_selected_dense_indices"]
+    real_count = len(selected)
+    assert real_count < 384
+    assert outputs["inputs"].shape == (2, 1, 3, 384, 2, 2)
+    assert outputs["masks"].shape == (2, 384)
+    assert outputs["selected_positions"].shape == (2, 384)
+    assert outputs["irregular_selected_positions"].shape == (2, 384)
+    assert int(outputs["masks"][0].sum().item()) == real_count
+    assert outputs["masks"][0, :real_count].all()
+    assert not outputs["masks"][0, real_count:].any()
+    assert outputs["selected_positions"][0, :real_count].tolist() == [float(pos) for pos in selected]
+    assert outputs["selected_positions"][0, real_count:].tolist() == [float(selected[-1])] * (384 - real_count)
+    assert outputs["metas"][0]["irregular_selected_positions"] == [float(pos) for pos in selected]
+    assert outputs["metas"][0]["boundary_microscope_true_observation_positions"] == [float(pos) for pos in selected]
+    assert outputs["metas"][0]["boundary_microscope_detector_input_positions"] == outputs[
+        "selected_positions"
+    ][0].tolist()
+    assert outputs["metas"][0]["boundary_microscope_raw_input_temporal_len"] == 384
+    assert outputs["metas"][0]["boundary_microscope_padding_count"] == 384 - real_count
+    assert outputs["metas"][0]["boundary_microscope_padding_slots_are_invalid"] is True
+    plan = outputs["metas"][0]["boundary_microscope_acquisition_plan"]
+    assert plan["route_label"] == "DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3"
+    assert plan["selection_surface"] == "pre_backbone_raw_frame"
+    assert plan["raw_input_temporal_len"] == 384
+    assert plan["true_observation_count"] == real_count
+    assert plan["padding_count"] == 384 - real_count
+    assert plan["padding_slots_are_invalid"] is True
+    assert plan["padding_not_gt_teacher_or_cache"] is True
+    assert plan["detector_input_positions_len"] == 384
+    assert plan["irregular_meta_positions_are_true_observation_prefix"] is True
+    serialized = repr(outputs["metas"][0]).lower()
+    for forbidden in ("c3-pro", "pc_ot_mras_prebackbone", "bh-sdc", "event-surprise", "event surprise", "frame-token", "frame_token", "combo"):
+        assert forbidden not in serialized
 
 
 def test_boundary_microscope_forward_test_rejects_forbidden_meta_shortcuts():
@@ -277,6 +368,7 @@ def test_boundary_microscope_rejects_route_drift_and_dense_window_mismatch():
 
 
 def test_boundary_microscope_exposes_live_selector_cache_guard():
+    _import_torch_or_skip()
     module = _load_route_module()
     selector = module.BoundaryMicroscopeAcquisitionRoute(dense_window_size=64)
 
