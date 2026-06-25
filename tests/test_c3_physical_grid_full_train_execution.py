@@ -68,12 +68,20 @@ def _gate_payload(**updates):
         "allow_long_training": True,
         "allow_pretrained_initialization": True,
         "allow_checkpoint_write": True,
+        "allow_checkpoint_load": False,
+        "allow_resume": False,
+        "allow_offline_ledger": False,
+        "allow_raw_prediction_cache": False,
         "allow_detector_training": True,
         "uses_p2": False,
         "uses_offline_ledger": False,
         "uses_teacher": False,
         "uses_test_gt": False,
         "uses_raw_prediction_cache": False,
+        "checkpoint_load": False,
+        "resume": False,
+        "offline_ledger": False,
+        "raw_prediction_cache": False,
         "load_from_raw_predictions": False,
         "save_raw_prediction": False,
         "metric_claim": False,
@@ -304,6 +312,10 @@ def test_physical_grid_full_train_launcher_is_single_gpu_fail_closed():
     assert "raw prediction/cache is forbidden" in text
     assert "offline ledger is forbidden" in text
     assert "P2/teacher/test-GT shortcuts are forbidden" in text
+    assert '"allow_checkpoint_load": False' in text
+    assert '"allow_resume": False' in text
+    assert '"offline_ledger": False' in text
+    assert '"raw_prediction_cache": False' in text
     assert "PRECHECK_ONLY_PASS_NO_TRAIN" in text
     assert "Training Over" in text
     assert "validate_pc_ot_mras_c3_diagnostic_gate.py" in text
