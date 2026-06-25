@@ -1119,7 +1119,8 @@ class PCOTMRASBoundaryHazardSparseToDenseBridge(nn.Module):
         dense = features.new_zeros(batch, channels, self.dense_window_size)
         dense_mask = torch.zeros(batch, self.dense_window_size, dtype=torch.bool, device=features.device)
         observed_mask = torch.zeros_like(dense_mask)
-        dense_axis = torch.arange(self.dense_window_size, device=features.device, dtype=features.dtype)
+        completion_dtype = torch.float64 if features.dtype == torch.float64 else torch.float32
+        dense_axis = torch.arange(self.dense_window_size, device=features.device, dtype=completion_dtype)
         new_metas: list[dict[str, Any]] = []
 
         for batch_idx, meta in enumerate(metas):
@@ -1152,14 +1153,15 @@ class PCOTMRASBoundaryHazardSparseToDenseBridge(nn.Module):
                 raise ValueError(f"meta[{batch_idx}] physical_time_axis is shorter than dense valid length")
 
             sparse = features[batch_idx, :, :selected_count]
-            distance = (dense_axis[:, None] - selected.to(dtype=features.dtype)[None, :]).abs()
+            sparse_for_completion = sparse.to(dtype=completion_dtype)
+            distance = (dense_axis[:, None] - selected.to(dtype=completion_dtype)[None, :]).abs()
             weights = torch.softmax(-distance / self.interpolation_temperature, dim=1)
             gap_distance = distance.min(dim=1).values
             completion_confidence = weights.max(dim=1).values
-            completed = sparse @ weights.transpose(0, 1)
-            completed[:, selected] = sparse
+            completed = sparse_for_completion @ weights.transpose(0, 1)
+            completed[:, selected] = sparse_for_completion
             completed[:, dense_valid_len:] = 0.0
-            dense[batch_idx] = completed
+            dense[batch_idx] = completed.to(dtype=features.dtype)
             dense_mask[batch_idx, :dense_valid_len] = True
             observed_mask[batch_idx, selected] = True
             completion_confidence[selected] = 1.0

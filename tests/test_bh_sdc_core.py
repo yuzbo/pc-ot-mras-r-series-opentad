@@ -437,6 +437,62 @@ def test_forward_test_rejects_gt_teacher_or_raw_prediction_meta_payloads():
         bridge.forward_test(good_outputs["inputs"], good_outputs["masks"], good_outputs["metas"])
 
 
+def test_sparse_dense_bridge_accepts_fp16_features_with_float32_completion_weights(monkeypatch):
+    module, _builder = _load_bh_sdc_module()
+    bridge = module.PCOTMRASBoundaryHazardSparseToDenseBridge(
+        dense_window_size=8,
+        target_len=8,
+        interpolation_temperature=1.5,
+        smoothness_loss_weight=0.0,
+    )
+    features = torch.tensor(
+        [[[1.0, 2.0, 4.0, 8.0], [0.5, 1.5, 2.5, 3.5]]],
+        dtype=torch.float16,
+    )
+    masks = torch.ones(1, 4, dtype=torch.bool)
+    metas = [
+        {
+            "sample_id": "fp16-completion",
+            "bh_sdc_acquisition_plan": {
+                "selected_count": 4,
+                "dense_valid_len": 8,
+                "selected_dense_indices": [0, 2, 5, 7],
+                "physical_time_axis": [float(i) for i in range(8)],
+                "uses_gt": False,
+                "uses_teacher": False,
+                "uses_raw_prediction_cache": False,
+            },
+        }
+    ]
+    original_softmax = module.torch.softmax
+
+    def _float32_softmax(*args, **kwargs):
+        return original_softmax(*args, **kwargs).float()
+
+    monkeypatch.setattr(module.torch, "softmax", _float32_softmax)
+
+    outputs = bridge.forward_train(
+        features,
+        masks,
+        metas,
+        gt_segments=[torch.empty(0, 2)],
+        gt_labels=[torch.empty(0)],
+    )
+
+    completed = outputs["features"]
+    completion_meta = outputs["metas"][0]["bh_sdc_completion"]
+    assert completed.dtype == torch.float16
+    assert torch.equal(outputs["masks"], torch.ones(1, 8, dtype=torch.bool))
+    assert completion_meta["observed_count"] == 4
+    assert completion_meta["observed_dense_indices"] == [0, 2, 5, 7]
+    assert completion_meta["uses_gt"] is False
+    assert completion_meta["uses_teacher"] is False
+    assert completion_meta["uses_raw_prediction_cache"] is False
+    assert torch.equal(completed[0, :, [0, 2, 5, 7]], features[0])
+    assert all(isinstance(value, float) for value in completion_meta["completion_confidence"])
+    assert all(isinstance(value, float) for value in completion_meta["gap_distance"])
+
+
 def test_selector_and_sparse_dense_bridge_preserve_dense_axis_and_gradient_flow():
     module, builder = _load_bh_sdc_module()
     selector = module.PCOTMRASBoundaryHazardSparseDenseFrameSelector(
