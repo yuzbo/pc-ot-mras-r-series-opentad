@@ -509,3 +509,241 @@ def test_c3_physical_grid_static_source_contracts_when_torch_is_unavailable():
     assert "metas=metas" in detector
     assert '"selected_dense_indices"' in formatting
     assert '"selected_valid_len"' in formatting
+
+
+def test_coarse_actionness_scout_has_no_learned_boundary_heads():
+    selector = read("opentad/models/selectors/pc_ot_mras_prebackbone_frame_selector.py")
+    class_source = selector.split("class PCOTMRASCoarseActionnessFrameScout", 1)[1].split(
+        "class PCOTMRASPreBackboneFrameSelector",
+        1,
+    )[0]
+
+    assert "self.action_head" in class_source
+    assert "start_head" not in class_source
+    assert "end_head" not in class_source
+    assert "boundary_head" not in class_source
+    assert '"start_logits"' not in class_source
+    assert '"end_logits"' not in class_source
+    assert '"boundary_logits"' not in class_source
+
+
+def test_coarse_actionness_scout_outputs_only_binary_derived_sampling_signals():
+    _install_prebackbone_selector_or_skip()
+    selector_module = sys.modules[f"{RUNTIME_PACKAGE}.models.selectors.pc_ot_mras_prebackbone_frame_selector"]
+    scout = selector_module.PCOTMRASCoarseActionnessFrameScout(
+        in_dim=4,
+        hidden_dim=4,
+        num_slots=6,
+        temporal_layers=1,
+        temporal_kernel_size=3,
+        dilations=(1,),
+        dropout=0.0,
+    )
+    features = torch.randn(1, 8, 4)
+    valid = torch.ones(1, 8, dtype=torch.bool)
+    out = scout(features, valid)
+
+    assert out["action_logits"].shape == (1, 8)
+    assert out["actionness_logits"].shape == (1, 8)
+    assert out["uncertainty_score"].shape == (1, 8)
+    assert out["change_score"].shape == (1, 8)
+    assert out["frame_selection_logits"].shape == (1, 8)
+    assert "start_logits" not in out
+    assert "end_logits" not in out
+    assert "boundary_logits" not in out
+    assert "risk_logits" not in out
+    assert torch.isfinite(out["frame_selection_logits"]).all()
+
+
+def test_coarse_actionness_uncertainty_plan_uses_classification_uncertainty_roles():
+    PCOTMRASPreBackboneFrameSelector = _install_prebackbone_selector_or_skip()
+    selector = PCOTMRASPreBackboneFrameSelector(
+        reader=dict(
+            type="PCOTMRASCoarseActionnessFrameScout",
+            in_dim=4,
+            hidden_dim=4,
+            num_slots=6,
+            temporal_layers=1,
+            temporal_kernel_size=3,
+            dilations=(1,),
+            dropout=0.0,
+        ),
+        target_len=6,
+        dense_window_size=12,
+        descriptor_dim=4,
+        selection_strategy="coarse_actionness_uncertainty",
+        coarse_uniform_count=1,
+        coarse_action_count=2,
+        coarse_uncertainty_count=1,
+        coarse_change_count=1,
+        coarse_background_count=1,
+        max_dense_gap=0,
+        max_gap_guard_count=0,
+        remap_gt_to_selected_axis=False,
+        straight_through_detector_loss=False,
+    )
+    candidate_valid = torch.ones(1, 12, dtype=torch.bool)
+    candidate_dense_indices = torch.arange(12, dtype=torch.long).unsqueeze(0)
+    valid = candidate_valid.clone()
+    action_logits = torch.tensor([[-5.0, -4.0, -3.0, 0.0, 5.0, 4.0, -0.1, 0.1, -4.0, 0.0, -5.0, 3.0]])
+
+    plan = selector._coarse_actionness_uncertainty_transport_plan(
+        reader_outputs={"actionness_logits": action_logits},
+        valid=valid,
+        candidate_valid=candidate_valid,
+        candidate_dense_indices=candidate_dense_indices,
+        training=False,
+    )
+    roles = plan["selected_roles"][0][:6]
+
+    assert plan["selected_positions"].shape == (1, 6)
+    assert plan["selected_output_valid_lengths"].tolist() == [6]
+    assert "coarse_uniform" in roles
+    assert "coarse_action" in roles
+    assert "coarse_uncertainty" in roles
+    assert "coarse_change" in roles
+    assert "coarse_background" in roles
+    assert plan["coarse_policy_meta"][0]["uses_learned_boundary_head"] is False
+    assert plan["coarse_policy_meta"][0]["uses_gt"] is False
+
+
+def test_coarse_actionness_selector_forward_train_writes_policy_metadata_and_action_loss():
+    PCOTMRASPreBackboneFrameSelector = _install_prebackbone_selector_or_skip()
+    selector = PCOTMRASPreBackboneFrameSelector(
+        reader=dict(
+            type="PCOTMRASCoarseActionnessFrameScout",
+            in_dim=4,
+            hidden_dim=4,
+            num_slots=4,
+            temporal_layers=1,
+            temporal_kernel_size=3,
+            dilations=(1,),
+            dropout=0.0,
+        ),
+        target_len=4,
+        dense_window_size=12,
+        descriptor_dim=4,
+        selection_strategy="coarse_actionness_uncertainty",
+        coarse_uniform_count=1,
+        coarse_action_count=1,
+        coarse_uncertainty_count=1,
+        coarse_change_count=1,
+        coarse_background_count=0,
+        max_dense_gap=0,
+        max_gap_guard_count=0,
+        remap_gt_to_selected_axis=False,
+        aux_gt_acquisition_loss_weight=0.1,
+        reader_regularizer_loss_weight=0.0,
+    )
+    inputs = torch.arange(1 * 3 * 12 * 2 * 2, dtype=torch.float32).reshape(1, 3, 12, 2, 2)
+    masks = torch.ones(1, 12, dtype=torch.bool)
+    selected = selector.forward_train(
+        inputs=inputs,
+        masks=masks,
+        metas=[{"video_name": "coarse-actionness"}],
+        gt_segments=[torch.tensor([[2.0, 7.0]], dtype=torch.float32)],
+        gt_labels=[torch.tensor([1], dtype=torch.long)],
+    )
+    meta = selected["metas"][0]
+
+    assert selected["inputs"].shape[2] == 4
+    assert selected["masks"].shape == (1, 4)
+    assert "selector_gt_actionness_loss" in selected["losses"]
+    assert meta["pc_ot_mras_prebackbone_selection_strategy"] == "coarse_actionness_uncertainty"
+    assert meta["pc_ot_mras_prebackbone_hard_selection_source"] == "classification_probability_uncertainty_change"
+    assert meta["pc_ot_mras_prebackbone_coarse_actionness_policy"]["enabled"] is True
+    assert meta["pc_ot_mras_prebackbone_coarse_actionness_policy"]["uses_learned_boundary_head"] is False
+    assert meta["pc_ot_mras_prebackbone_protocol_flags"]["uses_test_gt"] is False
+
+
+def test_coarse_actionness_selector_forward_test_writes_deploy_safe_policy_metadata_without_gt():
+    PCOTMRASPreBackboneFrameSelector = _install_prebackbone_selector_or_skip()
+    selector = PCOTMRASPreBackboneFrameSelector(
+        reader=dict(
+            type="PCOTMRASCoarseActionnessFrameScout",
+            in_dim=4,
+            hidden_dim=4,
+            num_slots=4,
+            temporal_layers=1,
+            temporal_kernel_size=3,
+            dilations=(1,),
+            dropout=0.0,
+        ),
+        target_len=4,
+        dense_window_size=8,
+        descriptor_dim=4,
+        selection_strategy="coarse_actionness_uncertainty",
+        coarse_uniform_count=1,
+        coarse_action_count=1,
+        coarse_uncertainty_count=1,
+        coarse_change_count=1,
+        coarse_background_count=0,
+        max_dense_gap=0,
+        max_gap_guard_count=0,
+        remap_gt_to_selected_axis=False,
+        straight_through_detector_loss=False,
+    )
+    inputs = torch.arange(1 * 3 * 8 * 2 * 2, dtype=torch.float32).reshape(1, 3, 8, 2, 2)
+    masks = torch.ones(1, 8, dtype=torch.bool)
+
+    selected = selector.forward_test(
+        inputs=inputs,
+        masks=masks,
+        metas=[{"video_name": "coarse-actionness-forward-test"}],
+    )
+    meta = selected["metas"][0]
+
+    assert selected["inputs"].shape[2] == 4
+    assert selected["masks"].shape == (1, 4)
+    assert selected["masks"].all()
+    assert selected["inputs"].shape[2] * 2 == inputs.shape[2]
+    assert meta["irregular_native_axis"] is True
+    assert meta["irregular_dense_valid_len"] == 8
+    assert meta["irregular_selected_count"] == 4
+    assert meta["selected_valid_len"] == 4
+    assert meta["pc_ot_mras_prebackbone_selection_strategy"] == "coarse_actionness_uncertainty"
+    assert meta["pc_ot_mras_prebackbone_hard_selection_source"] == "classification_probability_uncertainty_change"
+    assert len(meta["irregular_selected_positions"]) == 4
+    assert len(meta["pc_ot_mras_prebackbone_selected_dense_indices"]) == 4
+    assert all(0 <= pos < 8 for pos in meta["pc_ot_mras_prebackbone_selected_dense_indices"])
+    assert meta["pc_ot_mras_prebackbone_coarse_actionness_policy"]["enabled"] is True
+    assert meta["pc_ot_mras_prebackbone_coarse_actionness_policy"]["protocol"] == "binary_actionness_uncertainty_v0"
+    assert meta["pc_ot_mras_prebackbone_coarse_actionness_policy"]["uses_gt"] is False
+    assert meta["pc_ot_mras_prebackbone_coarse_actionness_policy"]["uses_teacher"] is False
+    assert meta["pc_ot_mras_prebackbone_coarse_actionness_policy"]["uses_raw_prediction_cache"] is False
+    assert meta["pc_ot_mras_prebackbone_coarse_actionness_policy"]["uses_learned_boundary_head"] is False
+    assert meta["pc_ot_mras_prebackbone_protocol_flags"]["uses_gt"] is False
+    assert meta["pc_ot_mras_prebackbone_protocol_flags"]["uses_test_gt"] is False
+    assert meta["pc_ot_mras_prebackbone_protocol_flags"]["uses_teacher"] is False
+    assert meta["pc_ot_mras_prebackbone_protocol_flags"]["uses_raw_prediction_cache"] is False
+    assert meta["pc_ot_mras_prebackbone_protocol_flags"]["uses_learned_boundary_head"] is False
+    diagnostics = meta["pc_ot_mras_prebackbone_reader_diagnostics"]
+    assert diagnostics["action"]["available"] is True
+    assert diagnostics["boundary"]["available"] is False
+
+
+def test_coarse_actionness_uncertainty_config_keeps_boundary_head_out_of_selector():
+    cfg = load_mmengine_config_or_skip(
+        "configs/adatad/thumos/pc_ot_mras_coarse_actionness_uncertainty_c3_physical_grid_actionformer_n16r4.py"
+    )
+
+    assert cfg.route_label == "C3_ORIGINAL_OPTIMIZATION_ROUTE"
+    assert cfg.route_family == "C3_MAINLINE_OPTIMIZATION"
+    assert cfg.experiment_scope.selection_strategy == "coarse_actionness_uncertainty"
+    assert cfg.experiment_scope.uses_learned_boundary_head is False
+    assert cfg.protocol_flags.uses_learned_boundary_head is False
+    assert cfg.model.frame_selector.selection_strategy == "coarse_actionness_uncertainty"
+    assert cfg.model.frame_selector.reader.type == "PCOTMRASCoarseActionnessFrameScout"
+    assert cfg.model.frame_selector.aux_frame_score_boundary_loss_weight == 0.0
+    assert cfg.model.frame_selector.aux_risk_loss_weight == 0.0
+    assert cfg.model.frame_selector.aux_uncertainty_loss_weight == 0.0
+    assert cfg.protocol_flags.remote_sync_allowed is True
+    assert cfg.protocol_flags.slurm_allowed is True
+    assert cfg.protocol_flags.tools_test_allowed is False
+    assert cfg.protocol_flags.tools_train_allowed is True
+    assert cfg.protocol_flags.metric_claim_allowed is False
+    assert cfg.protocol_flags.paper_claim_allowed is False
+    assert cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate.route == cfg.route_id
+    assert cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate.stage == cfg.stage_id
+    assert cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate.allow_slurm is True
+    assert cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate.allow_tools_test is False

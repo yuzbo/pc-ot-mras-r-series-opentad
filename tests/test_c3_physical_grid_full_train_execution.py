@@ -10,6 +10,13 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs" / "adatad" / "thumos" / "pc_ot_mras_prebackbone_c3_physical_grid_actionformer_full_train_n16r4.py"
+COARSE_CONFIG = (
+    ROOT
+    / "configs"
+    / "adatad"
+    / "thumos"
+    / "pc_ot_mras_coarse_actionness_uncertainty_c3_physical_grid_actionformer_n16r4.py"
+)
 LAUNCHER = ROOT / "scripts" / "run_pc_ot_mras_prebackbone_c3_physical_grid_actionformer_full_train_n16r4.sbatch"
 VALIDATOR = ROOT / "tools" / "bata" / "validate_pc_ot_mras_prebackbone_c3_physical_grid_full_train_gate.py"
 GUARD = ROOT / "opentad" / "utils" / "training_guard.py"
@@ -20,6 +27,9 @@ C3_DIAGNOSTIC_GATE = ROOT / "tools" / "bata" / "validate_pc_ot_mras_c3_diagnosti
 VARIANT_ID = "C3-PhysicalGridActionFormer-PreBackbone-OriginalAdaTAD"
 ROUTE_ID = "pc_ot_mras_prebackbone_c3_physical_grid_actionformer"
 STAGE_ID = "c3_physical_grid_actionformer_full_train_n16r4"
+COARSE_VARIANT_ID = "C3-CoarseActionnessUncertainty-PreBackbone-OriginalAdaTAD"
+COARSE_ROUTE_ID = "pc_ot_mras_coarse_actionness_uncertainty_c3_physical_grid_actionformer"
+COARSE_STAGE_ID = "c3_coarse_actionness_uncertainty_fixed384_n16r4"
 ALLOW_DECISION = "ALLOW_C3_PHYSICAL_GRID_FULL_TRAIN"
 
 
@@ -124,6 +134,36 @@ def test_physical_grid_full_train_selector_config_matches_runtime_signatures():
     script = LAUNCHER.read_text(encoding="utf-8")
     assert "PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_JSONL" in script
     assert "PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_MAX_ROWS" in script
+
+
+def test_coarse_actionness_full_train_selector_config_matches_runtime_signatures():
+    mmengine_config = pytest.importorskip("mmengine.config")
+    cfg = mmengine_config.Config.fromfile(str(COARSE_CONFIG))
+    selector_cfg = _cfg_dict(cfg.model.frame_selector)
+    reader_cfg = _cfg_dict(selector_cfg.pop("reader"))
+    selector_cfg.pop("type")
+    reader_cfg.pop("type")
+
+    selector_params = _class_init_params(PREBACKBONE_SELECTOR, "PCOTMRASPreBackboneFrameSelector")
+    reader_params = _class_init_params(PREBACKBONE_SELECTOR, "PCOTMRASCoarseActionnessFrameScout")
+
+    assert cfg.route_label == "C3_ORIGINAL_OPTIMIZATION_ROUTE"
+    assert cfg.route_family == "C3_MAINLINE_OPTIMIZATION"
+    assert cfg.route_id == COARSE_ROUTE_ID
+    assert cfg.variant_id == COARSE_VARIANT_ID
+    assert cfg.stage_id == COARSE_STAGE_ID
+    assert not (set(selector_cfg) - selector_params)
+    assert not (set(reader_cfg) - reader_params)
+    assert selector_cfg["selection_strategy"] == "coarse_actionness_uncertainty"
+    assert reader_cfg["in_dim"] == selector_cfg["descriptor_dim"] == 3 * 32 * 32
+    assert len(tuple(reader_cfg["dilations"])) == int(reader_cfg["temporal_layers"])
+    assert cfg.model.frame_selector.aux_frame_score_boundary_loss_weight == 0.0
+    assert cfg.model.frame_selector.aux_uncertainty_loss_weight == 0.0
+    assert cfg.protocol_flags.remote_sync_allowed is True
+    assert cfg.protocol_flags.slurm_allowed is True
+    assert cfg.protocol_flags.tools_test_allowed is False
+    assert cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate.route == cfg.route_id
+    assert cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate.stage == cfg.stage_id
 
 
 def test_physical_grid_full_train_selector_runtime_builds_when_torch_is_available():
@@ -266,6 +306,7 @@ def test_physical_grid_full_train_resolved_dataset_kwargs_match_runtime_construc
 def test_physical_grid_full_train_validator_accepts_config_and_rejects_leakage(tmp_path):
     validator = _load_module(VALIDATOR, "validate_c3_physical_grid_full_train_gate_test")
     assert validator.validate_config(CONFIG) is True
+    assert validator.validate_config(COARSE_CONFIG) is True
 
     bad_dataset_config = tmp_path / "bad_physical_grid_dataset_config.py"
     bad_dataset_config.write_text(
@@ -294,6 +335,17 @@ def test_physical_grid_full_train_validator_accepts_config_and_rejects_leakage(t
             pretrained_sha256="pretrained-sha",
         )
 
+    coarse_payload = _gate_payload(route=COARSE_ROUTE_ID, variant_id=COARSE_VARIANT_ID, stage=COARSE_STAGE_ID)
+    assert (
+        validator.validate_gate_payload(
+            coarse_payload,
+            active_manifest_sha256="manifest-sha",
+            resolved_config_sha256="resolved-sha",
+            pretrained_sha256="pretrained-sha",
+        )
+        is coarse_payload
+    )
+
 
 def test_physical_grid_full_train_launcher_is_single_gpu_fail_closed():
     text = LAUNCHER.read_text(encoding="utf-8")
@@ -301,6 +353,8 @@ def test_physical_grid_full_train_launcher_is_single_gpu_fail_closed():
     assert "#SBATCH --gpus=1" in text
     assert VARIANT_ID in text
     assert ROUTE_ID in text
+    assert COARSE_CONFIG.name in text
+    assert "resolved_identity route=$ROUTE_ID variant=$VARIANT_ID stage=$STAGE_ID" in text
     assert "PRECHECK_ONLY=\"${PRECHECK_ONLY:-1}\"" in text
     assert "ALLOW_C3_PHYSICAL_GRID_FULL_TRAIN" in text
     assert "PRECHECK_ONLY=0 requires ALLOW_C3_PHYSICAL_GRID_FULL_TRAIN=1" in text

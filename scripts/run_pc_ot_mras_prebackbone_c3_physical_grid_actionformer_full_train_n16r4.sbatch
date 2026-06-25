@@ -18,7 +18,9 @@ source activate "$YUZIBO_ROOT/conda_envs/opentad"
 ROUTE_FAMILY="C3_ORIGINAL_OPTIMIZATION_ROUTE"
 ROUTE_ID="pc_ot_mras_prebackbone_c3_physical_grid_actionformer"
 VARIANT_ID="C3-PhysicalGridActionFormer-PreBackbone-OriginalAdaTAD"
+STAGE_ID="c3_physical_grid_actionformer_full_train_n16r4"
 CONFIG_REVIEWED="configs/adatad/thumos/pc_ot_mras_prebackbone_c3_physical_grid_actionformer_full_train_n16r4.py"
+CONFIG_REVIEWED_COARSE="configs/adatad/thumos/pc_ot_mras_coarse_actionness_uncertainty_c3_physical_grid_actionformer_n16r4.py"
 CONFIG="${CONFIG:-$CONFIG_REVIEWED}"
 PRECHECK_ONLY="${PRECHECK_ONLY:-1}"
 ALLOW_C3_PHYSICAL_GRID_FULL_TRAIN="${ALLOW_C3_PHYSICAL_GRID_FULL_TRAIN:-0}"
@@ -99,22 +101,22 @@ write_summary() {
   local status="$1"
   local decision="$2"
   local reason="$3"
-  python - "$SUMMARY_JSON" "$status" "$decision" "$reason" "$RUN_ROOT" "$CONFIG" "$FINAL_WORK_DIR" <<'PY'
+  python - "$SUMMARY_JSON" "$status" "$decision" "$reason" "$RUN_ROOT" "$CONFIG" "$FINAL_WORK_DIR" "$ROUTE_ID" "$VARIANT_ID" "$STAGE_ID" <<'PY'
 import json
 import os
 import socket
 import sys
 from pathlib import Path
 
-summary_path, status, decision, reason, run_root, config, work_dir = sys.argv[1:8]
+summary_path, status, decision, reason, run_root, config, work_dir, route, variant, stage_id = sys.argv[1:11]
 payload = {
     "status": status,
     "decision": decision,
     "reason": reason,
-    "stage": "C3_PHYSICAL_GRID_ACTIONFORMER_FULL_TRAIN",
+    "stage": stage_id,
     "route_family": "C3_ORIGINAL_OPTIMIZATION_ROUTE",
-    "route": "pc_ot_mras_prebackbone_c3_physical_grid_actionformer",
-    "variant_id": "C3-PhysicalGridActionFormer-PreBackbone-OriginalAdaTAD",
+    "route": route,
+    "variant_id": variant,
     "host": socket.gethostname(),
     "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
     "run_root": run_root,
@@ -183,9 +185,10 @@ done
 if [ "$MASTER_PORT" -lt 1024 ] || [ "$MASTER_PORT" -gt 65535 ]; then
   fail "MASTER_PORT must be between 1024 and 65535; got $MASTER_PORT"
 fi
-if [ "$CONFIG" != "$CONFIG_REVIEWED" ]; then
-  fail "reviewed only for $CONFIG_REVIEWED; got $CONFIG"
-fi
+case "$CONFIG" in
+  "$CONFIG_REVIEWED"|"$CONFIG_REVIEWED_COARSE") ;;
+  *) fail "reviewed only for $CONFIG_REVIEWED or $CONFIG_REVIEWED_COARSE; got $CONFIG" ;;
+esac
 
 EXPECTED_GIT_BRANCH="${OPENTAD_C3_PHYSICAL_GRID_EXPECTED_BRANCH:-codex/c3-physical-grid-head-20260625}"
 GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || fail "repo must be a git checkout"
@@ -199,6 +202,18 @@ log "git_branch=$GIT_BRANCH git_head=$GIT_HEAD"
 log "config=$CONFIG"
 log "run_root=$RUN_ROOT"
 test -f "$CONFIG" || fail "missing reviewed config: $CONFIG"
+
+read VARIANT_ID ROUTE_ID STAGE_ID <<EOF
+$(python - "$CONFIG" <<'PY'
+import sys
+from mmengine.config import Config
+
+cfg = Config.fromfile(sys.argv[1])
+print(cfg.variant_id, cfg.route_id, cfg.stage_id)
+PY
+)
+EOF
+log "resolved_identity route=$ROUTE_ID variant=$VARIANT_ID stage=$STAGE_ID"
 
 python - "$CONFIG" "$RESOLVED_CONFIG_DUMP" <<'PY'
 import sys
@@ -264,17 +279,17 @@ test -d "$THUMOS14_TRAIN_DATA_PATH" || fail "missing train data dir: $THUMOS14_T
 test -d "$THUMOS14_TEST_DATA_PATH" || fail "missing test data dir: $THUMOS14_TEST_DATA_PATH"
 
 PRETRAINED_SHA256="$(sha256sum "$PRETRAINED_PATH" | awk '{print $1}')"
-python - "$GATE_JSON" "$ACTIVE_MANIFEST_SHA256" "$RESOLVED_CONFIG_SHA256" "$PRETRAINED_SHA256" <<'PY'
+python - "$GATE_JSON" "$ACTIVE_MANIFEST_SHA256" "$RESOLVED_CONFIG_SHA256" "$PRETRAINED_SHA256" "$ROUTE_ID" "$VARIANT_ID" "$STAGE_ID" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-path, manifest, resolved, pretrained = sys.argv[1:5]
+path, manifest, resolved, pretrained, route, variant, stage = sys.argv[1:8]
 payload = {
     "decision": "ALLOW_C3_PHYSICAL_GRID_FULL_TRAIN",
-    "route": "pc_ot_mras_prebackbone_c3_physical_grid_actionformer",
-    "variant_id": "C3-PhysicalGridActionFormer-PreBackbone-OriginalAdaTAD",
-    "stage": "c3_physical_grid_actionformer_full_train_n16r4",
+    "route": route,
+    "variant_id": variant,
+    "stage": stage,
     "execution_mode": "train",
     "selection_surface": "pre_backbone_raw_frame",
     "selection_timing": "online_before_backbone",

@@ -835,6 +835,131 @@ class PCOTMRASRSeriesHybridFrameScout(nn.Module):
 
 
 @SELECTORS.register_module()
+class PCOTMRASCoarseActionnessFrameScout(nn.Module):
+    """Binary action/background scout for coarse uncertainty-driven sampling."""
+
+    def __init__(
+        self,
+        in_dim: int,
+        hidden_dim: int = 96,
+        num_slots: int | None = None,
+        temporal_layers: int = 3,
+        temporal_kernel_size: int = 5,
+        dilations: Sequence[int] | None = (1, 2, 4),
+        dropout: float = 0.05,
+        descriptor_hidden_dim: int | None = None,
+        action_bias_weight: float = 1.0,
+        uncertainty_bias_weight: float = 0.75,
+        change_bias_weight: float = 0.75,
+        score_logit_eps: float = 1.0e-4,
+        local_global_fusion: str = "coarse_actionness_temporal_cnn",
+    ) -> None:
+        super().__init__()
+        if int(in_dim) <= 0:
+            raise ValueError("in_dim must be positive")
+        if int(hidden_dim) <= 0:
+            raise ValueError("hidden_dim must be positive")
+        if int(temporal_layers) <= 0:
+            raise ValueError("temporal_layers must be positive")
+        if num_slots is not None and int(num_slots) <= 0:
+            raise ValueError("num_slots must be positive when provided")
+        if float(action_bias_weight) < 0.0:
+            raise ValueError("action_bias_weight must be non-negative")
+        if float(uncertainty_bias_weight) < 0.0:
+            raise ValueError("uncertainty_bias_weight must be non-negative")
+        if float(change_bias_weight) < 0.0:
+            raise ValueError("change_bias_weight must be non-negative")
+        if not 0.0 < float(score_logit_eps) < 0.5:
+            raise ValueError("score_logit_eps must lie inside (0, 0.5)")
+        if str(local_global_fusion) != "coarse_actionness_temporal_cnn":
+            raise ValueError(
+                "PCOTMRASCoarseActionnessFrameScout supports only "
+                "local_global_fusion='coarse_actionness_temporal_cnn'"
+            )
+        descriptor_hidden_dim = int(descriptor_hidden_dim or hidden_dim)
+        self.action_bias_weight = float(action_bias_weight)
+        self.uncertainty_bias_weight = float(uncertainty_bias_weight)
+        self.change_bias_weight = float(change_bias_weight)
+        self.score_logit_eps = float(score_logit_eps)
+        self.descriptor_proj = nn.Sequential(
+            nn.LayerNorm(int(in_dim)),
+            nn.Linear(int(in_dim), descriptor_hidden_dim),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(descriptor_hidden_dim, int(hidden_dim)),
+        )
+        self.time_proj = nn.Linear(1, int(hidden_dim))
+        self.temporal = _MaskedTemporalConvStack(
+            hidden_dim=int(hidden_dim),
+            num_layers=int(temporal_layers),
+            kernel_size=int(temporal_kernel_size),
+            dropout=float(dropout),
+            dilations=dilations,
+        )
+        self.norm = nn.LayerNorm(int(hidden_dim))
+        self.action_head = nn.Linear(int(hidden_dim), 1)
+
+    @staticmethod
+    def _binary_uncertainty_scores(action_prob: torch.Tensor, valid: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        eps = 1.0e-6
+        prob = action_prob.float().clamp(min=eps, max=1.0 - eps)
+        entropy_score = -(prob * prob.log() + (1.0 - prob) * (1.0 - prob).log()) / math.log(2.0)
+        margin_uncertainty = 1.0 - (2.0 * prob - 1.0).abs()
+        uncertainty_score = torch.maximum(entropy_score, margin_uncertainty).clamp(0.0, 1.0)
+
+        valid_pair_prev = valid[:, 1:] & valid[:, :-1]
+        prev_change = torch.zeros_like(prob)
+        prev_change[:, 1:] = (prob[:, 1:] - prob[:, :-1]).abs().masked_fill(~valid_pair_prev, 0.0)
+        next_change = torch.zeros_like(prob)
+        next_change[:, :-1] = (prob[:, 1:] - prob[:, :-1]).abs().masked_fill(~valid_pair_prev, 0.0)
+        change_score = torch.maximum(prev_change, next_change).clamp(0.0, 1.0)
+        return entropy_score, uncertainty_score, change_score
+
+    def forward(self, features: torch.Tensor, valid: torch.Tensor, time_coords: torch.Tensor | None = None):
+        valid, time_coords = _validate_frame_scout_inputs(features, valid, time_coords)
+        features = features.float().masked_fill(~valid.unsqueeze(-1), 0.0)
+        encoded = self.descriptor_proj(features) + self.time_proj(time_coords.float().unsqueeze(-1))
+        encoded = encoded.masked_fill(~valid.unsqueeze(-1), 0.0)
+        encoded = self.temporal(encoded.transpose(1, 2), valid).transpose(1, 2)
+        encoded = self.norm(encoded).masked_fill(~valid.unsqueeze(-1), 0.0)
+        _require_finite(encoded, "coarse actionness encoded tokens")
+
+        action_logits = _masked_frame_logits(self.action_head(encoded).squeeze(-1), valid, "action_logits")
+        action_prob = torch.sigmoid(action_logits).masked_fill(~valid, 0.0)
+        entropy_score, uncertainty_score, change_score = self._binary_uncertainty_scores(action_prob, valid)
+        entropy_score = entropy_score.masked_fill(~valid, 0.0)
+        uncertainty_score = uncertainty_score.masked_fill(~valid, 0.0)
+        change_score = change_score.masked_fill(~valid, 0.0)
+        background_context_score = ((1.0 - action_prob) * (1.0 - uncertainty_score)).masked_fill(~valid, 0.0)
+
+        normalizer = self.action_bias_weight + self.uncertainty_bias_weight + self.change_bias_weight
+        if normalizer <= 0.0:
+            raise ValueError("at least one coarse actionness score weight must be positive")
+        mixed_score = (
+            self.action_bias_weight * action_prob
+            + self.uncertainty_bias_weight * uncertainty_score
+            + self.change_bias_weight * change_score
+        ) / normalizer
+        mixed_score = mixed_score.clamp(min=self.score_logit_eps, max=1.0 - self.score_logit_eps)
+        frame_selection_logits = torch.logit(mixed_score).masked_fill(~valid, 0.0)
+        _require_finite(frame_selection_logits, "coarse actionness frame selection logits")
+
+        return {
+            "action_logits": action_logits,
+            "actionness_logits": action_logits,
+            "value_logits": action_logits,
+            "action_prob": action_prob,
+            "entropy_score": entropy_score,
+            "uncertainty_score": uncertainty_score,
+            "change_score": change_score,
+            "transition_score": change_score,
+            "background_context_score": background_context_score,
+            "frame_selection_logits": frame_selection_logits,
+            "regularizers": {"total_regularizer": action_logits.sum() * 0.0},
+        }
+
+
+@SELECTORS.register_module()
 class PCOTMRASPreBackboneFrameSelector(nn.Module):
     """Online PC-OT-MRAS frame acquisition before the video backbone.
 
@@ -895,6 +1020,14 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         global_rank_st_rank_width: float = 1.0,
         interval_boundary_budget_ratio: float = 0.5,
         interval_candidate_topk: int = 16,
+        coarse_uniform_count: int = 160,
+        coarse_action_count: int = 96,
+        coarse_uncertainty_count: int = 80,
+        coarse_change_count: int = 32,
+        coarse_background_count: int = 16,
+        coarse_action_weight: float = 1.0,
+        coarse_uncertainty_weight: float = 0.75,
+        coarse_change_weight: float = 0.75,
         dynamic_budget: Mapping[str, Any] | None = None,
         meta_source: str = "pc_ot_mras_prebackbone_e2e_frame_selector",
     ) -> None:
@@ -995,10 +1128,12 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             "frame_score_topk",
             "frame_score_global_rank_st",
             "interval_boundary_packet",
+            "coarse_actionness_uncertainty",
         ):
             raise ValueError(
                 "selection_strategy must be 'slot_transport', 'frame_score_topk', "
-                "'frame_score_global_rank_st', or 'interval_boundary_packet'"
+                "'frame_score_global_rank_st', 'interval_boundary_packet', "
+                "or 'coarse_actionness_uncertainty'"
             )
         if float(frame_score_st_temperature) <= 0.0:
             raise ValueError("frame_score_st_temperature must be positive")
@@ -1036,6 +1171,22 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             raise ValueError("interval_boundary_budget_ratio must be in [0, 1]")
         if int(interval_candidate_topk) <= 0:
             raise ValueError("interval_candidate_topk must be positive")
+        for name, value in (
+            ("coarse_uniform_count", coarse_uniform_count),
+            ("coarse_action_count", coarse_action_count),
+            ("coarse_uncertainty_count", coarse_uncertainty_count),
+            ("coarse_change_count", coarse_change_count),
+            ("coarse_background_count", coarse_background_count),
+        ):
+            if int(value) < 0:
+                raise ValueError(f"{name} must be non-negative")
+        for name, value in (
+            ("coarse_action_weight", coarse_action_weight),
+            ("coarse_uncertainty_weight", coarse_uncertainty_weight),
+            ("coarse_change_weight", coarse_change_weight),
+        ):
+            if float(value) < 0.0:
+                raise ValueError(f"{name} must be non-negative")
         self.st_surrogate_mode = str(st_surrogate_mode)
         self.scout_pixel_normalize = bool(scout_pixel_normalize)
         self.scout_pixel_clamp = float(scout_pixel_clamp)
@@ -1054,6 +1205,14 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         self.global_rank_st_rank_width = float(global_rank_st_rank_width)
         self.interval_boundary_budget_ratio = float(interval_boundary_budget_ratio)
         self.interval_candidate_topk = int(interval_candidate_topk)
+        self.coarse_uniform_count = int(coarse_uniform_count)
+        self.coarse_action_count = int(coarse_action_count)
+        self.coarse_uncertainty_count = int(coarse_uncertainty_count)
+        self.coarse_change_count = int(coarse_change_count)
+        self.coarse_background_count = int(coarse_background_count)
+        self.coarse_action_weight = float(coarse_action_weight)
+        self.coarse_uncertainty_weight = float(coarse_uncertainty_weight)
+        self.coarse_change_weight = float(coarse_change_weight)
         self.dynamic_budget = self._normalize_dynamic_budget_config(dynamic_budget)
         self.meta_source = str(meta_source)
         self._metadata_dump_count = 0
@@ -1114,6 +1273,10 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             "start_logits",
             "end_logits",
             "uncertainty_logits",
+            "uncertainty_score",
+            "change_score",
+            "transition_score",
+            "background_context_score",
             "redundancy_logits",
             "role_logits",
             "frame_selection_logits",
@@ -1150,6 +1313,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             dynamic_budget_meta=plan.get("dynamic_budget_meta"),
             max_gap_guard_meta=plan.get("max_gap_guard_meta"),
             interval_packet_metadata=plan.get("interval_packet_metadata"),
+            coarse_policy_meta=plan.get("coarse_policy_meta"),
             reader_outputs=reader_outputs,
             candidate_valid=candidate_valid,
             candidate_dense_indices=candidate_dense_indices,
@@ -1347,6 +1511,14 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             "frame_score_global_rank_st",
         ):
             return self._frame_score_transport_plan(
+                reader_outputs=reader_outputs,
+                valid=valid,
+                candidate_valid=candidate_valid,
+                candidate_dense_indices=candidate_dense_indices,
+                training=training,
+            )
+        if getattr(self, "selection_strategy", "slot_transport") == "coarse_actionness_uncertainty":
+            return self._coarse_actionness_uncertainty_transport_plan(
                 reader_outputs=reader_outputs,
                 valid=valid,
                 candidate_valid=candidate_valid,
@@ -2334,6 +2506,351 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             "max_gap_guard_meta": max_gap_guard_meta,
         }
 
+    def _coarse_actionness_scores(
+        self,
+        *,
+        reader_outputs: Mapping[str, torch.Tensor],
+        candidate_valid: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        action_logits = reader_outputs.get("actionness_logits", reader_outputs.get("action_logits"))
+        if not torch.is_tensor(action_logits):
+            raise ValueError("coarse_actionness_uncertainty requires actionness_logits or action_logits")
+        if tuple(action_logits.shape) != tuple(candidate_valid.shape):
+            raise ValueError("coarse actionness logits must match candidate_valid shape")
+        _require_finite(action_logits, "coarse actionness logits", error_type=ValueError)
+
+        valid = candidate_valid.to(device=action_logits.device).bool()
+        prob = torch.sigmoid(action_logits.float()).masked_fill(~valid, 0.0)
+        eps = 1.0e-6
+        prob_safe = prob.clamp(min=eps, max=1.0 - eps)
+        entropy = -(prob_safe * prob_safe.log() + (1.0 - prob_safe) * (1.0 - prob_safe).log()) / math.log(2.0)
+        margin_uncertainty = 1.0 - (2.0 * prob_safe - 1.0).abs()
+        uncertainty = torch.maximum(entropy, margin_uncertainty).clamp(0.0, 1.0).masked_fill(~valid, 0.0)
+
+        adjacent_valid = valid[:, 1:] & valid[:, :-1]
+        prev_change = torch.zeros_like(prob)
+        prev_change[:, 1:] = (prob[:, 1:] - prob[:, :-1]).abs().masked_fill(~adjacent_valid, 0.0)
+        next_change = torch.zeros_like(prob)
+        next_change[:, :-1] = (prob[:, 1:] - prob[:, :-1]).abs().masked_fill(~adjacent_valid, 0.0)
+        change = torch.maximum(prev_change, next_change).clamp(0.0, 1.0).masked_fill(~valid, 0.0)
+        background = ((1.0 - prob) * (1.0 - uncertainty)).masked_fill(~valid, 0.0)
+
+        normalizer = self.coarse_action_weight + self.coarse_uncertainty_weight + self.coarse_change_weight
+        if normalizer <= 0.0:
+            raise ValueError("coarse actionness policy requires at least one positive score weight")
+        mixed = (
+            self.coarse_action_weight * prob
+            + self.coarse_uncertainty_weight * uncertainty
+            + self.coarse_change_weight * change
+        ) / normalizer
+        mixed = mixed.masked_fill(~valid, 0.0)
+        scores = {
+            "coarse_action": prob,
+            "coarse_uncertainty": uncertainty,
+            "coarse_change": change,
+            "coarse_background": background,
+            "coarse_mixed_fill": mixed,
+        }
+        for name, value in scores.items():
+            _require_finite(value, f"{name} score", error_type=ValueError)
+        return scores
+
+    @staticmethod
+    def _scaled_coarse_quota(configured: Mapping[str, int], budget: int) -> dict[str, int]:
+        budget = int(budget)
+        if budget <= 0:
+            return {key: 0 for key in configured}
+        clean = {key: max(0, int(value)) for key, value in configured.items()}
+        total = sum(clean.values())
+        if total <= budget:
+            return clean
+        raw = {key: (float(value) * float(budget) / float(total)) for key, value in clean.items()}
+        quota = {key: int(math.floor(value)) for key, value in raw.items()}
+        remainder = budget - sum(quota.values())
+        order = sorted(raw, key=lambda key: (raw[key] - quota[key], clean[key]), reverse=True)
+        for key in order[:remainder]:
+            quota[key] += 1
+        return quota
+
+    def _coarse_actionness_uncertainty_transport_plan(
+        self,
+        *,
+        reader_outputs: Mapping[str, torch.Tensor],
+        valid: torch.Tensor,
+        candidate_valid: torch.Tensor,
+        candidate_dense_indices: torch.Tensor,
+        training: bool,
+    ) -> dict[str, Any]:
+        if tuple(candidate_dense_indices.shape) != tuple(candidate_valid.shape):
+            raise ValueError("candidate_dense_indices must match candidate_valid")
+        scores = self._coarse_actionness_scores(
+            reader_outputs=reader_outputs,
+            candidate_valid=candidate_valid,
+        )
+        action_scores = scores["coarse_action"]
+        device = action_scores.device
+        candidate_valid = candidate_valid.to(device=device).bool()
+        candidate_dense_indices = candidate_dense_indices.to(device=device)
+        valid = valid.to(device=device).bool()
+        if bool((candidate_valid.long().sum(dim=1) <= 0).any().item()):
+            raise ValueError("each sample must contain at least one coarse actionness candidate")
+
+        batch, _candidate_len = action_scores.shape
+        dense_len = int(valid.shape[1])
+        topk = 1
+        fixed_indices = torch.empty((batch, self.target_len, topk), dtype=torch.long, device=device)
+        fixed_weights = torch.ones((batch, self.target_len, topk), dtype=torch.float32, device=device)
+        fixed_positions = torch.empty((batch, self.target_len), dtype=torch.float32, device=device)
+        transport_weights = torch.zeros((batch, self.target_len, dense_len), dtype=torch.float32, device=device)
+        selected_output_valid_lengths = torch.empty((batch,), dtype=torch.long, device=device)
+        selected_roles: list[list[str]] = []
+        raw_dense_indices: list[list[int]] = []
+        raw_duplicate_rates: list[float] = []
+        raw_unique_counts: list[int] = []
+        reader_fill_counts: list[int] = []
+        st_active_row_counts: list[int] = []
+        max_gap_guard_meta: list[dict[str, Any]] = []
+        coarse_policy_meta: list[dict[str, Any]] = []
+
+        configured_quota = {
+            "coarse_uniform": self.coarse_uniform_count,
+            "coarse_action": self.coarse_action_count,
+            "coarse_uncertainty": self.coarse_uncertainty_count,
+            "coarse_change": self.coarse_change_count,
+            "coarse_background": self.coarse_background_count,
+        }
+        min_score = torch.finfo(torch.float32).min
+        mixed_ranked_all = torch.argsort(
+            scores["coarse_mixed_fill"].masked_fill(~candidate_valid, min_score),
+            dim=1,
+            descending=True,
+            stable=True,
+        )
+
+        for batch_idx in range(batch):
+            valid_candidate_indices = torch.nonzero(candidate_valid[batch_idx], as_tuple=False).flatten()
+            output_valid_len = min(int(valid_candidate_indices.numel()), self.target_len)
+            selected_output_valid_lengths[batch_idx] = output_valid_len
+            if output_valid_len <= 0:
+                raise ValueError("coarse actionness policy found no valid candidates for a sample")
+
+            valid_positions = candidate_dense_indices[batch_idx][candidate_valid[batch_idx]]
+            pos_to_candidate: dict[int, int] = {}
+            for candidate_tensor in valid_candidate_indices:
+                candidate_idx = int(candidate_tensor.item())
+                pos = int(candidate_dense_indices[batch_idx, candidate_idx].item())
+                pos_to_candidate.setdefault(pos, candidate_idx)
+
+            quota = self._scaled_coarse_quota(configured_quota, output_valid_len)
+            rows: list[tuple[int, int | None, str, str | None]] = []
+            used: set[int] = set()
+
+            def add_pos(pos: int, candidate_idx: int | None, role: str, score_key: str | None) -> None:
+                if len(rows) >= output_valid_len:
+                    return
+                if pos in used or not bool(valid[batch_idx, pos].item()):
+                    return
+                used.add(pos)
+                rows.append((pos, candidate_idx, role, score_key))
+
+            for pos_tensor in self._uniform_anchor_positions(
+                valid_positions=valid_positions,
+                count=quota["coarse_uniform"],
+            ):
+                add_pos(int(pos_tensor.item()), None, "coarse_uniform", None)
+
+            guard_enabled = bool(getattr(self, "max_dense_gap", 0) > 0 and getattr(self, "max_gap_guard_count", 0) > 0)
+            for pos_tensor in self._max_gap_guard_positions(
+                valid_positions=valid_positions,
+                count=min(int(getattr(self, "max_gap_guard_count", 0)), output_valid_len),
+                max_gap=int(getattr(self, "max_dense_gap", 0)),
+            ):
+                add_pos(int(pos_tensor.item()), None, "coarse_max_gap_guard", None)
+
+            ranked_by_score: dict[str, torch.Tensor] = {}
+            rank_position_by_score: dict[str, dict[int, int]] = {}
+            for score_key in (
+                "coarse_action",
+                "coarse_uncertainty",
+                "coarse_change",
+                "coarse_background",
+                "coarse_mixed_fill",
+            ):
+                ranked = torch.argsort(
+                    scores[score_key][batch_idx].masked_fill(~candidate_valid[batch_idx], min_score),
+                    descending=True,
+                    stable=True,
+                )
+                ranked = ranked[candidate_valid[batch_idx].gather(0, ranked)]
+                ranked_by_score[score_key] = ranked
+                rank_position_by_score[score_key] = {
+                    int(candidate.item()): rank for rank, candidate in enumerate(ranked)
+                }
+
+            for score_key, count in (
+                ("coarse_action", quota["coarse_action"]),
+                ("coarse_uncertainty", quota["coarse_uncertainty"]),
+                ("coarse_change", quota["coarse_change"]),
+                ("coarse_background", quota["coarse_background"]),
+            ):
+                for candidate_tensor in ranked_by_score[score_key]:
+                    if sum(1 for _pos, _candidate_idx, role, _score_key in rows if role == score_key) >= count:
+                        break
+                    candidate_idx = int(candidate_tensor.item())
+                    pos = int(candidate_dense_indices[batch_idx, candidate_idx].item())
+                    add_pos(pos, candidate_idx, score_key, score_key)
+                    if len(rows) >= output_valid_len:
+                        break
+
+            for candidate_tensor in ranked_by_score["coarse_mixed_fill"]:
+                if len(rows) >= output_valid_len:
+                    break
+                candidate_idx = int(candidate_tensor.item())
+                pos = int(candidate_dense_indices[batch_idx, candidate_idx].item())
+                add_pos(pos, candidate_idx, "coarse_mixed_fill", "coarse_mixed_fill")
+
+            if len(rows) < output_valid_len:
+                for pos_tensor in valid_positions:
+                    if len(rows) >= output_valid_len:
+                        break
+                    pos = int(pos_tensor.item())
+                    add_pos(pos, pos_to_candidate.get(pos), "dense_fill", "coarse_mixed_fill")
+
+            if len(rows) != output_valid_len:
+                raise ValueError(
+                    "failed to resolve coarse actionness uncertainty plan: "
+                    f"rows={len(rows)}, output_valid_len={output_valid_len}, target_len={self.target_len}"
+                )
+
+            rows.sort(key=lambda item: item[0])
+            prefix_positions = [pos for pos, _candidate_idx, _role, _score_key in rows]
+            prefix_gaps = [right - left for left, right in zip(prefix_positions[:-1], prefix_positions[1:])]
+            raw_top_positions = [
+                int(candidate_dense_indices[batch_idx, int(candidate.item())].item())
+                for candidate in mixed_ranked_all[batch_idx][:output_valid_len]
+            ]
+            raw_dense_indices.append(raw_top_positions)
+            raw_unique_count = len(set(raw_top_positions))
+            raw_unique_counts.append(raw_unique_count)
+            raw_duplicate_rates.append(
+                1.0 - float(raw_unique_count) / float(max(1, len(raw_top_positions)))
+            )
+            role_counts: dict[str, int] = {}
+            for _pos, _candidate_idx, role, _score_key in rows:
+                role_counts[role] = role_counts.get(role, 0) + 1
+            max_gap_guard_meta.append(
+                {
+                    "enabled": guard_enabled,
+                    "max_dense_gap": int(getattr(self, "max_dense_gap", 0)),
+                    "max_gap_guard_count": int(getattr(self, "max_gap_guard_count", 0)),
+                    "applied_count": role_counts.get("coarse_max_gap_guard", 0),
+                    "max_gap_after": max(prefix_gaps) if prefix_gaps else 0,
+                    "safety_gate_only": True,
+                }
+            )
+            coarse_policy_meta.append(
+                {
+                    "enabled": True,
+                    "protocol": "binary_actionness_uncertainty_v0",
+                    "configured_quota": dict(configured_quota),
+                    "effective_quota": dict(quota),
+                    "role_counts": role_counts,
+                    "score_weights": {
+                        "action": float(self.coarse_action_weight),
+                        "uncertainty": float(self.coarse_uncertainty_weight),
+                        "change": float(self.coarse_change_weight),
+                    },
+                    "deploy_time_signals": [
+                        "actionness_logits",
+                        "p_action",
+                        "binary_entropy",
+                        "binary_margin_uncertainty",
+                        "temporal_probability_change",
+                    ],
+                    "uses_learned_boundary_head": False,
+                    "uses_gt": False,
+                    "uses_teacher": False,
+                    "uses_raw_prediction_cache": False,
+                    "uses_p2": False,
+                }
+            )
+
+            batch_roles: list[str] = []
+            st_count = 0
+            global_rank_cache_by_key: dict[str, Mapping[str, torch.Tensor]] = {}
+            for out_idx in range(self.target_len):
+                if out_idx < output_valid_len:
+                    pos, candidate_idx, role, score_key = rows[out_idx]
+                else:
+                    pos, candidate_idx, role, score_key = rows[-1][0], rows[-1][1], "pad_repeat", None
+
+                fixed_positions[batch_idx, out_idx] = float(pos)
+                fixed_indices[batch_idx, out_idx, 0] = pos
+                fixed_weights[batch_idx, out_idx, 0] = 1.0
+                batch_roles.append(role)
+
+                hard = torch.zeros((dense_len,), dtype=torch.float32, device=device)
+                hard[pos] = 1.0
+                if (
+                    self.straight_through_detector_loss
+                    and training
+                    and score_key is not None
+                    and candidate_idx is not None
+                ):
+                    if (
+                        getattr(self, "frame_score_st_surrogate", "local_softmax") == "global_rank_topk"
+                        and score_key not in global_rank_cache_by_key
+                    ):
+                        global_rank_cache_by_key[score_key] = self._global_rank_topk_cache(
+                            scores=scores[score_key][batch_idx],
+                            candidate_valid=candidate_valid[batch_idx],
+                            topk_budget=output_valid_len,
+                            name=f"coarse_actionness_uncertainty/{score_key}",
+                        )
+                    soft_candidate = self._rank_transport_candidate_distribution(
+                        scores=scores[score_key][batch_idx],
+                        candidate_valid=candidate_valid[batch_idx],
+                        candidate_dense_indices=candidate_dense_indices[batch_idx],
+                        candidate_idx=int(candidate_idx),
+                        hard_rank_position=rank_position_by_score[score_key].get(int(candidate_idx)),
+                        topk_budget=output_valid_len,
+                        global_rank_cache=global_rank_cache_by_key.get(score_key),
+                        name=f"coarse_actionness_uncertainty/{score_key}",
+                    )
+                    soft_dense = self._scatter_candidate_distribution_to_dense(
+                        candidate_distribution=soft_candidate,
+                        candidate_dense_indices=candidate_dense_indices[batch_idx],
+                        dense_len=dense_len,
+                        device=device,
+                    )
+                    st_scale = float(getattr(self, "frame_score_st_gradient_scale", 1.0))
+                    transport_weights[batch_idx, out_idx] = hard + st_scale * (soft_dense - soft_dense.detach())
+                    st_count += 1
+                else:
+                    transport_weights[batch_idx, out_idx] = hard
+            selected_roles.append(batch_roles)
+            reader_fill_counts.append(role_counts.get("coarse_mixed_fill", 0) + role_counts.get("dense_fill", 0))
+            st_active_row_counts.append(st_count if self.straight_through_detector_loss else 0)
+
+        _require_finite(fixed_weights, "coarse actionness fixed weights")
+        _require_finite(fixed_positions, "coarse actionness selected positions")
+        _require_finite(transport_weights, "coarse actionness sparse transport weights")
+        return {
+            "indices": fixed_indices,
+            "weights": fixed_weights,
+            "transport_weights": transport_weights,
+            "selected_positions": fixed_positions,
+            "selected_output_valid_lengths": selected_output_valid_lengths,
+            "selected_roles": selected_roles,
+            "raw_slot_dense_indices": raw_dense_indices,
+            "raw_slot_duplicate_rates": raw_duplicate_rates,
+            "raw_slot_unique_counts": raw_unique_counts,
+            "reader_fill_counts": reader_fill_counts,
+            "st_active_row_counts": st_active_row_counts,
+            "max_gap_guard_meta": max_gap_guard_meta,
+            "coarse_policy_meta": coarse_policy_meta,
+        }
+
     def _normalize_dynamic_budget_config(self, cfg: Mapping[str, Any] | None) -> dict[str, Any] | None:
         if cfg is None:
             return None
@@ -2670,6 +3187,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         dynamic_budget_meta: Sequence[Mapping[str, Any]] | None = None,
         max_gap_guard_meta: Sequence[Mapping[str, Any]] | None = None,
         interval_packet_metadata: Sequence[Mapping[str, Any]] | None = None,
+        coarse_policy_meta: Sequence[Mapping[str, Any]] | None = None,
         reader_outputs: Mapping[str, torch.Tensor] | None = None,
         candidate_valid: torch.Tensor | None = None,
         candidate_dense_indices: torch.Tensor | None = None,
@@ -2719,6 +3237,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 "frame_score_topk": "frame_selection_logits",
                 "frame_score_global_rank_st": "frame_selection_logits",
                 "interval_boundary_packet": "interval_boundary_packet",
+                "coarse_actionness_uncertainty": "classification_probability_uncertainty_change",
             }
             meta["pc_ot_mras_prebackbone_hard_selection_source"] = hard_source_by_strategy.get(
                 selection_strategy,
@@ -2812,6 +3331,19 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                     "uses_p2": False,
                 }
             )
+            meta["pc_ot_mras_prebackbone_coarse_actionness_policy"] = (
+                dict(coarse_policy_meta[idx])
+                if coarse_policy_meta is not None
+                else {
+                    "enabled": False,
+                    "protocol": "not_coarse_actionness_uncertainty",
+                    "uses_learned_boundary_head": None,
+                    "uses_gt": False,
+                    "uses_teacher": False,
+                    "uses_raw_prediction_cache": False,
+                    "uses_p2": False,
+                }
+            )
             head_diagnostics = self._reader_head_diagnostics_for_sample(
                 reader_outputs=reader_outputs,
                 candidate_valid=candidate_valid,
@@ -2823,9 +3355,11 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             meta["pc_ot_mras_prebackbone_reader_diagnostics"] = self._reader_diagnostic_summary(head_diagnostics)
             meta["pc_ot_mras_prebackbone_protocol_flags"] = {
                 "uses_p2": False,
+                "uses_gt": False,
                 "uses_raw_prediction_cache": False,
                 "uses_teacher": False,
                 "uses_test_gt": False,
+                "uses_learned_boundary_head": False,
             }
             meta["pc_ot_mras_prebackbone_scout_feature_source"] = self.scout_feature_source
             meta["pc_ot_mras_prebackbone_scout_spatial_size"] = [
@@ -2916,6 +3450,9 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 "pc_ot_mras_prebackbone_hard_selection_source"
             ),
             "pc_ot_mras_prebackbone_dynamic_budget": meta.get("pc_ot_mras_prebackbone_dynamic_budget"),
+            "pc_ot_mras_prebackbone_coarse_actionness_policy": meta.get(
+                "pc_ot_mras_prebackbone_coarse_actionness_policy"
+            ),
             "pc_ot_mras_prebackbone_protocol_flags": meta.get("pc_ot_mras_prebackbone_protocol_flags"),
             "pc_ot_mras_prebackbone_selector_source": meta.get("pc_ot_mras_prebackbone_selector_source"),
         }
@@ -3233,6 +3770,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         if gt_segments is None:
             return losses
         matrix = reader_outputs.get("acquisition_matrix")
+        actionness_logits = reader_outputs.get("actionness_logits", reader_outputs.get("action_logits"))
         value_logits = reader_outputs.get("value_logits", reader_outputs.get("action_logits"))
         risk_logits = reader_outputs.get("risk_logits", reader_outputs.get("boundary_logits"))
         frame_selection_logits = reader_outputs.get("frame_selection_logits")
@@ -3241,6 +3779,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         role_logits = reader_outputs.get("role_logits")
         aux_tensors = (
             matrix,
+            actionness_logits,
             value_logits,
             risk_logits,
             frame_selection_logits,
@@ -3279,6 +3818,23 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         _require_finite(boundary_target, "selector boundary auxiliary target")
         slot_prob = None
         column_mass = None
+        if (
+            getattr(self, "selection_strategy", "slot_transport") == "coarse_actionness_uncertainty"
+            and actionness_logits is not None
+            and self.aux_gt_acquisition_loss_weight > 0.0
+            and bool(valid.any().item())
+        ):
+            aux_actionness_logits = _smooth_clamp_logits(
+                actionness_logits.float(),
+                float(getattr(self, "frame_score_aux_logit_clamp", 0.0)),
+                "selector coarse actionness logits",
+            )
+            actionness_loss = (
+                F.binary_cross_entropy_with_logits(aux_actionness_logits[valid], action_target[valid])
+                * self.aux_gt_acquisition_loss_weight
+            )
+            _require_finite(actionness_loss, "selector coarse actionness loss")
+            losses["selector_gt_actionness_loss"] = actionness_loss
         if (
             getattr(self, "selection_strategy", "slot_transport") in (
                 "frame_score_topk",
@@ -3469,4 +4025,5 @@ __all__ = [
     "PCOTMRASLowResolutionPixelTemporalFrameScout",
     "PCOTMRASLowResPixelTemporalFrameReader",
     "PCOTMRASRSeriesHybridFrameScout",
+    "PCOTMRASCoarseActionnessFrameScout",
 ]
