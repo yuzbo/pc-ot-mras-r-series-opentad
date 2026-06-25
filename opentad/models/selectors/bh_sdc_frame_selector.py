@@ -1153,14 +1153,15 @@ class PCOTMRASBoundaryHazardSparseToDenseBridge(nn.Module):
                 raise ValueError(f"meta[{batch_idx}] physical_time_axis is shorter than dense valid length")
 
             sparse = features[batch_idx, :, :selected_count]
-            sparse_for_completion = sparse.to(dtype=completion_dtype)
-            distance = (dense_axis[:, None] - selected.to(dtype=completion_dtype)[None, :]).abs()
-            weights = torch.softmax(-distance / self.interpolation_temperature, dim=1)
-            gap_distance = distance.min(dim=1).values
-            completion_confidence = weights.max(dim=1).values
-            completed = sparse_for_completion @ weights.transpose(0, 1)
-            completed[:, selected] = sparse_for_completion
-            completed[:, dense_valid_len:] = 0.0
+            with torch.autocast(device_type=features.device.type, enabled=False):
+                sparse_for_completion = sparse.to(dtype=completion_dtype)
+                distance = (dense_axis[:, None] - selected.to(dtype=completion_dtype)[None, :]).abs()
+                weights = torch.softmax(-distance / self.interpolation_temperature, dim=1)
+                gap_distance = distance.min(dim=1).values
+                completion_confidence = weights.max(dim=1).values
+                completed = sparse_for_completion @ weights.transpose(0, 1)
+                completed[:, selected] = sparse_for_completion.to(dtype=completed.dtype)
+                completed[:, dense_valid_len:] = 0.0
             dense[batch_idx] = completed.to(dtype=features.dtype)
             dense_mask[batch_idx, :dense_valid_len] = True
             observed_mask[batch_idx, selected] = True

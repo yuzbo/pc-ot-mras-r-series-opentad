@@ -437,7 +437,7 @@ def test_forward_test_rejects_gt_teacher_or_raw_prediction_meta_payloads():
         bridge.forward_test(good_outputs["inputs"], good_outputs["masks"], good_outputs["metas"])
 
 
-def test_sparse_dense_bridge_accepts_fp16_features_with_float32_completion_weights(monkeypatch):
+def test_sparse_dense_bridge_preserves_observed_positions_under_autocast_dtype_mismatch(monkeypatch):
     module, _builder = _load_bh_sdc_module()
     bridge = module.PCOTMRASBoundaryHazardSparseToDenseBridge(
         dense_window_size=8,
@@ -471,13 +471,14 @@ def test_sparse_dense_bridge_accepts_fp16_features_with_float32_completion_weigh
 
     monkeypatch.setattr(module.torch, "softmax", _float32_softmax)
 
-    outputs = bridge.forward_train(
-        features,
-        masks,
-        metas,
-        gt_segments=[torch.empty(0, 2)],
-        gt_labels=[torch.empty(0)],
-    )
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        outputs = bridge.forward_train(
+            features,
+            masks,
+            metas,
+            gt_segments=[torch.empty(0, 2)],
+            gt_labels=[torch.empty(0)],
+        )
 
     completed = outputs["features"]
     completion_meta = outputs["metas"][0]["bh_sdc_completion"]
