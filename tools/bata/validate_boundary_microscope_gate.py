@@ -180,7 +180,6 @@ FORBIDDEN_ATTRIBUTION_TOKENS = (
 )
 
 CONFIG_REQUIRED_FALSE_KEYS = (
-    "allow_tools_train",
     "allow_tools_test",
     "allow_remote_sync",
     "allow_slurm",
@@ -189,6 +188,13 @@ CONFIG_REQUIRED_FALSE_KEYS = (
     "allow_raw_prediction",
     "metric_claim_allowed",
     "paper_claim_allowed",
+)
+
+BOUNDARY_ENTRYPOINT_GATE_ENVS = dict(
+    gate_json_env="OPENTAD_BOUNDARY_MICROSCOPE_ENTRYPOINT_GATE_JSON",
+    gate_sha256_env="OPENTAD_BOUNDARY_MICROSCOPE_ENTRYPOINT_GATE_SHA256",
+    active_manifest_sha256_env="OPENTAD_BOUNDARY_MICROSCOPE_ACTIVE_MANIFEST_SHA256",
+    resolved_config_sha256_env="OPENTAD_BOUNDARY_MICROSCOPE_RESOLVED_CONFIG_SHA256",
 )
 
 
@@ -270,6 +276,56 @@ def _reject_forbidden_attribution(payload):
 def _require_exact(payload, key, expected):
     if payload.get(key) != expected:
         raise ValueError(f"Boundary microscope gate must preserve {key}={expected}: {payload.get(key)}")
+
+
+def _require_gate_bound_full_train_config(gate):
+    if gate.get("allowed_decision") != FULL_TRAIN_ALLOWED_DECISION:
+        raise ValueError("Boundary microscope full-train config gate must bind ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN")
+    if gate.get("allow_precheck_only") is not False:
+        raise ValueError("Boundary microscope full-train config gate must keep allow_precheck_only=False")
+    if gate.get("allow_tools_train") is not True:
+        raise ValueError("Boundary microscope full-train config gate must set allow_tools_train=True")
+    if tuple(gate.get("allowed_entrypoints", ())) != ("tools/train.py",):
+        raise ValueError("Boundary microscope full-train config gate must allow only tools/train.py")
+
+    context = gate.get("entrypoint_gate_context")
+    if not isinstance(context, dict):
+        raise ValueError("Boundary microscope full-train config must define entrypoint_gate_context")
+    if context.get("required") is not True:
+        raise ValueError("Boundary microscope full-train entrypoint gate context must be required")
+    for key, expected in BOUNDARY_ENTRYPOINT_GATE_ENVS.items():
+        if context.get(key) != expected:
+            raise ValueError(f"Boundary microscope full-train entrypoint gate context must set {key}={expected}")
+    if tuple(context.get("allowed_decisions", ())) != (FULL_TRAIN_ALLOWED_DECISION,):
+        raise ValueError("Boundary microscope full-train entrypoint gate must allow only full-train decision")
+    if context.get("strict_payload_validation") is not True:
+        raise ValueError("Boundary microscope full-train entrypoint gate must use strict payload validation")
+
+    exact = context.get("required_exact_values", {})
+    for key, expected in (
+        ("route", ALLOWED_ROUTE),
+        ("route_label", ALLOWED_ROUTE_LABEL),
+        ("budget", 384),
+        ("dense_window_size", 768),
+        ("user_override_statement", FULL_TRAIN_USER_OVERRIDE_STATEMENT),
+    ):
+        if exact.get(key) != expected:
+            raise ValueError(f"Boundary microscope full-train entrypoint gate must bind {key}={expected}")
+
+    required_true = set(context.get("required_true_keys", ()))
+    for key in FULL_TRAIN_REQUIRED_TRUE_KEYS:
+        if key not in required_true:
+            raise ValueError(f"Boundary microscope full-train entrypoint gate must require {key}=true")
+    required_false = set(context.get("required_false_keys", ()))
+    for key in FULL_TRAIN_REQUIRED_FALSE_KEYS:
+        if key not in required_false:
+            raise ValueError(f"Boundary microscope full-train entrypoint gate must require {key}=false")
+    forbidden_true = set(context.get("forbidden_true_keys", ()))
+    for key in FULL_TRAIN_FORBIDDEN_TRUE_KEYS:
+        if key not in forbidden_true:
+            raise ValueError(f"Boundary microscope full-train entrypoint gate must forbid {key}=true")
+    if context.get("unknown_key_policy") != "reject_unknown_except_explicit_harmless_metadata":
+        raise ValueError("Boundary microscope full-train entrypoint gate must reject unknown payload keys")
 
 
 def validate_gate_payload(
@@ -411,13 +467,19 @@ def validate_config_file(config_path):
         raise ValueError(f"Boundary microscope config gate route mismatch: {gate.get('route')}")
     if gate.get("route_label") != ALLOWED_ROUTE_LABEL:
         raise ValueError(f"Boundary microscope config gate route_label mismatch: {gate.get('route_label')}")
-    if gate.get("allow_precheck_only") is not True:
-        raise ValueError("Boundary microscope config gate must keep allow_precheck_only=True")
+    is_full_train_candidate = gate.get("stage") == "full_train_candidate_n16r4"
+    if is_full_train_candidate:
+        _require_gate_bound_full_train_config(gate)
+    else:
+        if gate.get("allow_precheck_only") is not True:
+            raise ValueError("Boundary microscope config gate must keep allow_precheck_only=True")
+        if gate.get("allow_tools_train") is not False:
+            raise ValueError("Boundary microscope precheck config gate must keep allow_tools_train=False")
+        if tuple(gate.get("allowed_entrypoints", ())) != ():
+            raise ValueError("Boundary microscope precheck config gate must keep allowed_entrypoints empty")
     for key in CONFIG_REQUIRED_FALSE_KEYS:
         if gate.get(key) is not False:
             raise ValueError(f"Boundary microscope config gate must keep {key}=False")
-    if tuple(gate.get("allowed_entrypoints", ())) != ():
-        raise ValueError("Boundary microscope config gate must keep allowed_entrypoints empty")
     _reject_forbidden_attribution({key: value for key, value in gate.items() if key != "route_label"})
 
     inference = namespace.get("inference", {})
@@ -434,7 +496,7 @@ def validate_config_file(config_path):
         "route": ALLOWED_ROUTE,
         "route_label": ALLOWED_ROUTE_LABEL,
         "stage": gate.get("stage"),
-        "allowed_decision": ALLOWED_DECISION,
+        "allowed_decision": gate.get("allowed_decision", ALLOWED_DECISION),
         "allows_precheck_only": bool(gate.get("allow_precheck_only")),
         "allows_tools_train": bool(gate.get("allow_tools_train")),
         "allows_tools_test": bool(gate.get("allow_tools_test")),
@@ -445,6 +507,7 @@ def validate_config_file(config_path):
         "allows_raw_prediction": bool(gate.get("allow_raw_prediction")),
         "metric_claim_allowed": bool(gate.get("metric_claim_allowed")),
         "paper_claim_allowed": bool(gate.get("paper_claim_allowed")),
+        "requires_entrypoint_gate": bool(gate.get("entrypoint_gate_context", {}).get("required")),
         "future_full_train_requires_separate_decision": True,
         "current_gate_cannot_authorize_remote_sync_or_full_train": True,
     }

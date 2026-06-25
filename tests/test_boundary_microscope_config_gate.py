@@ -20,10 +20,12 @@ FULL_CONFIG = (
     / "boundary_microscope_acquisition_full_train_candidate_n16r4.py"
 )
 VALIDATOR = ROOT / "tools" / "bata" / "validate_boundary_microscope_gate.py"
+GUARD_PATH = ROOT / "opentad" / "utils" / "training_guard.py"
 DOC_CONTEXT = ROOT / "docs" / "en" / "boundary_microscope_acquisition_route_review_context_20260624.md"
 N16R4_PRECHECK_LAUNCHER = ROOT / "scripts" / "run_boundary_microscope_precheck_n16r4.sbatch"
 N16R4_FULL_TRAIN_LAUNCHER = ROOT / "scripts" / "run_boundary_microscope_full_train_n16r4.sbatch"
 FULL_TRAIN_USER_OVERRIDE_STATEMENT = "USER_EXPLICITLY_REQUESTED_BOUNDARY_MICROSCOPE_FULL_TRAIN_CANDIDATE_ON_2026-06-24"
+EXPECTED_PRO_FIX_BRANCH = "codex/boundary-microscope-pro-fix-20260625"
 
 
 def _load_validator():
@@ -33,9 +35,57 @@ def _load_validator():
     return module
 
 
+def _load_guard():
+    spec = importlib.util.spec_from_file_location("boundary_microscope_training_guard_for_test", GUARD_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_config_or_skip(path: Path):
     mmengine_config = pytest.importorskip("mmengine.config")
     return mmengine_config.Config.fromfile(str(path))
+
+
+def _sha_text(path: Path, text: str) -> str:
+    path.write_text(text, encoding="utf-8")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _full_train_payload(
+    manifest="manifest-sha",
+    resolved="resolved-sha",
+    run_tag="boundary_microscope_full_train_fixed_run_tag",
+):
+    return {
+        "decision": "ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN",
+        "route": "boundary_microscope_acquisition",
+        "route_label": "DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3",
+        "active_sha256_manifest_sha256": manifest,
+        "resolved_config_sha256": resolved,
+        "run_tag": run_tag,
+        "budget": 384,
+        "dense_window_size": 768,
+        "user_override_statement": FULL_TRAIN_USER_OVERRIDE_STATEMENT,
+        "allow_precheck_only": False,
+        "allow_tools_train": True,
+        "allow_tools_test": False,
+        "allow_remote_sync": False,
+        "allow_slurm": True,
+        "allow_gpu": True,
+        "allow_full_train": True,
+        "allow_raw_prediction": False,
+        "load_from_raw_predictions": False,
+        "save_raw_prediction": False,
+        "test_time_gt_allowed": False,
+        "teacher_allowed": False,
+        "raw_prediction_cache_allowed": False,
+        "uses_gt_at_test": False,
+        "uses_teacher": False,
+        "uses_raw_prediction_cache": False,
+        "metric_claim_allowed": False,
+        "paper_claim_allowed": False,
+    }
 
 
 def test_boundary_microscope_local_config_is_parseable_and_fail_closed():
@@ -66,14 +116,14 @@ def test_boundary_microscope_local_config_is_parseable_and_fail_closed():
     assert cfg.inference.save_raw_prediction is False
 
 
-def test_boundary_microscope_full_train_candidate_config_is_still_fail_closed_until_gate():
+def test_boundary_microscope_full_train_candidate_config_is_gate_bound_train_only():
     cfg = _load_config_or_skip(FULL_CONFIG)
 
     gate = cfg.boundary_microscope_gate
     assert gate.stage == "full_train_candidate_n16r4"
     assert gate.requires_gate_json is True
-    assert gate.allow_precheck_only is True
-    assert gate.allow_tools_train is False
+    assert gate.allow_precheck_only is False
+    assert gate.allow_tools_train is True
     assert gate.allow_tools_test is False
     assert gate.allow_remote_sync is False
     assert gate.allow_slurm is False
@@ -82,7 +132,19 @@ def test_boundary_microscope_full_train_candidate_config_is_still_fail_closed_un
     assert gate.allow_raw_prediction is False
     assert gate.metric_claim_allowed is False
     assert gate.paper_claim_allowed is False
-    assert tuple(gate.allowed_entrypoints) == ()
+    assert tuple(gate.allowed_entrypoints) == ("tools/train.py",)
+    assert gate.entrypoint_gate_context.required is True
+    assert gate.entrypoint_gate_context.gate_json_env == "OPENTAD_BOUNDARY_MICROSCOPE_ENTRYPOINT_GATE_JSON"
+    assert gate.entrypoint_gate_context.gate_sha256_env == "OPENTAD_BOUNDARY_MICROSCOPE_ENTRYPOINT_GATE_SHA256"
+    assert tuple(gate.entrypoint_gate_context.allowed_decisions) == ("ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN",)
+    assert gate.entrypoint_gate_context.required_exact_values.route == "boundary_microscope_acquisition"
+    assert gate.entrypoint_gate_context.required_exact_values.budget == 384
+    assert gate.entrypoint_gate_context.required_exact_values.dense_window_size == 768
+    assert gate.entrypoint_gate_context.required_exact_values.user_override_statement == FULL_TRAIN_USER_OVERRIDE_STATEMENT
+    assert "allow_tools_train" in tuple(gate.entrypoint_gate_context.required_true_keys)
+    assert "allow_tools_test" in tuple(gate.entrypoint_gate_context.required_false_keys)
+    assert "metric_claim_allowed" in tuple(gate.entrypoint_gate_context.required_false_keys)
+    assert "paper_claim_allowed" in tuple(gate.entrypoint_gate_context.required_false_keys)
     assert cfg.workflow.end_epoch == 60
     assert cfg.workflow.val_start_epoch == 40
     assert cfg.workflow.val_eval_interval == 2
@@ -93,6 +155,42 @@ def test_boundary_microscope_full_train_candidate_config_is_still_fail_closed_un
     assert cfg.model.rpn_head.temporal_grid.decode_axis == "dense"
     assert cfg.model.rpn_head.temporal_grid.positions_key == "irregular_selected_positions"
     assert cfg.model.rpn_head.temporal_grid.valid_len_key == "irregular_selected_valid_len"
+
+
+def test_boundary_microscope_training_guard_requires_external_full_train_gate(tmp_path, monkeypatch):
+    cfg = _load_config_or_skip(FULL_CONFIG)
+    training_guard = _load_guard()
+
+    with pytest.raises(RuntimeError, match="missing required entrypoint gate env"):
+        training_guard.assert_detector_training_allowed(cfg, entrypoint="tools/train.py")
+
+    gate_json = tmp_path / "boundary_full_train_gate.json"
+    gate_json.write_text(json.dumps(_full_train_payload()), encoding="utf-8")
+    gate_sha = hashlib.sha256(gate_json.read_bytes()).hexdigest()
+    monkeypatch.setenv("OPENTAD_BOUNDARY_MICROSCOPE_ENTRYPOINT_GATE_JSON", str(gate_json))
+    monkeypatch.setenv("OPENTAD_BOUNDARY_MICROSCOPE_ENTRYPOINT_GATE_SHA256", gate_sha)
+    monkeypatch.setenv("OPENTAD_BOUNDARY_MICROSCOPE_ACTIVE_MANIFEST_SHA256", "manifest-sha")
+    monkeypatch.setenv("OPENTAD_BOUNDARY_MICROSCOPE_RESOLVED_CONFIG_SHA256", "resolved-sha")
+
+    assert training_guard.assert_detector_training_allowed(cfg, entrypoint="tools/train.py") is None
+    with pytest.raises(RuntimeError, match="allow_tools_test=False"):
+        training_guard.assert_detector_training_allowed(cfg, entrypoint="tools/test.py")
+
+
+def test_boundary_microscope_training_guard_rejects_invalid_full_train_gate(tmp_path, monkeypatch):
+    cfg = _load_config_or_skip(FULL_CONFIG)
+    training_guard = _load_guard()
+
+    gate_json = tmp_path / "boundary_bad_full_train_gate.json"
+    gate_json.write_text(json.dumps(_full_train_payload(resolved="other-resolved-sha")), encoding="utf-8")
+    gate_sha = hashlib.sha256(gate_json.read_bytes()).hexdigest()
+    monkeypatch.setenv("OPENTAD_BOUNDARY_MICROSCOPE_ENTRYPOINT_GATE_JSON", str(gate_json))
+    monkeypatch.setenv("OPENTAD_BOUNDARY_MICROSCOPE_ENTRYPOINT_GATE_SHA256", gate_sha)
+    monkeypatch.setenv("OPENTAD_BOUNDARY_MICROSCOPE_ACTIVE_MANIFEST_SHA256", "manifest-sha")
+    monkeypatch.setenv("OPENTAD_BOUNDARY_MICROSCOPE_RESOLVED_CONFIG_SHA256", "resolved-sha")
+
+    with pytest.raises(RuntimeError, match="resolved config sha256 mismatch"):
+        training_guard.assert_detector_training_allowed(cfg, entrypoint="tools/train.py")
 
 
 def test_boundary_microscope_gate_validator_rejects_open_train_or_claims(tmp_path):
@@ -281,35 +379,7 @@ def test_boundary_microscope_validator_cli_passes_for_precheck_payload(tmp_path)
 
 def test_boundary_microscope_full_train_gate_json_is_fail_closed_when_missing_or_invalid(tmp_path):
     gate_json = tmp_path / "boundary_full_train_gate.json"
-    payload = {
-        "decision": "ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN",
-        "route": "boundary_microscope_acquisition",
-        "route_label": "DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3",
-        "active_sha256_manifest_sha256": "manifest-sha",
-        "resolved_config_sha256": "resolved-sha",
-        "run_tag": "boundary_microscope_full_train_fixed_run_tag",
-        "budget": 384,
-        "dense_window_size": 768,
-        "user_override_statement": FULL_TRAIN_USER_OVERRIDE_STATEMENT,
-        "allow_precheck_only": False,
-        "allow_tools_train": True,
-        "allow_tools_test": False,
-        "allow_remote_sync": False,
-        "allow_slurm": True,
-        "allow_gpu": True,
-        "allow_full_train": True,
-        "allow_raw_prediction": False,
-        "load_from_raw_predictions": False,
-        "save_raw_prediction": False,
-        "test_time_gt_allowed": False,
-        "teacher_allowed": False,
-        "raw_prediction_cache_allowed": False,
-        "uses_gt_at_test": False,
-        "uses_teacher": False,
-        "uses_raw_prediction_cache": False,
-        "metric_claim_allowed": False,
-        "paper_claim_allowed": False,
-    }
+    payload = _full_train_payload()
     gate_json.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     gate_sha = hashlib.sha256(gate_json.read_bytes()).hexdigest()
 
@@ -372,35 +442,7 @@ def test_boundary_microscope_full_train_gate_json_is_fail_closed_when_missing_or
 
 def test_boundary_microscope_full_train_gate_json_can_authorize_tools_train(tmp_path):
     gate_json = tmp_path / "boundary_full_train_gate.json"
-    payload = {
-        "decision": "ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN",
-        "route": "boundary_microscope_acquisition",
-        "route_label": "DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3",
-        "active_sha256_manifest_sha256": "manifest-sha",
-        "resolved_config_sha256": "resolved-sha",
-        "run_tag": "boundary_microscope_full_train_fixed_run_tag",
-        "budget": 384,
-        "dense_window_size": 768,
-        "user_override_statement": FULL_TRAIN_USER_OVERRIDE_STATEMENT,
-        "allow_precheck_only": False,
-        "allow_tools_train": True,
-        "allow_tools_test": False,
-        "allow_remote_sync": False,
-        "allow_slurm": True,
-        "allow_gpu": True,
-        "allow_full_train": True,
-        "allow_raw_prediction": False,
-        "load_from_raw_predictions": False,
-        "save_raw_prediction": False,
-        "test_time_gt_allowed": False,
-        "teacher_allowed": False,
-        "raw_prediction_cache_allowed": False,
-        "uses_gt_at_test": False,
-        "uses_teacher": False,
-        "uses_raw_prediction_cache": False,
-        "metric_claim_allowed": False,
-        "paper_claim_allowed": False,
-    }
+    payload = _full_train_payload()
     gate_json.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     gate_sha = hashlib.sha256(gate_json.read_bytes()).hexdigest()
 
@@ -459,7 +501,9 @@ def test_boundary_microscope_validator_cli_reports_config_is_precheck_only_json(
     report = json.loads(result.stdout)
     assert report["status"] == "BOUNDARY_MICROSCOPE_CONFIG_GATE_VALIDATION_PASS"
     assert report["route_label"] == "DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3"
-    assert report["allowed_decision"] == "ALLOW_BOUNDARY_MICROSCOPE_PRECHECK_ONLY"
+    assert report["allowed_decision"] == "ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN"
+    assert report["allows_tools_train"] is True
+    assert report["requires_entrypoint_gate"] is True
     assert report["allows_full_train"] is False
     assert report["allows_remote_sync"] is False
     assert report["allows_slurm"] is False
@@ -505,6 +549,7 @@ def test_boundary_microscope_n16r4_precheck_launcher_is_fail_closed():
     text = N16R4_PRECHECK_LAUNCHER.read_text(encoding="utf-8")
 
     assert 'PRECHECK_ONLY="${PRECHECK_ONLY:-1}"' in text
+    assert f'EXPECTED_GIT_BRANCH="${{EXPECTED_GIT_BRANCH:-{EXPECTED_PRO_FIX_BRANCH}}}"' in text
     assert "ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN" in text
     assert "PRECHECK_ONLY=1 must not set ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN=1" in text
     assert "PRECHECK_ONLY=0 requires ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN=1" in text
@@ -519,12 +564,15 @@ def test_boundary_microscope_n16r4_full_train_launcher_is_locked_by_default_and_
     text = N16R4_FULL_TRAIN_LAUNCHER.read_text(encoding="utf-8")
 
     assert 'PRECHECK_ONLY="${PRECHECK_ONLY:-1}"' in text
+    assert f'EXPECTED_GIT_BRANCH="${{EXPECTED_GIT_BRANCH:-{EXPECTED_PRO_FIX_BRANCH}}}"' in text
     assert "PRECHECK_ONLY=0 requires ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN=1" in text
     assert "BOUNDARY_MICROSCOPE_FULL_TRAIN_GATE_JSON" in text
     assert "--action full-train" in text
     assert "--run-tag \"$RUN_TAG\"" in text
     assert "BOUNDARY_MICROSCOPE_PRECHECK_ONLY_PASS_NO_TRAIN" in text
     assert "BOUNDARY_MICROSCOPE_FULL_TRAIN_TOOLS_TRAIN_STARTED" in text
+    assert "OPENTAD_BOUNDARY_MICROSCOPE_ENTRYPOINT_GATE_JSON" in text
+    assert "OPENTAD_BOUNDARY_MICROSCOPE_RESOLVED_CONFIG_SHA256" in text
     assert "python tools/train.py \"$CONFIG\" --id \"$TRAIN_ID\"" in text
     assert "full train remains locked" not in text
     assert text.index("--action full-train") < text.index("python tools/train.py")

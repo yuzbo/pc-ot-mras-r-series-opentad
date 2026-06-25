@@ -31,7 +31,7 @@ PRECHECK_ONLY="${PRECHECK_ONLY:-1}"
 ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN="${ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN:-0}"
 BOUNDARY_MICROSCOPE_FULL_TRAIN_GATE_JSON="${BOUNDARY_MICROSCOPE_FULL_TRAIN_GATE_JSON:-}"
 BOUNDARY_MICROSCOPE_FULL_TRAIN_GATE_SHA256="${BOUNDARY_MICROSCOPE_FULL_TRAIN_GATE_SHA256:-}"
-EXPECTED_GIT_BRANCH="${EXPECTED_GIT_BRANCH:-codex/boundary-microscope-precheck-deploy-20260624}"
+EXPECTED_GIT_BRANCH="${EXPECTED_GIT_BRANCH:-codex/boundary-microscope-pro-fix-20260625}"
 RUN_TAG="${RUN_TAG:-boundary_microscope_precheck_${SLURM_JOB_ID:-nojob}_$(date '+%Y%m%d_%H%M%S')}"
 
 case "$RUN_TAG" in
@@ -196,9 +196,18 @@ require(cfg.route_id == "boundary_microscope_acquisition", cfg.route_id)
 require(cfg.model.frame_selector.type == "BoundaryMicroscopeAcquisitionRoute", cfg.model.frame_selector)
 require(int(cfg.model.frame_selector.target_len) == 384, cfg.model.frame_selector)
 require(int(cfg.model.frame_selector.dense_window_size) == 768, cfg.model.frame_selector)
-require(gate.allow_precheck_only is True, gate)
+require(gate.allowed_decision == "ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN", gate)
+require(gate.requires_gate_json is True, gate)
+require(gate.allow_precheck_only is False, gate)
+require(gate.allow_tools_train is True, gate)
+require(tuple(gate.allowed_entrypoints) == ("tools/train.py",), gate)
+require(gate.entrypoint_gate_context.required is True, gate)
+require(gate.entrypoint_gate_context.gate_json_env == "OPENTAD_BOUNDARY_MICROSCOPE_ENTRYPOINT_GATE_JSON", gate)
+require(gate.entrypoint_gate_context.gate_sha256_env == "OPENTAD_BOUNDARY_MICROSCOPE_ENTRYPOINT_GATE_SHA256", gate)
+require(gate.entrypoint_gate_context.active_manifest_sha256_env == "OPENTAD_BOUNDARY_MICROSCOPE_ACTIVE_MANIFEST_SHA256", gate)
+require(gate.entrypoint_gate_context.resolved_config_sha256_env == "OPENTAD_BOUNDARY_MICROSCOPE_RESOLVED_CONFIG_SHA256", gate)
+require(tuple(gate.entrypoint_gate_context.allowed_decisions) == ("ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN",), gate)
 for key in (
-    "allow_tools_train",
     "allow_tools_test",
     "allow_remote_sync",
     "allow_slurm",

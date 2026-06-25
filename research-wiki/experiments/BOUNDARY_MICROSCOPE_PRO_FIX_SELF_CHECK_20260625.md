@@ -2,25 +2,32 @@
 
 ## Status
 
-- Timestamp: `2026-06-25T00:51:58+08:00`.
+- Timestamp: `2026-06-25T12:45:44+08:00`.
 - Route label: `DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3`.
 - Owner worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_BoundaryMicroscope_ProFix_Worktree_20260625`.
 - Owner branch: `codex/boundary-microscope-pro-fix-20260625`.
-- Decision status: `FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO`.
-- Full-train / Slurm / remote sync / `tools/test.py` mAP: still locked.
+- Decision status: `PRO_FIX_LOCAL_COMMIT_READY_FOR_PRECHECK_ONLY_DEPLOYMENT`.
+- Remote sync, push, Slurm, `tools/test.py`, mAP, runtime/FLOPs, metric claim, and paper claim: not performed and still outside this local code-owner action.
+- Full train: no longer blocked by a stale `training_guard` double gate after a valid external full-train gate, but still requires explicit external gate JSON/SHA, active manifest SHA, resolved config SHA, matching `RUN_TAG`, and user override statement before `tools/train.py` can start.
 
 ## Boundary Pro Findings Addressed
 
 - Fixed the selector package import/registry blocker by removing unconditional imports of Event-Surprise and PC-OT/C3 selector classes from the Boundary branch package surface. Boundary can now register from its own selector file without depending on other divergent route files.
 - Enabled the Boundary route to use the ActionFormer physical temporal-grid head path through config inheritance. The head receives `irregular_selected_positions` as original dense/window coordinates and marks `irregular_native_axis=True` before seconds conversion.
 - Added an executable coordinate roundtrip test for a start microscope packet: selected dense positions include the synthetic boundary start/end, physical-grid head points use those dense positions, a proposal roundtrips to `[8, 22]` dense time, and post-processing converts it to seconds via the original window metadata.
-- Kept the full-train candidate fail-closed. Gate validation reports `allows_tools_train=false`, `allows_slurm=false`, `allows_full_train=false`, and `future_full_train_requires_separate_decision=true`.
+- Updated both Boundary N16R4 launchers so `EXPECTED_GIT_BRANCH` defaults to `codex/boundary-microscope-pro-fix-20260625`, not the old `codex/boundary-microscope-precheck-deploy-20260624`.
+- Converted the full-train candidate config from stale hard-blocked `allow_tools_train=False` to gate-bound train-only: config validation now reports `allows_tools_train=true`, `requires_entrypoint_gate=true`, `allows_slurm=false`, `allows_gpu=false`, and `allows_full_train=false`.
+- The full-train launcher now exports `OPENTAD_BOUNDARY_MICROSCOPE_ENTRYPOINT_GATE_JSON`, `OPENTAD_BOUNDARY_MICROSCOPE_ENTRYPOINT_GATE_SHA256`, `OPENTAD_BOUNDARY_MICROSCOPE_ACTIVE_MANIFEST_SHA256`, and `OPENTAD_BOUNDARY_MICROSCOPE_RESOLVED_CONFIG_SHA256` immediately before `tools/train.py`, so `training_guard` verifies the same external gate that the launcher validated.
 
 ## Changed Files
 
 - `opentad/models/selectors/__init__.py`
 - `opentad/models/selectors/boundary_microscope_acquisition_route.py`
 - `configs/adatad/thumos/boundary_microscope_acquisition_local_precheck.py`
+- `configs/adatad/thumos/boundary_microscope_acquisition_full_train_candidate_n16r4.py`
+- `scripts/run_boundary_microscope_precheck_n16r4.sbatch`
+- `scripts/run_boundary_microscope_full_train_n16r4.sbatch`
+- `tools/bata/validate_boundary_microscope_gate.py`
 - `tests/test_boundary_microscope_registry_build.py`
 - `tests/test_boundary_microscope_config_gate.py`
 - `tests/test_boundary_microscope_coordinate_roundtrip.py`
@@ -36,8 +43,9 @@
 - Losses/assignment changed: no.
 - Test-time post-processing changed: no production code change; existing `irregular_native_axis=True` path is now exercised by the physical-grid head and tested.
 - Strict random-fixed 50% status: Boundary route remains an up-to-384-from-768 sparse acquisition candidate, not a claim of final dynamic-budget success.
-- GT/teacher/cache leakage risk: tests cover no GT/teacher/raw-prediction/cache metadata in selector plans and forward-test shortcut rejection.
+- GT/teacher/cache leakage risk: full-train gate validation and `training_guard` tests require `test_time_gt_allowed=False`, `teacher_allowed=False`, `raw_prediction_cache_allowed=False`, `metric_claim_allowed=False`, and `paper_claim_allowed=False`.
 - C3 mixing risk: Boundary package export and configs are route-isolated from Event-Surprise, PC-OT/C3 reader/selector, Frame-Token, BH-SDC, and combo attribution.
+- `training_guard` double-layer risk: fixed without changing the generic guard. The Boundary full-train config now uses the existing entrypoint-gate mechanism; without env-bound gate evidence `tools/train.py` is rejected, with valid gate evidence only `tools/train.py` is allowed, and `tools/test.py` remains rejected.
 
 ## Verification
 
@@ -70,7 +78,50 @@ Result: pass.
 C:\Users\skywalker\.conda\envs\torch_1\python.exe tools\bata\validate_boundary_microscope_gate.py configs\adatad\thumos\boundary_microscope_acquisition_full_train_candidate_n16r4.py --json
 ```
 
-Result: `BOUNDARY_MICROSCOPE_CONFIG_GATE_VALIDATION_PASS`, with `allows_tools_train=false`, `allows_slurm=false`, `allows_full_train=false`.
+Historical initial self-check result before the launcher gate-readiness fix:
+`BOUNDARY_MICROSCOPE_CONFIG_GATE_VALIDATION_PASS`, with `allows_tools_train=false`, `allows_slurm=false`, `allows_full_train=false`.
+
+Additional 2026-06-25 pro-fix verification:
+
+```powershell
+python -m pytest tests/test_boundary_microscope_config_gate.py -q -rs
+```
+
+Initial RED result before implementation: `6 failed, 9 passed in 1.80s`.
+Expected failures covered the old launcher branch defaults and the stale `allow_tools_train=False` second-layer `training_guard` block.
+
+Final result after implementation: `15 passed in 1.55s`.
+
+```powershell
+python -m py_compile tools/bata/validate_boundary_microscope_gate.py configs/adatad/thumos/boundary_microscope_acquisition_local_precheck.py configs/adatad/thumos/boundary_microscope_acquisition_full_train_candidate_n16r4.py tests/test_boundary_microscope_config_gate.py opentad/utils/training_guard.py opentad/models/selectors/boundary_microscope_acquisition_route.py
+```
+
+Result: pass.
+
+```powershell
+Get-Content -Raw scripts/run_boundary_microscope_precheck_n16r4.sbatch | ForEach-Object { $_ -replace "`r", "" } | bash -n -s
+Get-Content -Raw scripts/run_boundary_microscope_full_train_n16r4.sbatch | ForEach-Object { $_ -replace "`r", "" } | bash -n -s
+```
+
+Result: both pass.
+
+```powershell
+python tools/bata/validate_boundary_microscope_gate.py configs/adatad/thumos/boundary_microscope_acquisition_full_train_candidate_n16r4.py --json
+```
+
+Result: `BOUNDARY_MICROSCOPE_CONFIG_GATE_VALIDATION_PASS`, with `allowed_decision=ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN`, `allows_tools_train=true`, `requires_entrypoint_gate=true`, `allows_slurm=false`, `allows_gpu=false`, `allows_full_train=false`, `metric_claim_allowed=false`, and `paper_claim_allowed=false`.
+
+```powershell
+python tools/bata/validate_boundary_microscope_gate.py --action full-train --gate-json <temp> --gate-sha256 <temp_sha> --active-manifest-sha256 manifest-sha --resolved-config-sha256 resolved-sha --run-tag boundary_microscope_full_train_fixed_run_tag --json
+```
+
+Result: `BOUNDARY_MICROSCOPE_FULL_TRAIN_GATE_VALIDATION_PASS`, with `allows_tools_train=true`, `allows_slurm=true`, `allows_gpu=true`, `allows_full_train=true`, `metric_claim_allowed=false`, and `paper_claim_allowed=false`.
+
+```powershell
+git diff --check
+```
+
+Result: pass; only Windows LF-to-CRLF warnings.
 
 ```powershell
 git diff --check
@@ -80,5 +131,6 @@ Result: pass; only Windows LF-to-CRLF warnings.
 
 ## Still Locked
 
-- Follow-up Pro review is still pending.
-- No remote sync, SCP/rsync, Slurm, GPU allocation, long training, `tools/train.py`, `tools/test.py`, mAP, runtime/FLOPs, deployment, metric claim, or paper claim is unlocked by this local fix.
+- No Pro/Gemini/Claude review was launched in this action by user instruction.
+- No remote sync, SCP/rsync, push, Slurm, GPU allocation, long training, `tools/train.py`, `tools/test.py`, mAP, runtime/FLOPs, deployment, metric claim, or paper claim was executed by this local fix.
+- Main process may use this committed pro-fix branch for remote `PRECHECK_ONLY=1` deployment checks after deciding to sync/push externally; full train still additionally requires the external full-train gate JSON/SHA/run_tag/user authorization bundle.
