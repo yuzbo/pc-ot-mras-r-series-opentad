@@ -29,6 +29,7 @@ cd "$ROOT_DIR"
   tools/bata/validate_c3_physical_grid_actionformer_precheck.py
 
 "$PYTHON_BIN" -m pytest tests/test_c3_physical_grid_actionformer_candidate.py -q
+"$PYTHON_BIN" -m pytest tests/test_c3_physical_grid_round_trip.py -q
 
 "$PYTHON_BIN" tools/bata/validate_c3_physical_grid_actionformer_precheck.py --config "$CONFIG"
 
