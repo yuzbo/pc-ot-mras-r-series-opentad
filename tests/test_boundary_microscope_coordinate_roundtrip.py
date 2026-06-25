@@ -169,7 +169,7 @@ def test_boundary_microscope_physical_grid_head_uses_selected_dense_positions_fo
     head.prior_generator = types.SimpleNamespace(regression_range=[(0, 10000)])
 
     output_len = int(selected_outputs["inputs"].shape[2])
-    assert output_len == 32
+    assert output_len == 64
     assert selected_mask.shape == (1, output_len)
     assert selected_mask[0, :selected_len].all()
     assert not selected_mask[0, selected_len:].any()

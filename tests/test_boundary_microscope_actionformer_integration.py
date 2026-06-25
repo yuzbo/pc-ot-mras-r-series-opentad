@@ -271,13 +271,13 @@ def test_actionformer_calls_boundary_selector_before_backbone_on_videomae_6d_lay
     train_metas = model.rpn_head.last_train_call["metas"]
     selected = train_metas[0]["boundary_microscope_selected_dense_indices"]
     selected_len = len(selected)
-    assert model.backbone.calls == [(1, 2, 3, 32, 3, 3)]
+    assert model.backbone.calls == [(1, 2, 3, 64, 3, 3)]
     assert selected_len <= 32
     assert model.rpn_head.last_train_call["feat_shape"] == (1, 4, 64)
     assert model.rpn_head.last_train_call["mask_shape"] == (1, 64)
     assert int(model.rpn_head.last_train_call["mask"].sum().item()) == selected_len
     assert model.rpn_head.last_train_call["mask"][0, :selected_len].all()
-    assert not model.rpn_head.last_train_call["mask"][0, selected_len:32].any()
+    assert not model.rpn_head.last_train_call["mask"][0, selected_len:64].any()
     assert "boundary_microscope_acquisition_plan" not in metas[0]
 
     plan = train_metas[0]["boundary_microscope_acquisition_plan"]
@@ -288,13 +288,13 @@ def test_actionformer_calls_boundary_selector_before_backbone_on_videomae_6d_lay
     assert plan["uses_gt"] is False
     assert plan["uses_teacher"] is False
     assert plan["uses_raw_prediction_cache"] is False
-    assert plan["raw_input_temporal_len"] == 32
+    assert plan["raw_input_temporal_len"] == 64
     assert plan["true_observation_count"] == selected_len
-    assert plan["padding_count"] == 32 - selected_len
+    assert plan["padding_count"] == 64 - selected_len
     assert plan["padding_slots_are_invalid"] is True
-    assert plan["detector_input_positions_len"] == 32
+    assert plan["detector_input_positions_len"] == 64
     assert plan["irregular_meta_positions_are_true_observation_prefix"] is True
-    full_indices = selected + [selected[-1]] * (32 - selected_len)
+    full_indices = selected + [selected[-1]] * (64 - selected_len)
     expected_backbone_inputs = inputs[:, :, :, full_indices, :, :]
     assert torch.equal(model.backbone.last_inputs, expected_backbone_inputs)
     assert train_metas[0]["irregular_selected_positions"] == [float(pos) for pos in selected]
@@ -303,8 +303,8 @@ def test_actionformer_calls_boundary_selector_before_backbone_on_videomae_6d_lay
     assert train_metas[0]["irregular_selected_count"] == selected_len
     assert train_metas[0]["irregular_selected_output_valid_len"] == float(selected_len)
     assert train_metas[0]["irregular_selected_valid_len"] == 64.0
-    assert train_metas[0]["boundary_microscope_raw_input_temporal_len"] == 32
-    assert train_metas[0]["boundary_microscope_padding_count"] == 32 - selected_len
+    assert train_metas[0]["boundary_microscope_raw_input_temporal_len"] == 64
+    assert train_metas[0]["boundary_microscope_padding_count"] == 64 - selected_len
     assert train_metas[0]["boundary_microscope_padding_slots_are_invalid"] is True
     assert all(left < right for left, right in zip(selected, selected[1:]))
 
