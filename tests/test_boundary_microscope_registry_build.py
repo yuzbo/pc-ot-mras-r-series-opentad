@@ -23,7 +23,7 @@ def test_boundary_microscope_lightweight_registry_export_is_visible_without_heav
     assert ROUTE_LABEL in route_text
 
 
-def test_boundary_microscope_selector_package_import_is_route_isolated(monkeypatch):
+def test_boundary_microscope_selector_package_import_keeps_final_divergent_routes_only(monkeypatch):
     import importlib
     import sys
     import types
@@ -58,11 +58,14 @@ def test_boundary_microscope_selector_package_import_is_route_isolated(monkeypat
         assert selectors.BoundaryMicroscopeAcquisitionRoute.__name__ == "BoundaryMicroscopeAcquisitionRoute"
         exported = set(selectors.__all__)
         assert "BoundaryMicroscopeAcquisitionRoute" in exported
+        assert "EventSurpriseTemporalAcquisitionSelector" in exported
+        assert "FrameTokenHybridAcquisitionRoute" in exported
         for forbidden in (
-            "EventSurpriseTemporalAcquisitionSelector",
             "PCOTMRASPreBackboneFrameSelector",
             "PCOTMRASReader",
             "ProcessConditionedOrderedTransportMRASReader",
+            "BHSDCAcquisitionRoute",
+            "BoundaryHazardSparseDenseRoute",
         ):
             assert forbidden not in exported
     finally:

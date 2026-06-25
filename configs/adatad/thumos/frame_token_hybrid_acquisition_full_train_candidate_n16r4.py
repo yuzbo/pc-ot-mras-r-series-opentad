@@ -1,0 +1,167 @@
+_base_ = ["./frame_token_hybrid_acquisition_local_precheck.py"]
+
+
+route_label = "DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3"
+route_id = "frame_token_hybrid_acquisition"
+stage_id = "full_train_candidate_n16r4"
+variant_id = "Frame-Token-Hybrid-Acquisition-Full-Train-Candidate-N16R4"
+window_size = 768
+target_len = 384
+target_dense_len = 768
+
+experiment_scope = dict(
+    route=route_id,
+    stage=stage_id,
+    variant_id=variant_id,
+    route_label=route_label,
+    changed_surface="input_sampling_token_compression_dense_completion",
+    candidate_status="full_train_candidate_gate_bound_tools_train_only",
+    strict_budget_family="up_to_384_raw_frame_observations_plus_span_tokens_from_768_dense_window",
+    selection_surface="preview_probe_visible_pre_backbone_bridge",
+    actual_decode_saving_in_current_pipeline=False,
+    raw_decode_saving_claim_allowed=False,
+    pre_decode_loader_hook_reviewed=False,
+    requires_deploy_preview_probe_signal=True,
+    deploy_time_inputs_only=True,
+    test_time_gt_allowed=False,
+    teacher_allowed=False,
+    oracle_allowed=False,
+    raw_prediction_cache_allowed=False,
+    paper_claim_allowed=False,
+)
+
+frame_token_hybrid_gate = dict(
+    route=route_id,
+    stage=stage_id,
+    route_label=route_label,
+    requires_gate_json=True,
+    allowed_decision="ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN",
+    allow_precheck_only=True,
+    allow_tools_train=True,
+    allow_tools_test=False,
+    allow_remote_sync=False,
+    allow_slurm=True,
+    allow_gpu=True,
+    allow_full_train=True,
+    allow_raw_prediction=False,
+    load_from_raw_predictions=False,
+    save_raw_prediction=False,
+    metric_claim_allowed=False,
+    paper_claim_allowed=False,
+    allowed_entrypoints=("tools/train.py",),
+    forbidden_entrypoints=("tools/test.py", "scp", "rsync"),
+    entrypoint_gate_context=dict(
+        required=True,
+        gate_json_env="FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_JSON",
+        gate_sha256_env="FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_SHA256",
+        active_manifest_sha256_env="FRAME_TOKEN_HYBRID_ACTIVE_MANIFEST_SHA256",
+        resolved_config_sha256_env="FRAME_TOKEN_HYBRID_RESOLVED_CONFIG_SHA256",
+        require_resolved_config_sha256=True,
+        allowed_decisions=("ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN",),
+        strict_payload_validation=True,
+        required_exact_values=dict(
+            route=route_id,
+            route_label=route_label,
+            route_label_override_statement=route_label,
+            user_override_statement="USER_REQUESTED_FRAME_TOKEN_HYBRID_FULL_TRAIN_CANDIDATE_20260624",
+            coordinator_override_statement="FRAME_TOKEN_HYBRID_OWNER_AUTHORIZES_FULL_TRAIN_CANDIDATE_20260624",
+            budget=target_len,
+            dense_window_size=window_size,
+            target_dense_len=target_dense_len,
+        ),
+        env_value_bindings=(
+            dict(gate_key="run_tag", env="RUN_TAG", label="run tag"),
+        ),
+        required_true_keys=(
+            "precheck_passed",
+            "allow_precheck_only",
+            "allow_tools_train",
+            "allow_slurm",
+            "allow_gpu",
+            "allow_full_train",
+        ),
+        required_false_keys=(
+            "allow_tools_test",
+            "allow_remote_sync",
+            "load_from_raw_predictions",
+            "save_raw_prediction",
+            "uses_gt_at_test",
+            "uses_teacher",
+            "uses_oracle",
+            "uses_raw_prediction_cache",
+            "metric_claim_allowed",
+            "paper_claim_allowed",
+        ),
+        unknown_key_policy="reject_unknown_except_explicit_harmless_metadata",
+        harmless_metadata_keys=("note", "review_id", "run_tag"),
+        forbidden_true_keys=(
+            "tools_train",
+            "tools_test",
+            "allow_tools_test",
+            "direct_tools_test",
+            "remote_sync",
+            "allow_remote_sync",
+            "sbatch",
+            "allow_sbatch",
+            "raw_prediction",
+            "allow_raw_prediction",
+            "raw_predictions",
+            "allow_raw_predictions",
+            "raw_prediction_cache",
+            "allow_raw_prediction_cache",
+            "prediction_cache",
+            "allow_prediction_cache",
+            "load_from_raw_predictions",
+            "allow_load_from_raw_predictions",
+            "save_raw_prediction",
+            "allow_save_raw_prediction",
+            "metric",
+            "metric_claim",
+            "allow_metric_claim",
+            "metric_claim_allowed",
+            "paper_claim",
+            "allow_paper_claim",
+            "paper_claim_allowed",
+            "runtime_claim",
+            "allow_runtime_claim",
+            "deploy_claim",
+            "allow_deploy_claim",
+            "uses_gt_at_test",
+            "uses_test_gt",
+            "uses_teacher",
+            "uses_oracle",
+        ),
+    ),
+)
+
+model = dict(
+    frame_selector=dict(
+        type="FrameTokenHybridAcquisitionRoute",
+        route_label=route_label,
+        meta_key="frame_token_hybrid_acquisition_plan",
+        target_len=target_len,
+        dense_window_size=window_size,
+        target_dense_len=target_dense_len,
+        anchor_stride=24,
+        boundary_radius=2,
+        boundary_epsilon=0.25,
+        stable_gap_min_len=12,
+        stable_epsilon=0.02,
+        max_span_tokens=64,
+        require_preview_signal=True,
+        preview_signal_meta_key="frame_token_hybrid_preview_signal",
+        preview_positions_meta_key="frame_token_hybrid_preview_positions",
+        preview_source_meta_key="frame_token_hybrid_preview_source",
+    )
+)
+
+workflow = dict(
+    logging_interval=50,
+    checkpoint_interval=60,
+    val_loss_interval=-1,
+    val_eval_interval=2,
+    val_start_epoch=40,
+    end_epoch=60,
+)
+
+work_dir = "exps/thumos/adatad/frame_token_hybrid_acquisition_full_train_candidate_n16r4"

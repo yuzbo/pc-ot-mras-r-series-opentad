@@ -214,6 +214,7 @@ class ActionFormer(SingleStageDetector):
 
     def forward_test(self, inputs, masks, metas=None, infer_cfg=None, **kwargs):
         self._reject_pc_ot_mras_value_targets_in_forward_test(metas)
+        selector_outputs_for_decode = None
         if self.frame_selector is not None:
             selector_outputs = self.frame_selector.forward_test(
                 inputs=inputs,
@@ -223,6 +224,7 @@ class ActionFormer(SingleStageDetector):
             inputs = selector_outputs["inputs"]
             masks = selector_outputs["masks"]
             metas = selector_outputs.get("metas", metas)
+            selector_outputs_for_decode = selector_outputs.get("event_surprise_selector_outputs")
             self._reject_pc_ot_mras_value_targets_in_forward_test(metas)
 
         if self.with_backbone:
@@ -259,6 +261,15 @@ class ActionFormer(SingleStageDetector):
             x, masks, metas = self._call_neck_forward(x, masks, metas=metas)
 
         rpn_proposals, rpn_scores = self._call_rpn_head_forward_test(x, masks, metas=metas, **kwargs)
+        if selector_outputs_for_decode is not None and hasattr(
+            self.frame_selector,
+            "map_selected_axis_predictions_to_dense_axis",
+        ):
+            rpn_proposals = self.frame_selector.map_selected_axis_predictions_to_dense_axis(
+                rpn_proposals,
+                selector_outputs_for_decode,
+                metas,
+            )
         predictions = rpn_proposals, rpn_scores
         return predictions
 

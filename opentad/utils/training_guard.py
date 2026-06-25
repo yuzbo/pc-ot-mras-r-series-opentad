@@ -93,6 +93,17 @@ def _is_pc_ot_mras_gate(gate):
     return "pc-ot-mras" in route or "pc_ot_mras" in stage or "pc-ot-mras" in stage
 
 
+def _is_frame_token_hybrid_gate(gate):
+    route = _lower_text(_get_value(gate, "route", _MISSING))
+    stage = _lower_text(_get_value(gate, "stage", _MISSING))
+    route_label = _lower_text(_get_value(gate, "route_label", _MISSING))
+    return (
+        "frame_token_hybrid" in route
+        or "frame_token_hybrid" in stage
+        or "frame-token-hybrid" in route_label
+    )
+
+
 def _as_int(value, default=None):
     if value is _MISSING or value is None:
         return default
@@ -267,9 +278,16 @@ def _has_pc_ot_mras_gate(cfg):
     return any(_is_pc_ot_mras_gate(gate) for _, gate in _iter_candidate_gates(cfg))
 
 
+def _has_guarded_cli_gate(cfg):
+    return any(
+        _is_pc_ot_mras_gate(gate) or _is_frame_token_hybrid_gate(gate)
+        for _, gate in _iter_candidate_gates(cfg)
+    )
+
+
 def assert_safe_cfg_options_for_gated_config(cfg, cfg_options, entrypoint="tools/train.py"):
-    """Reject CLI config overrides that can mutate PC-OT-MRAS gate boundaries."""
-    if not cfg_options or not _has_pc_ot_mras_gate(cfg):
+    """Reject CLI config overrides that can mutate guarded gate boundaries."""
+    if not cfg_options or not _has_guarded_cli_gate(cfg):
         return
 
     safe_exact = {
@@ -329,7 +347,7 @@ def assert_safe_cfg_options_for_gated_config(cfg, cfg_options, entrypoint="tools
     if bad_paths:
         joined = ", ".join(sorted(bad_paths))
         raise RuntimeError(
-            f"{entrypoint} rejected unsafe --cfg-options for PC-OT-MRAS gated config: {joined}. "
+            f"{entrypoint} rejected unsafe --cfg-options for guarded gated config: {joined}. "
             "Use the reviewed launcher allowlist for runtime paths only; gate, workflow, "
             "checkpoint, raw-prediction, metric, and claim fields are immutable."
         )
@@ -337,12 +355,12 @@ def assert_safe_cfg_options_for_gated_config(cfg, cfg_options, entrypoint="tools
 
 def assert_safe_entrypoint_args_for_gated_config(cfg, args, entrypoint="tools/train.py"):
     """Reject CLI entrypoint arguments that bypass gated-config launchers."""
-    if not _has_pc_ot_mras_gate(cfg):
+    if not _has_guarded_cli_gate(cfg):
         return
 
     if getattr(args, "resume", None) is not None:
         raise RuntimeError(
-            f"{entrypoint} rejected --resume for PC-OT-MRAS gated config before DDP, dataset, "
+            f"{entrypoint} rejected --resume for guarded gated config before DDP, dataset, "
             "model, or checkpoint access. Use a separately reviewed launcher/gate for any resume path."
         )
 
@@ -392,6 +410,29 @@ def _entrypoint_sha256_binding_block_reason(cfg, context, gate_payload):
     return None
 
 
+def _entrypoint_env_value_binding_block_reason(context, gate_payload):
+    bindings = _get_value(context, "env_value_bindings", _MISSING)
+    if bindings in (_MISSING, None):
+        return None
+
+    for binding in bindings:
+        gate_key = str(_get_value(binding, "gate_key", ""))
+        env_key = str(_get_value(binding, "env", ""))
+        label = str(_get_value(binding, "label", gate_key or env_key or "entrypoint gate binding"))
+        if not gate_key:
+            return f"entrypoint gate env value binding for {label} is missing gate_key"
+        if not env_key:
+            return f"entrypoint gate env value binding for {label} is missing env"
+        expected = os.environ.get(env_key)
+        if expected in (None, ""):
+            return f"missing required entrypoint gate env {env_key} for {label}"
+        actual = gate_payload.get(gate_key)
+        if actual != expected:
+            return f"entrypoint gate {label} mismatch: expected={expected} actual={actual}"
+
+    return None
+
+
 def _entrypoint_gate_context_block_reason(cfg, gate):
     context = _get_value(gate, "entrypoint_gate_context", _MISSING)
     if context in (_MISSING, None) or not _is_true(_get_value(context, "required", _MISSING)):
@@ -405,11 +446,14 @@ def _entrypoint_gate_context_block_reason(cfg, gate):
     resolved_env = str(
         _get_value(context, "resolved_config_sha256_env", "OPENTAD_PCOTMRAS_RESOLVED_CONFIG_SHA256")
     )
+    run_tag_env_value = _get_value(context, "run_tag_env", _MISSING)
+    run_tag_env = None if run_tag_env_value in (_MISSING, None, "") else str(run_tag_env_value)
 
     gate_json_path = os.environ.get(gate_json_env)
     gate_sha256 = os.environ.get(gate_sha_env)
     active_manifest_sha256 = os.environ.get(manifest_env)
     resolved_config_sha256 = os.environ.get(resolved_env)
+    run_tag = os.environ.get(run_tag_env) if run_tag_env is not None else None
 
     if not gate_json_path:
         return f"missing required entrypoint gate env {gate_json_env}"
@@ -419,6 +463,8 @@ def _entrypoint_gate_context_block_reason(cfg, gate):
         return f"missing required entrypoint gate env {manifest_env}"
     if _is_true(_get_value(context, "require_resolved_config_sha256", True)) and not resolved_config_sha256:
         return f"missing required entrypoint gate env {resolved_env}"
+    if run_tag_env is not None and _is_true(_get_value(context, "require_run_tag", False)) and not run_tag:
+        return f"missing required entrypoint gate env {run_tag_env}"
 
     gate_path = Path(gate_json_path)
     if not gate_path.is_file():
@@ -461,6 +507,8 @@ def _entrypoint_gate_context_block_reason(cfg, gate):
             "entrypoint gate resolved config sha256 mismatch: "
             f"expected={expected_resolved} actual={resolved_config_sha256}"
         )
+    if run_tag_env is not None and run_tag is not None and gate_payload.get("run_tag") != run_tag:
+        return f"entrypoint gate run_tag mismatch: expected={gate_payload.get('run_tag')} actual={run_tag}"
 
     forbidden_true = _get_value(context, "forbidden_true_keys", _MISSING)
     if forbidden_true is not _MISSING:
@@ -515,10 +563,20 @@ def _entrypoint_gate_context_block_reason(cfg, gate):
                     gate_key = _get_value(binding, "gate_key", _MISSING)
                     if gate_key not in (_MISSING, None, ""):
                         allowed_keys.add(str(gate_key))
+            env_bindings = _get_value(context, "env_value_bindings", _MISSING)
+            if env_bindings not in (_MISSING, None):
+                for binding in env_bindings:
+                    gate_key = _get_value(binding, "gate_key", _MISSING)
+                    if gate_key not in (_MISSING, None, ""):
+                        allowed_keys.add(str(gate_key))
             allowed_keys.update(str(key) for key in harmless)
             for key in gate_payload:
                 if str(key) not in allowed_keys:
                     return f"entrypoint gate contains unknown or unallowlisted key: {key}"
+
+    reason = _entrypoint_env_value_binding_block_reason(context, gate_payload)
+    if reason is not None:
+        return reason
 
     reason = _entrypoint_sha256_binding_block_reason(cfg, context, gate_payload)
     if reason is not None:
