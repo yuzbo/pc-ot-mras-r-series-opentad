@@ -158,8 +158,7 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
         return self._forward_impl(inputs, masks, metas, reject_forbidden_meta=True)
 
     def _forward_impl(self, inputs: torch.Tensor, masks: torch.Tensor, metas, *, reject_forbidden_meta: bool):
-        if inputs.ndim != 5:
-            raise ValueError(f"inputs must be [B,C,T,H,W], got {tuple(inputs.shape)}")
+        inputs = self._canonical_dense_inputs(inputs)
         batch, _channels, dense_len, _height, _width = inputs.shape
         if dense_len != self.target_dense_len:
             raise ValueError(f"target_dense_len={self.target_dense_len} must match input dense axis {dense_len}")
@@ -206,6 +205,21 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
             ],
             "span_tokens": [plan["span_tokens"] for plan in plans],
         }
+
+    @staticmethod
+    def _canonical_dense_inputs(inputs: torch.Tensor) -> torch.Tensor:
+        if inputs.ndim == 5:
+            return inputs
+        if inputs.ndim == 6:
+            batch, num_views, _channels, _dense_len, _height, _width = inputs.shape
+            if int(num_views) != 1:
+                raise ValueError(
+                    "FrameTokenHybridAcquisitionRoute currently supports only a single clip/view dataloader axis "
+                    f"for [B,N,C,T,H,W] inputs; got N={int(num_views)} for batch={int(batch)}. "
+                    "N>1 needs an explicit metadata flattening or view-fusion contract before use."
+                )
+            return inputs[:, 0].contiguous()
+        raise ValueError(f"inputs must be [B,C,T,H,W] or [B,N,C,T,H,W], got {tuple(inputs.shape)}")
 
     def _selection_signal_for_sample(
         self,

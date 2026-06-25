@@ -221,6 +221,49 @@ def test_frame_token_hybrid_outputs_actionformer_compatible_dense_axis_and_train
     assert train_outputs["metas"][0]["frame_token_hybrid_acquisition_plan"]["output_dense_axis_len"] == 768
 
 
+def test_frame_token_hybrid_forward_train_accepts_single_clip_dataloader_axis_and_writes_batch_metadata():
+    torch = _import_torch_or_skip()
+    module = _load_route_module()
+    selector = module.FrameTokenHybridAcquisitionRoute(
+        dense_window_size=32,
+        target_dense_len=32,
+        anchor_stride=8,
+        boundary_radius=0,
+        stable_gap_min_len=6,
+    )
+    dense_inputs, masks, metas = _make_hybrid_frames(torch, batch=2, dense_len=32)
+    dataloader_inputs = dense_inputs.unsqueeze(1)
+    gt_segments = [torch.tensor([[2.0, 6.0]], dtype=torch.float32) for _idx in range(2)]
+    gt_labels = [torch.tensor([1], dtype=torch.long) for _idx in range(2)]
+
+    outputs = selector.forward_train(dataloader_inputs, masks, metas, gt_segments, gt_labels)
+
+    assert outputs["inputs"].shape == dense_inputs.shape
+    assert outputs["masks"].shape == (2, 32)
+    assert outputs["gt_segments"] is gt_segments
+    assert outputs["gt_labels"] is gt_labels
+    assert len(outputs["metas"]) == 2
+    assert outputs["metas"][0]["sample_id"] == "frame-token-hybrid-0"
+    assert outputs["metas"][1]["sample_id"] == "frame-token-hybrid-1"
+    for meta in outputs["metas"]:
+        plan = meta["frame_token_hybrid_acquisition_plan"]
+        assert plan["route_label"] == "DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3"
+        assert plan["output_dense_axis_len"] == 32
+        assert len(meta["frame_token_hybrid_observed_raw_mask"]) == 32
+        assert len(meta["frame_token_hybrid_dense_completion_mask"]) == 32
+
+
+def test_frame_token_hybrid_rejects_multi_clip_axis_without_metadata_flattening_contract():
+    torch = _import_torch_or_skip()
+    module = _load_route_module()
+    selector = module.FrameTokenHybridAcquisitionRoute(dense_window_size=32, target_dense_len=32)
+    dense_inputs, masks, metas = _make_hybrid_frames(torch, batch=2, dense_len=32)
+    multi_clip_inputs = dense_inputs.unsqueeze(1).expand(-1, 2, -1, -1, -1, -1).contiguous()
+
+    with pytest.raises(ValueError, match="single clip/view"):
+        selector.forward_test(multi_clip_inputs, masks, metas)
+
+
 @pytest.mark.parametrize(
     "bad_meta",
     [

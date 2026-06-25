@@ -445,3 +445,81 @@ Launch decision:
   for the Frame/Token Hybrid full-train launcher repair.
 - Still locked in this owner turn: no direct push, no remote sync, no Slurm
   submission, no `tools/test.py`, no mAP/runtime/FLOPs/paper claim.
+
+## Full-Train Dataloader Single-Clip Axis Fix
+
+Timestamp: 2026-06-25T11:36:35+08:00
+
+Status:
+`FIXED_LOCALLY_PENDING_MAIN_PROCESS_PUSH_SYNC_REDEPLOY`
+
+Scope:
+
+- Owned worktree:
+  `E:/DeskTop/TAD/temrefuse-tad/OpenTAD_FrameToken_ProFix_Worktree_20260625`
+- Owned branch:
+  `codex/frame-token-pro-fix-20260625`
+- Route label:
+  `DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3`
+- User constraint honored: no Pro/Gemini/Claude review, no C3/BH-SDC/shared
+  main worktree writes, no remote sync, no Slurm launch, and no push.
+
+Trigger:
+
+- Remote full-train gate had passed and training reached `Training Starts` /
+  `Epoch 0 started`, then failed before the first loss with:
+  `ValueError: inputs must be [B,C,T,H,W], got (2, 1, 3, 768, 160, 160)`.
+- This showed that the real OpenTAD dataloader supplies dense video tensors as
+  `[B,N,C,T,H,W]` with `N=1` for this THUMOS full-train path, while
+  `FrameTokenHybridAcquisitionRoute._forward_impl` only accepted
+  `[B,C,T,H,W]`.
+
+Fix:
+
+- `FrameTokenHybridAcquisitionRoute` now canonicalizes selector inputs at the
+  route boundary:
+  `[B,C,T,H,W]` remains unchanged, `[B,1,C,T,H,W]` is squeezed to
+  `[B,C,T,H,W]`, and `N>1` raises a clear fail-closed error because this route
+  does not yet have an explicit metadata flattening or view-fusion contract.
+- Masks and metas keep batch semantics unchanged: masks remain `[B,T]`, metas
+  length must still equal `B`, observed positions are still per original
+  sample, dense completion still emits the ActionFormer-compatible 5D tensor,
+  and GT segment/label passthrough remains unchanged.
+
+Changed files in this repair:
+
+- `opentad/models/selectors/frame_token_hybrid_acquisition_route.py`
+- `tests/test_frame_token_hybrid_acquisition_route.py`
+- `research-wiki/experiments/FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_DEPLOYMENT_20260624.md`
+
+Verification:
+
+```text
+C:/Users/skywalker/.conda/envs/torch_1/python.exe -m pytest tests/test_frame_token_hybrid_acquisition_route.py -k "single_clip_dataloader_axis or multi_clip_axis"
+PASS: 2 passed, 11 deselected in 9.88s.
+
+C:/Users/skywalker/.conda/envs/torch_1/python.exe -m pytest tests/test_frame_token_hybrid_acquisition_route.py tests/test_frame_token_hybrid_metadata_contract.py tests/test_frame_token_hybrid_config_gate.py tests/test_frame_token_hybrid_build_forward_smoke.py tests/test_frame_token_hybrid_actionformer_integration.py
+PASS: 36 passed, 1 skipped in 50.57s.
+NOTE: the skipped pytest path requires full `mmaction.registry`; the independent build-forward smoke below passed.
+
+C:/Users/skywalker/.conda/envs/torch_1/python.exe -m py_compile opentad/models/selectors/frame_token_hybrid_acquisition_route.py tests/test_frame_token_hybrid_acquisition_route.py tools/bata/frame_token_hybrid_build_forward_smoke.py
+PASS.
+
+C:/Users/skywalker/.conda/envs/torch_1/python.exe tools/bata/frame_token_hybrid_build_forward_smoke.py
+PASS: FRAME_TOKEN_HYBRID_BUILD_FORWARD_SMOKE_PASS.
+```
+
+Local environment note:
+
+- Default `C:/ProgramData/anaconda3/python.exe` still cannot import torch
+  because `c10.dll` fails Windows DLL initialization; torch verification used
+  `C:/Users/skywalker/.conda/envs/torch_1/python.exe`, which imports torch and
+  runs pytest successfully.
+
+Launch decision:
+
+- Local fix status: `PASS`.
+- Allowed next action: main process may push/sync/redeploy this branch's new
+  commit for the Frame/Token Hybrid full-train dataloader shape repair.
+- Still locked in this owner turn: no direct push, no remote sync, no Slurm
+  submission, no `tools/test.py`, no mAP/runtime/FLOPs/paper claim.
