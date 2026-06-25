@@ -335,8 +335,8 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
         self.redundancy_weight = float(redundancy_weight)
         self.min_width = float(min_width)
         self.input_layout = str(input_layout)
-        if self.input_layout not in {"auto", "btc", "bct", "bcthw"}:
-            raise ValueError("input_layout must be one of auto, btc, bct, or bcthw")
+        if self.input_layout not in {"auto", "btc", "bct", "bcthw", "bncthw"}:
+            raise ValueError("input_layout must be one of auto, btc, bct, bcthw, or bncthw")
         self.remap_gt_to_selected_axis = bool(remap_gt_to_selected_axis)
         self.route_label = str(route_label)
         self.meta_key = str(meta_key)
@@ -560,6 +560,15 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
             features = inputs.detach().to(dtype=torch.float32).mean(dim=(3, 4)).transpose(1, 2).contiguous()
             return self._fit_preview_dim(features), "bcthw"
 
+        if inputs.ndim == 6:
+            if layout not in {"auto", "bct", "bcthw", "bncthw"}:
+                raise ValueError("6D inputs require input_layout='auto', 'bct', 'bcthw', or 'bncthw'")
+            if int(inputs.shape[1]) != 1:
+                raise ValueError("6D detector inputs require a singleton clip dimension [B,1,C,T,H,W]")
+            dense_clip = inputs[:, 0]
+            features = dense_clip.detach().to(dtype=torch.float32).mean(dim=(3, 4)).transpose(1, 2).contiguous()
+            return self._fit_preview_dim(features), "bncthw"
+
         raise ValueError(f"unsupported detector input shape: {tuple(inputs.shape)}")
 
     @staticmethod
@@ -594,6 +603,21 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
             )
             selected = torch.gather(inputs, dim=2, index=gather_index)
             return selected.masked_fill(~selected_mask[:, None, :, None, None], 0.0)
+        if layout == "bncthw":
+            if inputs.ndim != 6 or int(inputs.shape[0]) != batch:
+                raise ValueError("bncthw detector inputs must be [B,N,C,T,H,W]")
+            if int(inputs.shape[1]) != 1:
+                raise ValueError("6D detector inputs require a singleton clip dimension [B,1,C,T,H,W]")
+            gather_index = indices[:, None, None, :, None, None].expand(
+                -1,
+                inputs.shape[1],
+                inputs.shape[2],
+                -1,
+                inputs.shape[4],
+                inputs.shape[5],
+            )
+            selected = torch.gather(inputs, dim=3, index=gather_index)
+            return selected.masked_fill(~selected_mask[:, None, None, :, None, None], 0.0)
         raise ValueError(f"unsupported resolved layout: {layout}")
 
     def _normalize_metas_for_batch(
@@ -858,7 +882,9 @@ class EventSurpriseTemporalAcquisitionSelector(nn.Module):
             _validate_deploy_visible_meta(metas)
         features, layout = self._detector_preview_features(inputs)
         preview_feature_source = (
-            "loaded_dense_detector_input_prototype" if layout == "bcthw" else "deploy_visible_detector_feature_tensor"
+            "loaded_dense_detector_input_prototype"
+            if layout in {"bcthw", "bncthw"}
+            else "deploy_visible_detector_feature_tensor"
         )
         valid, coords = self._validate_inputs(features, masks.to(device=features.device), time_coords)
         scores = self._event_scores(features, valid)

@@ -430,6 +430,65 @@ def test_5d_preview_is_marked_as_loaded_dense_prototype_without_compute_saving_c
     assert flags["runtime_flops_claim_allowed"] is False
 
 
+def test_6d_single_clip_raw_inputs_preserve_temporal_axis_and_metadata():
+    module, _registry = _load_event_module()
+    selector = module.EventSurpriseTemporalAcquisitionSelector(
+        in_dim=3,
+        target_len=6,
+        max_gap=3,
+        coverage_anchor_count=3,
+        input_layout="bct",
+        remap_gt_to_selected_axis=True,
+    )
+    temporal_values = torch.arange(12, dtype=torch.float32).view(1, 1, 1, 12, 1, 1)
+    inputs = temporal_values.expand(2, 1, 3, 12, 2, 2).clone()
+    masks = torch.tensor(
+        [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
+        ],
+        dtype=torch.bool,
+    )
+    metas = [{"video_id": "event-6d-0"}, {"video_id": "event-6d-1"}]
+    gt_segments = [
+        torch.tensor([[2.0, 8.0]], dtype=torch.float32),
+        torch.tensor([[1.0, 7.0]], dtype=torch.float32),
+    ]
+    gt_labels = [torch.tensor([1], dtype=torch.long), torch.tensor([2], dtype=torch.long)]
+
+    out = selector.forward_train(
+        inputs=inputs,
+        masks=masks,
+        metas=metas,
+        gt_segments=gt_segments,
+        gt_labels=gt_labels,
+    )
+
+    assert out["inputs"].shape == (2, 1, 3, 6, 2, 2)
+    assert out["masks"].shape == (2, 6)
+    assert out["masks"].dtype == torch.bool
+    assert out["gt_segments"][0].shape == (1, 2)
+    for batch_idx, meta in enumerate(out["metas"]):
+        selected = out["event_surprise_selector_outputs"]["selected_dense_indices"][batch_idx]
+        count = int(out["event_surprise_selector_outputs"]["selected_mask"][batch_idx].sum().item())
+        selected_prefix = selected[:count]
+        assert torch.equal(out["inputs"][batch_idx, 0, 0, :count, 0, 0], selected_prefix.to(dtype=inputs.dtype))
+        assert meta["event_surprise_selected_dense_indices"] == selected_prefix.tolist()
+        assert meta["irregular_selected_positions"] == [float(item) for item in selected_prefix.tolist()]
+        assert meta["event_surprise_protocol_flags"]["preview_feature_source"] == "loaded_dense_detector_input_prototype"
+        assert meta["event_surprise_acquisition_plan"]["selected_count"] == count
+
+
+def test_6d_multi_clip_raw_inputs_fail_closed_until_flattening_semantics_are_defined():
+    module, _registry = _load_event_module()
+    selector = module.EventSurpriseTemporalAcquisitionSelector(in_dim=3, target_len=6, input_layout="bct")
+    inputs = torch.randn(1, 2, 3, 12, 2, 2)
+    masks = torch.ones(1, 12, dtype=torch.bool)
+
+    with pytest.raises(ValueError, match="6D detector inputs require a singleton clip dimension"):
+        selector.forward_test(inputs=inputs, masks=masks, metas=[{"video_id": "event-6d-n2"}])
+
+
 def test_remap_gt_filters_segments_and_labels_with_one_keep_mask():
     module, _registry = _load_event_module()
     selector = module.EventSurpriseTemporalAcquisitionSelector(
