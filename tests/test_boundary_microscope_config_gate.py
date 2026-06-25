@@ -560,6 +560,17 @@ def test_boundary_microscope_n16r4_precheck_launcher_is_fail_closed():
     assert "DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3" in text
 
 
+def test_boundary_microscope_precheck_launcher_accepts_gate_bound_train_only_config_audit():
+    text = N16R4_PRECHECK_LAUNCHER.read_text(encoding="utf-8")
+
+    assert 'require(gate.allow_tools_train is True, gate)' in text
+    assert 'require(tuple(gate.allowed_entrypoints) == ("tools/train.py",), gate)' in text
+    assert "requires_entrypoint_gate" in text
+    assert 'require(tuple(gate.allowed_entrypoints) == (), gate)' not in text
+    assert "BOUNDARY_MICROSCOPE_PRECHECK_ONLY_PASS_NO_TRAIN" in text
+    assert text.index('if [ "$PRECHECK_ONLY" = "1" ]') < text.index("test -f \"$BOUNDARY_MICROSCOPE_FULL_TRAIN_GATE_JSON\"")
+
+
 def test_boundary_microscope_n16r4_full_train_launcher_is_locked_by_default_and_runs_train_after_gate():
     text = N16R4_FULL_TRAIN_LAUNCHER.read_text(encoding="utf-8")
 
@@ -573,6 +584,9 @@ def test_boundary_microscope_n16r4_full_train_launcher_is_locked_by_default_and_
     assert "BOUNDARY_MICROSCOPE_FULL_TRAIN_TOOLS_TRAIN_STARTED" in text
     assert "OPENTAD_BOUNDARY_MICROSCOPE_ENTRYPOINT_GATE_JSON" in text
     assert "OPENTAD_BOUNDARY_MICROSCOPE_RESOLVED_CONFIG_SHA256" in text
+    assert "requires_entrypoint_gate" in text
+    assert 'require(tuple(gate.allowed_entrypoints) == ("tools/train.py",), gate)' in text
+    assert 'require(tuple(gate.allowed_entrypoints) == (), gate)' not in text
     assert "python tools/train.py \"$CONFIG\" --id \"$TRAIN_ID\"" in text
     assert "full train remains locked" not in text
     assert text.index("--action full-train") < text.index("python tools/train.py")

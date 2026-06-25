@@ -2,6 +2,46 @@
 
 ## Status
 
+- Timestamp: `2026-06-25T13:03:16+08:00`.
+- Route label: `DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3`.
+- Owner worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_BoundaryMicroscope_ProFix_Worktree_20260625`.
+- Owner branch: `codex/boundary-microscope-pro-fix-20260625`.
+- Decision status: `LOCAL_PRECHECK_GATE_BOUND_ENTRYPOINT_FIX_READY_FOR_COMMIT`.
+- Remote failure addressed: remote bundle commit `b6ce770` failed `PRECHECK_ONLY` before active manifest generation because `scripts/run_boundary_microscope_precheck_n16r4.sbatch` still asserted `allowed_entrypoints == ()` after the full-train candidate config had become gate-bound train-only with `allowed_entrypoints=("tools/train.py",)`.
+- Fix summary: both Boundary N16R4 launchers now audit the gate-bound train-only config as `allow_tools_train=True`, `allowed_entrypoints=("tools/train.py",)`, and `requires_entrypoint_gate=True`, while retaining `allow_tools_test=False`, raw-prediction disabled, metric/paper claims disabled, and `PRECHECK_ONLY=1` exit-before-train behavior.
+- Remote sync, push, Slurm, `tools/train.py`, `tools/test.py`, mAP, runtime/FLOPs, metric claim, and paper claim: not performed and still outside this local code-owner action.
+- Tracker/log note: `research-wiki/log.md` and `research-wiki/experiments/SPARSE_TAD_TASK_FLOW_TRACKER_20260520.md` are absent in this owned worktree, so no shared-main-worktree tracker/log files were touched.
+
+## 2026-06-25 Gate-Bound Entrypoint PRECHECK Fix
+
+- Changed files:
+  - `scripts/run_boundary_microscope_precheck_n16r4.sbatch`
+  - `scripts/run_boundary_microscope_full_train_n16r4.sbatch`
+  - `tests/test_boundary_microscope_config_gate.py`
+  - `research-wiki/experiments/BOUNDARY_MICROSCOPE_PRO_FIX_SELF_CHECK_20260625.md`
+- Root cause: the resolved-config audit had contradictory assertions for the same full-train candidate config, first requiring `("tools/train.py",)` and then requiring `()`.
+- Precheck-only safety: `PRECHECK_ONLY=1` still rejects `ALLOW_BOUNDARY_MICROSCOPE_FULL_TRAIN=1`, writes `BOUNDARY_MICROSCOPE_PRECHECK_ONLY_PASS_NO_TRAIN`, and exits before full-train gate JSON checks or any `tools/train.py` execution.
+- Train-only safety: when a future full-train launcher is used, the resolved-config audit permits only `tools/train.py`, requires the entrypoint gate, and still rejects `tools/test.py`, raw prediction/cache shortcuts, metric claims, and paper claims.
+- Initial RED test:
+  - `python -m pytest tests/test_boundary_microscope_config_gate.py::test_boundary_microscope_precheck_launcher_accepts_gate_bound_train_only_config_audit tests/test_boundary_microscope_config_gate.py::test_boundary_microscope_n16r4_full_train_launcher_is_locked_by_default_and_runs_train_after_gate -q`
+  - Result before implementation: `2 failed`; both failures showed the launcher audit did not yet expose the required gate-bound entrypoint contract and still had the stale empty-entrypoint assertion path.
+- Focused GREEN test:
+  - `python -m pytest tests/test_boundary_microscope_config_gate.py::test_boundary_microscope_precheck_launcher_accepts_gate_bound_train_only_config_audit tests/test_boundary_microscope_config_gate.py::test_boundary_microscope_n16r4_full_train_launcher_is_locked_by_default_and_runs_train_after_gate -q`
+  - Result after implementation: `2 passed in 0.02s`.
+- Final focused config/gate test:
+  - `python -m pytest tests/test_boundary_microscope_config_gate.py -q -rs`
+  - Result: `16 passed in 2.12s`.
+- Static compile:
+  - `python -m py_compile tools/bata/validate_boundary_microscope_gate.py configs/adatad/thumos/boundary_microscope_acquisition_local_precheck.py configs/adatad/thumos/boundary_microscope_acquisition_full_train_candidate_n16r4.py tests/test_boundary_microscope_config_gate.py opentad/utils/training_guard.py opentad/models/selectors/boundary_microscope_acquisition_route.py`
+  - Result: pass.
+- Launcher syntax:
+  - `Get-Content -Raw scripts/run_boundary_microscope_precheck_n16r4.sbatch | ForEach-Object { $_ -replace "\`r", "" } | bash -n -s`
+  - `Get-Content -Raw scripts/run_boundary_microscope_full_train_n16r4.sbatch | ForEach-Object { $_ -replace "\`r", "" } | bash -n -s`
+  - Result: both pass.
+- Diff hygiene:
+  - `git diff --check`
+  - Result: pass; only Windows LF-to-CRLF warnings.
+
 - Timestamp: `2026-06-25T12:45:44+08:00`.
 - Route label: `DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3`.
 - Owner worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_BoundaryMicroscope_ProFix_Worktree_20260625`.

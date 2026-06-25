@@ -210,7 +210,8 @@ require(gate.requires_gate_json is True, gate)
 require(gate.allow_precheck_only is False, gate)
 require(gate.allow_tools_train is True, gate)
 require(tuple(gate.allowed_entrypoints) == ("tools/train.py",), gate)
-require(gate.entrypoint_gate_context.required is True, gate)
+requires_entrypoint_gate = bool(gate.entrypoint_gate_context.required)
+require(requires_entrypoint_gate is True, gate)
 require(gate.entrypoint_gate_context.gate_json_env == "OPENTAD_BOUNDARY_MICROSCOPE_ENTRYPOINT_GATE_JSON", gate)
 require(gate.entrypoint_gate_context.gate_sha256_env == "OPENTAD_BOUNDARY_MICROSCOPE_ENTRYPOINT_GATE_SHA256", gate)
 require(gate.entrypoint_gate_context.active_manifest_sha256_env == "OPENTAD_BOUNDARY_MICROSCOPE_ACTIVE_MANIFEST_SHA256", gate)
@@ -227,7 +228,6 @@ for key in (
     "paper_claim_allowed",
 ):
     require(getattr(gate, key) is False, f"{key} must remain False")
-require(tuple(gate.allowed_entrypoints) == (), gate)
 require(cfg.inference.load_from_raw_predictions is False, cfg.inference)
 require(cfg.inference.save_raw_prediction is False, cfg.inference)
 print("boundary_microscope_resolved_config_full_train_preflight=PASS")
