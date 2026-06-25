@@ -192,11 +192,12 @@ def test_physical_grid_full_train_config_identity_and_guard_contract(tmp_path, m
         load_steps = [step for step in cfg.dataset[split].pipeline if step.get("type") == "LoadFrames"]
         assert len(load_steps) == 1
         assert load_steps[0].remap_gt_to_selected_axis is False
-        assert cfg.dataset[split].window_size == selector.dense_window_size
         if split == "train":
+            assert "window_size" not in cfg.dataset[split]
             assert load_steps[0].method == "random_trunc"
             assert load_steps[0].trunc_len == selector.dense_window_size
         else:
+            assert cfg.dataset[split].window_size == selector.dense_window_size
             assert load_steps[0].method == "sliding_window"
 
     assert selector.target_len == 384
@@ -230,9 +231,41 @@ def test_physical_grid_full_train_config_identity_and_guard_contract(tmp_path, m
         guard.assert_detector_training_allowed(cfg, entrypoint="tools/test.py")
 
 
+def test_physical_grid_full_train_resolved_dataset_kwargs_match_runtime_constructors():
+    mmengine_config = pytest.importorskip("mmengine.config")
+    validator = _load_module(VALIDATOR, "validate_c3_physical_grid_full_train_dataset_kwargs_test")
+    cfg = mmengine_config.Config.fromfile(str(CONFIG))
+
+    padding_params = _class_init_params(ROOT / "opentad" / "datasets" / "base" / "padding_dataset.py", "PaddingDataset")
+    sliding_params = _class_init_params(ROOT / "opentad" / "datasets" / "base" / "sliding_dataset.py", "SlidingWindowDataset")
+    expected_params = {
+        "train": padding_params,
+        "val": sliding_params,
+        "test": sliding_params,
+    }
+
+    for split in ("train", "val", "test"):
+        dataset_kwargs = validator.resolve_dataset_constructor_kwargs(cfg, split)
+        assert "type" not in dataset_kwargs
+        assert set(dataset_kwargs) <= expected_params[split]
+
+    assert "window_size" not in validator.resolve_dataset_constructor_kwargs(cfg, "train")
+    assert validator.resolve_dataset_constructor_kwargs(cfg, "val")["window_size"] == 768
+    assert validator.resolve_dataset_constructor_kwargs(cfg, "test")["window_size"] == 768
+
+
 def test_physical_grid_full_train_validator_accepts_config_and_rejects_leakage(tmp_path):
     validator = _load_module(VALIDATOR, "validate_c3_physical_grid_full_train_gate_test")
     assert validator.validate_config(CONFIG) is True
+
+    bad_dataset_config = tmp_path / "bad_physical_grid_dataset_config.py"
+    bad_dataset_config.write_text(
+        f'_base_ = ["{CONFIG.as_posix()}"]\n'
+        "dataset = dict(train=dict(window_size=768))\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="unsupported constructor fields: .*window_size"):
+        validator.validate_config(bad_dataset_config)
 
     bad_config = tmp_path / "bad_physical_grid_config.py"
     bad_config.write_text(

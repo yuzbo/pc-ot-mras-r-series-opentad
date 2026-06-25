@@ -20,6 +20,36 @@ STAGE_ID = "c3_physical_grid_actionformer_full_train_n16r4"
 ALLOW_DECISION = "ALLOW_C3_PHYSICAL_GRID_FULL_TRAIN"
 PASS_MESSAGE = "C3_PHYSICAL_GRID_FULL_TRAIN_GATE_VALIDATION_PASS"
 
+PADDING_DATASET_CONSTRUCTOR_KWARGS = frozenset(
+    {
+        "ann_file",
+        "subset_name",
+        "data_path",
+        "pipeline",
+        "class_map",
+        "filter_gt",
+        "class_agnostic",
+        "block_list",
+        "test_mode",
+        "feature_stride",
+        "sample_stride",
+        "offset_frames",
+        "fps",
+        "logger",
+    }
+)
+SLIDING_DATASET_CONSTRUCTOR_KWARGS = PADDING_DATASET_CONSTRUCTOR_KWARGS | frozenset(
+    {
+        "window_size",
+        "window_overlap_ratio",
+        "ioa_thresh",
+    }
+)
+DATASET_CONSTRUCTOR_KWARGS_BY_TYPE = {
+    "ThumosPaddingDataset": PADDING_DATASET_CONSTRUCTOR_KWARGS,
+    "ThumosSlidingDataset": SLIDING_DATASET_CONSTRUCTOR_KWARGS,
+}
+
 
 def _require(condition: bool, message: str) -> None:
     if not condition:
@@ -62,6 +92,25 @@ def _sha256_file(path: str | Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def resolve_dataset_constructor_kwargs(cfg: Any, split: str) -> dict[str, Any]:
+    dataset_cfg = cfg.dataset[split]
+    return {str(key): value for key, value in dict(dataset_cfg).items() if key != "type"}
+
+
+def _validate_dataset_constructor_kwargs(cfg: Any, split: str) -> None:
+    dataset_cfg = cfg.dataset[split]
+    dataset_type = _get(dataset_cfg, "type")
+    allowed_kwargs = DATASET_CONSTRUCTOR_KWARGS_BY_TYPE.get(dataset_type)
+    _require(allowed_kwargs is not None, f"{split}.type has unsupported dataset type {dataset_type}")
+
+    dataset_kwargs = resolve_dataset_constructor_kwargs(cfg, split)
+    unexpected = sorted(set(dataset_kwargs) - allowed_kwargs)
+    _require(
+        not unexpected,
+        f"{split} {dataset_type} top-level kwargs include unsupported constructor fields: {unexpected}",
+    )
 
 
 def _forbid_tokens(text: str, *, context: str) -> None:
@@ -168,13 +217,15 @@ def validate_config(cfg_path: str | Path) -> bool:
     _require(_get(cfg, "resume") in (None, False, "", "none"), "resume must stay disabled")
 
     for split in ("train", "val", "test"):
+        _validate_dataset_constructor_kwargs(cfg, split)
         load_steps = [step for step in cfg.dataset[split].pipeline if _get(step, "type") == "LoadFrames"]
         _require(len(load_steps) == 1, f"{split} pipeline must contain one LoadFrames")
-        _require(int(_get(cfg.dataset[split], "window_size", 0)) == 768, f"{split}.window_size must be dense 768")
         if split == "train":
+            _require(_get(cfg.dataset[split], "window_size") is None, "train.window_size must stay absent")
             _require(_get(load_steps[0], "method") == "random_trunc", "train.LoadFrames.method must be random_trunc")
             _require(int(_get(load_steps[0], "trunc_len", 0)) == 768, "train.LoadFrames.trunc_len must be dense 768")
         else:
+            _require(int(_get(cfg.dataset[split], "window_size", 0)) == 768, f"{split}.window_size must be dense 768")
             _require(_get(load_steps[0], "method") == "sliding_window", f"{split}.LoadFrames.method must be sliding_window")
         _require(
             _get(load_steps[0], "remap_gt_to_selected_axis") is False,
