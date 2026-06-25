@@ -299,32 +299,40 @@ def test_bh_sdc_actionformer_compacts_before_temporal_mixing_backbone_and_preser
     assert captured["bh_sdc_detector_metadata"]["route_label"] == BH_SDC_ROUTE_LABEL
 
 
-def test_bh_sdc_compact_backbone_pads_video_sample_to_fixed_temporal_shape_without_expanding_budget():
+def test_bh_sdc_compact_backbone_sends_tubelet_mask_without_expanding_budget():
     model = ActionFormer(
         backbone=dict(type="TailSensitiveTemporalMixingBackbone", channels=1),
         projection=dict(type="IdentityProjection", max_seq_len=384),
         rpn_head=dict(type="CapturingHead"),
     )
 
-    class FixedTemporalShapeBackbone(nn.Module):
+    class TubeletFeatureMaskBackbone(nn.Module):
         def __init__(self):
             super().__init__()
             self.calls = []
 
         def forward(self, inputs, masks=None):
             temporal_len = int(inputs.shape[2])
+            feature_len = temporal_len // 2
             self.calls.append(
                 {
                     "temporal_len": temporal_len,
                     "mask": None if masks is None else masks.detach().cpu().tolist(),
                 }
             )
-            return torch.arange(temporal_len, dtype=inputs.dtype, device=inputs.device).view(1, 1, temporal_len)
+            if masks is None:
+                raise AssertionError("BH-SDC compact video backbone must pass a feature-level mask")
+            if int(masks.shape[-1]) != feature_len:
+                raise RuntimeError(
+                    f"fake wrapper received mask length {int(masks.shape[-1])}, expected {feature_len}"
+                )
+            return torch.arange(feature_len, dtype=inputs.dtype, device=inputs.device).view(1, 1, feature_len)
 
-    model.backbone = FixedTemporalShapeBackbone()
+    model.backbone = TubeletFeatureMaskBackbone()
     model.frame_selector = types.SimpleNamespace(
         bh_sdc_requires_compact_backbone=True,
         max_budget=448,
+        tubelet_size=2,
     )
 
     inputs = torch.ones(1, 3, 384, 2, 2)
@@ -333,8 +341,9 @@ def test_bh_sdc_compact_backbone_pads_video_sample_to_fixed_temporal_shape_witho
     features, output_mask = model._call_bh_sdc_compact_backbone(inputs, masks)
 
     assert model.backbone.calls[0]["temporal_len"] == 448
-    assert model.backbone.calls[0]["mask"][0][:384] == [True] * 384
-    assert model.backbone.calls[0]["mask"][0][384:] == [False] * 64
+    assert len(model.backbone.calls[0]["mask"][0]) == 224
+    assert model.backbone.calls[0]["mask"][0][:192] == [True] * 192
+    assert model.backbone.calls[0]["mask"][0][192:] == [False] * 32
     assert features.shape == (1, 1, 384)
     assert output_mask.shape == (1, 384)
     assert int(output_mask.sum().item()) == 384

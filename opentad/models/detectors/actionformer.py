@@ -412,7 +412,8 @@ class ActionFormer(SingleStageDetector):
             sample_inputs = self._pad_temporal_sample_to_expected(sample_inputs, count, backbone_count)
             sample_mask = torch.zeros((1, backbone_count), dtype=torch.bool, device=masks.device)
             sample_mask[:, :count] = True
-            sample_features = self._call_backbone_single_sample(sample_inputs, sample_mask)
+            backbone_mask = self._bh_sdc_backbone_output_mask(sample_inputs, sample_mask, fixed_temporal_frames)
+            sample_features = self._call_backbone_single_sample(sample_inputs, backbone_mask)
             if sample_features.ndim != 3:
                 raise RuntimeError(
                     "BH-SDC compact backbone expects [B,C,T] features; "
@@ -519,6 +520,39 @@ class ActionFormer(SingleStageDetector):
                 value = cls._positive_int_or_none(kernel_size[0])
                 if value is not None:
                     return value
+        return None
+
+    def _bh_sdc_backbone_output_mask(self, sample_inputs, frame_mask, fixed_temporal_frames):
+        if fixed_temporal_frames is None or sample_inputs.ndim not in (5, 6):
+            return frame_mask
+        frame_len = int(frame_mask.shape[-1])
+        expected_frames = int(fixed_temporal_frames)
+        if frame_len != expected_frames:
+            raise RuntimeError(
+                "BH-SDC compact backbone frame mask length mismatch before tubelet conversion: "
+                f"mask_len={frame_len}, fixed_temporal_frames={expected_frames}"
+            )
+        tubelet_size = self._bh_sdc_backbone_tubelet_size()
+        if tubelet_size is None:
+            raise RuntimeError(
+                "BH-SDC compact video backbone cannot infer tubelet/downsample ratio for output mask. "
+                "Refusing to pass a frame-level mask to a feature-level backbone wrapper."
+            )
+        if frame_len % tubelet_size != 0:
+            raise RuntimeError(
+                "BH-SDC compact video backbone fixed temporal frames are not divisible by tubelet size: "
+                f"fixed_temporal_frames={frame_len}, tubelet_size={tubelet_size}"
+            )
+        if tubelet_size == 1:
+            return frame_mask
+        feature_len = frame_len // tubelet_size
+        return frame_mask.view(frame_mask.shape[0], feature_len, tubelet_size).any(dim=-1)
+
+    def _bh_sdc_backbone_tubelet_size(self):
+        for root in (getattr(self, "frame_selector", None), getattr(self, "backbone", None)):
+            tubelet_size = self._infer_tubelet_size_for_module(root)
+            if tubelet_size is not None:
+                return tubelet_size
         return None
 
     def _call_backbone_single_sample(self, sample_inputs, sample_mask):
