@@ -115,6 +115,7 @@ def _install_head_runtime_or_skip():
     _ensure_package(RUNTIME_PACKAGE, ROOT / "opentad")
     _ensure_package(f"{RUNTIME_PACKAGE}.models", ROOT / "opentad" / "models")
     _ensure_package(f"{RUNTIME_PACKAGE}.models.dense_heads", ROOT / "opentad" / "models" / "dense_heads")
+    _ensure_package(f"{RUNTIME_PACKAGE}.models.selectors", ROOT / "opentad" / "models" / "selectors")
     _ensure_package(
         f"{RUNTIME_PACKAGE}.models.dense_heads.prior_generator",
         ROOT / "opentad" / "models" / "dense_heads" / "prior_generator",
@@ -122,9 +123,11 @@ def _install_head_runtime_or_skip():
 
     builder = types.ModuleType(f"{RUNTIME_PACKAGE}.models.builder")
     builder.HEADS = _Registry()
+    builder.SELECTORS = _Registry()
     builder.PRIOR_GENERATORS = _Registry()
     builder.LOSSES = _Registry()
     builder.build_prior_generator = lambda cfg: builder.PRIOR_GENERATORS.build(cfg)
+    builder.build_selector = lambda cfg: builder.SELECTORS.build(cfg)
     builder.build_loss = lambda cfg: _DummyLoss()
     sys.modules[f"{RUNTIME_PACKAGE}.models.builder"] = builder
 
@@ -146,6 +149,15 @@ def _install_head_runtime_or_skip():
         ROOT / "opentad" / "models" / "dense_heads" / "actionformer_head.py",
     )
     return actionformer_head.ActionFormerHead
+
+
+def _install_prebackbone_selector_or_skip():
+    _install_head_runtime_or_skip()
+    selector_module = _load_module(
+        f"{RUNTIME_PACKAGE}.models.selectors.pc_ot_mras_prebackbone_frame_selector",
+        ROOT / "opentad" / "models" / "selectors" / "pc_ot_mras_prebackbone_frame_selector.py",
+    )
+    return selector_module.PCOTMRASPreBackboneFrameSelector
 
 
 def _make_head(**kwargs):
@@ -307,6 +319,109 @@ def test_physical_grid_training_assignment_uses_physical_dense_centers():
     assert debug["physical_grid_actionformer_axis_delta_max"] == 3.0
 
 
+def test_prebackbone_selector_dense_axis_meta_feeds_physical_grid_train_path():
+    PCOTMRASPreBackboneFrameSelector = _install_prebackbone_selector_or_skip()
+    selector = PCOTMRASPreBackboneFrameSelector(
+        reader=dict(type="PCOTMRASBoundaryDifficultyTemporalFrameScout", in_dim=4, hidden_dim=4, num_slots=4),
+        target_len=4,
+        dense_window_size=12,
+        descriptor_dim=4,
+        remap_gt_to_selected_axis=False,
+    )
+    metas = selector._write_selected_axis_meta(
+        metas=[{"video_name": "selector-physical-grid"}],
+        selected_positions=torch.tensor([[0, 3, 4, 10]], dtype=torch.long),
+        valid_lengths=torch.tensor([12], dtype=torch.long),
+        selected_output_valid_lengths=torch.tensor([4], dtype=torch.long),
+        training=True,
+    )
+
+    assert metas[0]["pc_ot_mras_prebackbone_remap_gt_to_selected_axis"] is False
+    assert metas[0]["irregular_native_axis"] is True
+    assert metas[0]["irregular_selected_positions"] == [0.0, 3.0, 4.0, 10.0]
+    assert metas[0]["irregular_dense_valid_len"] == 12
+    assert metas[0]["irregular_selected_count"] == 4
+    assert metas[0]["selected_valid_len"] == 4
+    assert metas[0]["irregular_selected_valid_len"] == 12.0
+
+    head = _make_head(physical_grid_actionformer=dict(enabled=True, required=True, strict=True))
+    feat_list = [torch.zeros(1, 2, 4)]
+    mask_list = [torch.tensor([[True, True, True, True]])]
+    losses = head.forward_train(
+        feat_list,
+        mask_list,
+        gt_segments=[torch.tensor([[2.5, 4.5]], dtype=torch.float32)],
+        gt_labels=[torch.tensor([1], dtype=torch.long)],
+        metas=metas,
+    )
+    debug = head.collect_debug_state()
+
+    assert set(losses) == {"cls_loss", "reg_loss"}
+    assert debug["physical_grid_actionformer_valid_points"] == 4
+    assert debug["physical_grid_actionformer_selected_count"] == 4
+    assert debug["physical_grid_actionformer_dense_valid_len_max"] == 12.0
+    assert debug["physical_grid_actionformer_center_max"] == 10.0
+
+
+def test_prebackbone_selector_forward_train_meta_feeds_physical_grid_train_path():
+    PCOTMRASPreBackboneFrameSelector = _install_prebackbone_selector_or_skip()
+    selector = PCOTMRASPreBackboneFrameSelector(
+        reader=dict(
+            type="PCOTMRASBoundaryDifficultyTemporalFrameScout",
+            in_dim=4,
+            hidden_dim=4,
+            num_slots=4,
+            temporal_layers=1,
+            dilations=(1,),
+            dropout=0.0,
+        ),
+        target_len=4,
+        dense_window_size=12,
+        descriptor_dim=4,
+        remap_gt_to_selected_axis=False,
+    )
+    inputs = torch.arange(1 * 3 * 12 * 2 * 2, dtype=torch.float32).reshape(1, 3, 12, 2, 2)
+    masks = torch.ones(1, 12, dtype=torch.bool)
+    selected = selector.forward_train(
+        inputs=inputs,
+        masks=masks,
+        metas=[{"video_name": "selector-forward-train"}],
+        gt_segments=[torch.tensor([[2.5, 4.5]], dtype=torch.float32)],
+        gt_labels=[torch.tensor([1], dtype=torch.long)],
+    )
+    metas = selected["metas"]
+
+    assert selected["inputs"].shape[2] == 4
+    assert selected["masks"].shape == (1, 4)
+    assert selected["masks"].all()
+    assert selected["gt_segments"][0].shape == (1, 2)
+    assert torch.allclose(selected["gt_segments"][0], torch.tensor([[2.5, 4.5]], dtype=torch.float32))
+    assert metas[0]["pc_ot_mras_prebackbone_remap_gt_to_selected_axis"] is False
+    assert metas[0]["irregular_native_axis"] is True
+    assert metas[0]["irregular_dense_valid_len"] == 12
+    assert metas[0]["irregular_selected_count"] == 4
+    assert metas[0]["selected_valid_len"] == 4
+    assert metas[0]["irregular_selected_valid_len"] == 12.0
+    assert len(metas[0]["irregular_selected_positions"]) == 4
+
+    head = _make_head(physical_grid_actionformer=dict(enabled=True, required=True, strict=True))
+    feat_list = [torch.zeros(1, 2, 4)]
+    mask_list = [selected["masks"]]
+    losses = head.forward_train(
+        feat_list,
+        mask_list,
+        gt_segments=selected["gt_segments"],
+        gt_labels=selected["gt_labels"],
+        metas=metas,
+    )
+    debug = head.collect_debug_state()
+
+    assert set(losses) == {"cls_loss", "reg_loss"}
+    assert debug["physical_grid_actionformer_valid_points"] == 4
+    assert debug["physical_grid_actionformer_selected_count"] == 4
+    assert debug["physical_grid_actionformer_dense_valid_len_max"] == 12.0
+
+
 def test_c3_candidate_config_and_launcher_are_fail_closed():
     cfg = load_mmengine_config_or_skip(
         "configs/adatad/thumos/input_random_fixed_50pct_c3_physical_grid_actionformer_precheck.py"
@@ -355,6 +470,16 @@ def test_c3_physical_grid_static_source_contracts_when_torch_is_unavailable():
     assert "irregular_selected_positions" in head
     assert "selected_dense_indices" in head
     assert "selected_valid_len" in head
+    assert "def _physical_selected_count_from_meta" in head
+    assert 'for key in ("selected_valid_len", "irregular_selected_count")' in head
+    assert "selected_count = self._physical_selected_count_from_meta(meta, positions)" in head
+    assert "physical_grid_selected_count" in head
+    assert "level_valid = selected_center < (float(selected_count) - self.physical_grid_eps)" in head
+    selected_count_fn = head.split("def _physical_selected_count_from_meta", 1)[1].split(
+        "def _physical_positions_from_meta", 1
+    )[0]
+    assert "irregular_selected_valid_len" not in selected_count_fn
+    assert "irregular_dense_valid_len" not in selected_count_fn
     assert 'meta["irregular_native_axis"] = True' in head
     assert 'meta["physical_grid_actionformer"] = True' in head
     assert "physical_masks[level_idx][batch_idx] = physical_masks[level_idx][batch_idx] & level_valid" in head
@@ -363,6 +488,17 @@ def test_c3_physical_grid_static_source_contracts_when_torch_is_unavailable():
     assert "cb_dist_left = point[:, 0, None] - torch.maximum(t_mins, gt_segs[:, :, 0])" in head
     assert "cb_dist_right = torch.minimum(t_maxs, gt_segs[:, :, 1]) - point[:, 0, None]" in head
     assert "torch.cat(points, dim=1) if points[0].dim() == 3 else torch.cat(points, dim=0)" in head
+
+    selector = read("opentad/models/selectors/pc_ot_mras_prebackbone_frame_selector.py")
+    assert "meta[\"irregular_native_axis\"] = not bool(self.remap_gt_to_selected_axis)" in selector
+    assert "meta[\"pc_ot_mras_prebackbone_remap_gt_to_selected_axis\"] = bool(self.remap_gt_to_selected_axis)" in selector
+    assert "meta[\"irregular_dense_valid_len\"] = int(valid_cpu[idx])" in selector
+    assert "meta[\"irregular_selected_count\"] = int(selected_valid_cpu[idx])" in selector
+    assert "meta[\"selected_valid_len\"] = int(selected_valid_cpu[idx])" in selector
+    assert (
+        "meta[\"irregular_selected_valid_len_semantics\"] = \"carried_forward_dense_valid_len_alias\""
+        in selector
+    )
 
     assert "metas=metas" in detector
     assert '"selected_dense_indices"' in formatting

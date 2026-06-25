@@ -77,6 +77,30 @@ class AnchorFreeHead(nn.Module):
         if self._physical_grid_forbidden_gt_remap(meta):
             raise ValueError("physical-grid ActionFormer requires dense-axis GT; selected-axis GT remap is forbidden.")
 
+    def _physical_selected_count_from_meta(self, meta, positions):
+        count_sources = []
+        for key in ("selected_valid_len", "irregular_selected_count"):
+            if key in meta and meta[key] is not None:
+                count_sources.append((key, int(round(float(meta[key])))))
+        if not count_sources:
+            return int(positions.numel())
+
+        selected_count = count_sources[0][1]
+        for key, value in count_sources[1:]:
+            if value != selected_count:
+                raise ValueError(
+                    "physical-grid ActionFormer selected-count metadata mismatch: "
+                    f"{count_sources[0][0]}={selected_count}, {key}={value}."
+                )
+        if selected_count < 0:
+            raise ValueError("physical-grid ActionFormer selected count must be non-negative.")
+        if selected_count > int(positions.numel()):
+            raise ValueError(
+                "physical-grid ActionFormer selected count exceeds physical positions length: "
+                f"selected_count={selected_count}, positions={int(positions.numel())}."
+            )
+        return selected_count
+
     def _physical_positions_from_meta(self, meta, device, dtype):
         positions = meta.get("irregular_selected_positions", None)
         if positions is None:
@@ -87,9 +111,8 @@ class AnchorFreeHead(nn.Module):
             return None, None
 
         positions = torch.as_tensor(positions, device=device, dtype=dtype).reshape(-1)
-        valid_count = meta.get("selected_valid_len", meta.get("irregular_selected_count", positions.numel()))
-        valid_count = max(min(int(round(float(valid_count))), int(positions.numel())), 0)
-        positions = positions[:valid_count]
+        selected_count = self._physical_selected_count_from_meta(meta, positions)
+        positions = positions[:selected_count]
         if positions.numel() == 0:
             if self.physical_grid_required:
                 raise ValueError("physical-grid ActionFormer requires at least one selected physical position.")
@@ -134,6 +157,8 @@ class AnchorFreeHead(nn.Module):
         debug_centers = []
         debug_axis_delta = []
         valid_points_total = 0
+        debug_selected_count = 0
+        debug_dense_valid_len = 0.0
 
         for batch_idx, meta in enumerate(metas):
             if train_mode:
@@ -146,8 +171,11 @@ class AnchorFreeHead(nn.Module):
                 return points, mask_list
 
             selected_count = int(positions.numel())
+            debug_selected_count += selected_count
+            debug_dense_valid_len = max(debug_dense_valid_len, float(dense_valid_len))
             meta["irregular_native_axis"] = True
             meta["physical_grid_actionformer"] = True
+            meta["physical_grid_selected_count"] = selected_count
             meta["physical_grid_dense_valid_len"] = float(dense_valid_len)
 
             for level_idx, base_point in enumerate(points):
@@ -169,7 +197,7 @@ class AnchorFreeHead(nn.Module):
                 point[:, 3] = physical_stride
                 physical_points[level_idx].append(point)
 
-                level_valid = selected_center < float(selected_count)
+                level_valid = selected_center < (float(selected_count) - self.physical_grid_eps)
                 physical_masks[level_idx][batch_idx] = physical_masks[level_idx][batch_idx] & level_valid
                 kept = physical_masks[level_idx][batch_idx]
                 if kept.any():
@@ -185,6 +213,8 @@ class AnchorFreeHead(nn.Module):
             self._physical_grid_debug = {
                 "physical_grid_actionformer_enabled": True,
                 "physical_grid_actionformer_valid_points": int(valid_points_total),
+                "physical_grid_actionformer_selected_count": int(debug_selected_count),
+                "physical_grid_actionformer_dense_valid_len_max": float(debug_dense_valid_len),
                 "physical_grid_actionformer_center_min": float(centers.min().item()),
                 "physical_grid_actionformer_center_max": float(centers.max().item()),
                 "physical_grid_actionformer_axis_delta_mean": float(axis_delta.mean().item()),
