@@ -144,6 +144,31 @@ CONFIG_REQUIRED_FALSE_KEYS = REQUIRED_FALSE_KEYS + (
     "pre_decode_loader_hook_reviewed",
 )
 
+CONFIG_FULL_TRAIN_REQUIRED_TRUE_KEYS = (
+    "allow_precheck_only",
+    "allow_tools_train",
+    "allow_slurm",
+    "allow_gpu",
+    "allow_full_train",
+    "requires_deploy_preview_probe_signal",
+)
+
+CONFIG_FULL_TRAIN_REQUIRED_FALSE_KEYS = (
+    "allow_tools_test",
+    "allow_remote_sync",
+    "load_from_raw_predictions",
+    "save_raw_prediction",
+    "uses_gt_at_test",
+    "uses_teacher",
+    "uses_oracle",
+    "uses_raw_prediction_cache",
+    "metric_claim_allowed",
+    "paper_claim_allowed",
+    "actual_decode_saving_in_current_pipeline",
+    "raw_decode_saving_claim_allowed",
+    "pre_decode_loader_hook_reviewed",
+)
+
 
 def sha256_file(path):
     digest = hashlib.sha256()
@@ -331,6 +356,10 @@ def _config_gate_payload(config_path):
         "stage": gate.get("stage", namespace.get("stage_id", scope.get("stage"))),
         "allowed_entrypoints": _as_list(gate.get("allowed_entrypoints")),
         "forbidden_entrypoints": _as_list(gate.get("forbidden_entrypoints")),
+        "entrypoint_gate_required": (gate.get("entrypoint_gate_context") or {}).get("required"),
+        "entrypoint_gate_allowed_decisions": _as_list(
+            (gate.get("entrypoint_gate_context") or {}).get("allowed_decisions")
+        ),
         "allow_precheck_only": gate.get("allow_precheck_only"),
         "allow_tools_train": gate.get("allow_tools_train"),
         "allow_tools_test": gate.get("allow_tools_test"),
@@ -361,7 +390,7 @@ def _config_gate_payload(config_path):
 
 
 def validate_config_payload(payload):
-    if payload.get("decision") != ALLOWED_DECISION:
+    if payload.get("decision") not in (PRECHECK_DECISION, FULL_TRAIN_DECISION):
         raise ValueError(f"Frame/token hybrid config decision is not allowed: {payload.get('decision')}")
     if payload.get("route") != ALLOWED_ROUTE:
         raise ValueError(f"Frame/token hybrid config route mismatch: {payload.get('route')}")
@@ -374,18 +403,37 @@ def validate_config_payload(payload):
     if payload.get("preview_source_meta_key") != "frame_token_hybrid_preview_source":
         raise ValueError("Frame/token hybrid config must expose frame_token_hybrid_preview_source")
 
-    for key in CONFIG_REQUIRED_TRUE_KEYS:
-        if payload.get(key) is not True:
-            raise ValueError(f"Frame/token hybrid config must set {key}=true")
-    for key in CONFIG_REQUIRED_FALSE_KEYS:
-        if payload.get(key) is not False:
-            raise ValueError(f"Frame/token hybrid config must set {key}=false")
-
     allowed_entrypoints = [str(item) for item in payload.get("allowed_entrypoints", [])]
-    if any("train.py" in item or "test.py" in item or item in {"sbatch", "scp", "rsync"} for item in allowed_entrypoints):
-        raise ValueError(f"Frame/token hybrid config allowed_entrypoints are not precheck-only: {allowed_entrypoints}")
-    if any("precheck" not in item and "validate_frame_token_hybrid_gate.py" not in item for item in allowed_entrypoints):
-        raise ValueError(f"Frame/token hybrid config allowed_entrypoints must be empty or precheck-only: {allowed_entrypoints}")
+    if payload.get("decision") == PRECHECK_DECISION:
+        for key in CONFIG_REQUIRED_TRUE_KEYS:
+            if payload.get(key) is not True:
+                raise ValueError(f"Frame/token hybrid config must set {key}=true")
+        for key in CONFIG_REQUIRED_FALSE_KEYS:
+            if payload.get(key) is not False:
+                raise ValueError(f"Frame/token hybrid config must set {key}=false")
+        if any(
+            "train.py" in item or "test.py" in item or item in {"sbatch", "scp", "rsync"}
+            for item in allowed_entrypoints
+        ):
+            raise ValueError(f"Frame/token hybrid config allowed_entrypoints are not precheck-only: {allowed_entrypoints}")
+        if any("precheck" not in item and "validate_frame_token_hybrid_gate.py" not in item for item in allowed_entrypoints):
+            raise ValueError(f"Frame/token hybrid config allowed_entrypoints must be empty or precheck-only: {allowed_entrypoints}")
+    else:
+        for key in CONFIG_FULL_TRAIN_REQUIRED_TRUE_KEYS:
+            if payload.get(key) is not True:
+                raise ValueError(f"Frame/token hybrid full-train config must set {key}=true")
+        for key in CONFIG_FULL_TRAIN_REQUIRED_FALSE_KEYS:
+            if payload.get(key) is not False:
+                raise ValueError(f"Frame/token hybrid full-train config must set {key}=false")
+        if allowed_entrypoints != ["tools/train.py"]:
+            raise ValueError(
+                "Frame/token hybrid full-train config must allow only tools/train.py: "
+                f"{allowed_entrypoints}"
+            )
+        if payload.get("entrypoint_gate_required") is not True:
+            raise ValueError("Frame/token hybrid full-train config must require entrypoint gate context")
+        if payload.get("entrypoint_gate_allowed_decisions") != [FULL_TRAIN_DECISION]:
+            raise ValueError("Frame/token hybrid full-train config must bind only the full-train decision")
     return True
 
 

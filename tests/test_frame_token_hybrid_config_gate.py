@@ -5,6 +5,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -17,10 +18,18 @@ VALIDATOR = ROOT / "tools" / "bata" / "validate_frame_token_hybrid_gate.py"
 SELECTOR_INIT = ROOT / "opentad" / "models" / "selectors" / "__init__.py"
 N16R4_PRECHECK_LAUNCHER = ROOT / "scripts" / "run_frame_token_hybrid_acquisition_precheck_n16r4.sbatch"
 N16R4_FULL_TRAIN_LAUNCHER = ROOT / "scripts" / "run_frame_token_hybrid_acquisition_full_train_n16r4.sbatch"
+TRAINING_GUARD = ROOT / "opentad" / "utils" / "training_guard.py"
 
 
 def _load_validator():
     spec = importlib.util.spec_from_file_location("frame_token_hybrid_gate_for_test", VALIDATOR)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_training_guard():
+    spec = importlib.util.spec_from_file_location("frame_token_hybrid_training_guard_for_test", TRAINING_GUARD)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -122,17 +131,25 @@ def test_frame_token_hybrid_full_train_candidate_config_is_still_fail_closed_unt
     gate = cfg.frame_token_hybrid_gate
     assert gate.stage == "full_train_candidate_n16r4"
     assert gate.requires_gate_json is True
-    assert gate.allowed_decision == "ALLOW_FRAME_TOKEN_HYBRID_PRECHECK_ONLY"
+    assert gate.allowed_decision == "ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN"
     assert gate.allow_precheck_only is True
-    assert gate.allow_tools_train is False
+    assert gate.allow_tools_train is True
     assert gate.allow_tools_test is False
     assert gate.allow_remote_sync is False
-    assert gate.allow_slurm is False
-    assert gate.allow_gpu is False
-    assert gate.allow_full_train is False
+    assert gate.allow_slurm is True
+    assert gate.allow_gpu is True
+    assert gate.allow_full_train is True
     assert gate.metric_claim_allowed is False
     assert gate.paper_claim_allowed is False
-    assert tuple(gate.allowed_entrypoints) == ()
+    assert tuple(gate.allowed_entrypoints) == ("tools/train.py",)
+    assert tuple(gate.forbidden_entrypoints) == ("tools/test.py", "scp", "rsync")
+    assert gate.entrypoint_gate_context.required is True
+    assert tuple(gate.entrypoint_gate_context.allowed_decisions) == ("ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN",)
+    assert gate.entrypoint_gate_context.required_exact_values.route_label == (
+        "DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3"
+    )
+    assert gate.entrypoint_gate_context.env_value_bindings[0].gate_key == "run_tag"
+    assert gate.entrypoint_gate_context.env_value_bindings[0].env == "RUN_TAG"
     assert cfg.workflow.end_epoch == 60
     assert cfg.workflow.val_start_epoch == 40
     assert cfg.workflow.val_eval_interval == 2
@@ -140,6 +157,83 @@ def test_frame_token_hybrid_full_train_candidate_config_is_still_fail_closed_unt
     assert cfg.model.frame_selector.require_preview_signal is True
     assert cfg.model.frame_selector.preview_source_meta_key == "frame_token_hybrid_preview_source"
     assert cfg.model.frame_selector.stable_gap_min_len >= 6
+
+
+def test_frame_token_hybrid_full_train_config_unlocks_tools_train_only_with_bound_gate(tmp_path, monkeypatch):
+    cfg = _load_config_or_skip(FULL_CONFIG)
+    training_guard = _load_training_guard()
+
+    with pytest.raises(RuntimeError, match="missing required entrypoint gate env"):
+        training_guard.assert_detector_training_allowed(cfg, entrypoint="tools/train.py")
+
+    precheck_payload = {
+        "decision": "ALLOW_FRAME_TOKEN_HYBRID_PRECHECK_ONLY",
+        "route": "frame_token_hybrid_acquisition",
+        "route_label": "DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3",
+        "active_sha256_manifest_sha256": "manifest-sha",
+        "resolved_config_sha256": "resolved-sha",
+        "budget": 384,
+        "dense_window_size": 768,
+        "target_dense_len": 768,
+        "allow_precheck_only": True,
+        "allow_tools_train": False,
+        "allow_tools_test": False,
+        "allow_remote_sync": False,
+        "allow_slurm": False,
+        "allow_gpu": False,
+        "allow_full_train": False,
+        "load_from_raw_predictions": False,
+        "save_raw_prediction": False,
+        "uses_gt_at_test": False,
+        "uses_teacher": False,
+        "uses_oracle": False,
+        "uses_raw_prediction_cache": False,
+        "metric_claim_allowed": False,
+        "paper_claim_allowed": False,
+    }
+    gate_json = tmp_path / "frame_token_hybrid_precheck_gate.json"
+    gate_json.write_text(json.dumps(precheck_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    gate_sha = hashlib.sha256(gate_json.read_bytes()).hexdigest()
+    monkeypatch.setenv("FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_JSON", str(gate_json))
+    monkeypatch.setenv("FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_SHA256", gate_sha)
+    monkeypatch.setenv("FRAME_TOKEN_HYBRID_ACTIVE_MANIFEST_SHA256", "manifest-sha")
+    monkeypatch.setenv("FRAME_TOKEN_HYBRID_RESOLVED_CONFIG_SHA256", "resolved-sha")
+
+    with pytest.raises(RuntimeError, match="entrypoint gate decision is not allowed"):
+        training_guard.assert_detector_training_allowed(cfg, entrypoint="tools/train.py")
+
+    full_payload = _valid_full_train_gate_payload()
+    gate_json.write_text(json.dumps(full_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    gate_sha = hashlib.sha256(gate_json.read_bytes()).hexdigest()
+    monkeypatch.setenv("FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_SHA256", gate_sha)
+    monkeypatch.setenv("RUN_TAG", "different_run_tag")
+
+    with pytest.raises(RuntimeError, match="entrypoint gate run tag mismatch"):
+        training_guard.assert_detector_training_allowed(cfg, entrypoint="tools/train.py")
+
+    monkeypatch.setenv("RUN_TAG", "frame_token_hybrid_full_train_gate_unit")
+    assert training_guard.assert_detector_training_allowed(cfg, entrypoint="tools/train.py") is None
+    with pytest.raises(RuntimeError, match="allow_tools_test=False"):
+        training_guard.assert_detector_training_allowed(cfg, entrypoint="tools/test.py")
+
+
+def test_frame_token_hybrid_full_train_config_rejects_unsafe_cli_overrides_and_resume():
+    cfg = _load_config_or_skip(FULL_CONFIG)
+    training_guard = _load_training_guard()
+
+    with pytest.raises(RuntimeError, match="rejected unsafe --cfg-options"):
+        training_guard.assert_safe_cfg_options_for_gated_config(
+            cfg,
+            {"inference": {"load_from_raw_predictions": True}},
+            entrypoint="tools/train.py",
+        )
+
+    with pytest.raises(RuntimeError, match="rejected --resume"):
+        training_guard.assert_safe_entrypoint_args_for_gated_config(
+            cfg,
+            SimpleNamespace(resume="checkpoint.pth"),
+            entrypoint="tools/train.py",
+        )
 
 
 def test_frame_token_hybrid_configs_attach_preview_probe_hook_to_all_normal_pipelines():
@@ -390,16 +484,18 @@ def test_frame_token_hybrid_validator_cli_json_config_precheck_is_fail_closed():
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["decision"] == "ALLOW_FRAME_TOKEN_HYBRID_PRECHECK_ONLY"
+    assert payload["decision"] == "ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN"
     assert payload["route_label"] == "DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3"
-    assert payload["allowed_entrypoints"] == []
-    assert payload["forbidden_entrypoints"] == ["tools/train.py", "tools/test.py", "sbatch", "scp", "rsync"]
-    assert payload["allow_tools_train"] is False
+    assert payload["allowed_entrypoints"] == ["tools/train.py"]
+    assert payload["forbidden_entrypoints"] == ["tools/test.py", "scp", "rsync"]
+    assert payload["entrypoint_gate_required"] is True
+    assert payload["entrypoint_gate_allowed_decisions"] == ["ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN"]
+    assert payload["allow_tools_train"] is True
     assert payload["allow_tools_test"] is False
     assert payload["allow_remote_sync"] is False
-    assert payload["allow_slurm"] is False
-    assert payload["allow_gpu"] is False
-    assert payload["allow_full_train"] is False
+    assert payload["allow_slurm"] is True
+    assert payload["allow_gpu"] is True
+    assert payload["allow_full_train"] is True
     assert payload["actual_decode_saving_in_current_pipeline"] is False
     assert payload["raw_decode_saving_claim_allowed"] is False
     assert payload["pre_decode_loader_hook_reviewed"] is False
@@ -489,6 +585,10 @@ def test_frame_token_hybrid_n16r4_full_train_launcher_is_locked_by_default_and_g
     assert "ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN" in text
     assert "FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_JSON" in text
     assert "FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_SHA256" in text
+    assert "FRAME_TOKEN_HYBRID_ACTIVE_MANIFEST_SHA256" in text
+    assert "FRAME_TOKEN_HYBRID_RESOLVED_CONFIG_SHA256" in text
+    assert "entrypoint gate context must be required" in text
+    assert "allowed_entrypoints must be tools/train.py only" in text
     assert "--action full-train" in text
     assert "--run-tag \"$RUN_TAG\"" in text
     assert "FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_VALIDATION_PASS" in text

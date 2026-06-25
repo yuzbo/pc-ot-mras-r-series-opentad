@@ -168,21 +168,24 @@ route_label = sys.argv[2]
 if payload.get("route_label") != route_label:
     raise SystemExit("route label mismatch")
 for key in (
-    "allow_tools_train",
     "allow_tools_test",
     "allow_remote_sync",
-    "allow_slurm",
-    "allow_gpu",
-    "allow_full_train",
     "metric_claim_allowed",
     "paper_claim_allowed",
 ):
     if payload.get(key) is not False:
         raise SystemExit(f"{key} must remain false in config default")
+for key in ("allow_tools_train", "allow_slurm", "allow_gpu", "allow_full_train"):
+    if payload.get(key) is not True:
+        raise SystemExit(f"{key} must be true in gate-bound full-train config")
 if payload.get("allow_precheck_only") is not True:
     raise SystemExit("allow_precheck_only must be true")
-if payload.get("allowed_entrypoints") != []:
-    raise SystemExit("allowed_entrypoints must remain empty")
+if payload.get("allowed_entrypoints") != ["tools/train.py"]:
+    raise SystemExit("allowed_entrypoints must be tools/train.py only")
+if payload.get("entrypoint_gate_required") is not True:
+    raise SystemExit("entrypoint gate context must be required")
+if payload.get("entrypoint_gate_allowed_decisions") != ["ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN"]:
+    raise SystemExit("entrypoint gate must bind only ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN")
 PY
 
 "$PYTHON" - "$CONFIG" "$RESOLVED_CONFIG_DUMP" "$ROUTE_LABEL" <<'PY'
@@ -196,22 +199,28 @@ cfg = Config.fromfile(config_path)
 if cfg.route_label != route_label:
     raise SystemExit("route_label mismatch")
 gate = cfg.frame_token_hybrid_gate
-if gate.allowed_decision != "ALLOW_FRAME_TOKEN_HYBRID_PRECHECK_ONLY":
-    raise SystemExit("config default must remain precheck-only")
+if gate.allowed_decision != "ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN":
+    raise SystemExit("config must be a full-train gate-bound candidate")
 if gate.allow_precheck_only is not True:
     raise SystemExit("allow_precheck_only must be true")
 for key in (
-    "allow_tools_train",
     "allow_tools_test",
     "allow_remote_sync",
-    "allow_slurm",
-    "allow_gpu",
-    "allow_full_train",
     "metric_claim_allowed",
     "paper_claim_allowed",
 ):
     if getattr(gate, key) is not False:
         raise SystemExit(f"{key} must remain false in config default")
+for key in ("allow_tools_train", "allow_slurm", "allow_gpu", "allow_full_train"):
+    if getattr(gate, key) is not True:
+        raise SystemExit(f"{key} must be true in gate-bound full-train config")
+if tuple(gate.allowed_entrypoints) != ("tools/train.py",):
+    raise SystemExit("allowed_entrypoints must be tools/train.py only")
+context = gate.entrypoint_gate_context
+if context.required is not True:
+    raise SystemExit("entrypoint gate context must be required")
+if tuple(context.allowed_decisions) != ("ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN",):
+    raise SystemExit("entrypoint gate must bind only ALLOW_FRAME_TOKEN_HYBRID_FULL_TRAIN")
 selector = cfg.model.frame_selector
 if selector.type != "FrameTokenHybridAcquisitionRoute":
     raise SystemExit("selector type mismatch")
@@ -311,6 +320,9 @@ fi
   --budget 384 \
   --dense-window-size 768 \
   --target-dense-len 768
+
+export FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_JSON
+export FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_SHA256
 
 TRAIN_ID="${FRAME_TOKEN_HYBRID_TRAIN_ID:-0}"
 log "FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_VALIDATION_PASS"

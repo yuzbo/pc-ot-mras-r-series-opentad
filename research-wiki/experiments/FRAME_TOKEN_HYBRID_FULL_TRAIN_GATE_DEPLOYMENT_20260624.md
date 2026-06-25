@@ -273,3 +273,84 @@ Still locked:
 - Remote sync, Slurm, long training, `tools/train.py`, `tools/test.py`, mAP,
   runtime/FLOPs, deploy/raw-decode-saving, paper claims, and any C3/combo
   attribution.
+
+## Full-Train Local Guard Fix
+
+Timestamp: 2026-06-25T10:23:20+08:00
+
+Status:
+`FIXED_FOR_SYNC_DEPLOY_PENDING_MAIN_PROCESS_ACCEPTANCE`
+
+User override for this narrow stage:
+
+- This is a small startup gate repair after the external full-train JSON gate
+  had already passed but `tools/train.py` was blocked by the config local-only
+  guard.
+- The user explicitly requested no Pro/Gemini/Claude gate for this repair.
+- Route label remains
+  `DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3`.
+- This change does not touch BH-SDC, C3, C3-Pro, or GlobalRank-ST files.
+
+Root cause:
+
+- `scripts/run_frame_token_hybrid_acquisition_full_train_n16r4.sbatch`
+  correctly validated `--action full-train`, but
+  `configs/adatad/thumos/frame_token_hybrid_acquisition_full_train_candidate_n16r4.py`
+  still advertised `ALLOW_FRAME_TOKEN_HYBRID_PRECHECK_ONLY` and
+  `allow_tools_train=False`.
+- `opentad/utils/training_guard.py` therefore rejected `tools/train.py`
+  before DDP, dataset, model, or runner construction.
+
+Fix:
+
+- The full-train candidate config now allows only `tools/train.py` and requires
+  a strict `entrypoint_gate_context` bound to:
+  `FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_JSON`,
+  `FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_SHA256`,
+  `FRAME_TOKEN_HYBRID_ACTIVE_MANIFEST_SHA256`,
+  `FRAME_TOKEN_HYBRID_RESOLVED_CONFIG_SHA256`, and `RUN_TAG`.
+- The guard now supports generic payload-to-environment value bindings and
+  uses that to reject a reused or mismatched full-train gate `run_tag`.
+- A precheck-only JSON, missing JSON/SHA/env, mismatched manifest/resolved config,
+  mismatched `RUN_TAG`, direct `tools/test.py`, raw prediction cache, metric
+  claim, or paper claim remains fail-closed.
+- The full-train launcher now validates that the config is a gate-bound
+  full-train config instead of requiring the old precheck-only config shape, and
+  exports the full-train gate variables before `tools/train.py`.
+
+Changed files in this repair:
+
+- `configs/adatad/thumos/frame_token_hybrid_acquisition_full_train_candidate_n16r4.py`
+- `opentad/utils/training_guard.py`
+- `scripts/run_frame_token_hybrid_acquisition_full_train_n16r4.sbatch`
+- `tools/bata/validate_frame_token_hybrid_gate.py`
+- `tests/test_frame_token_hybrid_config_gate.py`
+- `research-wiki/experiments/FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_DEPLOYMENT_20260624.md`
+
+Verification:
+
+```text
+C:/Users/skywalker/.conda/envs/torch_1/python.exe -m pytest tests/test_frame_token_hybrid_config_gate.py -q
+PASS: 17 passed in 3.39s.
+
+C:/Users/skywalker/.conda/envs/torch_1/python.exe -m py_compile opentad/utils/training_guard.py tools/bata/validate_frame_token_hybrid_gate.py configs/adatad/thumos/frame_token_hybrid_acquisition_full_train_candidate_n16r4.py tests/test_frame_token_hybrid_config_gate.py
+PASS.
+
+C:/Users/skywalker/.conda/envs/torch_1/python.exe tools/bata/validate_frame_token_hybrid_gate.py configs/adatad/thumos/frame_token_hybrid_acquisition_full_train_candidate_n16r4.py --json
+PASS: emitted gate-bound full-train config JSON with only tools/train.py open and tools/test/raw-cache/metric/paper claims closed.
+
+bash -n scripts/run_frame_token_hybrid_acquisition_precheck_n16r4.sbatch scripts/run_frame_token_hybrid_acquisition_full_train_n16r4.sbatch
+NOTE: direct check failed on CRLF line endings in the existing scripts.
+
+bash -lc "tr -d '\r' < scripts/run_frame_token_hybrid_acquisition_precheck_n16r4.sbatch | bash -n - && tr -d '\r' < scripts/run_frame_token_hybrid_acquisition_full_train_n16r4.sbatch | bash -n -"
+PASS.
+
+C:/Users/skywalker/.conda/envs/torch_1/python.exe tools/bata/frame_token_hybrid_build_forward_smoke.py
+PASS: FRAME_TOKEN_HYBRID_BUILD_FORWARD_SMOKE_PASS.
+
+C:/Users/skywalker/.conda/envs/torch_1/python.exe -m pytest tests/test_frame_token_hybrid_actionformer_integration.py tests/test_frame_token_hybrid_acquisition_route.py tests/test_frame_token_hybrid_build_forward_smoke.py tests/test_frame_token_hybrid_config_gate.py tests/test_frame_token_hybrid_metadata_contract.py -q
+PASS: 33 passed, 1 skipped in 42.04s.
+
+C:/Users/skywalker/.conda/envs/torch_1/python.exe -m pytest tests/test_pc_ot_mras_p2_quality_formal_train_candidate.py tests/test_pc_ot_mras_p2_quality_short_smoke_execution_candidate.py tests/test_pc_ot_mras_r17_formal_train_config.py tests/test_pc_ot_mras_r18_aux_formal_train_config.py tests/test_pc_ot_mras_r35_actionformer_head_formal_train_config.py tests/test_pc_ot_mras_r17_r18_post_train_eval_gate.py tests/test_pc_ot_mras_local_lowmem_eval_config.py -q
+PASS: 74 passed in 6.15s.
+```
