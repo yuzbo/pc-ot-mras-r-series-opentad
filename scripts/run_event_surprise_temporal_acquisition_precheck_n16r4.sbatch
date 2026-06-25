@@ -134,7 +134,7 @@ if [ -n "${LOAD_FROM_RAW_PREDICTIONS:-}" ] || [ -n "${RAW_PREDICTION_CACHE:-}" ]
   fail "raw prediction/cache environment shortcuts are forbidden for Event-Surprise precheck"
 fi
 
-EXPECTED_GIT_BRANCH="${EVENT_SURPRISE_EXPECTED_BRANCH:-codex/event-surprise-owner-fix-20260624}"
+EXPECTED_GIT_BRANCH="${EVENT_SURPRISE_EXPECTED_BRANCH:-codex/event-surprise-pro-fix-20260625}"
 GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || fail "Event-Surprise repo must be a git checkout"
 GIT_HEAD="$(git rev-parse HEAD 2>/dev/null)" || fail "Event-Surprise repo HEAD is unavailable"
 if [ "$GIT_BRANCH" != "$EXPECTED_GIT_BRANCH" ]; then
@@ -203,11 +203,11 @@ nvidia-smi || fail "nvidia-smi failed"
 log "event-surprise validator precheck action"
 python "$VALIDATOR" --config "$PRECHECK_CONFIG" --action precheck-only
 
-log "event-surprise locked config validation"
+log "event-surprise precheck/full candidate config validation"
 python "$VALIDATOR" --config "$PRECHECK_CONFIG"
 python "$VALIDATOR" --config "$FULL_CONFIG"
 
-log "asserting full-train remains locked without external gate JSON"
+log "asserting full-train remains fail-closed without external gate JSON"
 if python "$VALIDATOR" --config "$FULL_CONFIG" --action full-train; then
   fail "full-train action unexpectedly passed without gate JSON"
 else
@@ -252,6 +252,11 @@ python -m py_compile \
   tests/test_event_surprise_acquisition_route.py
 
 log "focused Event-Surprise launcher/gate pytest"
+unset EVENT_SURPRISE_ENTRYPOINT_GATE_JSON
+unset EVENT_SURPRISE_ENTRYPOINT_GATE_SHA256
+unset EVENT_SURPRISE_ACTIVE_MANIFEST_SHA256
+unset EVENT_SURPRISE_RESOLVED_CONFIG_SHA256
+unset EVENT_SURPRISE_RUN_TAG
 python -m pytest \
   tests/test_event_surprise_config_gate.py \
   -q

@@ -168,3 +168,87 @@ Commands and results:
   detector-evaluation, or paper/deploy/runtime claim action.
 - Event-Surprise must remain separate from C3:
   `DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3`.
+
+---
+
+# EVENT_SURPRISE Full-Train Gate-Bound Fix 2026-06-25
+
+Timestamp: 2026-06-25 12:45:13 +08:00
+
+Route: `DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3`
+
+Writable worktree:
+`E:\DeskTop\TAD\temrefuse-tad\OpenTAD_EventSurprise_ProFix_Worktree_20260625`
+
+Branch: `codex/event-surprise-pro-fix-20260625`
+
+This stage fixes the full-train blocker created by the previous follow-up-Pro
+hard lock. No GPT-5 Pro, Gemini, Claude, remote sync, Slurm, `tools/test.py`,
+metric evaluation, raw-prediction cache, or paper/deploy/runtime claim was
+invoked.
+
+## Gate-Bound Status
+
+The full-train candidate config is now gate-bound instead of Pro-hard-locked:
+
+- `stage=full_train_candidate_gate_bound`
+- `review_status=GATE_BOUND_FULL_TRAIN_CANDIDATE_NO_FOLLOWUP_PRO_REQUIRED`
+- `reviewed_impl_commit=EVENT_SURPRISE_FULL_TRAIN_GATE_BOUND_FIX`
+- `requires_followup_pro_review=False`
+- train-only config entrypoint: `allowed_entrypoints=("tools/train.py",)`
+
+It remains fail-closed without all external launch bindings:
+
+- external full-train gate JSON plus SHA256;
+- active manifest SHA256;
+- resolved config SHA256;
+- `EVENT_SURPRISE_RUN_TAG`;
+- route label and route id;
+- fixed-budget contract:
+  `budget_protocol=fixed384_over_dense768_event_surprise_train_only`,
+  `dense_window_size=768`, `selected_length=384`, `target_len=384`,
+  `selection_ratio=0.5`;
+- user plus coordinator override statement:
+  `USER_COORDINATOR_APPROVED_EVENT_SURPRISE_GATE_BOUND_FULL_TRAIN`.
+
+The valid-gate path allows `tools/train.py` only. It continues to forbid
+`tools/test.py`, raw-prediction cache load/save, GT/teacher/oracle shortcuts,
+detector-map/eval entrypoints, metric claims, paper claims, runtime/FLOPs
+claims, and deploy claims.
+
+This is not a C3 optimization and must not be merged into C3 attribution. Any
+future combined route still requires a separate explicit combo gate.
+
+## Changed Files In This Stage
+
+- `configs/adatad/thumos/event_surprise_temporal_acquisition_full_train_candidate_n16r4.py`
+- `opentad/utils/training_guard.py`
+- `tools/bata/validate_event_surprise_gate.py`
+- `scripts/run_event_surprise_temporal_acquisition_full_train_n16r4.sbatch`
+- `scripts/run_event_surprise_temporal_acquisition_precheck_n16r4.sbatch`
+- `tests/test_event_surprise_config_gate.py`
+- `docs/en/event_surprise_temporal_acquisition_route.md`
+- `research-wiki/experiments/EVENT_SURPRISE_OWNER_FIX_REPORT_20260624.md`
+
+## Local Verification Snapshot
+
+Red test before implementation:
+
+- `python -m pytest tests/test_event_surprise_config_gate.py -q`
+  -> failed on the old follow-up-Pro hard lock and old false train contract.
+- RUN_TAG regression test:
+  `python -m pytest tests/test_event_surprise_config_gate.py::test_event_surprise_full_train_config_is_guarded_by_external_entrypoint_gate -q`
+  -> failed because `training_guard.py` did not require `EVENT_SURPRISE_RUN_TAG`.
+- External binding regression test:
+  `python -m pytest tests/test_event_surprise_config_gate.py::test_event_surprise_launch_action_full_train_rejects_missing_external_bindings -q`
+  -> failed because validator accepted a gate JSON without requiring
+  `--gate-sha256`, `--active-manifest-sha256`,
+  `--resolved-config-sha256`, and `--run-tag`.
+
+Green evidence collected during implementation:
+
+- `python -m pytest tests/test_event_surprise_config_gate.py -q`
+  -> `17 passed`.
+
+Final verification commands are recorded in the commit/task response for this
+stage. No metric or paper claim is derived from these local gates.

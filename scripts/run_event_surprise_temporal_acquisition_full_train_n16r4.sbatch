@@ -134,7 +134,7 @@ if [ -n "${LOAD_FROM_RAW_PREDICTIONS:-}" ] || [ -n "${RAW_PREDICTION_CACHE:-}" ]
   fail "raw prediction/cache environment shortcuts are forbidden for Event-Surprise full train"
 fi
 
-EXPECTED_GIT_BRANCH="${EVENT_SURPRISE_EXPECTED_BRANCH:-codex/event-surprise-owner-fix-20260624}"
+EXPECTED_GIT_BRANCH="${EVENT_SURPRISE_EXPECTED_BRANCH:-codex/event-surprise-pro-fix-20260625}"
 GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || fail "Event-Surprise repo must be a git checkout"
 GIT_HEAD="$(git rev-parse HEAD 2>/dev/null)" || fail "Event-Surprise repo HEAD is unavailable"
 if [ "$GIT_BRANCH" != "$EXPECTED_GIT_BRANCH" ]; then
@@ -191,7 +191,7 @@ sha256sum \
 ACTIVE_MANIFEST_SHA256="$(sha256sum "$SHA_MANIFEST" | awk '{print $1}')"
 log "active_sha256_manifest_sha256=$ACTIVE_MANIFEST_SHA256"
 
-log "event-surprise locked full config validation"
+log "event-surprise gate-bound full config validation"
 python "$VALIDATOR" --config "$FULL_CONFIG"
 
 log "static py_compile"
@@ -207,7 +207,12 @@ bash -n "$FULL_LAUNCHER"
 bash -n "$PRECHECK_LAUNCHER"
 
 if [ "$PRECHECK_ONLY" = "1" ]; then
-  log "asserting full-train remains locked without external gate JSON"
+  unset EVENT_SURPRISE_ENTRYPOINT_GATE_JSON
+  unset EVENT_SURPRISE_ENTRYPOINT_GATE_SHA256
+  unset EVENT_SURPRISE_ACTIVE_MANIFEST_SHA256
+  unset EVENT_SURPRISE_RESOLVED_CONFIG_SHA256
+  unset EVENT_SURPRISE_RUN_TAG
+  log "asserting full-train remains fail-closed without external gate JSON"
   if python "$VALIDATOR" --config "$FULL_CONFIG" --action full-train; then
     fail "full-train action unexpectedly passed without gate JSON"
   else
@@ -250,6 +255,7 @@ export EVENT_SURPRISE_ENTRYPOINT_GATE_JSON="$GATE_JSON"
 export EVENT_SURPRISE_ENTRYPOINT_GATE_SHA256="$GATE_SHA256"
 export EVENT_SURPRISE_ACTIVE_MANIFEST_SHA256="$ACTIVE_MANIFEST_SHA256"
 export EVENT_SURPRISE_RESOLVED_CONFIG_SHA256="$RESOLVED_CONFIG_SHA256"
+export EVENT_SURPRISE_RUN_TAG="$RUN_TAG"
 
 write_summary "RUNNING" "EVENT_SURPRISE_FULL_TRAIN_CANDIDATE_STARTED" "full-train gate validated and training command is starting"
 log "starting Event-Surprise full-train candidate"

@@ -10,6 +10,7 @@ from typing import Any
 
 
 ROUTE_LABEL = "DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3"
+ROUTE_ID = "event_surprise_temporal_acquisition_full_train_candidate_n16r4"
 GATE_NAME = "event_surprise_acquisition_gate"
 META_KEY = "event_surprise_acquisition_plan"
 ROUTE = "event_surprise_temporal_acquisition"
@@ -136,6 +137,7 @@ FULL_TRAIN_GATE_ALLOWED_KEYS = frozenset(
     {
         "gate_type",
         "route",
+        "route_id",
         "route_label",
         "action",
         "run_tag",
@@ -152,6 +154,11 @@ FULL_TRAIN_GATE_ALLOWED_KEYS = frozenset(
         "selector_type",
         "no_c3_mixing",
         "no_gt_teacher_cache_leakage",
+        "budget_protocol",
+        "dense_window_size",
+        "selected_length",
+        "target_len",
+        "selection_ratio",
         "timestamp",
         "active_sha256_manifest_sha256",
         "expected_active_sha256_manifest_sha256",
@@ -205,18 +212,26 @@ FULL_TRAIN_GATE_ALLOWED_KEYS = frozenset(
 )
 
 FULL_TRAIN_DECISION = "ALLOW_EVENT_SURPRISE_FULL_TRAIN_CANDIDATE"
-FULL_TRAIN_COORDINATOR_OVERRIDE_STATEMENT = "USER_REQUESTED_NORMAL_SPEED_EVENT_SURPRISE_FOLLOWUP_PRO_REQUIRED"
+FULL_TRAIN_COORDINATOR_OVERRIDE_STATEMENT = "USER_COORDINATOR_APPROVED_EVENT_SURPRISE_GATE_BOUND_FULL_TRAIN"
 FULL_TRAIN_CONFIG = "configs/adatad/thumos/event_surprise_temporal_acquisition_full_train_candidate_n16r4.py"
-FULL_TRAIN_REQUIRED_TRUE_KEYS = ()
-FULL_TRAIN_REQUIRED_FALSE_KEYS = (
+FULL_TRAIN_CONFIG_STAGE = "full_train_candidate_gate_bound"
+FULL_TRAIN_REVIEW_STATUS = "GATE_BOUND_FULL_TRAIN_CANDIDATE_NO_FOLLOWUP_PRO_REQUIRED"
+FULL_TRAIN_REVIEWED_IMPL_COMMIT = "EVENT_SURPRISE_FULL_TRAIN_GATE_BOUND_FIX"
+FULL_TRAIN_BUDGET_PROTOCOL = "fixed384_over_dense768_event_surprise_train_only"
+FULL_TRAIN_DENSE_WINDOW_SIZE = 768
+FULL_TRAIN_SELECTED_LENGTH = 384
+FULL_TRAIN_SELECTION_RATIO = 0.5
+FULL_TRAIN_REQUIRED_TRUE_KEYS = (
     "allow_slurm",
     "allow_gpu",
     "allow_tools_train",
     "allow_detector_training",
-    "allow_train_validation_map",
     "allow_long_training",
     "allow_full_train",
     "launch_gate_passed",
+)
+FULL_TRAIN_REQUIRED_FALSE_KEYS = (
+    "allow_train_validation_map",
     "tools_test",
     "allow_tools_test",
     "detector_map",
@@ -344,27 +359,35 @@ def validate_full_train_config_gate_payload(payload: Mapping[str, Any]) -> bool:
     payload = _as_plain(payload)
     _require(isinstance(payload, Mapping), "gate payload must be a mapping")
     _require(_get(payload, "route") == ROUTE, "route mismatch")
+    _require(_get(payload, "route_id") == ROUTE_ID, "route_id mismatch")
     _require(_get(payload, "route_label") == ROUTE_LABEL, "route_label mismatch")
-    _require(_get(payload, "stage") == "full_train_candidate_locked", "stage mismatch")
+    _require(_get(payload, "stage") == FULL_TRAIN_CONFIG_STAGE, "stage mismatch")
     _require(_get(payload, "default_off") is True, "default_off must be true")
     _require(_get(payload, "formal_train_candidate") is True, "formal_train_candidate must be true")
     _require(_get(payload, "full_train_candidate") is True, "full_train_candidate must be true")
     _require(_get(payload, "requires_launch_gate") is True, "requires_launch_gate must be true")
-    _require(_get(payload, "launch_gate_passed") is False, "launch_gate_passed must be false")
-    _require(tuple(_get(payload, "allowed_entrypoints", ())) == (), "allowed_entrypoints must be empty")
+    _require(_get(payload, "launch_gate_passed") is True, "launch_gate_passed must be true")
+    _require(tuple(_get(payload, "allowed_entrypoints", ())) == ("tools/train.py",), "allowed_entrypoints mismatch")
     _require(
-        _get(payload, "review_status") == "FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO",
+        _get(payload, "review_status") == FULL_TRAIN_REVIEW_STATUS,
         "review_status mismatch",
     )
-    _require(_get(payload, "reviewed_impl_commit") == "FOLLOWUP_PRO_REQUIRED", "reviewed_impl_commit mismatch")
+    _require(_get(payload, "reviewed_impl_commit") == FULL_TRAIN_REVIEWED_IMPL_COMMIT, "reviewed_impl_commit mismatch")
     _require(
         _get(payload, "selector_type") == "EventSurpriseTemporalAcquisitionSelector",
         "selector_type mismatch",
     )
     _require(_get(payload, "no_c3_mixing") is True, "no_c3_mixing must be true")
     _require(_get(payload, "no_gt_teacher_cache_leakage") is True, "no_gt_teacher_cache_leakage must be true")
-    _require(_get(payload, "requires_followup_pro_review") is True, "requires_followup_pro_review must be true")
+    _require(_get(payload, "requires_followup_pro_review") is False, "requires_followup_pro_review must be false")
+    _require(_get(payload, "budget_protocol") == FULL_TRAIN_BUDGET_PROTOCOL, "budget_protocol mismatch")
+    _require(int(_get(payload, "dense_window_size", 0)) == FULL_TRAIN_DENSE_WINDOW_SIZE, "dense_window_size mismatch")
+    _require(int(_get(payload, "selected_length", 0)) == FULL_TRAIN_SELECTED_LENGTH, "selected_length mismatch")
+    _require(int(_get(payload, "target_len", 0)) == FULL_TRAIN_SELECTED_LENGTH, "target_len mismatch")
+    _require(float(_get(payload, "selection_ratio", -1.0)) == FULL_TRAIN_SELECTION_RATIO, "selection_ratio mismatch")
 
+    for key in FULL_TRAIN_REQUIRED_TRUE_KEYS:
+        _require(_get(payload, key) is True, f"{key} must be true")
     for key in FULL_TRAIN_REQUIRED_FALSE_KEYS:
         _require(_get(payload, key) is False, f"{key} must be false")
 
@@ -381,10 +404,19 @@ def validate_full_train_config_gate_payload(payload: Mapping[str, Any]) -> bool:
         _get(context, "resolved_config_sha256_env") == "EVENT_SURPRISE_RESOLVED_CONFIG_SHA256",
         "resolved_config_sha256_env mismatch",
     )
+    _require(_get(context, "run_tag_env") == "EVENT_SURPRISE_RUN_TAG", "run_tag_env mismatch")
     _require(_get(context, "require_resolved_config_sha256") is True, "resolved config sha256 must be required")
-    _require(tuple(_get(context, "allowed_decisions", ())) == (), "allowed_decisions must be empty")
-    _require(_get(context, "reviewed_impl_commit") == "FOLLOWUP_PRO_REQUIRED", "context reviewed_impl_commit mismatch")
+    _require(_get(context, "require_run_tag") is True, "run_tag must be required")
+    _require(
+        tuple(_get(context, "allowed_decisions", ())) == (FULL_TRAIN_DECISION,),
+        "allowed_decisions mismatch",
+    )
+    _require(
+        _get(context, "reviewed_impl_commit") == FULL_TRAIN_REVIEWED_IMPL_COMMIT,
+        "context reviewed_impl_commit mismatch",
+    )
     _require(_get(context, "route_label") == ROUTE_LABEL, "context route_label mismatch")
+    _require(_get(context, "route_id") == ROUTE_ID, "context route_id mismatch")
     _require(
         _get(context, "selector_type") == "EventSurpriseTemporalAcquisitionSelector",
         "context selector_type mismatch",
@@ -394,7 +426,7 @@ def validate_full_train_config_gate_payload(payload: Mapping[str, Any]) -> bool:
         _get(context, "no_gt_teacher_cache_leakage") is True,
         "context no_gt_teacher_cache_leakage must be true",
     )
-    _require(_get(context, "requires_followup_pro_review") is True, "context follow-up Pro lock missing")
+    _require(_get(context, "requires_followup_pro_review") is False, "context follow-up Pro flag must be false")
     _require(_get(context, "strict_payload_validation") is True, "strict payload validation must be true")
     _require(
         _get(context, "unknown_key_policy") == "reject_unknown_except_explicit_harmless_metadata",
@@ -413,14 +445,20 @@ def validate_full_train_config_gate_payload(payload: Mapping[str, Any]) -> bool:
     _require(isinstance(exact, Mapping), "required_exact_values must be present")
     _require(_get(exact, "gate_type") == "event_surprise_launch_gate", "gate_type exact value mismatch")
     _require(_get(exact, "route") == ROUTE, "route exact value mismatch")
+    _require(_get(exact, "route_id") == ROUTE_ID, "route_id exact value mismatch")
     _require(_get(exact, "route_label") == ROUTE_LABEL, "route_label exact value mismatch")
     _require(_get(exact, "action") == "full_train", "action exact value mismatch")
     _require(_get(exact, "config") == FULL_TRAIN_CONFIG, "config exact value mismatch")
-    _require(_get(exact, "config_stage") == "full_train_candidate_locked", "config_stage exact value mismatch")
+    _require(_get(exact, "config_stage") == FULL_TRAIN_CONFIG_STAGE, "config_stage exact value mismatch")
     _require(
         _get(exact, "coordinator_override_statement") == FULL_TRAIN_COORDINATOR_OVERRIDE_STATEMENT,
         "coordinator override exact value mismatch",
     )
+    _require(_get(exact, "budget_protocol") == FULL_TRAIN_BUDGET_PROTOCOL, "budget exact value mismatch")
+    _require(_get(exact, "dense_window_size") == FULL_TRAIN_DENSE_WINDOW_SIZE, "dense_window_size exact mismatch")
+    _require(_get(exact, "selected_length") == FULL_TRAIN_SELECTED_LENGTH, "selected_length exact mismatch")
+    _require(_get(exact, "target_len") == FULL_TRAIN_SELECTED_LENGTH, "target_len exact mismatch")
+    _require(_get(exact, "selection_ratio") == FULL_TRAIN_SELECTION_RATIO, "selection_ratio exact mismatch")
 
     forbidden = tuple(_get(context, "forbidden_true_keys", ()))
     missing = [key for key in FULL_TRAIN_REQUIRED_FALSE_KEYS if key not in forbidden]
@@ -447,14 +485,18 @@ def validate_config(config_path: str | Path) -> dict[str, Any]:
     scope = _as_plain(getattr(cfg, "experiment_scope", {}))
     _require(isinstance(scope, Mapping), "experiment_scope must be present")
     _require(_get(scope, "route") == ROUTE, "experiment_scope.route mismatch")
+    _require(_get(scope, "route_id") in (None, ROUTE_ID), "experiment_scope.route_id mismatch")
     _require(_get(scope, "route_label") == ROUTE_LABEL, "experiment_scope.route_label mismatch")
     _require(_get(scope, "meta_key") == META_KEY, "experiment_scope.meta_key mismatch")
     _require(_get(scope, "protocol_family") == "event_surprise_sparse_acquisition_contract", "protocol family mismatch")
     _require(_get(scope, "route_isolation") == "no_c3_mixing", "route isolation mismatch")
-    _require(
-        _get(scope, "review_status") == "FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO",
-        "experiment_scope.review_status mismatch",
-    )
+    if _get(gate, "full_train_candidate") is True:
+        _require(_get(scope, "review_status") == FULL_TRAIN_REVIEW_STATUS, "experiment_scope.review_status mismatch")
+    else:
+        _require(
+            _get(scope, "review_status") == "FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO",
+            "experiment_scope.review_status mismatch",
+        )
     _require(
         _get(scope, "selected_axis_inference_mapping") == "selector_selected_axis_to_dense_window_axis",
         "selected-axis inference mapping mismatch",
@@ -507,7 +549,8 @@ def validate_config(config_path: str | Path) -> dict[str, Any]:
         "full_train_candidate": bool(gate.get("full_train_candidate", False)),
         "allowed_entrypoints": list(gate.get("allowed_entrypoints", ())),
         "review_status": scope["review_status"],
-        "full_train_locked_pending_followup_pro": bool(gate.get("requires_followup_pro_review", False)),
+        "requires_followup_pro_review": bool(gate.get("requires_followup_pro_review", False)),
+        "requires_external_full_train_gate": bool(gate.get("requires_launch_gate", False)),
         "forbidden_true_key_count": len(tuple(gate["entrypoint_gate_context"]["forbidden_true_keys"])),
     }
 
@@ -540,11 +583,23 @@ def validate_full_train_gate_payload(
     _require(not unexpected, f"launch gate has unexpected key(s): {unexpected}")
     _require(_get(payload, "gate_type") == "event_surprise_launch_gate", "launch gate type mismatch")
     _require(_get(payload, "route") == ROUTE, "launch gate route mismatch")
+    _require(_get(payload, "route_id") == ROUTE_ID, "launch gate route_id mismatch")
     _require(_get(payload, "route_label") == ROUTE_LABEL, "launch gate route_label mismatch")
     _require(_normalize_action(_get(payload, "action")) == "full_train", "launch gate action mismatch")
     _require(_get(payload, "decision") == FULL_TRAIN_DECISION, "launch gate decision mismatch")
     _require(_get(payload, "config") == FULL_TRAIN_CONFIG, "launch gate config mismatch")
-    _require(_get(payload, "config_stage") == "full_train_candidate_locked", "launch gate config_stage mismatch")
+    _require(_get(payload, "config_stage") == FULL_TRAIN_CONFIG_STAGE, "launch gate config_stage mismatch")
+    _require(_get(payload, "review_status") == FULL_TRAIN_REVIEW_STATUS, "launch gate review_status mismatch")
+    _require(
+        _get(payload, "reviewed_impl_commit") == FULL_TRAIN_REVIEWED_IMPL_COMMIT,
+        "launch gate reviewed_impl_commit mismatch",
+    )
+    _require(_get(payload, "selector_type") == "EventSurpriseTemporalAcquisitionSelector", "launch gate selector mismatch")
+    _require(_get(payload, "no_c3_mixing") is True, "launch gate must set no_c3_mixing=true")
+    _require(
+        _get(payload, "no_gt_teacher_cache_leakage") is True,
+        "launch gate must set no_gt_teacher_cache_leakage=true",
+    )
     _require(isinstance(_get(payload, "user"), str) and bool(_get(payload, "user").strip()), "launch gate user missing")
     _require(
         _get(payload, "coordinator_override_statement") == FULL_TRAIN_COORDINATOR_OVERRIDE_STATEMENT,
@@ -552,6 +607,11 @@ def validate_full_train_gate_payload(
     )
     _require(isinstance(_get(payload, "run_tag"), str) and bool(_get(payload, "run_tag").strip()), "run_tag missing")
     _require("/" not in _get(payload, "run_tag") and "\\" not in _get(payload, "run_tag"), "run_tag must be path-safe")
+    _require(_get(payload, "budget_protocol") == FULL_TRAIN_BUDGET_PROTOCOL, "launch gate budget_protocol mismatch")
+    _require(int(_get(payload, "dense_window_size", 0)) == FULL_TRAIN_DENSE_WINDOW_SIZE, "launch gate dense_window_size mismatch")
+    _require(int(_get(payload, "selected_length", 0)) == FULL_TRAIN_SELECTED_LENGTH, "launch gate selected_length mismatch")
+    _require(int(_get(payload, "target_len", 0)) == FULL_TRAIN_SELECTED_LENGTH, "launch gate target_len mismatch")
+    _require(float(_get(payload, "selection_ratio", -1.0)) == FULL_TRAIN_SELECTION_RATIO, "launch gate selection_ratio mismatch")
     _require(_get(payload, "launch_gate_passed") is True, "launch gate must be passed")
     _require(_get(payload, "allow_full_train") is True, "launch gate must allow full_train")
     entrypoints = tuple(_get(payload, "allowed_entrypoints", ()))
@@ -610,17 +670,16 @@ def validate_launch_action(
 
     if action_name == "full_train":
         _require(summary["full_train_candidate"] is True, "full_train launch requires full_train_candidate config")
-        _require(
-            not summary.get("full_train_locked_pending_followup_pro", False),
-            "full_train remains locked pending follow-up Pro review",
-        )
         _require(gate_json is not None, "full_train launch requires --gate-json")
-        if gate_sha256 is not None:
-            actual_gate_sha256 = _sha256_file(gate_json)
-            _require(
-                actual_gate_sha256 == gate_sha256,
-                f"gate json sha256 mismatch: expected {gate_sha256} got {actual_gate_sha256}",
-            )
+        _require(gate_sha256 is not None, "full_train launch requires --gate-sha256")
+        _require(active_manifest_sha256 is not None, "full_train launch requires --active-manifest-sha256")
+        _require(resolved_config_sha256 is not None, "full_train launch requires --resolved-config-sha256")
+        _require(run_tag is not None, "full_train launch requires --run-tag")
+        actual_gate_sha256 = _sha256_file(gate_json)
+        _require(
+            actual_gate_sha256 == gate_sha256,
+            f"gate json sha256 mismatch: expected {gate_sha256} got {actual_gate_sha256}",
+        )
         payload = _read_json_mapping(gate_json)
         validate_full_train_gate_payload(
             payload,

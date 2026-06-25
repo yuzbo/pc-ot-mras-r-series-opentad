@@ -57,42 +57,58 @@ claims. The route metadata keeps `decode_saving_claim_allowed=False` and
 
 ## Current Gate State
 
-Both provided configs are fail-closed:
+The local precheck config remains the default safe path:
 
 - local precheck config: `event_surprise_temporal_acquisition_local_precheck.py`;
-- locked full-train candidate config:
+- gate-bound full-train candidate config:
   `event_surprise_temporal_acquisition_full_train_candidate_n16r4.py`.
 
-Remote sync, Slurm full-train submission, detector training, direct evaluation,
-raw-prediction cache use, runtime/deploy claims, metric claims, and paper claims
-remain locked. The full-train candidate config is preserved only as a reviewed
-candidate container and is marked
-`FIXED_FOR_LOCAL_SMOKE_PENDING_FOLLOWUP_PRO`; an external gate JSON cannot open
-full training until a follow-up Pro review replaces the pending provenance lock.
+The full-train candidate is no longer blocked by a hard follow-up-Pro flag. It is
+a train-only, external-gate-bound candidate for
+`DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3`, not a C3
+optimization or combined attribution route. Its config permits only
+`tools/train.py` after an entrypoint gate is present. Direct evaluation,
+`tools/test.py`, raw-prediction cache use, GT/teacher/oracle shortcuts,
+train-validation metric claims, runtime/deploy claims, metric claims, and paper
+claims remain forbidden.
+
+Full train must fail closed unless all of the following are supplied and match:
+
+- external full-train gate JSON path and SHA256;
+- active manifest SHA256;
+- resolved config SHA256;
+- `EVENT_SURPRISE_RUN_TAG` / launcher `RUN_TAG`;
+- route label and route id;
+- fixed-budget contract:
+  `budget_protocol=fixed384_over_dense768_event_surprise_train_only`,
+  `dense_window_size=768`, `selected_length=384`, `target_len=384`,
+  `selection_ratio=0.5`;
+- user plus coordinator override statement:
+  `USER_COORDINATOR_APPROVED_EVENT_SURPRISE_GATE_BOUND_FULL_TRAIN`.
 
 Launcher enforcement is handled by `tools/bata/validate_event_surprise_gate.py`.
 The config validator alone is not a training permission. Any entrypoint must
 also pass an explicit action check:
 
 - `--action precheck-only` is allowed only for the local precheck config;
-- `--action full-train` fails closed with
-  `full_train remains locked pending follow-up Pro review`, even if a gate JSON
-  is supplied.
+- `--action full-train` fails closed without the external gate JSON/SHA and
+  matching active-manifest, resolved-config, and RUN_TAG bindings; with a valid
+  gate it returns `train_command_allowed=true`.
 
 The N16R4 deployment-precheck launcher is
 `scripts/run_event_surprise_temporal_acquisition_precheck_n16r4.sbatch`. It
 defaults to `PRECHECK_ONLY=1` and runs validator/import/compile/focused
-launcher-gate checks only. Under the current follow-up-Pro lock,
-`PRECHECK_ONLY=0` remains blocked by the config/validator and must not be used
-to run `tools/train.py` or `tools/test.py`.
+launcher-gate checks only. Before focused pytest it clears formal full-train
+gate env vars so a stale gate cannot pollute precheck tests.
 
 The N16R4 full-train launcher is
 `scripts/run_event_surprise_temporal_acquisition_full_train_n16r4.sbatch`. It
 also defaults to `PRECHECK_ONLY=1`, which computes the resolved config and active
 manifest, validates the config, compiles the relevant Python files, checks bash
-syntax, and proves full train remains locked. The config-level hard gate now
-blocks full train before any gate JSON can authorize it; follow-up Pro review is
-required before this launcher can be reconsidered.
+syntax, and proves full train remains fail-closed without an external gate. With
+`PRECHECK_ONLY=0`, `ALLOW_EVENT_SURPRISE_FULL_TRAIN=1`, the explicit coordinator
+override, and a valid gate JSON/SHA, it exports the entrypoint gate env to
+`tools/train.py`. It never invokes `tools/test.py`.
 
 ## Validation
 
@@ -105,3 +121,6 @@ python tools/bata/validate_event_surprise_gate.py --config configs/adatad/thumos
 python tools/bata/validate_event_surprise_gate.py --config configs/adatad/thumos/event_surprise_temporal_acquisition_local_precheck.py --action precheck-only
 python tools/bata/validate_event_surprise_gate.py --config configs/adatad/thumos/event_surprise_temporal_acquisition_full_train_candidate_n16r4.py --action full-train
 ```
+
+The last command is expected to fail without `--gate-json`, `--gate-sha256`,
+`--active-manifest-sha256`, `--resolved-config-sha256`, and `--run-tag`.

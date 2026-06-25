@@ -405,11 +405,14 @@ def _entrypoint_gate_context_block_reason(cfg, gate):
     resolved_env = str(
         _get_value(context, "resolved_config_sha256_env", "OPENTAD_PCOTMRAS_RESOLVED_CONFIG_SHA256")
     )
+    run_tag_env_value = _get_value(context, "run_tag_env", _MISSING)
+    run_tag_env = None if run_tag_env_value in (_MISSING, None, "") else str(run_tag_env_value)
 
     gate_json_path = os.environ.get(gate_json_env)
     gate_sha256 = os.environ.get(gate_sha_env)
     active_manifest_sha256 = os.environ.get(manifest_env)
     resolved_config_sha256 = os.environ.get(resolved_env)
+    run_tag = os.environ.get(run_tag_env) if run_tag_env is not None else None
 
     if not gate_json_path:
         return f"missing required entrypoint gate env {gate_json_env}"
@@ -419,6 +422,8 @@ def _entrypoint_gate_context_block_reason(cfg, gate):
         return f"missing required entrypoint gate env {manifest_env}"
     if _is_true(_get_value(context, "require_resolved_config_sha256", True)) and not resolved_config_sha256:
         return f"missing required entrypoint gate env {resolved_env}"
+    if run_tag_env is not None and _is_true(_get_value(context, "require_run_tag", False)) and not run_tag:
+        return f"missing required entrypoint gate env {run_tag_env}"
 
     gate_path = Path(gate_json_path)
     if not gate_path.is_file():
@@ -461,6 +466,8 @@ def _entrypoint_gate_context_block_reason(cfg, gate):
             "entrypoint gate resolved config sha256 mismatch: "
             f"expected={expected_resolved} actual={resolved_config_sha256}"
         )
+    if run_tag_env is not None and run_tag is not None and gate_payload.get("run_tag") != run_tag:
+        return f"entrypoint gate run_tag mismatch: expected={gate_payload.get('run_tag')} actual={run_tag}"
 
     forbidden_true = _get_value(context, "forbidden_true_keys", _MISSING)
     if forbidden_true is not _MISSING:
