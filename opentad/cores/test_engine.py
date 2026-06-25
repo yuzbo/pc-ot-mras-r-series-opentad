@@ -9,6 +9,7 @@ from opentad.utils import create_folder
 from opentad.models.utils.post_processing import build_classifier, batched_nms
 from opentad.evaluations import build_evaluator
 from opentad.datasets.base import SlidingWindowDataset
+from opentad.cores.train_engine import _inject_selector_dump_context
 
 
 def eval_one_epoch(
@@ -21,6 +22,7 @@ def eval_one_epoch(
     use_amp=False,
     world_size=0,
     not_eval=False,
+    selector_dump_epoch=None,
 ):
     """Inference and Evaluation the model"""
 
@@ -46,7 +48,10 @@ def eval_one_epoch(
     # model forward
     model.eval()
     result_dict = {}
-    for data_dict in tqdm.tqdm(test_loader, disable=(rank != 0)):
+    if selector_dump_epoch is None:
+        selector_dump_epoch = cfg.inference.get("test_epoch", -1)
+    for iter_idx, data_dict in enumerate(tqdm.tqdm(test_loader, disable=(rank != 0))):
+        _inject_selector_dump_context(data_dict, phase="validation", epoch=selector_dump_epoch, iter_idx=iter_idx)
         with torch.cuda.amp.autocast(dtype=torch.float16, enabled=use_amp):
             with torch.no_grad():
                 results = model(

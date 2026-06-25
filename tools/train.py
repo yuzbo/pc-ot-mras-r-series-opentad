@@ -233,6 +233,7 @@ def main():
                     use_amp=use_amp,
                     world_size=args.world_size,
                     not_eval=args.not_eval,
+                    selector_dump_epoch=epoch,
                 )
     logger.info("Training Over...\n")
 

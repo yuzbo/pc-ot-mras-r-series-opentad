@@ -464,6 +464,11 @@ def test_c3_global_rank_st_full_train_launcher_is_route_specific_and_runs_requir
     assert "pc_ot_mras_prebackbone_c3_global_rank_st_boundary_full_train_n16r4.py" in text
     assert "validate_pc_ot_mras_prebackbone_c3_global_rank_st_full_train_gate.py" in text
     assert "C3_SELECTOR_METADATA_MAX_ROWS=\"${C3_SELECTOR_METADATA_MAX_ROWS:-32768}\"" in text
+    assert "C3_SELECTOR_METADATA_MIN_LATE_EPOCH=\"${C3_SELECTOR_METADATA_MIN_LATE_EPOCH:-40}\"" in text
+    assert "C3_SELECTOR_METADATA_TRAIN_STRIDE=\"${C3_SELECTOR_METADATA_TRAIN_STRIDE:-200}\"" in text
+    assert "C3_SELECTOR_METADATA_VALIDATION_STRIDE=\"${C3_SELECTOR_METADATA_VALIDATION_STRIDE:-1}\"" in text
+    assert "PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_TRAIN_STRIDE" in text
+    assert "PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_VALIDATION_STRIDE" in text
     assert "selector_metadata.jsonl" in text
     assert "PRECHECK_ONLY=\"${PRECHECK_ONLY:-0}\"" in text
     assert "ALLOW_C3_GLOBAL_RANK_ST_FULL_TRAIN=\"${ALLOW_C3_GLOBAL_RANK_ST_FULL_TRAIN:-1}\"" in text
@@ -475,7 +480,14 @@ def test_c3_global_rank_st_full_train_launcher_is_route_specific_and_runs_requir
     assert "raw prediction/cache is forbidden" in text
     assert "validate_pc_ot_mras_c3_diagnostic_gate.py" in text
     assert "analyze_pc_ot_mras_selector_posttrain_diagnostics.py" in text
+    assert "--row-cap \"$C3_SELECTOR_METADATA_MAX_ROWS\"" in text
+    assert "--require-train-phase" in text
+    assert "--require-validation-phase" in text
+    assert "--min-late-epoch \"$C3_SELECTOR_METADATA_MIN_LATE_EPOCH\"" in text
     assert "analyze_p2_proposal_localization.py" in text
+    assert "--require-selector-train-phase" in text
+    assert "--require-selector-validation-phase" in text
+    assert "--min-selector-late-epoch \"$C3_SELECTOR_METADATA_MIN_LATE_EPOCH\"" in text
     assert "codex/c3-global-rank-st-20260624" in text
     assert "C3-RS-Hybrid" not in text
     assert "DIVERGENT_INNOVATION" not in text

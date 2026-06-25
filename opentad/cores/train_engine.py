@@ -1,7 +1,39 @@
 import copy
+import os
+from collections.abc import Mapping
+
 import torch
 import tqdm
 from opentad.utils.misc import AverageMeter, reduce_loss
+
+
+def _selector_dump_enabled():
+    return bool(
+        os.environ.get("PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_JSONL")
+        or os.environ.get("C3_SELECTOR_METADATA_JSONL")
+    )
+
+
+def _inject_selector_dump_context(data_dict, *, phase, epoch, iter_idx):
+    if not _selector_dump_enabled() or not isinstance(data_dict, dict):
+        return
+    metas = data_dict.get("metas")
+    if not isinstance(metas, (list, tuple)):
+        return
+    out = []
+    for meta in metas:
+        if isinstance(meta, dict):
+            item = meta
+        elif isinstance(meta, Mapping):
+            item = dict(meta)
+        else:
+            out.append(meta)
+            continue
+        item.setdefault("pc_ot_mras_selector_dump_phase", str(phase))
+        item.setdefault("pc_ot_mras_selector_dump_epoch", int(epoch))
+        item.setdefault("pc_ot_mras_selector_dump_iter", int(iter_idx))
+        out.append(item)
+    data_dict["metas"] = out
 
 
 def _assert_loss_dict_finite(losses, *, stage):
@@ -104,6 +136,7 @@ def train_one_epoch(
     model.train()
     nonfinite_grad_skip_count = 0
     for iter_idx, data_dict in enumerate(train_loader):
+        _inject_selector_dump_context(data_dict, phase="train", epoch=curr_epoch, iter_idx=iter_idx)
         optimizer.zero_grad()
 
         # current learning rate
@@ -221,7 +254,8 @@ def val_one_epoch(
     losses_tracker = {}
 
     model.eval()
-    for data_dict in tqdm.tqdm(val_loader, disable=(rank != 0)):
+    for iter_idx, data_dict in enumerate(tqdm.tqdm(val_loader, disable=(rank != 0))):
+        _inject_selector_dump_context(data_dict, phase="validation", epoch=curr_epoch, iter_idx=iter_idx)
         with torch.cuda.amp.autocast(dtype=torch.float16, enabled=use_amp):
             with torch.no_grad():
                 losses = model(**data_dict, return_loss=True)

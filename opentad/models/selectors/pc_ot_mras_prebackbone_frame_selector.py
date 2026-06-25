@@ -2871,12 +2871,41 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             return
         max_rows = self._metadata_dump_max_rows()
         written = int(getattr(self, "_metadata_dump_count", 0))
+        phase = self._metadata_dump_phase(meta, training)
+        seen = int(getattr(self, "_metadata_dump_seen_count", 0))
+        self._metadata_dump_seen_count = seen + 1
+        stride = self._metadata_dump_stride(phase)
+        if stride > 1 and (seen % stride) != 0:
+            return
         if max_rows is not None and written >= max_rows:
             return
 
         row = {
             "schema_version": "pc_ot_mras_prebackbone_selector_metadata_dump_v0",
-            "phase": "train" if training else "eval",
+            "phase": phase,
+            "epoch": self._metadata_dump_optional_int(
+                meta,
+                (
+                    "pc_ot_mras_selector_dump_epoch",
+                    "epoch",
+                    "curr_epoch",
+                    "current_epoch",
+                    "checkpoint_epoch",
+                    "train_epoch",
+                ),
+            ),
+            "iter": self._metadata_dump_optional_int(
+                meta,
+                (
+                    "pc_ot_mras_selector_dump_iter",
+                    "iter",
+                    "iteration",
+                    "iter_idx",
+                    "global_iter",
+                    "global_step",
+                    "step",
+                ),
+            ),
             "sample_id": self._metadata_dump_sample_id(meta, batch_idx),
             "video_name": meta.get("video_name"),
             "window_start_frame": meta.get("window_start_frame"),
@@ -2919,6 +2948,52 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(self._metadata_dump_jsonable(row), sort_keys=True, allow_nan=False) + "\n")
         self._metadata_dump_count = written + 1
+
+    @staticmethod
+    def _metadata_dump_phase(meta: Mapping[str, Any], training: bool) -> str:
+        for key in ("pc_ot_mras_selector_dump_phase", "phase", "split", "mode"):
+            value = meta.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return "train" if training else "eval"
+
+    @staticmethod
+    def _metadata_dump_optional_int(meta: Mapping[str, Any], keys: Sequence[str]) -> int | None:
+        for key in keys:
+            value = meta.get(key)
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                try:
+                    score = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(score) and float(score).is_integer():
+                    return int(score)
+        return None
+
+    @staticmethod
+    def _metadata_dump_stride(phase: str) -> int:
+        normalized = str(phase).strip().lower()
+        env_names = (
+            ("PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_TRAIN_STRIDE", "C3_SELECTOR_METADATA_TRAIN_STRIDE")
+            if normalized in ("train", "training")
+            else (
+                "PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_VALIDATION_STRIDE",
+                "C3_SELECTOR_METADATA_VALIDATION_STRIDE",
+            )
+        )
+        for name in env_names:
+            raw = os.environ.get(name)
+            if raw is None or str(raw).strip() == "":
+                continue
+            stride = int(raw)
+            if stride <= 0:
+                raise ValueError(f"{name} must be positive")
+            return stride
+        return 1
 
     @staticmethod
     def _metadata_dump_max_rows() -> int | None:

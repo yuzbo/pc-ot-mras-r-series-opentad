@@ -18,6 +18,7 @@ from tools.bata.export_pc_ot_mras_hard_positions import strict_json_value, write
 SCHEMA_VERSION = "pc_ot_mras_c3_diagnostic_gate_v0"
 READY = "PC_OT_MRAS_C3_DIAGNOSTIC_GATE_READY"
 NO_GO = "PC_OT_MRAS_C3_DIAGNOSTIC_GATE_NO_GO"
+NOT_ATTRIBUTION_READY = "PC_OT_MRAS_C3_DIAGNOSTIC_GATE_NOT_ATTRIBUTION_READY"
 PROPOSAL_RANKING_READY_DECISIONS = {
     "NATIVE_IRREGULAR_AREA_HEAD_P2_LOCALIZATION_ATTRIBUTION_READY",
 }
@@ -25,8 +26,6 @@ PROPOSAL_CAP_READY_DECISIONS = {
     "ACTIONFORMER_POST_NMS_OVERLOAD_AUDIT_READY",
 }
 SELECTOR_READY_DECISION = "PC_OT_MRAS_SELECTOR_POSTTRAIN_DIAGNOSTIC_READY"
-
-
 def _load_json(path: str | Path) -> dict[str, Any]:
     payload = json.loads(Path(path).expanduser().read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict):
@@ -150,6 +149,63 @@ def _selector_dump_gate(selector_summary: Mapping[str, Any], *, min_selector_sam
             "raw_slot_duplicate_rate_mean": _nested(aggregate, ("slot_transport", "raw_slot_duplicate_rate_mean")),
             "reader_fill_count_mean": _nested(aggregate, ("slot_transport", "reader_fill_count_mean")),
             "st_active_row_count_mean": _nested(aggregate, ("slot_transport", "st_active_row_count_mean")),
+        },
+    }
+
+
+def _selector_attribution_gate(
+    selector_summary: Mapping[str, Any],
+    *,
+    require_train_phase: bool,
+    require_validation_phase: bool,
+    min_late_epoch: int | None,
+) -> dict[str, Any]:
+    missing: list[str] = []
+    coverage = selector_summary.get("metadata_coverage")
+    if not isinstance(coverage, Mapping):
+        missing.append("selector metadata coverage summary")
+        coverage = {}
+
+    row_cap = coverage.get("row_cap")
+    if isinstance(row_cap, Mapping):
+        if row_cap.get("hit_or_exceeded") is True:
+            missing.append("selector row cap appears to have truncated the dump")
+    else:
+        missing.append("selector row cap coverage")
+
+    phase = coverage.get("phase")
+    if isinstance(phase, Mapping):
+        if require_train_phase and phase.get("has_train") is not True:
+            missing.append("train selector rows")
+        if require_validation_phase and phase.get("has_validation") is not True:
+            missing.append("validation selector rows")
+    else:
+        missing.append("selector phase coverage")
+
+    epoch = coverage.get("epoch")
+    if min_late_epoch is not None:
+        max_epoch = epoch.get("max") if isinstance(epoch, Mapping) else None
+        if not isinstance(max_epoch, int) or isinstance(max_epoch, bool) or int(max_epoch) < int(min_late_epoch):
+            missing.append(f"late-epoch selector rows with epoch >= {int(min_late_epoch)}")
+
+    readiness = selector_summary.get("attribution_readiness")
+    if isinstance(readiness, Mapping):
+        for item in readiness.get("missing", []):
+            if isinstance(item, str) and item not in missing:
+                missing.append(item)
+
+    status = "PASS" if not missing else NOT_ATTRIBUTION_READY
+    return {
+        "status": status,
+        "missing": missing,
+        "observed": {
+            "row_cap": dict(row_cap) if isinstance(row_cap, Mapping) else None,
+            "phase": dict(phase) if isinstance(phase, Mapping) else None,
+            "epoch": dict(epoch) if isinstance(epoch, Mapping) else None,
+            "summary_attribution_readiness": dict(readiness) if isinstance(readiness, Mapping) else None,
+            "requires_train_phase": bool(require_train_phase),
+            "requires_validation_phase": bool(require_validation_phase),
+            "min_late_epoch": None if min_late_epoch is None else int(min_late_epoch),
         },
     }
 
@@ -354,12 +410,21 @@ def validate_c3_diagnostic_gate_payloads(
     proposal_summary: Mapping[str, Any] | None,
     overload_summary: Mapping[str, Any] | None,
     min_selector_samples: int = 1,
+    require_selector_train_phase: bool = True,
+    require_selector_validation_phase: bool = True,
+    min_selector_late_epoch: int | None = None,
     expected_run_root: str | None = None,
     expected_work_dir: str | None = None,
     expected_train_stdout: str | None = None,
     expected_result_detection_json: str | None = None,
 ) -> dict[str, Any]:
     selector_gate = _selector_dump_gate(selector_summary, min_selector_samples=int(min_selector_samples))
+    selector_attribution_gate = _selector_attribution_gate(
+        selector_summary,
+        require_train_phase=bool(require_selector_train_phase),
+        require_validation_phase=bool(require_selector_validation_phase),
+        min_late_epoch=min_selector_late_epoch,
+    )
     proposal_gate = _proposal_ranking_gate(proposal_summary)
     cap_gate = _proposal_cap_gate(overload_summary)
     provenance_gate = _provenance_gate(
@@ -373,6 +438,7 @@ def validate_c3_diagnostic_gate_payloads(
     )
     gates = {
         "selector_dump": selector_gate,
+        "selector_attribution": selector_attribution_gate,
         "proposal_ranking": proposal_gate,
         "proposal_cap": cap_gate,
         "provenance": provenance_gate,
@@ -380,13 +446,26 @@ def validate_c3_diagnostic_gate_payloads(
     blockers = [
         f"{name}: {', '.join(item['missing'])}"
         for name, item in gates.items()
-        if item["status"] != "PASS"
+        if item["status"] not in ("PASS", NOT_ATTRIBUTION_READY)
     ]
+    selector_attribution_blockers = selector_attribution_gate["missing"] if selector_attribution_gate["status"] != "PASS" else []
+    downstream_ready = proposal_gate["status"] == "PASS" and cap_gate["status"] == "PASS"
+    if blockers:
+        decision = NO_GO
+    elif selector_attribution_blockers:
+        decision = NOT_ATTRIBUTION_READY
+    else:
+        decision = READY
     return {
         "schema_version": SCHEMA_VERSION,
-        "decision": READY if not blockers else NO_GO,
+        "decision": decision,
         "gate": gates,
-        "blocking_findings": blockers,
+        "blocking_findings": blockers
+        + ([f"selector_attribution: {', '.join(selector_attribution_blockers)}"] if selector_attribution_blockers else []),
+        "attribution_readiness": {
+            "selector": "PASS" if not selector_attribution_blockers else NOT_ATTRIBUTION_READY,
+            "downstream_geometry_ranking": "PASS" if downstream_ready else "NO_GO",
+        },
         "interpretation_boundary": (
             "PASS means diagnostic evidence is complete enough to distinguish selector selection quality "
             "from downstream selected-axis geometry/ranking failure. It is not a metric or paper claim."
@@ -416,6 +495,9 @@ def run_c3_diagnostic_gate(
     overload_summary_path: str | Path | None = None,
     output_json: str | Path | None = None,
     min_selector_samples: int = 1,
+    require_selector_train_phase: bool = True,
+    require_selector_validation_phase: bool = True,
+    min_selector_late_epoch: int | None = None,
     expected_run_root: str | None = None,
     expected_work_dir: str | None = None,
     expected_train_stdout: str | None = None,
@@ -426,6 +508,9 @@ def run_c3_diagnostic_gate(
         proposal_summary=_load_json(proposal_summary_path) if proposal_summary_path is not None else None,
         overload_summary=_load_json(overload_summary_path) if overload_summary_path is not None else None,
         min_selector_samples=int(min_selector_samples),
+        require_selector_train_phase=bool(require_selector_train_phase),
+        require_selector_validation_phase=bool(require_selector_validation_phase),
+        min_selector_late_epoch=min_selector_late_epoch,
         expected_run_root=expected_run_root,
         expected_work_dir=expected_work_dir,
         expected_train_stdout=expected_train_stdout,
@@ -445,6 +530,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--overload-summary")
     parser.add_argument("--output")
     parser.add_argument("--min-selector-samples", type=int, default=1)
+    parser.set_defaults(require_selector_train_phase=True, require_selector_validation_phase=True)
+    parser.add_argument("--require-selector-train-phase", dest="require_selector_train_phase", action="store_true")
+    parser.add_argument("--no-require-selector-train-phase", dest="require_selector_train_phase", action="store_false")
+    parser.add_argument(
+        "--require-selector-validation-phase",
+        dest="require_selector_validation_phase",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--no-require-selector-validation-phase",
+        dest="require_selector_validation_phase",
+        action="store_false",
+    )
+    parser.add_argument("--min-selector-late-epoch", type=int)
     parser.add_argument("--expected-run-root")
     parser.add_argument("--expected-work-dir")
     parser.add_argument("--expected-train-stdout")
@@ -457,6 +556,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             overload_summary_path=args.overload_summary,
             output_json=args.output,
             min_selector_samples=int(args.min_selector_samples),
+            require_selector_train_phase=bool(args.require_selector_train_phase),
+            require_selector_validation_phase=bool(args.require_selector_validation_phase),
+            min_selector_late_epoch=args.min_selector_late_epoch,
             expected_run_root=args.expected_run_root,
             expected_work_dir=args.expected_work_dir,
             expected_train_stdout=args.expected_train_stdout,

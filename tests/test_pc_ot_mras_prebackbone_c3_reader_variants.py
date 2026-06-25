@@ -59,6 +59,49 @@ def _load_prebackbone_selector_module():
     return module
 
 
+def _load_prebackbone_selector_module_with_fake_torch(monkeypatch):
+    for name in (
+        "opentad.models.selectors.pc_ot_mras_prebackbone_frame_selector",
+        "opentad.models.builder",
+        "torch",
+        "torch.nn",
+        "torch.nn.functional",
+    ):
+        sys.modules.pop(name, None)
+
+    class _FakeModule:
+        pass
+
+    torch_module = types.ModuleType("torch")
+    torch_module.__path__ = []
+    torch_module.is_tensor = lambda _value: False
+    nn_module = types.ModuleType("torch.nn")
+    nn_module.Module = _FakeModule
+    functional_module = types.ModuleType("torch.nn.functional")
+    torch_module.nn = nn_module
+    monkeypatch.setitem(sys.modules, "torch", torch_module)
+    monkeypatch.setitem(sys.modules, "torch.nn", nn_module)
+    monkeypatch.setitem(sys.modules, "torch.nn.functional", functional_module)
+
+    _ensure_package("opentad", ROOT / "opentad")
+    _ensure_package("opentad.models", ROOT / "opentad" / "models")
+    _ensure_package("opentad.models.selectors", ROOT / "opentad" / "models" / "selectors")
+
+    builder = types.ModuleType("opentad.models.builder")
+    builder.SELECTORS = _Registry()
+    builder.build_selector = lambda cfg: cfg
+    monkeypatch.setitem(sys.modules, "opentad.models.builder", builder)
+
+    spec = importlib.util.spec_from_file_location(
+        "opentad.models.selectors.pc_ot_mras_prebackbone_frame_selector",
+        SELECTOR_PATH,
+    )
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _init_reader(reader_cls, *, in_dim: int, hidden_dim: int, num_slots: int):
     kwargs = {
         "in_dim": in_dim,
@@ -457,7 +500,15 @@ def test_c3_selector_metadata_env_hook_writes_analyzer_ready_current_batch_jsonl
     }
     candidate_valid = torch.tensor([[True, True, True, True, True, True, True, True]], dtype=torch.bool)
     candidate_dense_indices = torch.arange(8, dtype=torch.long).unsqueeze(0)
-    metas = [{"video_name": "video_a", "window_start_frame": 0}]
+    metas = [
+        {
+            "video_name": "video_a",
+            "window_start_frame": 0,
+            "pc_ot_mras_selector_dump_phase": "validation",
+            "pc_ot_mras_selector_dump_epoch": 59,
+            "pc_ot_mras_selector_dump_iter": 7,
+        }
+    ]
     gt_segments = [torch.tensor([[1.0, 5.0]], dtype=torch.float32)]
 
     selector._write_selected_axis_meta(
@@ -475,14 +526,16 @@ def test_c3_selector_metadata_env_hook_writes_analyzer_ready_current_batch_jsonl
         candidate_valid=candidate_valid,
         candidate_dense_indices=candidate_dense_indices,
         gt_segments=gt_segments,
-        training=True,
+        training=False,
     )
 
     rows = [json.loads(line) for line in dump_path.read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 1
     row = rows[0]
     assert row["sample_id"] == "video_a|window_start_frame=0"
-    assert row["phase"] == "train"
+    assert row["phase"] == "validation"
+    assert row["epoch"] == 59
+    assert row["iter"] == 7
     assert row["selected_dense_indices"] == [0, 2, 4, 6]
     assert row["valid_len"] == 8
     assert row["gt_segments"] == [[1.0, 5.0]]
@@ -496,6 +549,43 @@ def test_c3_selector_metadata_env_hook_writes_analyzer_ready_current_batch_jsonl
 
     monkeypatch.delenv("PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_JSONL", raising=False)
     monkeypatch.delenv("PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_MAX_ROWS", raising=False)
+
+
+def test_c3_selector_metadata_append_row_writes_epoch_iter_phase_from_meta_without_torch(tmp_path, monkeypatch):
+    module = _load_prebackbone_selector_module_with_fake_torch(monkeypatch)
+    selector_cls = module.PCOTMRASPreBackboneFrameSelector
+    selector = selector_cls.__new__(selector_cls)
+    selector._metadata_dump_count = 0
+    selector._metadata_dump_seen_count = 0
+
+    dump_path = tmp_path / "selector_metadata.jsonl"
+    monkeypatch.setenv("PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_JSONL", str(dump_path))
+    monkeypatch.setenv("PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_MAX_ROWS", "8")
+
+    selector._append_metadata_dump_row(
+        meta={
+            "sample_id": "video_val",
+            "pc_ot_mras_selector_dump_phase": "validation",
+            "pc_ot_mras_selector_dump_epoch": 59,
+            "pc_ot_mras_selector_dump_iter": 11,
+        },
+        batch_idx=0,
+        selected_dense_indices=[1, 3, 5],
+        valid_len=8,
+        gt_segments=None,
+        reader_outputs=None,
+        candidate_valid=None,
+        candidate_dense_indices=None,
+        training=False,
+    )
+
+    rows = [json.loads(line) for line in dump_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["sample_id"] == "video_val"
+    assert rows[0]["phase"] == "validation"
+    assert rows[0]["epoch"] == 59
+    assert rows[0]["iter"] == 11
+    assert rows[0]["selected_dense_indices"] == [1, 3, 5]
 
 
 def test_c3_reader_full_train_launcher_prechecks_formal_selector_and_ranking_diagnostics():

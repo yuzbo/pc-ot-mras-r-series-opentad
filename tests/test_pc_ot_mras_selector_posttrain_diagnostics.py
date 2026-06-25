@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from tools.bata.analyze_pc_ot_mras_selector_posttrain_diagnostics import (
+    NOT_ATTRIBUTION_READY,
     analyze_selector_payload,
 )
 
@@ -226,3 +227,63 @@ def test_selector_posttrain_diagnostics_npz_dynamic_plan_loader_cli(tmp_path):
     assert payload["input"]["format"] == "npz"
     assert payload["sample_count"] == 1
     assert payload["aggregate"]["dynamic_budget"]["budget_distribution"] == {"2": 1}
+
+
+def test_selector_posttrain_diagnostics_reports_cap_phase_and_epoch_coverage():
+    payload = {
+        "samples": [
+            {
+                "sample_id": "train_early_a",
+                "phase": "train",
+                "epoch": 0,
+                "iter": 3,
+                "selected_dense_indices": [0, 2, 4],
+                "valid_len": 8,
+                "gt_segments": [[1, 5]],
+                "selector_scores": [0.1, 0.8, 0.2, 0.6, 0.4, 0.3, 0.2, 0.1],
+                "pc_ot_mras_prebackbone_raw_slot_dense_indices": [0, 2, 2],
+                "pc_ot_mras_prebackbone_reader_fill_count": 1,
+                "pc_ot_mras_prebackbone_st_active_row_count": 2,
+                "irregular_selected_positions": [0, 2, 4],
+                "irregular_dense_valid_len": 8,
+                "irregular_selected_valid_len": 8,
+            },
+            {
+                "sample_id": "train_early_b",
+                "phase": "train",
+                "epoch": 0,
+                "iter": 4,
+                "selected_dense_indices": [1, 3, 5],
+                "valid_len": 8,
+                "gt_segments": [[2, 6]],
+                "selector_scores": [0.1, 0.8, 0.2, 0.6, 0.4, 0.3, 0.2, 0.1],
+                "pc_ot_mras_prebackbone_raw_slot_dense_indices": [1, 3, 5],
+                "pc_ot_mras_prebackbone_reader_fill_count": 0,
+                "pc_ot_mras_prebackbone_st_active_row_count": 3,
+                "irregular_selected_positions": [1, 3, 5],
+                "irregular_dense_valid_len": 8,
+                "irregular_selected_valid_len": 8,
+            },
+        ]
+    }
+
+    summary = analyze_selector_payload(
+        payload,
+        row_cap=2,
+        require_train_phase=True,
+        require_validation_phase=True,
+        min_late_epoch=40,
+    )
+
+    coverage = summary["metadata_coverage"]
+    assert coverage["row_cap"]["configured"] == 2
+    assert coverage["row_cap"]["hit_or_exceeded"] is True
+    assert coverage["phase"]["counts"] == {"train": 2}
+    assert coverage["phase"]["has_train"] is True
+    assert coverage["phase"]["has_validation"] is False
+    assert coverage["epoch"]["known_count"] == 2
+    assert coverage["epoch"]["max"] == 0
+    assert coverage["iter"]["known_count"] == 2
+    assert summary["attribution_readiness"]["status"] == NOT_ATTRIBUTION_READY
+    assert any("validation selector rows" in item for item in summary["attribution_readiness"]["missing"])
+    assert any("row cap appears to have truncated" in item for item in summary["attribution_readiness"]["missing"])

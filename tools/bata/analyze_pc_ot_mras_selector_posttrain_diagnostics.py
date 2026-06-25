@@ -20,6 +20,8 @@ SCHEMA_VERSION = "pc_ot_mras_selector_posttrain_diagnostic_v0"
 READY = "PC_OT_MRAS_SELECTOR_POSTTRAIN_DIAGNOSTIC_READY"
 READY_WITH_WARNINGS = "PC_OT_MRAS_SELECTOR_POSTTRAIN_DIAGNOSTIC_READY_WITH_WARNINGS"
 NO_GO = "PC_OT_MRAS_SELECTOR_POSTTRAIN_DIAGNOSTIC_NO_GO"
+ATTRIBUTION_READY = "PASS"
+NOT_ATTRIBUTION_READY = "NOT_ATTRIBUTION_READY"
 
 POSITION_KEYS = (
     "selected_dense_indices",
@@ -554,6 +556,24 @@ def _optional_float(value: Any, *, name: str) -> float | None:
         return None
 
 
+def _normalize_phase(value: Any) -> str:
+    text = str(_to_plain(value) or "unknown").strip().lower()
+    if text in ("train", "training"):
+        return "train"
+    if text in ("val", "valid", "validation", "eval", "evaluation"):
+        return "validation"
+    if text in ("test", "testing"):
+        return "test"
+    return text or "unknown"
+
+
+def _optional_row_int(row: Mapping[str, Any], keys: Sequence[str], *, name: str) -> int | None:
+    value = _nested_get(row, keys)
+    if value is None:
+        return None
+    return _optional_int(value, name=name)
+
+
 def _slot_transport_diagnostics(row: Mapping[str, Any]) -> dict[str, Any]:
     raw_value = _nested_get(
         row,
@@ -751,6 +771,18 @@ def _extract_direct_sample(row: Mapping[str, Any], *, row_idx: int) -> dict[str,
         "selected": selected,
         "valid_len": valid_len,
         "budget": _budget_from_row(row, len(selected)),
+        "phase": _normalize_phase(_nested_get(row, ("phase", "split", "mode"))),
+        "epoch": _optional_row_int(
+            row,
+            ("epoch", "curr_epoch", "current_epoch", "checkpoint_epoch", "train_epoch"),
+            name="epoch",
+        ),
+        "iter": _optional_row_int(
+            row,
+            ("iter", "iteration", "iter_idx", "global_iter", "global_step", "step"),
+            name="iter",
+        ),
+        "source_row_index": int(row_idx),
     }
 
 
@@ -820,6 +852,8 @@ def _expand_reader_snapshot_row(row: Mapping[str, Any], *, row_idx: int) -> list
             "budget": row.get("budget"),
             "snapshot_id": row.get("snapshot_id"),
             "epoch": row.get("epoch"),
+            "iter": row.get("iter", row.get("iteration", row.get("iter_idx"))),
+            "phase": row.get("phase", row.get("split", row.get("mode"))),
         }
         for key in POSITION_KEYS:
             if key in reader_out:
@@ -903,6 +937,10 @@ def _diagnose_sample(sample: Mapping[str, Any], *, default_boundary_radius: floa
     slot_transport = _slot_transport_diagnostics(row)
     return {
         "sample_id": sample["sample_id"],
+        "phase": sample.get("phase", "unknown"),
+        "epoch": sample.get("epoch"),
+        "iter": sample.get("iter"),
+        "source_row_index": sample.get("source_row_index"),
         "selected_dense_indices": selected,
         "valid_len": valid_len,
         "budget": int(sample["budget"]),
@@ -1029,6 +1067,92 @@ def _aggregate(samples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _metadata_coverage(
+    samples: Sequence[Mapping[str, Any]],
+    *,
+    source_row_count: int,
+    row_cap: int | None,
+) -> dict[str, Any]:
+    phase_counts: dict[str, int] = {}
+    for item in samples:
+        phase = _normalize_phase(item.get("phase"))
+        phase_counts[phase] = phase_counts.get(phase, 0) + 1
+    epochs = [
+        int(item["epoch"])
+        for item in samples
+        if isinstance(item.get("epoch"), int) and not isinstance(item.get("epoch"), bool)
+    ]
+    iters = [
+        int(item["iter"])
+        for item in samples
+        if isinstance(item.get("iter"), int) and not isinstance(item.get("iter"), bool)
+    ]
+    hit_cap = None
+    if row_cap is not None:
+        hit_cap = int(source_row_count) >= int(row_cap)
+    return {
+        "source_row_count": int(source_row_count),
+        "expanded_sample_count": len(samples),
+        "row_cap": {
+            "configured": None if row_cap is None else int(row_cap),
+            "hit_or_exceeded": hit_cap,
+            "fail_closed_if_hit": True,
+        },
+        "phase": {
+            "counts": dict(sorted(phase_counts.items())),
+            "has_train": phase_counts.get("train", 0) > 0,
+            "has_validation": phase_counts.get("validation", 0) > 0,
+            "unknown_count": phase_counts.get("unknown", 0),
+        },
+        "epoch": {
+            "known_count": len(epochs),
+            "unknown_count": len(samples) - len(epochs),
+            "min": min(epochs) if epochs else None,
+            "max": max(epochs) if epochs else None,
+            "unique": sorted(set(epochs)),
+        },
+        "iter": {
+            "known_count": len(iters),
+            "unknown_count": len(samples) - len(iters),
+            "min": min(iters) if iters else None,
+            "max": max(iters) if iters else None,
+        },
+    }
+
+
+def _selector_attribution_readiness(
+    coverage: Mapping[str, Any],
+    *,
+    require_train_phase: bool,
+    require_validation_phase: bool,
+    min_late_epoch: int | None,
+) -> dict[str, Any]:
+    missing: list[str] = []
+    row_cap = coverage.get("row_cap", {})
+    if isinstance(row_cap, Mapping) and row_cap.get("hit_or_exceeded") is True:
+        missing.append("selector row cap appears to have truncated the dump")
+
+    phase = coverage.get("phase", {})
+    if require_train_phase and (not isinstance(phase, Mapping) or phase.get("has_train") is not True):
+        missing.append("train selector rows")
+    if require_validation_phase and (not isinstance(phase, Mapping) or phase.get("has_validation") is not True):
+        missing.append("validation selector rows")
+
+    epoch = coverage.get("epoch", {})
+    if min_late_epoch is not None:
+        max_epoch = epoch.get("max") if isinstance(epoch, Mapping) else None
+        if not isinstance(max_epoch, int) or int(max_epoch) < int(min_late_epoch):
+            missing.append(f"late-epoch selector rows with epoch >= {int(min_late_epoch)}")
+
+    return {
+        "status": ATTRIBUTION_READY if not missing else NOT_ATTRIBUTION_READY,
+        "missing": missing,
+        "requires_train_phase": bool(require_train_phase),
+        "requires_validation_phase": bool(require_validation_phase),
+        "min_late_epoch": None if min_late_epoch is None else int(min_late_epoch),
+    }
+
+
 def synthetic_payload() -> dict[str, Any]:
     return {
         "samples": [
@@ -1070,14 +1194,26 @@ def analyze_selector_payload(
     boundary_radius: float = 2.0,
     synthetic_smoke: bool = False,
     provenance: Mapping[str, Any] | None = None,
+    row_cap: int | None = None,
+    require_train_phase: bool = False,
+    require_validation_phase: bool = False,
+    min_late_epoch: int | None = None,
 ) -> dict[str, Any]:
     non_finite_count, non_finite_examples = _find_non_finite(payload)
+    source_row_count = len(_rows_from_payload(payload))
     expanded = _expand_samples(payload)
     sample_summaries = [
         _diagnose_sample(sample, default_boundary_radius=float(boundary_radius))
         for sample in expanded
     ]
     aggregate = _aggregate(sample_summaries)
+    coverage = _metadata_coverage(sample_summaries, source_row_count=source_row_count, row_cap=row_cap)
+    attribution_readiness = _selector_attribution_readiness(
+        coverage,
+        require_train_phase=bool(require_train_phase),
+        require_validation_phase=bool(require_validation_phase),
+        min_late_epoch=min_late_epoch,
+    )
     warning_count = int(non_finite_count) + int(aggregate["metadata_consistency"]["inconsistent_sample_count"])
     decision = READY_WITH_WARNINGS if warning_count else READY
     summary = {
@@ -1087,6 +1223,8 @@ def analyze_selector_payload(
         "synthetic_smoke": bool(synthetic_smoke),
         "sample_count": len(sample_summaries),
         "non_finite": {"count": int(non_finite_count), "examples": non_finite_examples},
+        "metadata_coverage": coverage,
+        "attribution_readiness": attribution_readiness,
         "aggregate": aggregate,
         "samples": sample_summaries,
         "protocol": {
@@ -1157,6 +1295,10 @@ def run_selector_posttrain_diagnostics(
     boundary_radius: float = 2.0,
     use_synthetic: bool = False,
     provenance: Mapping[str, Any] | None = None,
+    row_cap: int | None = None,
+    require_train_phase: bool = False,
+    require_validation_phase: bool = False,
+    min_late_epoch: int | None = None,
 ) -> dict[str, Any]:
     if use_synthetic:
         payload = synthetic_payload()
@@ -1174,6 +1316,10 @@ def run_selector_posttrain_diagnostics(
         boundary_radius=float(boundary_radius),
         synthetic_smoke=bool(use_synthetic),
         provenance=provenance,
+        row_cap=row_cap,
+        require_train_phase=bool(require_train_phase),
+        require_validation_phase=bool(require_validation_phase),
+        min_late_epoch=min_late_epoch,
     )
     if output_json is not None:
         write_json(output_json, summary)
@@ -1188,6 +1334,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output", help="Optional summary JSON output path.")
     parser.add_argument("--boundary-radius", type=float, default=2.0)
     parser.add_argument("--synthetic-smoke", action="store_true", help="Run a built-in synthetic smoke payload.")
+    parser.add_argument("--row-cap", type=int, help="Configured selector metadata row cap for truncation detection.")
+    parser.add_argument("--require-train-phase", action="store_true")
+    parser.add_argument("--require-validation-phase", action="store_true")
+    parser.add_argument("--min-late-epoch", type=int)
     parser.add_argument("--provenance-run-root")
     parser.add_argument("--provenance-work-dir")
     parser.add_argument("--provenance-train-stdout")
@@ -1211,6 +1361,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             boundary_radius=float(args.boundary_radius),
             use_synthetic=bool(args.synthetic_smoke),
             provenance=provenance or None,
+            row_cap=args.row_cap,
+            require_train_phase=bool(args.require_train_phase),
+            require_validation_phase=bool(args.require_validation_phase),
+            min_late_epoch=args.min_late_epoch,
         )
     except Exception as exc:  # pragma: no cover - CLI guard
         print(json.dumps({"schema_version": SCHEMA_VERSION, "decision": NO_GO, "error": str(exc)}))

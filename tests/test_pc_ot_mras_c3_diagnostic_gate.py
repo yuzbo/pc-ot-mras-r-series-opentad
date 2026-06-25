@@ -9,6 +9,7 @@ from tools.bata.analyze_actionformer_post_nms_overload import run_post_nms_overl
 from tools.bata.analyze_p2_proposal_localization import run_localization_attribution
 from tools.bata.analyze_pc_ot_mras_selector_posttrain_diagnostics import analyze_selector_payload
 from tools.bata.validate_pc_ot_mras_c3_diagnostic_gate import (
+    NOT_ATTRIBUTION_READY,
     READY,
     NO_GO,
     validate_c3_diagnostic_gate_payloads,
@@ -33,6 +34,9 @@ def _selector_summary():
             "samples": [
                 {
                     "sample_id": "video_a",
+                    "phase": "train",
+                    "epoch": 59,
+                    "iter": 100,
                     "selected_dense_indices": [0, 2, 4, 6],
                     "valid_len": 8,
                     "gt_segments": [[1, 5]],
@@ -46,6 +50,9 @@ def _selector_summary():
                 },
                 {
                     "sample_id": "video_b",
+                    "phase": "validation",
+                    "epoch": 59,
+                    "iter": 0,
                     "selected_dense_indices": [1, 3, 5, 7],
                     "valid_len": 8,
                     "gt_segments": [[2, 7]],
@@ -155,10 +162,12 @@ def test_c3_diagnostic_gate_passes_only_when_selector_ranking_and_cap_evidence_e
         proposal_summary=proposal,
         overload_summary=overload,
         min_selector_samples=2,
+        min_selector_late_epoch=40,
     )
 
     assert payload["decision"] == READY
     assert payload["gate"]["selector_dump"]["status"] == "PASS"
+    assert payload["gate"]["selector_attribution"]["status"] == "PASS"
     assert payload["gate"]["proposal_ranking"]["status"] == "PASS"
     assert payload["gate"]["proposal_cap"]["status"] == "PASS"
     assert payload["gate"]["proposal_cap"]["observed"]["result_detection_cap_hit_video_count"] == 2
@@ -191,6 +200,7 @@ def test_c3_diagnostic_gate_rejects_summaries_without_matching_run_provenance(tm
         proposal_summary=proposal,
         overload_summary=overload,
         min_selector_samples=2,
+        min_selector_late_epoch=40,
         expected_run_root=run_root,
         expected_work_dir=work_dir,
         expected_train_stdout=train_stdout,
@@ -227,6 +237,9 @@ def test_c3_diagnostic_gate_accepts_actual_producer_outputs_with_current_run_pro
             "samples": [
                 {
                     "sample_id": "video_a",
+                    "phase": "validation",
+                    "epoch": 59,
+                    "iter": 0,
                     "selected_dense_indices": [0, 2, 4, 6],
                     "valid_len": 8,
                     "gt_segments": [[1, 5]],
@@ -338,6 +351,8 @@ def test_c3_diagnostic_gate_accepts_actual_producer_outputs_with_current_run_pro
         proposal_summary=proposal_summary,
         overload_summary=overload_summary,
         min_selector_samples=1,
+        require_selector_train_phase=False,
+        min_selector_late_epoch=40,
         expected_run_root=str(run_root),
         expected_work_dir=str(work_dir),
         expected_train_stdout=str(train_stdout),
@@ -378,6 +393,7 @@ def test_c3_diagnostic_gate_rejects_under_cap_or_partial_video_cap(tmp_path, cas
         proposal_summary=proposal,
         overload_summary=overload,
         min_selector_samples=2,
+        min_selector_late_epoch=40,
     )
 
     assert payload["decision"] == NO_GO
@@ -419,6 +435,7 @@ def test_c3_diagnostic_gate_rejects_selector_warnings_nonfinite_or_metadata_inco
         proposal_summary=proposal,
         overload_summary=overload,
         min_selector_samples=2,
+        min_selector_late_epoch=40,
     )
 
     assert payload["decision"] == NO_GO
@@ -438,6 +455,7 @@ def test_c3_diagnostic_gate_rejects_dataset_cap_without_per_video_counts(tmp_pat
         proposal_summary=proposal,
         overload_summary=overload,
         min_selector_samples=2,
+        min_selector_late_epoch=40,
     )
 
     assert payload["decision"] == NO_GO
@@ -457,6 +475,7 @@ def test_c3_diagnostic_gate_rejects_non_ready_source_decisions(tmp_path):
         proposal_summary=proposal,
         overload_summary=overload,
         min_selector_samples=2,
+        min_selector_late_epoch=40,
     )
 
     assert payload["decision"] == NO_GO
@@ -476,6 +495,7 @@ def test_c3_diagnostic_gate_fails_without_raw_slot_and_proposal_cap_evidence(tmp
         proposal_summary=proposal,
         overload_summary=None,
         min_selector_samples=2,
+        min_selector_late_epoch=40,
     )
 
     assert payload["decision"] == NO_GO
@@ -508,6 +528,8 @@ def test_c3_diagnostic_gate_cli_writes_summary(tmp_path):
             str(output_path),
             "--min-selector-samples",
             "2",
+            "--min-selector-late-epoch",
+            "40",
         ],
         cwd=ROOT,
         stdout=subprocess.PIPE,
@@ -522,3 +544,42 @@ def test_c3_diagnostic_gate_cli_writes_summary(tmp_path):
     file_payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert stdout_payload == file_payload
     assert stdout_payload["decision"] == READY
+
+
+def test_c3_diagnostic_gate_reports_selector_not_attribution_ready_without_blocking_proposal_evidence(tmp_path):
+    selector = _selector_summary()
+    proposal = _proposal_summary(tmp_path)
+    overload = _overload_summary()
+    for sample in selector["samples"]:
+        sample["phase"] = "train"
+        sample["epoch"] = 0
+    selector["metadata_coverage"]["phase"]["counts"] = {"train": selector["sample_count"]}
+    selector["metadata_coverage"]["phase"]["has_train"] = True
+    selector["metadata_coverage"]["phase"]["has_validation"] = False
+    selector["metadata_coverage"]["epoch"]["max"] = 0
+    selector["metadata_coverage"]["row_cap"]["configured"] = selector["sample_count"]
+    selector["metadata_coverage"]["row_cap"]["hit_or_exceeded"] = True
+    selector["attribution_readiness"] = {
+        "status": NOT_ATTRIBUTION_READY,
+        "missing": [
+            "validation selector rows",
+            "late-epoch selector rows with epoch >= 40",
+            "selector row cap appears to have truncated the dump",
+        ],
+    }
+
+    payload = validate_c3_diagnostic_gate_payloads(
+        selector_summary=selector,
+        proposal_summary=proposal,
+        overload_summary=overload,
+        min_selector_samples=2,
+        min_selector_late_epoch=40,
+    )
+
+    assert payload["decision"] == NOT_ATTRIBUTION_READY
+    assert payload["gate"]["selector_dump"]["status"] == "PASS"
+    assert payload["gate"]["selector_attribution"]["status"] == NOT_ATTRIBUTION_READY
+    assert payload["gate"]["proposal_ranking"]["status"] == "PASS"
+    assert payload["gate"]["proposal_cap"]["status"] == "PASS"
+    assert payload["attribution_readiness"]["selector"] == NOT_ATTRIBUTION_READY
+    assert payload["attribution_readiness"]["downstream_geometry_ranking"] == "PASS"

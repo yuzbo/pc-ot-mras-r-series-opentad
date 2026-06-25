@@ -15,6 +15,8 @@ CONFIG = (
 SELECTOR_PATH = ROOT / "opentad" / "models" / "selectors" / "pc_ot_mras_prebackbone_frame_selector.py"
 READER_PATH = ROOT / "opentad" / "models" / "selectors" / "pc_ot_mras_reader.py"
 ACTIONFORMER_PATH = ROOT / "opentad" / "models" / "detectors" / "actionformer.py"
+TRAIN_ENGINE_PATH = ROOT / "opentad" / "cores" / "train_engine.py"
+TEST_ENGINE_PATH = ROOT / "opentad" / "cores" / "test_engine.py"
 
 
 def _load_cfg():
@@ -322,6 +324,28 @@ def test_irregular_temporal_metadata_contract_is_not_uniform_axis_only():
     assert "_call_rpn_head_forward_train" in actionformer_source
     assert "_call_rpn_head_forward_test" in actionformer_source
     assert "metas=metas" in actionformer_source
+
+
+def test_selector_dump_context_epoch_iter_phase_are_written_from_runtime_metas():
+    selector_source = _source(SELECTOR_PATH)
+    train_source = _source(TRAIN_ENGINE_PATH)
+    test_source = _source(TEST_ENGINE_PATH)
+
+    for key in (
+        "pc_ot_mras_selector_dump_phase",
+        "pc_ot_mras_selector_dump_epoch",
+        "pc_ot_mras_selector_dump_iter",
+    ):
+        assert key in selector_source
+        assert key in train_source or key in test_source
+
+    assert "phase = self._metadata_dump_phase(meta, training)" in selector_source
+    assert '"phase": phase' in selector_source
+    assert '"epoch": self._metadata_dump_optional_int(' in selector_source
+    assert '"iter": self._metadata_dump_optional_int(' in selector_source
+    assert '_inject_selector_dump_context(data_dict, phase="train", epoch=curr_epoch, iter_idx=iter_idx)' in train_source
+    assert '_inject_selector_dump_context(data_dict, phase="validation", epoch=curr_epoch, iter_idx=iter_idx)' in train_source
+    assert '_inject_selector_dump_context(data_dict, phase="validation", epoch=selector_dump_epoch, iter_idx=iter_idx)' in test_source
 
 
 def test_selector_reader_guard_and_scout_knobs_are_explicit_in_config():
