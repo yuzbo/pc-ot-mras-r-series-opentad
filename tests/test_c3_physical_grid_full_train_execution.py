@@ -106,6 +106,7 @@ def test_physical_grid_full_train_selector_config_matches_runtime_signatures():
     assert not (set(selector_cfg) - selector_params)
     assert not (set(reader_cfg) - reader_params)
     assert int(selector_cfg["descriptor_dim"]) == int(reader_cfg["in_dim"])
+    assert len(tuple(reader_cfg["dilations"])) == int(reader_cfg["temporal_layers"])
     assert int(cfg.model.projection.max_seq_len) == int(cfg.model.frame_selector.target_len)
     assert int(cfg.model.backbone.backbone.total_frames) == int(cfg.model.frame_selector.target_len)
     assert int(cfg.model.backbone.custom.pre_processing_pipeline[0].t1) == 24
@@ -172,6 +173,7 @@ def test_physical_grid_full_train_config_identity_and_guard_contract(tmp_path, m
     assert selector.target_len == 384
     assert selector.dense_window_size == 768
     assert selector.descriptor_dim == selector.reader.in_dim == 3 * 32 * 32
+    assert len(tuple(selector.reader.dilations)) == selector.reader.temporal_layers
     assert selector.remap_gt_to_selected_axis is False
     assert cfg.model.projection.max_seq_len == selector.target_len
     assert cfg.model.backbone.backbone.total_frames == selector.target_len

@@ -474,7 +474,9 @@ def test_c3_physical_grid_static_source_contracts_when_torch_is_unavailable():
     assert 'for key in ("selected_valid_len", "irregular_selected_count")' in head
     assert "selected_count = self._physical_selected_count_from_meta(meta, positions)" in head
     assert "physical_grid_selected_count" in head
-    assert "level_valid = selected_center < (float(selected_count) - self.physical_grid_eps)" in head
+    assert "slot_index = torch.arange(point.shape[0], device=base_device)" in head
+    assert "level_valid = slot_index < int(selected_count)" in head
+    assert "level_valid = physical_center <" not in head
     selected_count_fn = head.split("def _physical_selected_count_from_meta", 1)[1].split(
         "def _physical_positions_from_meta", 1
     )[0]

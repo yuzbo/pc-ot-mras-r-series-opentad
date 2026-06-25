@@ -114,6 +114,10 @@ def validate_config(cfg_path: str | Path) -> bool:
     _require(selector.remap_gt_to_selected_axis is False, "frame_selector.remap_gt_to_selected_axis must be false")
     _require(selector.reader.type == "PCOTMRASBoundaryDifficultyTemporalFrameScout", "selector reader mismatch")
     _require(int(selector.reader.in_dim) == int(selector.descriptor_dim), "selector reader.in_dim must match descriptor_dim")
+    _require(
+        len(tuple(selector.reader.dilations)) == int(selector.reader.temporal_layers),
+        "selector reader dilations length must match temporal_layers",
+    )
     _require(int(cfg.model.projection.max_seq_len) == int(selector.target_len), "projection.max_seq_len must be selected 384")
     _require(
         int(cfg.model.backbone.backbone.total_frames) == int(selector.target_len),

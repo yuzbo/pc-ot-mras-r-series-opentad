@@ -197,7 +197,8 @@ class AnchorFreeHead(nn.Module):
                 point[:, 3] = physical_stride
                 physical_points[level_idx].append(point)
 
-                level_valid = selected_center < (float(selected_count) - self.physical_grid_eps)
+                slot_index = torch.arange(point.shape[0], device=base_device)
+                level_valid = slot_index < int(selected_count)
                 physical_masks[level_idx][batch_idx] = physical_masks[level_idx][batch_idx] & level_valid
                 kept = physical_masks[level_idx][batch_idx]
                 if kept.any():

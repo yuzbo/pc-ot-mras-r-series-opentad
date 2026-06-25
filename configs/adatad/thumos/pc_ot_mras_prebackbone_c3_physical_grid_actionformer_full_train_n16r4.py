@@ -188,6 +188,7 @@ model = dict(
             num_slots=window_size,
             temporal_layers=4,
             temporal_kernel_size=5,
+            dilations=(1, 2, 4, 8),
             dropout=0.10,
         ),
     ),
