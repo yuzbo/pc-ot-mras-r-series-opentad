@@ -523,3 +523,165 @@ Launch decision:
   commit for the Frame/Token Hybrid full-train dataloader shape repair.
 - Still locked in this owner turn: no direct push, no remote sync, no Slurm
   submission, no `tools/test.py`, no mAP/runtime/FLOPs/paper claim.
+
+## Shape-Fix Remote Redeploy On Hold 1117268
+
+Timestamp: 2026-06-25T11:56:00+08:00
+
+Status:
+`FULL_TRAIN_GATE_PASS_TRAIN_START_FAILS_BEFORE_FIRST_LOSS`
+
+Scope and constraints:
+
+- Route label:
+  `DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3`.
+- Local branch `codex/frame-token-pro-fix-20260625` was pushed to origin at
+  `b46e8f35fb70cea30004fe9909979c6282db85ef`.
+- No source code was modified in this worker turn.
+- No Pro/Gemini/Claude review, no `tools/test.py`, no metric claim, and no
+  C3/BH-SDC/GPU1 action was performed.
+- Only Slurm hold `1117268` on `g0053` was used. No hold was cancelled or
+  released.
+
+Remote deployment:
+
+- Bundle created locally:
+  `logs/frame_token_hybrid_b46e8f3.bundle`.
+- Remote clone:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_FrameToken_ShapeFix_20260625_b46e8f3`
+  (resolved runtime path `/data/run01/sczc063/yuzibo/OpenTAD_FrameToken_ShapeFix_20260625_b46e8f3`).
+- Remote branch/head:
+  `codex/frame-token-pro-fix-20260625` at `b46e8f3`.
+- Runtime links added inside the new clone only:
+  `data/thumos-14 -> /data/home/sczc063/run/yuzibo/thumos14` and
+  `pretrained -> ../pretrained`.
+
+Run artifacts:
+
+- RUN_TAG:
+  `frame_token_hybrid_full_train_b46e8f3_hold1117268_v4_20260625_1120`.
+- Precheck status:
+  `FRAME_TOKEN_HYBRID_PRECHECK_ONLY_PASS_NO_TRAIN`.
+- `active_manifest_sha256`:
+  `16b2d4fbd6c8d933cfa3419c2ff2466fcb9f217d844a3d385c5f7cb687198909`.
+- `resolved_config_sha256`:
+  `d8efe898253fd4d3ef718db57ad797e19d4923d6ea2ae4ac49545ee54c4ceaa8`.
+- Full-train gate JSON:
+  `logs/frame_token_hybrid_full_train_b46e8f3_hold1117268_v4_20260625_1120/frame_token_hybrid_full_train_gate.json`.
+- Full-train gate SHA256:
+  `6d6eb4d3e7142e4a024efd1297bea3bed1b5811dfc3009f6078e9b1c325defda`.
+- Accepted full-train gate output:
+  `FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_VALIDATION_PASS`.
+
+Launch evidence:
+
+- Final launch wrapper:
+  `logs/frame_token_hybrid_full_train_b46e8f3_hold1117268_v4_20260625_1120/full_train_env_1117268_v5.sh`.
+- Final nohup log:
+  `logs/frame_token_hybrid_full_train_b46e8f3_hold1117268_v4_20260625_1120/full_train_srun_1117268_nohup_v5.log`.
+- Final `srun` launch PID: `4139777`.
+- The process exited after a hard error; hold `1117268` remained `RUNNING` on
+  `g0053`.
+
+Result of startup sanity check:
+
+- Training reached:
+  `Training Starts...` and `[Train]: Epoch 0 started`.
+- First loss was not reached.
+- No NaN/Inf loss was observed before failure.
+- Hard failure:
+  `einops.EinopsError` in `opentad/datasets/transforms/formatting.py`, pattern
+  `"b n c (t1 t) h w -> (b t1) n c t h w"`, input tensor shape
+  `torch.Size([2, 3, 768, 160, 160])`, expected 6 dims but received 5 dims.
+- Interpretation:
+  the latest selector-side squeeze allowed the route to pass the previous
+  `[B,1,C,T,H,W]` failure and reach epoch startup, but the downstream backbone
+  pre-processing path still expects a 6D tensor contract before first loss.
+
+Blocked next action:
+
+- Do not relaunch this full train unchanged.
+- Next implementation must reconcile the Frame/Token selector output with the
+  downstream backbone pre-processing dimensional contract, then rerun local
+  shape/smoke checks before another hold-backed launch.
+
+## Downstream Shape Contract Repair
+
+Timestamp: 2026-06-25T12:01:17+08:00
+
+Status:
+`LOCAL_REPAIR_PASS_PENDING_COMMIT_NO_PUSH_NO_REMOTE_REDEPLOY`
+
+Route label:
+`DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3`
+
+Root cause:
+
+- The failing `einops` pattern is owned by the ActionFormer VideoMAE backbone
+  wrapper pre-processing pipeline:
+  `opentad/models/backbones/backbone_wrapper.py` composes
+  `model.backbone.custom.pre_processing_pipeline`, and the THUMOS base config
+  supplies `dict(type="Rearrange", keys=["frames"], ops="b n c (t1 t) h w -> (b t1) n c t h w", t1=chunk_num)`.
+- The Frame/Token route runs inside `ActionFormer.forward_train` before
+  `self.backbone(inputs)`.
+- Commit `b46e8f3` made the selector accept `[B,1,C,T,H,W]`, but it returned
+  `[B,C,T,H,W]`. That is valid for direct 5D unit/smoke backbones, but invalid
+  for the real VideoMAE wrapper, which still expects the singleton dataloader
+  view axis before its 6D rearrange.
+
+Repair strategy:
+
+- Keep Frame/Token dense completion internals canonical 5D.
+- If the selector input is `[B,1,C,T,H,W]`, fail closed for `N>1`, canonicalize
+  only internally, then restore `[B,1,C,T,H,W]` before returning to
+  ActionFormer/backbone.
+- Keep existing `[B,C,T,H,W]` direct-backbone path unchanged.
+- Add bridge metadata fields documenting the downstream tensor contract:
+  `input_tensor_rank`, `output_tensor_rank`,
+  `single_view_axis_preserved_for_downstream_backbone`, and
+  `downstream_shape_contract`.
+
+Changed files in this repair:
+
+- `opentad/models/selectors/frame_token_hybrid_acquisition_route.py`
+- `tests/test_frame_token_hybrid_acquisition_route.py`
+- `tests/test_frame_token_hybrid_actionformer_integration.py`
+- `research-wiki/experiments/FRAME_TOKEN_HYBRID_FULL_TRAIN_GATE_DEPLOYMENT_20260624.md`
+
+Red/green verification:
+
+```text
+conda run -n torch_1 python -m pytest tests/test_frame_token_hybrid_acquisition_route.py::test_frame_token_hybrid_forward_train_accepts_single_clip_dataloader_axis_and_writes_batch_metadata -q
+RED before source fix:
+FAILED because selector returned torch.Size([2, 3, 32, 2, 2]) instead of torch.Size([2, 1, 3, 32, 2, 2]).
+GREEN after source fix:
+1 passed in 4.94s.
+
+conda run -n torch_1 python -m pytest tests/test_frame_token_hybrid_actionformer_integration.py::test_actionformer_preserves_single_view_axis_for_backbone_rearrange_after_selector -q
+RED before source fix:
+FAILED with einops.EinopsError on pattern "b n c (t1 t) h w -> (b t1) n c t h w"; input shape torch.Size([2, 3, 16, 2, 2]); expected 6 dimensions, got 5.
+GREEN after source fix:
+1 passed in 4.85s.
+```
+
+Full local verification:
+
+```text
+conda run -n torch_1 python -m pytest tests/test_frame_token_hybrid_acquisition_route.py tests/test_frame_token_hybrid_metadata_contract.py tests/test_frame_token_hybrid_actionformer_integration.py tests/test_frame_token_hybrid_config_gate.py tests/test_frame_token_hybrid_build_forward_smoke.py -q
+PASS: 37 passed, 1 skipped in 44.98s.
+
+conda run -n torch_1 python -m py_compile opentad/models/selectors/frame_token_hybrid_acquisition_route.py tests/test_frame_token_hybrid_acquisition_route.py tests/test_frame_token_hybrid_actionformer_integration.py tools/bata/frame_token_hybrid_build_forward_smoke.py
+PASS.
+
+conda run -n torch_1 python tools/bata/frame_token_hybrid_build_forward_smoke.py
+PASS: FRAME_TOKEN_HYBRID_BUILD_FORWARD_SMOKE_PASS.
+```
+
+Launch decision:
+
+- Local source/test status: `PASS`.
+- No Pro/Gemini/Claude review was run by explicit user constraint.
+- No push, no remote sync, no remote launch, no `tools/test.py`, no metric
+  claim, no runtime/FLOPs/paper claim.
+- Allowed next action after commit: main process may push/sync/redeploy this
+  branch for another Frame/Token full-train gate attempt.

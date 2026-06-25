@@ -158,7 +158,7 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
         return self._forward_impl(inputs, masks, metas, reject_forbidden_meta=True)
 
     def _forward_impl(self, inputs: torch.Tensor, masks: torch.Tensor, metas, *, reject_forbidden_meta: bool):
-        inputs = self._canonical_dense_inputs(inputs)
+        inputs, restore_single_view_axis = self._canonical_dense_inputs(inputs)
         batch, _channels, dense_len, _height, _width = inputs.shape
         if dense_len != self.target_dense_len:
             raise ValueError(f"target_dense_len={self.target_dense_len} must match input dense axis {dense_len}")
@@ -194,7 +194,13 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
                 )
             )
         completed = self._dense_complete(inputs, plans)
-        output_metas = self._write_metas(metas, plans)
+        output_metas = self._write_metas(
+            metas,
+            plans,
+            input_had_single_view_axis=restore_single_view_axis,
+        )
+        if restore_single_view_axis:
+            completed = completed.unsqueeze(1)
         return {
             "inputs": completed,
             "masks": valid,
@@ -207,9 +213,9 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
         }
 
     @staticmethod
-    def _canonical_dense_inputs(inputs: torch.Tensor) -> torch.Tensor:
+    def _canonical_dense_inputs(inputs: torch.Tensor) -> Tuple[torch.Tensor, bool]:
         if inputs.ndim == 5:
-            return inputs
+            return inputs, False
         if inputs.ndim == 6:
             batch, num_views, _channels, _dense_len, _height, _width = inputs.shape
             if int(num_views) != 1:
@@ -218,7 +224,7 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
                     f"for [B,N,C,T,H,W] inputs; got N={int(num_views)} for batch={int(batch)}. "
                     "N>1 needs an explicit metadata flattening or view-fusion contract before use."
                 )
-            return inputs[:, 0].contiguous()
+            return inputs[:, 0].contiguous(), True
         raise ValueError(f"inputs must be [B,C,T,H,W] or [B,N,C,T,H,W], got {tuple(inputs.shape)}")
 
     def _selection_signal_for_sample(
@@ -520,7 +526,13 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
             dense_completion_mask.append(bool(is_valid and not is_observed))
         return observed_mask, span_derived_mask, dense_completion_mask
 
-    def _write_metas(self, metas: Sequence[Dict[str, Any]], plans: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _write_metas(
+        self,
+        metas: Sequence[Dict[str, Any]],
+        plans: Sequence[Dict[str, Any]],
+        *,
+        input_had_single_view_axis: bool,
+    ) -> List[Dict[str, Any]]:
         output = []
         conditioning_keys = [
             "span_start",
@@ -547,6 +559,14 @@ class FrameTokenHybridAcquisitionRoute(nn.Module):
                 "completion_rule": "raw_observed_positions_are_copied; unobserved_valid_positions_are_interpolated_and_span_conditioned; invalid_mask_suffix_is_zero",
                 "preserves_observed_raw_positions": True,
                 "output_dense_axis_len": self.target_dense_len,
+                "input_tensor_rank": 6 if input_had_single_view_axis else 5,
+                "output_tensor_rank": 6 if input_had_single_view_axis else 5,
+                "single_view_axis_preserved_for_downstream_backbone": bool(input_had_single_view_axis),
+                "downstream_shape_contract": (
+                    "preserve_[B,1,C,T,H,W]_for_backbone_pre_processing"
+                    if input_had_single_view_axis
+                    else "preserve_[B,C,T,H,W]_for_direct_dense_backbone"
+                ),
                 "actual_decode_saving_in_current_actionformer_pipeline": False,
                 "raw_decode_saving_claim_allowed": False,
                 "pre_decode_loader_hook_reviewed": False,

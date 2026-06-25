@@ -186,3 +186,77 @@ def test_actionformer_forwards_selector_rewritten_dense_bridge_to_backbone_and_h
     assert plan["selection_decision_source"] == "deploy_preview_probe_metadata"
     assert plan["compute_accounting"]["actual_decode_saving_in_current_actionformer_pipeline"] is False
     assert head.received_metas[0]["frame_token_hybrid_dense_completion_mask"][4] is True
+
+
+def test_actionformer_preserves_single_view_axis_for_backbone_rearrange_after_selector():
+    torch = _import_torch_or_skip()
+    route_module, action_module = _load_modules(torch)
+    from einops import rearrange
+
+    class RearrangingBackbone(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.received_inputs_shape = None
+            self.rearranged_shape = None
+
+        def forward(self, inputs):
+            self.received_inputs_shape = tuple(inputs.shape)
+            frames = rearrange(inputs, "b n c (t1 t) h w -> (b t1) n c t h w", t1=2)
+            self.rearranged_shape = tuple(frames.shape)
+            return inputs[:, 0].mean(dim=(3, 4))
+
+    class IdentityProjection(torch.nn.Module):
+        n_mha_win_size = 1
+        arch = (1, 1, 0)
+        max_seq_len = 16
+
+        def forward(self, features, masks):
+            return [features], [masks]
+
+    class ScalarLossHead(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.prior_generator = types.SimpleNamespace(strides=[1])
+            self.received_metas = None
+
+        def forward_train(self, feat_list, mask_list, gt_segments, gt_labels, metas=None):
+            self.received_metas = metas
+            return {"loc_loss": feat_list[0].sum() * 0.0}
+
+    selector = route_module.FrameTokenHybridAcquisitionRoute(
+        dense_window_size=16,
+        target_dense_len=16,
+        anchor_stride=8,
+        boundary_radius=0,
+        boundary_epsilon=0.1,
+        stable_gap_min_len=6,
+        require_preview_signal=True,
+    )
+    backbone = RearrangingBackbone()
+    head = ScalarLossHead()
+    detector = action_module.ActionFormer(
+        backbone=backbone,
+        projection=IdentityProjection(),
+        rpn_head=head,
+        frame_selector=selector,
+    )
+    inputs = torch.zeros((2, 1, 3, 16, 2, 2), dtype=torch.float32)
+    inputs[:, :, :, 4] = 1234.0
+    masks = torch.ones((2, 16), dtype=torch.bool)
+    metas = [
+        {
+            "sample_id": f"backbone-rearrange-{idx}",
+            "frame_token_hybrid_preview_signal": [0.0] * 16,
+            "frame_token_hybrid_preview_positions": list(range(16)),
+        }
+        for idx in range(2)
+    ]
+    gt_segments = [torch.tensor([[1.0, 4.0]], dtype=torch.float32) for _idx in range(2)]
+    gt_labels = [torch.tensor([1], dtype=torch.long) for _idx in range(2)]
+
+    losses = detector.forward_train(inputs, masks, metas, gt_segments, gt_labels)
+
+    assert tuple(backbone.received_inputs_shape) == (2, 1, 3, 16, 2, 2)
+    assert tuple(backbone.rearranged_shape) == (4, 1, 3, 8, 2, 2)
+    assert "cost" in losses
+    assert head.received_metas[0]["frame_token_hybrid_acquisition_plan"]["output_dense_axis_len"] == 16

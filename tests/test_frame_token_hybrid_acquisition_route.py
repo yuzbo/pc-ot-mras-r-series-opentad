@@ -238,7 +238,9 @@ def test_frame_token_hybrid_forward_train_accepts_single_clip_dataloader_axis_an
 
     outputs = selector.forward_train(dataloader_inputs, masks, metas, gt_segments, gt_labels)
 
-    assert outputs["inputs"].shape == dense_inputs.shape
+    assert outputs["inputs"].shape == dataloader_inputs.shape
+    rearranged = torch.einsum("bncthw->bncthw", outputs["inputs"])
+    assert rearranged.shape == (2, 1, 3, 32, 2, 2)
     assert outputs["masks"].shape == (2, 32)
     assert outputs["gt_segments"] is gt_segments
     assert outputs["gt_labels"] is gt_labels
@@ -247,8 +249,13 @@ def test_frame_token_hybrid_forward_train_accepts_single_clip_dataloader_axis_an
     assert outputs["metas"][1]["sample_id"] == "frame-token-hybrid-1"
     for meta in outputs["metas"]:
         plan = meta["frame_token_hybrid_acquisition_plan"]
+        bridge = meta["frame_token_hybrid_bridge"]
         assert plan["route_label"] == "DIVERGENT_INNOVATION_FRAME_TOKEN_HYBRID_DO_NOT_MERGE_WITH_C3"
         assert plan["output_dense_axis_len"] == 32
+        assert bridge["input_tensor_rank"] == 6
+        assert bridge["output_tensor_rank"] == 6
+        assert bridge["single_view_axis_preserved_for_downstream_backbone"] is True
+        assert bridge["downstream_shape_contract"] == "preserve_[B,1,C,T,H,W]_for_backbone_pre_processing"
         assert len(meta["frame_token_hybrid_observed_raw_mask"]) == 32
         assert len(meta["frame_token_hybrid_dense_completion_mask"]) == 32
 
