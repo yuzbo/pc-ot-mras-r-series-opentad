@@ -3429,6 +3429,13 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 batch_idx=batch_idx,
                 valid_len=int(valid_len),
             ),
+            "selector_score_components": self._metadata_dump_score_components(
+                reader_outputs=reader_outputs,
+                candidate_valid=candidate_valid,
+                candidate_dense_indices=candidate_dense_indices,
+                batch_idx=batch_idx,
+                valid_len=int(valid_len),
+            ),
             "packet_roles": list(meta.get("pc_ot_mras_prebackbone_selected_roles", [])),
             "irregular_selected_positions": list(meta.get("irregular_selected_positions", [])),
             "irregular_dense_valid_len": int(valid_len),
@@ -3558,6 +3565,74 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 return dense_scores
             return [float(item) for item in scores.tolist()]
         return []
+
+    def _metadata_dump_score_components(
+        self,
+        *,
+        reader_outputs: Mapping[str, torch.Tensor] | None,
+        candidate_valid: torch.Tensor | None,
+        candidate_dense_indices: torch.Tensor | None,
+        batch_idx: int,
+        valid_len: int,
+    ) -> dict[str, list[float]]:
+        if reader_outputs is None:
+            return {}
+
+        def to_dense_scores(tensor: torch.Tensor) -> list[float]:
+            scores = tensor[batch_idx].detach().float().cpu()
+            if (
+                candidate_valid is not None
+                and candidate_dense_indices is not None
+                and candidate_valid.ndim == 2
+                and candidate_dense_indices.ndim == 2
+                and int(candidate_valid.shape[0]) > int(batch_idx)
+                and int(candidate_dense_indices.shape[0]) > int(batch_idx)
+                and int(candidate_valid.shape[1]) == int(scores.numel())
+                and int(candidate_dense_indices.shape[1]) == int(scores.numel())
+            ):
+                dense_scores = [0.0 for _ in range(max(0, int(valid_len)))]
+                valid_mask = candidate_valid[batch_idx].detach().cpu().bool()
+                dense_indices = candidate_dense_indices[batch_idx].detach().cpu().long()
+                for score, is_valid, pos in zip(scores.tolist(), valid_mask.tolist(), dense_indices.tolist()):
+                    if is_valid and 0 <= int(pos) < len(dense_scores):
+                        dense_scores[int(pos)] = float(score)
+                return dense_scores
+            return [float(item) for item in scores.tolist()]
+
+        components: dict[str, list[float]] = {}
+        for name in (
+            "frame_selection_logits",
+            "actionness_logits",
+            "action_logits",
+            "value_logits",
+            "boundary_logits",
+            "risk_logits",
+        ):
+            tensor = reader_outputs.get(name)
+            if torch.is_tensor(tensor) and tensor.ndim == 2 and int(tensor.shape[0]) > int(batch_idx):
+                components[name] = to_dense_scores(tensor)
+
+        action_logits = reader_outputs.get("actionness_logits", reader_outputs.get("action_logits"))
+        if (
+            torch.is_tensor(action_logits)
+            and candidate_valid is not None
+            and action_logits.ndim == 2
+            and candidate_valid.ndim == 2
+            and tuple(action_logits.shape) == tuple(candidate_valid.shape)
+        ):
+            coarse_scores = self._coarse_actionness_scores(
+                reader_outputs=reader_outputs,
+                candidate_valid=candidate_valid.to(device=action_logits.device),
+            )
+            for output_key, score_key in (
+                ("p_action", "coarse_action"),
+                ("uncertainty", "coarse_uncertainty"),
+                ("change", "coarse_change"),
+                ("background", "coarse_background"),
+                ("mixed", "coarse_mixed_fill"),
+            ):
+                components[output_key] = to_dense_scores(coarse_scores[score_key])
+        return components
 
     @staticmethod
     def _metadata_dump_jsonable(value: Any) -> Any:

@@ -25,15 +25,37 @@ ALLOWED_C3_PHYSICAL_GRID_IDENTITIES = {
         "variant_id": "C3-PhysicalGridActionFormer-PreBackbone-OriginalAdaTAD",
         "stage_id": "c3_physical_grid_actionformer_full_train_n16r4",
         "selection_strategy": "frame_score_topk",
+        "scope_selection_strategy": "frame_score_topk",
         "selector_reader": "PCOTMRASBoundaryDifficultyTemporalFrameScout",
         "uses_learned_boundary_head": False,
+        "policy_kind": "frame_score_topk",
     },
     "pc_ot_mras_coarse_actionness_uncertainty_c3_physical_grid_actionformer": {
         "variant_id": "C3-CoarseActionnessUncertainty-PreBackbone-OriginalAdaTAD",
         "stage_id": "c3_coarse_actionness_uncertainty_fixed384_n16r4",
         "selection_strategy": "coarse_actionness_uncertainty",
+        "scope_selection_strategy": "coarse_actionness_uncertainty",
         "selector_reader": "PCOTMRASCoarseActionnessFrameScout",
         "uses_learned_boundary_head": False,
+        "policy_kind": "coarse_actionness",
+    },
+    "pc_ot_mras_exact_uniform_c3_physical_grid_actionformer": {
+        "variant_id": "C3-ExactUniformPhysicalGrid-PreBackbone-OriginalAdaTAD",
+        "stage_id": "c3_exact_uniform_physical_grid_fixed384_n16r4",
+        "selection_strategy": "coarse_actionness_uncertainty",
+        "scope_selection_strategy": "exact_uniform_physical_grid_control",
+        "selector_reader": "PCOTMRASCoarseActionnessFrameScout",
+        "uses_learned_boundary_head": False,
+        "policy_kind": "exact_uniform_control",
+    },
+    "pc_ot_mras_uniform_biased_coarse_actionness_c3_physical_grid_actionformer": {
+        "variant_id": "C3-UniformBiasedCoarseActionness-PreBackbone-OriginalAdaTAD",
+        "stage_id": "c3_uniform_biased_coarse_actionness_fixed384_n16r4",
+        "selection_strategy": "coarse_actionness_uncertainty",
+        "scope_selection_strategy": "uniform_scaffold_small_actionness_bias_maxgap3",
+        "selector_reader": "PCOTMRASCoarseActionnessFrameScout",
+        "uses_learned_boundary_head": False,
+        "policy_kind": "uniform_biased_coarse_actionness",
     },
 }
 
@@ -186,18 +208,56 @@ def validate_config(cfg_path: str | Path) -> bool:
     _require(int(selector.dense_window_size) == 768, "frame_selector.dense_window_size must be 768")
     _require(int(selector.descriptor_dim) == 3 * 32 * 32, "frame_selector.descriptor_dim must be 3072")
     _require(selector.remap_gt_to_selected_axis is False, "frame_selector.remap_gt_to_selected_axis must be false")
+    _require(scope.selection_strategy == identity["scope_selection_strategy"], "scope selection strategy mismatch")
     _require(selector.selection_strategy == identity["selection_strategy"], "selector strategy mismatch")
     _require(selector.reader.type == identity["selector_reader"], "selector reader mismatch")
     if selector.selection_strategy == "coarse_actionness_uncertainty":
         _require(scope.selector_reader == "PCOTMRASCoarseActionnessFrameScout", "scope selector_reader mismatch")
-        _require(scope.budget_protocol == "fixed384_over_dense768_binary_actionness_uncertainty_change", "coarse budget protocol mismatch")
         _require(selector.aux_frame_score_boundary_loss_weight == 0.0, "coarse selector must not use boundary aux loss")
         _require(selector.aux_uncertainty_loss_weight == 0.0, "coarse selector must not use learned uncertainty aux loss")
-        _require(int(selector.coarse_uniform_count) > 0, "coarse selector requires uniform scaffold")
-        _require(int(selector.coarse_action_count) > 0, "coarse selector requires action quota")
-        _require(int(selector.coarse_uncertainty_count) > 0, "coarse selector requires uncertainty quota")
-        _require(int(selector.coarse_change_count) > 0, "coarse selector requires change quota")
-        _require(int(selector.coarse_background_count) > 0, "coarse selector requires background quota")
+        policy_kind = identity["policy_kind"]
+        if policy_kind == "coarse_actionness":
+            _require(
+                scope.budget_protocol == "fixed384_over_dense768_binary_actionness_uncertainty_change",
+                "coarse budget protocol mismatch",
+            )
+            _require(int(selector.coarse_uniform_count) > 0, "coarse selector requires uniform scaffold")
+            _require(int(selector.coarse_action_count) > 0, "coarse selector requires action quota")
+            _require(int(selector.coarse_uncertainty_count) > 0, "coarse selector requires uncertainty quota")
+            _require(int(selector.coarse_change_count) > 0, "coarse selector requires change quota")
+            _require(int(selector.coarse_background_count) > 0, "coarse selector requires background quota")
+        elif policy_kind == "exact_uniform_control":
+            _require(
+                scope.budget_protocol == "fixed384_over_dense768_exact_uniform_physical_grid_control",
+                "exact-uniform budget protocol mismatch",
+            )
+            _require(int(selector.coarse_uniform_count) == 384, "exact-uniform control requires 384 uniform anchors")
+            _require(int(selector.coarse_action_count) == 0, "exact-uniform control must disable action quota")
+            _require(int(selector.coarse_uncertainty_count) == 0, "exact-uniform control must disable uncertainty quota")
+            _require(int(selector.coarse_change_count) == 0, "exact-uniform control must disable change quota")
+            _require(int(selector.coarse_background_count) == 0, "exact-uniform control must disable background quota")
+            _require(float(selector.aux_gt_acquisition_loss_weight) == 0.0, "exact-uniform control must disable selector GT loss")
+            _require(float(selector.aux_duplicate_cap_loss_weight) == 0.0, "exact-uniform control must disable duplicate cap loss")
+            _require(selector.straight_through_detector_loss is False, "exact-uniform control must disable selector ST gradient")
+            _require(int(selector.max_dense_gap) == 0, "exact-uniform control must not add a max-gap guard")
+        elif policy_kind == "uniform_biased_coarse_actionness":
+            _require(
+                scope.budget_protocol == "fixed384_over_dense768_uniform288_action72_uncertainty24_guard12_maxgap3",
+                "uniform-biased budget protocol mismatch",
+            )
+            _require(int(selector.coarse_uniform_count) == 288, "uniform-biased policy requires 288 uniform anchors")
+            _require(int(selector.coarse_action_count) == 72, "uniform-biased policy requires 72 action slots")
+            _require(int(selector.coarse_uncertainty_count) == 24, "uniform-biased policy requires 24 uncertainty slots")
+            _require(int(selector.coarse_change_count) == 0, "uniform-biased policy must disable change quota")
+            _require(int(selector.coarse_background_count) == 0, "uniform-biased policy must disable background quota")
+            _require(int(selector.max_dense_gap) <= 3, "uniform-biased policy requires max_dense_gap <= 3")
+            _require(int(selector.max_gap_guard_count) > 0, "uniform-biased policy requires max-gap guard enabled")
+            _require(
+                int(selector.max_gap_guard_count) <= 24,
+                "uniform-biased policy guard must leave uncertainty quota reachable",
+            )
+        else:
+            raise ValueError(f"unsupported C3 policy kind {policy_kind}")
     _require(int(selector.reader.in_dim) == int(selector.descriptor_dim), "selector reader.in_dim must match descriptor_dim")
     _require(
         len(tuple(selector.reader.dilations)) == int(selector.reader.temporal_layers),

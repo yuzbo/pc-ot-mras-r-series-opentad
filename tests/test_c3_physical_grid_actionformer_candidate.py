@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import subprocess
 import sys
 import types
@@ -607,6 +608,84 @@ def test_coarse_actionness_uncertainty_plan_uses_classification_uncertainty_role
     assert plan["coarse_policy_meta"][0]["uses_gt"] is False
 
 
+def test_exact_uniform_c3_config_plan_uses_only_uniform_roles_with_dense_coverage():
+    PCOTMRASPreBackboneFrameSelector = _install_prebackbone_selector_or_skip()
+    cfg = load_mmengine_config_or_skip(
+        "configs/adatad/thumos/pc_ot_mras_exact_uniform_c3_physical_grid_actionformer_n16r4.py"
+    )
+    selector_cfg = dict(cfg.model.frame_selector)
+    selector_cfg.pop("type")
+    selector = PCOTMRASPreBackboneFrameSelector(**selector_cfg)
+    dense_len = int(selector.dense_window_size)
+    candidate_valid = torch.ones(1, dense_len, dtype=torch.bool)
+    candidate_dense_indices = torch.arange(dense_len, dtype=torch.long).unsqueeze(0)
+    valid = candidate_valid.clone()
+    action_logits = torch.linspace(-4.0, 4.0, dense_len, dtype=torch.float32).unsqueeze(0)
+
+    plan = selector._coarse_actionness_uncertainty_transport_plan(
+        reader_outputs={"actionness_logits": action_logits},
+        valid=valid,
+        candidate_valid=candidate_valid,
+        candidate_dense_indices=candidate_dense_indices,
+        training=False,
+    )
+    positions = [int(item) for item in plan["selected_positions"][0].tolist()]
+    gaps = [right - left for left, right in zip(positions[:-1], positions[1:])]
+    role_counts = plan["coarse_policy_meta"][0]["role_counts"]
+
+    assert plan["selected_output_valid_lengths"].tolist() == [384]
+    assert set(plan["selected_roles"][0]) == {"coarse_uniform"}
+    assert role_counts == {"coarse_uniform": 384}
+    assert positions == sorted(positions)
+    assert len(set(positions)) == 384
+    assert max(gaps) <= 3
+    assert plan["coarse_policy_meta"][0]["configured_quota"]["coarse_action"] == 0
+    assert plan["st_active_row_counts"] == [0]
+
+
+def test_uniform_biased_c3_config_plan_preserves_actionness_bias_under_max_gap3():
+    PCOTMRASPreBackboneFrameSelector = _install_prebackbone_selector_or_skip()
+    cfg = load_mmengine_config_or_skip(
+        "configs/adatad/thumos/pc_ot_mras_uniform_biased_coarse_actionness_c3_physical_grid_actionformer_n16r4.py"
+    )
+    selector_cfg = dict(cfg.model.frame_selector)
+    selector_cfg.pop("type")
+    selector = PCOTMRASPreBackboneFrameSelector(**selector_cfg)
+    dense_len = int(selector.dense_window_size)
+    candidate_valid = torch.ones(1, dense_len, dtype=torch.bool)
+    candidate_dense_indices = torch.arange(dense_len, dtype=torch.long).unsqueeze(0)
+    valid = candidate_valid.clone()
+    action_logits = torch.full((1, dense_len), -4.0, dtype=torch.float32)
+    action_logits[:, 1::8] = 6.0
+    action_logits[:, 3::8] = 0.0
+
+    plan = selector._coarse_actionness_uncertainty_transport_plan(
+        reader_outputs={"actionness_logits": action_logits},
+        valid=valid,
+        candidate_valid=candidate_valid,
+        candidate_dense_indices=candidate_dense_indices,
+        training=False,
+    )
+    positions = [int(item) for item in plan["selected_positions"][0].tolist()]
+    gaps = [right - left for left, right in zip(positions[:-1], positions[1:])]
+    role_counts = plan["coarse_policy_meta"][0]["role_counts"]
+
+    assert plan["selected_output_valid_lengths"].tolist() == [384]
+    assert positions == sorted(positions)
+    assert len(set(positions)) == 384
+    assert max(gaps) <= 3
+    assert role_counts["coarse_uniform"] == 288
+    assert role_counts.get("coarse_action", 0) > 0
+    assert role_counts.get("coarse_uncertainty", 0) > 0
+    assert role_counts.get("coarse_max_gap_guard", 0) > 0
+    assert "coarse_change" not in role_counts
+    assert "coarse_background" not in role_counts
+    assert plan["coarse_policy_meta"][0]["configured_quota"]["coarse_action"] == 72
+    assert plan["max_gap_guard_meta"][0]["enabled"] is True
+    assert plan["max_gap_guard_meta"][0]["max_dense_gap"] == 3
+    assert plan["max_gap_guard_meta"][0]["max_gap_guard_count"] == 12
+
+
 def test_coarse_actionness_selector_forward_train_writes_policy_metadata_and_action_loss():
     PCOTMRASPreBackboneFrameSelector = _install_prebackbone_selector_or_skip()
     selector = PCOTMRASPreBackboneFrameSelector(
@@ -656,7 +735,7 @@ def test_coarse_actionness_selector_forward_train_writes_policy_metadata_and_act
     assert meta["pc_ot_mras_prebackbone_protocol_flags"]["uses_test_gt"] is False
 
 
-def test_coarse_actionness_selector_forward_test_writes_deploy_safe_policy_metadata_without_gt():
+def test_coarse_actionness_selector_forward_test_writes_deploy_safe_policy_metadata_without_gt(tmp_path, monkeypatch):
     PCOTMRASPreBackboneFrameSelector = _install_prebackbone_selector_or_skip()
     selector = PCOTMRASPreBackboneFrameSelector(
         reader=dict(
@@ -685,6 +764,8 @@ def test_coarse_actionness_selector_forward_test_writes_deploy_safe_policy_metad
     )
     inputs = torch.arange(1 * 3 * 8 * 2 * 2, dtype=torch.float32).reshape(1, 3, 8, 2, 2)
     masks = torch.ones(1, 8, dtype=torch.bool)
+    dump_path = tmp_path / "selector_metadata.jsonl"
+    monkeypatch.setenv("PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_JSONL", str(dump_path))
 
     selected = selector.forward_test(
         inputs=inputs,
@@ -720,6 +801,13 @@ def test_coarse_actionness_selector_forward_test_writes_deploy_safe_policy_metad
     diagnostics = meta["pc_ot_mras_prebackbone_reader_diagnostics"]
     assert diagnostics["action"]["available"] is True
     assert diagnostics["boundary"]["available"] is False
+    row = json.loads(dump_path.read_text(encoding="utf-8").strip())
+    components = row["selector_score_components"]
+    for key in ("actionness_logits", "p_action", "uncertainty", "change", "background", "mixed"):
+        assert key in components
+        assert len(components[key]) == 8
+    for key in ("p_action", "uncertainty", "change", "background", "mixed"):
+        assert all(0.0 <= value <= 1.0 for value in components[key])
 
 
 def test_coarse_actionness_uncertainty_config_keeps_boundary_head_out_of_selector():

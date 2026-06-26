@@ -21,6 +21,8 @@ VARIANT_ID="C3-PhysicalGridActionFormer-PreBackbone-OriginalAdaTAD"
 STAGE_ID="c3_physical_grid_actionformer_full_train_n16r4"
 CONFIG_REVIEWED="configs/adatad/thumos/pc_ot_mras_prebackbone_c3_physical_grid_actionformer_full_train_n16r4.py"
 CONFIG_REVIEWED_COARSE="configs/adatad/thumos/pc_ot_mras_coarse_actionness_uncertainty_c3_physical_grid_actionformer_n16r4.py"
+CONFIG_REVIEWED_EXACT_UNIFORM="configs/adatad/thumos/pc_ot_mras_exact_uniform_c3_physical_grid_actionformer_n16r4.py"
+CONFIG_REVIEWED_UNIFORM_BIAS="configs/adatad/thumos/pc_ot_mras_uniform_biased_coarse_actionness_c3_physical_grid_actionformer_n16r4.py"
 CONFIG="${CONFIG:-$CONFIG_REVIEWED}"
 PRECHECK_ONLY="${PRECHECK_ONLY:-1}"
 ALLOW_C3_PHYSICAL_GRID_FULL_TRAIN="${ALLOW_C3_PHYSICAL_GRID_FULL_TRAIN:-0}"
@@ -186,8 +188,8 @@ if [ "$MASTER_PORT" -lt 1024 ] || [ "$MASTER_PORT" -gt 65535 ]; then
   fail "MASTER_PORT must be between 1024 and 65535; got $MASTER_PORT"
 fi
 case "$CONFIG" in
-  "$CONFIG_REVIEWED"|"$CONFIG_REVIEWED_COARSE") ;;
-  *) fail "reviewed only for $CONFIG_REVIEWED or $CONFIG_REVIEWED_COARSE; got $CONFIG" ;;
+  "$CONFIG_REVIEWED"|"$CONFIG_REVIEWED_COARSE"|"$CONFIG_REVIEWED_EXACT_UNIFORM"|"$CONFIG_REVIEWED_UNIFORM_BIAS") ;;
+  *) fail "reviewed only for $CONFIG_REVIEWED, $CONFIG_REVIEWED_COARSE, $CONFIG_REVIEWED_EXACT_UNIFORM, or $CONFIG_REVIEWED_UNIFORM_BIAS; got $CONFIG" ;;
 esac
 
 EXPECTED_GIT_BRANCH="${OPENTAD_C3_PHYSICAL_GRID_EXPECTED_BRANCH:-codex/c3-physical-grid-head-20260625}"
@@ -376,7 +378,7 @@ torchrun --nproc_per_node=1 --master_port="$MASTER_PORT" \
   2>&1 | tee "$TRAIN_STDOUT"
 
 grep -q "Training Over" "$TRAIN_STDOUT" || fail "train stdout does not show clean Training Over"
-if grep -Eiq "load_from_raw_predictions[\"']?[[:space:]]*[:=][[:space:]]*True|save_raw_prediction[\"']?[[:space:]]*[:=][[:space:]]*True|RAW_PREDICTION_CACHE[[:space:]]*=|PREDICTION_CACHE[[:space:]]*=" "$TRAIN_STDOUT"; then
+if grep -Eq "load_from_raw_predictions[\"']?[[:space:]]*[:=][[:space:]]*True|save_raw_prediction[\"']?[[:space:]]*[:=][[:space:]]*True|(^|[[:space:]])RAW_PREDICTION_CACHE[[:space:]]*=|(^|[[:space:]])PREDICTION_CACHE[[:space:]]*=" "$TRAIN_STDOUT"; then
   fail "train stdout contains raw prediction/cache marker"
 fi
 

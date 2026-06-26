@@ -1,6 +1,7 @@
 import ast
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,20 @@ COARSE_CONFIG = (
     / "thumos"
     / "pc_ot_mras_coarse_actionness_uncertainty_c3_physical_grid_actionformer_n16r4.py"
 )
+EXACT_UNIFORM_CONFIG = (
+    ROOT
+    / "configs"
+    / "adatad"
+    / "thumos"
+    / "pc_ot_mras_exact_uniform_c3_physical_grid_actionformer_n16r4.py"
+)
+UNIFORM_BIAS_CONFIG = (
+    ROOT
+    / "configs"
+    / "adatad"
+    / "thumos"
+    / "pc_ot_mras_uniform_biased_coarse_actionness_c3_physical_grid_actionformer_n16r4.py"
+)
 LAUNCHER = ROOT / "scripts" / "run_pc_ot_mras_prebackbone_c3_physical_grid_actionformer_full_train_n16r4.sbatch"
 VALIDATOR = ROOT / "tools" / "bata" / "validate_pc_ot_mras_prebackbone_c3_physical_grid_full_train_gate.py"
 GUARD = ROOT / "opentad" / "utils" / "training_guard.py"
@@ -30,6 +45,12 @@ STAGE_ID = "c3_physical_grid_actionformer_full_train_n16r4"
 COARSE_VARIANT_ID = "C3-CoarseActionnessUncertainty-PreBackbone-OriginalAdaTAD"
 COARSE_ROUTE_ID = "pc_ot_mras_coarse_actionness_uncertainty_c3_physical_grid_actionformer"
 COARSE_STAGE_ID = "c3_coarse_actionness_uncertainty_fixed384_n16r4"
+EXACT_UNIFORM_VARIANT_ID = "C3-ExactUniformPhysicalGrid-PreBackbone-OriginalAdaTAD"
+EXACT_UNIFORM_ROUTE_ID = "pc_ot_mras_exact_uniform_c3_physical_grid_actionformer"
+EXACT_UNIFORM_STAGE_ID = "c3_exact_uniform_physical_grid_fixed384_n16r4"
+UNIFORM_BIAS_VARIANT_ID = "C3-UniformBiasedCoarseActionness-PreBackbone-OriginalAdaTAD"
+UNIFORM_BIAS_ROUTE_ID = "pc_ot_mras_uniform_biased_coarse_actionness_c3_physical_grid_actionformer"
+UNIFORM_BIAS_STAGE_ID = "c3_uniform_biased_coarse_actionness_fixed384_n16r4"
 ALLOW_DECISION = "ALLOW_C3_PHYSICAL_GRID_FULL_TRAIN"
 
 
@@ -164,6 +185,80 @@ def test_coarse_actionness_full_train_selector_config_matches_runtime_signatures
     assert cfg.protocol_flags.tools_test_allowed is False
     assert cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate.route == cfg.route_id
     assert cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate.stage == cfg.stage_id
+
+
+@pytest.mark.parametrize(
+    ("config_path", "route_id", "variant_id", "stage_id"),
+    (
+        (EXACT_UNIFORM_CONFIG, EXACT_UNIFORM_ROUTE_ID, EXACT_UNIFORM_VARIANT_ID, EXACT_UNIFORM_STAGE_ID),
+        (UNIFORM_BIAS_CONFIG, UNIFORM_BIAS_ROUTE_ID, UNIFORM_BIAS_VARIANT_ID, UNIFORM_BIAS_STAGE_ID),
+    ),
+)
+def test_c3_coarse_next_step_configs_match_runtime_signatures(config_path, route_id, variant_id, stage_id):
+    mmengine_config = pytest.importorskip("mmengine.config")
+    cfg = mmengine_config.Config.fromfile(str(config_path))
+    selector_cfg = _cfg_dict(cfg.model.frame_selector)
+    reader_cfg = _cfg_dict(selector_cfg.pop("reader"))
+    selector_cfg.pop("type")
+    reader_cfg.pop("type")
+
+    selector_params = _class_init_params(PREBACKBONE_SELECTOR, "PCOTMRASPreBackboneFrameSelector")
+    reader_params = _class_init_params(PREBACKBONE_SELECTOR, "PCOTMRASCoarseActionnessFrameScout")
+
+    assert cfg.route_label == "C3_ORIGINAL_OPTIMIZATION_ROUTE"
+    assert cfg.route_family == "C3_MAINLINE_OPTIMIZATION"
+    assert cfg.route_id == route_id
+    assert cfg.variant_id == variant_id
+    assert cfg.stage_id == stage_id
+    assert not (set(selector_cfg) - selector_params)
+    assert not (set(reader_cfg) - reader_params)
+    assert cfg.model.frame_selector.selection_strategy == "coarse_actionness_uncertainty"
+    assert cfg.model.frame_selector.reader.type == "PCOTMRASCoarseActionnessFrameScout"
+    assert cfg.model.frame_selector.reader.in_dim == cfg.model.frame_selector.descriptor_dim == 3 * 32 * 32
+    assert len(tuple(cfg.model.frame_selector.reader.dilations)) == cfg.model.frame_selector.reader.temporal_layers
+    assert cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate.route == cfg.route_id
+    assert cfg.pc_ot_mras_prebackbone_e2e_acquisition_gate.stage == cfg.stage_id
+
+
+def test_c3_exact_uniform_config_is_reader_influence_free_uniform_control():
+    mmengine_config = pytest.importorskip("mmengine.config")
+    cfg = mmengine_config.Config.fromfile(str(EXACT_UNIFORM_CONFIG))
+    selector = cfg.model.frame_selector
+
+    assert cfg.experiment_scope.selection_strategy == "exact_uniform_physical_grid_control"
+    assert cfg.experiment_scope.budget_protocol == "fixed384_over_dense768_exact_uniform_physical_grid_control"
+    assert selector.coarse_uniform_count == 384
+    assert selector.coarse_action_count == 0
+    assert selector.coarse_uncertainty_count == 0
+    assert selector.coarse_change_count == 0
+    assert selector.coarse_background_count == 0
+    assert selector.aux_gt_acquisition_loss_weight == 0.0
+    assert selector.aux_duplicate_cap_loss_weight == 0.0
+    assert selector.straight_through_detector_loss is False
+    assert selector.straight_through_downstream is False
+    assert selector.max_dense_gap == 0
+    assert selector.max_gap_guard_count == 0
+    assert selector.meta_source == "c3_exact_uniform_physical_grid_prebackbone_selector_control"
+
+
+def test_c3_uniform_biased_config_keeps_uniform_scaffold_and_small_actionness_bias():
+    mmengine_config = pytest.importorskip("mmengine.config")
+    cfg = mmengine_config.Config.fromfile(str(UNIFORM_BIAS_CONFIG))
+    selector = cfg.model.frame_selector
+
+    assert cfg.experiment_scope.selection_strategy == "uniform_scaffold_small_actionness_bias_maxgap3"
+    assert cfg.experiment_scope.budget_protocol == "fixed384_over_dense768_uniform288_action72_uncertainty24_guard12_maxgap3"
+    assert selector.coarse_uniform_count == 288
+    assert selector.coarse_action_count == 72
+    assert selector.coarse_uncertainty_count == 24
+    assert selector.coarse_change_count == 0
+    assert selector.coarse_background_count == 0
+    assert selector.max_dense_gap == 3
+    assert selector.max_gap_guard_count == 12
+    assert selector.coarse_action_weight == 1.0
+    assert selector.coarse_uncertainty_weight == 0.35
+    assert selector.coarse_change_weight == 0.0
+    assert selector.meta_source == "c3_uniform_biased_coarse_actionness_guard12_maxgap3_prebackbone_selector"
 
 
 def test_physical_grid_full_train_selector_runtime_builds_when_torch_is_available():
@@ -307,6 +402,8 @@ def test_physical_grid_full_train_validator_accepts_config_and_rejects_leakage(t
     validator = _load_module(VALIDATOR, "validate_c3_physical_grid_full_train_gate_test")
     assert validator.validate_config(CONFIG) is True
     assert validator.validate_config(COARSE_CONFIG) is True
+    assert validator.validate_config(EXACT_UNIFORM_CONFIG) is True
+    assert validator.validate_config(UNIFORM_BIAS_CONFIG) is True
 
     bad_dataset_config = tmp_path / "bad_physical_grid_dataset_config.py"
     bad_dataset_config.write_text(
@@ -346,6 +443,36 @@ def test_physical_grid_full_train_validator_accepts_config_and_rejects_leakage(t
         is coarse_payload
     )
 
+    exact_uniform_payload = _gate_payload(
+        route=EXACT_UNIFORM_ROUTE_ID,
+        variant_id=EXACT_UNIFORM_VARIANT_ID,
+        stage=EXACT_UNIFORM_STAGE_ID,
+    )
+    assert (
+        validator.validate_gate_payload(
+            exact_uniform_payload,
+            active_manifest_sha256="manifest-sha",
+            resolved_config_sha256="resolved-sha",
+            pretrained_sha256="pretrained-sha",
+        )
+        is exact_uniform_payload
+    )
+
+    uniform_bias_payload = _gate_payload(
+        route=UNIFORM_BIAS_ROUTE_ID,
+        variant_id=UNIFORM_BIAS_VARIANT_ID,
+        stage=UNIFORM_BIAS_STAGE_ID,
+    )
+    assert (
+        validator.validate_gate_payload(
+            uniform_bias_payload,
+            active_manifest_sha256="manifest-sha",
+            resolved_config_sha256="resolved-sha",
+            pretrained_sha256="pretrained-sha",
+        )
+        is uniform_bias_payload
+    )
+
 
 def test_physical_grid_full_train_launcher_is_single_gpu_fail_closed():
     text = LAUNCHER.read_text(encoding="utf-8")
@@ -354,6 +481,8 @@ def test_physical_grid_full_train_launcher_is_single_gpu_fail_closed():
     assert VARIANT_ID in text
     assert ROUTE_ID in text
     assert COARSE_CONFIG.name in text
+    assert EXACT_UNIFORM_CONFIG.name in text
+    assert UNIFORM_BIAS_CONFIG.name in text
     assert "resolved_identity route=$ROUTE_ID variant=$VARIANT_ID stage=$STAGE_ID" in text
     assert "PRECHECK_ONLY=\"${PRECHECK_ONLY:-1}\"" in text
     assert "ALLOW_C3_PHYSICAL_GRID_FULL_TRAIN" in text
@@ -377,6 +506,33 @@ def test_physical_grid_full_train_launcher_is_single_gpu_fail_closed():
     assert "POSTTRAIN_DIAGNOSTIC_GATE_REQUIRED" in text
     assert 'grep -Eiq "load_from_raw_predictions|RAW_PREDICTION_CACHE|PREDICTION_CACHE"' not in text
     assert "load_from_raw_predictions[\\\"']?[[:space:]]*[:=][[:space:]]*True" in text
+    assert "(^|[[:space:]])PREDICTION_CACHE[[:space:]]*=" in text
+
+
+def test_physical_grid_full_train_stdout_raw_cache_marker_regression():
+    text = LAUNCHER.read_text(encoding="utf-8")
+    assert "if grep -Eq " in text
+    pattern = (
+        r"""load_from_raw_predictions["']?\s*[:=]\s*True"""
+        r"""|save_raw_prediction["']?\s*[:=]\s*True"""
+        r"""|(^|\s)RAW_PREDICTION_CACHE\s*="""
+        r"""|(^|\s)PREDICTION_CACHE\s*="""
+    )
+
+    clean_stdout = "\n".join(
+        [
+            "inference = dict(load_from_raw_predictions=False, save_raw_prediction=False)",
+            "    allow_raw_prediction_cache=False,",
+            "    uses_raw_prediction_cache=False",
+            "2026-06-26 12:10:43 Train INFO: Training Over...",
+        ]
+    )
+    assert re.search(pattern, clean_stdout) is None
+
+    assert re.search(pattern, "load_from_raw_predictions=True")
+    assert re.search(pattern, "save_raw_prediction=True")
+    assert re.search(pattern, "PREDICTION_CACHE=/tmp/preds.json")
+    assert re.search(pattern, "RAW_PREDICTION_CACHE=/tmp/preds.json")
 
 
 def test_physical_grid_full_train_launcher_and_validator_static_no_forbidden_routes():
