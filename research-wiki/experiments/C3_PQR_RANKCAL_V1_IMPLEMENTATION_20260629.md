@@ -174,6 +174,41 @@ Fix applied in the same route-owned worktree:
 This is a clean-clone dependency completeness fix only. It does not create a
 model-result claim, selector claim, smoke claim, or mAP claim.
 
+## Pseudo-Boundary Dependency Fix - 2026-06-30
+
+After the rasterizer dependency fix, the remote clean clone at branch HEAD
+`8cb6b64f83c1b9e86d887978accf1cabfe6f7d34` passed Linux PRECHECK but failed the
+2-iteration runtime smoke before the training loop with:
+
+```text
+ModuleNotFoundError: No module named 'opentad.datasets.transforms.pseudo_boundary'
+```
+
+The error came from the hard import in
+`opentad/datasets/transforms/end_to_end.py`. The root cause was another
+clean-clone dependency completeness gap: the real pseudo-boundary transform
+helper existed in repository history and matched the current tests/API, but was
+missing from this PQR branch.
+
+Fix applied in the same route-owned worktree:
+
+- added `opentad/datasets/transforms/pseudo_boundary.py`;
+- kept `end_to_end.py` as a hard import instead of hiding the issue behind an
+  optional import;
+- added a PQR validator/test dependency guard for the helper file and required
+  API symbols;
+- updated the three PQR config metadata fields to state that pseudo_boundary is
+  locally restored and remote PRECHECK plus 2-iter smoke evidence is still
+  required.
+
+This fix does not alter CADF selector logic, BH-SDC, evaluator,
+post-processing, sampler, PQR scoring math, quality-head math, detector head
+logic, loss/assignment, training launcher behavior, runtime gate behavior, or
+mAP claims.
+
+Evidence report:
+`research-wiki/experiments/c3_pqr_rankcal_v1_pseudo_boundary_dependency_fix_20260630.md`.
+
 ## Local Verification
 
 Commands run in

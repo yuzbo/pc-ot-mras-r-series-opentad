@@ -14,7 +14,7 @@ ALLOWED_ROUTE_VARIANTS = {
 }
 FORBIDDEN_ROUTE_TOKENS = ("BH", "BH-SDC", "BH_SDC", "DIVERGENT", "CADF")
 EXPECTED_PRECHECK_SCOPE = "config_validator_plus_quality_head_unit"
-EXPECTED_BUILD_ONLY_STATUS = "locked_by_baseline_import_dependencies"
+EXPECTED_BUILD_ONLY_STATUS = "pseudo_boundary_dependency_restored_pending_remote_runtime_smoke"
 SUPPORTED_QUALITY_HEAD_KEYS = {
     "enabled",
     "kernel_size",
@@ -84,6 +84,29 @@ def validate_runtime_max_train_iters_gate_consumed():
     assert "return completed_iters" in train_engine_source
 
 
+def validate_clean_clone_transform_dependencies_present():
+    pseudo_boundary_path = ROOT / "opentad/datasets/transforms/pseudo_boundary.py"
+    assert pseudo_boundary_path.is_file(), (
+        "missing clean-clone transform dependency: "
+        "opentad/datasets/transforms/pseudo_boundary.py"
+    )
+
+    pseudo_boundary_source = pseudo_boundary_path.read_text(encoding="utf-8")
+    for required_symbol in (
+        "def load_boundary_scores",
+        "def slice_global_scores_for_window",
+        "def select_pseudo_boundary_hybrid_positions",
+        "def select_pseudo_boundary_snap_positions",
+    ):
+        assert required_symbol in pseudo_boundary_source, (
+            "pseudo_boundary.py is present but missing required API: "
+            f"{required_symbol}"
+        )
+
+    end_to_end_source = (ROOT / "opentad/datasets/transforms/end_to_end.py").read_text(encoding="utf-8")
+    assert "from .pseudo_boundary import" in end_to_end_source
+
+
 def _load_frame_step(cfg, split):
     return next(step for step in cfg.dataset[split].pipeline if step["type"] == "LoadFrames")
 
@@ -143,6 +166,7 @@ def validate_config(config_path):
     _validate_route(cfg)
     validate_detector_consumes_model_keys(cfg, config_path)
     validate_runtime_max_train_iters_gate_consumed()
+    validate_clean_clone_transform_dependencies_present()
     _validate_quality_head(cfg)
 
     assert cfg.model.rpn_head.type == "ActionFormerHead"
@@ -166,8 +190,9 @@ def validate_config(config_path):
     assert cfg.pqr_rankcal_v1.requires_c3_selector_tree_for_input_experiment is True
     assert cfg.pqr_rankcal_v1.precheck_scope == EXPECTED_PRECHECK_SCOPE
     assert cfg.pqr_rankcal_v1.build_only_status == EXPECTED_BUILD_ONLY_STATUS
-    assert "Rearrange" in cfg.pqr_rankcal_v1.build_only_blockers
     assert "pseudo_boundary" in cfg.pqr_rankcal_v1.build_only_blockers
+    assert "restoration" in cfg.pqr_rankcal_v1.build_only_blockers
+    assert "remote PRECHECK" in cfg.pqr_rankcal_v1.build_only_blockers
 
     if cfg.route_variant == "C3_PQR_RankCalV1_MaxIoU_Stride2UniformBackendControl":
         _validate_stride2_uniform_backend(cfg)

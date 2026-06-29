@@ -8,6 +8,7 @@ the broader source for cross-route orchestration.
 
 | Time (+08:00) | Experiment / Config | Changed Surface | Status | Review / Gate State | Deployment / Result State | Next Action |
 | --- | --- | --- | --- | --- | --- | --- |
+| 2026-06-30 04:28:44 | `C3_PQR_RankCalV1_MaxIoU` / pseudo-boundary clean-clone dependency fix | Added missing transform helper dependency `opentad/datasets/transforms/pseudo_boundary.py`; added PQR validator/test dependency guard; updated PQR config metadata only; no PQR scoring math, CADF selector, BH-SDC, sampler, evaluator, postprocess, launcher, or runtime-gate behavior change | Remote clean clone 2-iter smoke import blocker addressed locally; no remote/runtime training launched | Local RED/GREEN dependency test; py_compile PASS; focused PQR pytest `17 passed, 3 skipped` with Windows torch-backed tests skipped due local torch DLL failure; 3 validators PASS; pseudo-boundary pure module behavior `5 passed`; review tool attempts failed and are not counted as PASS | No deployment, no SSH, no Slurm, no `tools/train.py` real run, no `tools/test.py`, no mAP evidence; N16R4 untouched | Commit/push this dependency completeness fix, then allow separate remote agent to rerun Linux PRECHECK and 2-iter smoke; keep 8-epoch shortdiag/formal training/eval/claims locked |
 | 2026-06-30 04:08:38 | `C3_PQR_RankCalV1_MaxIoU` / clean-clone dependency completeness fix | Added missing backbone dependency module `opentad/models/backbones/time_aligned_rasterizer.py` only; no PQR scoring math, CADF selector, BH-SDC, sampler, evaluator, postprocess, or launch logic change | Remote clean clone PRECHECK import blocker addressed locally; no remote/runtime training launched | Local py_compile PASS; focused PQR pytest `16 passed, 3 skipped` with Windows torch-backed tests skipped due local torch DLL failure; 3 validators PASS; Linux clean clone must rerun failed torch-backed PRECHECK | No deployment, no SSH, no Slurm, no `tools/train.py` real run, no `tools/test.py`, no mAP evidence; N16R4 untouched | Commit/push this dependency completeness fix, then allow separate remote PRECHECK agent to rerun PRECHECK; keep smoke/training/eval locked here |
 | 2026-06-30 03:48:16 | `C3_PQR_RankCalV1_MaxIoU` / `workflow.max_train_iters` runtime gate | Standard local training launcher and train loop only; PQR validator/tests/docs; no CADF selector, no BH-SDC, no evaluator/postprocess change | Pro blocker fixed at local implementation layer; no remote/runtime training launched | Local focused runtime gate tests PASS (`3 passed`); full focused PQR pytest PASS (`16 passed, 3 skipped`); py_compile PASS; 3 validators PASS; still needs read-only subagent final review | No deployment, no Slurm, no SSH, no `tools/train.py` real run, no `tools/test.py`, no mAP evidence; N16R4 `1118197 pcot_dbg2g` untouched | Run required read-only subagent final review, then remote PRECHECK/2-iter smoke only if review passes; keep 8-epoch shortdiag and formal/full train locked |
 | 2026-06-30 03:38:34 | `C3_PQR_RankCalV1_MaxIoU` / `c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_precheck.py` | Detector-head quality/ranking calibration only; no CADF selector, no BH-SDC, no evaluator/postprocess change | GitHub-synced PRECHECK_ONLY evidence; Pro gate valid | Remote PRECHECK_ONLY evidence: py_compile PASS, 3 validators PASS, focused pytest `16 passed in 15.44s`; GPT-5.5 Pro verdict `FIX_BEFORE_RUNTIME` | Branch pushed to GitHub at `dca62cc24c0bef50e53135709820b6a66afe1422`; no training launched; no mAP/runtime/deploy/paper claim | Fix runtime gate so `workflow.max_train_iters=2` is consumed before any 2-iter smoke; keep 8-epoch shortdiag and formal/full train locked |
@@ -29,11 +30,47 @@ the broader source for cross-route orchestration.
 
 ## Current Locks
 
-- No runtime smoke is allowed until required read-only subagent final review and remote PRECHECK pass.
-- No 8-epoch short diagnostic is allowed until the reviewed 2-iter runtime smoke passes.
+- This local owner must not start remote PRECHECK, smoke, SSH, Slurm, training,
+  or evaluation.
+- A separate remote agent may rerun Linux PRECHECK and then the 2-iteration
+  runtime smoke after this commit is pushed.
+- No 8-epoch short diagnostic is allowed until the rerun 2-iteration runtime
+  smoke passes.
 - Formal/full training remains locked.
 - No `tools/test.py`, no metric claim, no official result claim, no paper/deploy claim.
 - N16R4 long-held parent allocation `1118197 pcot_dbg2g` was not touched.
+
+## 2026-06-30 Pseudo-Boundary Clean Clone Dependency Fix
+
+- Evidence report:
+  `research-wiki/experiments/c3_pqr_rankcal_v1_pseudo_boundary_dependency_fix_20260630.md`
+- Remote failed evidence: clean clone
+  `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQRRankCal_Precheck_20260630/github_clean_c3_pqr_rankcal_v1`
+  at branch HEAD `8cb6b64f83c1b9e86d887978accf1cabfe6f7d34` passed Linux
+  PRECHECK but failed 2-iter runtime smoke before the train loop with
+  `ModuleNotFoundError: No module named
+  'opentad.datasets.transforms.pseudo_boundary'`.
+- Root cause: `opentad/datasets/transforms/end_to_end.py` hard-imports the real
+  pseudo-boundary transform helper, but the module file was absent from this PQR
+  branch/clean clone.
+- Changed files: `opentad/datasets/transforms/pseudo_boundary.py`,
+  `tools/validate_c3_pqr_rankcal_v1_config.py`,
+  `tests/test_c3_pqr_rankcal_v1_config.py`, and the three PQR config metadata
+  files.
+- Changed surface: clean-clone dependency restoration and metadata guard only.
+  No CADF selector, BH-SDC, evaluator, postprocess, sampler, PQR scoring math,
+  quality-head math, training launcher, or runtime gate behavior was changed.
+- Strict random-fixed 50% contract: unchanged.
+- GT/teacher leakage risk: unchanged; pseudo-boundary cache loader rejects
+  `uses_gt=True` manifests.
+- Local verification: RED/GREEN dependency test; py_compile PASS; focused PQR
+  pytest `17 passed, 3 skipped`; three validators PASS; pseudo-boundary pure
+  module behavior `5 passed`.
+- Review gate status: attempted but incomplete due tool failures; no PASS review
+  claimed.
+- Next launch decision: this owner does not launch remote PRECHECK, smoke, or
+  training. A separate remote agent may rerun Linux PRECHECK and 2-iter smoke
+  after this commit is pushed.
 
 ## 2026-06-30 Clean Clone Dependency Completeness Fix
 

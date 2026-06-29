@@ -7,7 +7,11 @@ from types import SimpleNamespace
 import pytest
 from mmengine.config import Config
 
-from tools.validate_c3_pqr_rankcal_v1_config import validate_config, validate_detector_consumes_model_keys
+from tools.validate_c3_pqr_rankcal_v1_config import (
+    validate_clean_clone_transform_dependencies_present,
+    validate_config,
+    validate_detector_consumes_model_keys,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -239,9 +243,14 @@ def test_pqr_rankcal_precheck_is_short_fail_closed_gate():
     assert cfg.pqr_rankcal_v1["remote_launch_locked"] is True
     assert cfg.pqr_rankcal_v1["diagnostic_only"] is True
     assert cfg.pqr_rankcal_v1.precheck_scope == "config_validator_plus_quality_head_unit"
-    assert cfg.pqr_rankcal_v1.build_only_status == "locked_by_baseline_import_dependencies"
-    assert "Rearrange" in cfg.pqr_rankcal_v1.build_only_blockers
+    assert cfg.pqr_rankcal_v1.build_only_status == "pseudo_boundary_dependency_restored_pending_remote_runtime_smoke"
     assert "pseudo_boundary" in cfg.pqr_rankcal_v1.build_only_blockers
+    assert "restoration" in cfg.pqr_rankcal_v1.build_only_blockers
+    assert "remote PRECHECK" in cfg.pqr_rankcal_v1.build_only_blockers
+
+
+def test_clean_clone_transform_dependencies_are_present_for_runtime_imports():
+    validate_clean_clone_transform_dependencies_present()
 
 
 def test_standard_train_launcher_consumes_max_train_iters_runtime_gate():

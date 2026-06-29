@@ -19,8 +19,8 @@ pqr_rankcal_v1 = dict(
     c3_selector_input_experiment=False,
     requires_c3_selector_tree_for_input_experiment=True,
     precheck_scope="config_validator_plus_quality_head_unit",
-    build_only_status="locked_by_baseline_import_dependencies",
-    build_only_blockers="Rearrange transform registration missing before dataset build; opentad.datasets.transforms.pseudo_boundary missing in clean snapshot",
+    build_only_status="pseudo_boundary_dependency_restored_pending_remote_runtime_smoke",
+    build_only_blockers="No known pseudo_boundary dependency blocker after local restoration; remote PRECHECK and 2-iter smoke evidence still required",
 )
 
 annotation_path = "/root/autodl-tmp/annotations/thumos_14_anno.json"
