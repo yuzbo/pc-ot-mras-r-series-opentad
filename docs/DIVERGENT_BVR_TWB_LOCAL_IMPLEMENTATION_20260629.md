@@ -255,3 +255,15 @@ The N16R4 GPU1 three-epoch gradient-stability diagnostic completed after the one
 - Final visible loss line: `Loss=1.7851 cls_loss=0.5739 reg_loss=0.6661 boundary_loss=0.5451 lr_det=6.0e-05 mem=1422MB`.
 
 Interpretation: the shape/runtime/positional-embedding blocker is resolved, and a short multi-epoch diagnostic can run to completion on GPU1. However, four skipped non-finite gradients in `module.rpn_head.reg_head.weight` remain a formal-full-train stability risk. This diagnostic still does not unlock full train, mAP, runtime/FLOPs, deploy readiness, paper claims, or true sparse-compute claims; those remain locked pending the coordinator / Pro / explicit user gate.
+
+## BVR-TWB / VOI-BBC Regression Decode Stability Fix
+
+Route label: `DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3`.
+
+Local-only fix prepared on 2026-06-30 Asia/Shanghai for the non-finite `module.rpn_head.reg_head.weight` gradient blocker observed in the three-epoch diagnostic. `IrregularActionFormerHeadV2.get_refined_proposals()` now supports an optional `max_reg_log_distance` clamp and performs log-distance clamp, `expm1`, and physical-distance restoration in fp32. The default is `None`, preserving legacy behavior for configs that do not opt in. The BVR HeadV3 config explicitly sets `max_reg_log_distance=6.0`; HeadV3 passes the setting through to the inherited V2 decode path.
+
+Changed surface: detector head numeric decode path and BVR full-train candidate config only. No input sampler, dynamic budget policy, token compression, Adapter/backbone internals, loss/assignment targets, evaluator, post-processing, GT/teacher/cache behavior, Slurm launcher, or remote state was changed.
+
+Focused regression coverage added in `tests/test_bvr_twb_regression_stability.py`: config inheritance resolves the clamp, and a Linux torch test checks that huge `reg_pred=1000` values produce finite refined proposals and finite backward gradients under the clamped decode path.
+
+Still locked after this fix: remote sync, Slurm, formal full training, validation/test evaluation, mAP, runtime/FLOPs, deploy claim, paper claim, C3/combo merge, and any claim that the non-finite gradient issue is fully resolved on GPU before a reviewed remote diagnostic rerun.

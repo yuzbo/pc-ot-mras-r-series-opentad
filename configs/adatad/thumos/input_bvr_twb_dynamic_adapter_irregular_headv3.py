@@ -131,6 +131,7 @@ model = dict(
         ),
     ),
     projection=dict(max_seq_len=window_size),
+    rpn_head=dict(max_reg_log_distance=6.0),
 )
 
 solver = dict(

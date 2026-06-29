@@ -30,6 +30,7 @@ class IrregularActionFormerHeadV2(nn.Module):
         soft_center_cost_weight=1.0,
         soft_scale_cost_weight=0.5,
         reg_denom_floor=0.5,
+        max_reg_log_distance=None,
         debug_cfg=None,
     ):
         super().__init__()
@@ -48,6 +49,7 @@ class IrregularActionFormerHeadV2(nn.Module):
         self.soft_center_cost_weight = soft_center_cost_weight
         self.soft_scale_cost_weight = soft_scale_cost_weight
         self.reg_denom_floor = reg_denom_floor
+        self.max_reg_log_distance = max_reg_log_distance
         self.loss_normalizer_momentum = loss_normalizer_momentum
         self.register_buffer("loss_normalizer", torch.tensor(float(loss_normalizer)))
 
@@ -145,13 +147,20 @@ class IrregularActionFormerHeadV2(nn.Module):
     def get_refined_proposals(self, points, reg_pred):
         point_tensor = torch.cat(points, dim=1)
         reg_tensor = torch.cat(reg_pred, dim=-1).permute(0, 2, 1)
-        left_denom = point_tensor[:, :, 3].clamp_min(self.reg_denom_floor)
-        right_denom = point_tensor[:, :, 4].clamp_min(self.reg_denom_floor)
-        left = torch.expm1(reg_tensor[:, :, 0].clamp_min(0.0)) * left_denom
-        right = torch.expm1(reg_tensor[:, :, 1].clamp_min(0.0)) * right_denom
-        start = point_tensor[:, :, 0] - left
-        end = point_tensor[:, :, 0] + right
-        return torch.stack((start, end), dim=-1)
+        point_decode = point_tensor.float()
+        reg_decode = reg_tensor.float().clamp_min(0.0)
+        if self.max_reg_log_distance is not None:
+            reg_decode = reg_decode.clamp_max(float(self.max_reg_log_distance))
+        left_denom = point_decode[:, :, 3].clamp_min(self.reg_denom_floor)
+        right_denom = point_decode[:, :, 4].clamp_min(self.reg_denom_floor)
+        left = torch.expm1(reg_decode[:, :, 0]) * left_denom
+        right = torch.expm1(reg_decode[:, :, 1]) * right_denom
+        start = point_decode[:, :, 0] - left
+        end = point_decode[:, :, 0] + right
+        proposals = torch.stack((start, end), dim=-1)
+        if point_tensor.dtype not in (torch.float16, torch.bfloat16):
+            proposals = proposals.to(dtype=point_tensor.dtype)
+        return proposals
 
     def get_valid_proposals_scores(self, points, reg_pred, cls_pred, mask_list):
         proposals = self.get_refined_proposals(points, reg_pred)
