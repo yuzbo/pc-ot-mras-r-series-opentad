@@ -28,6 +28,7 @@ Protocol boundaries:
 - Current Adapter compatibility uses `fixed_pad`: MDL chooses dynamic `valid_k`, then raw frame indices are padded to the inherited Adapter target length while masks and sparse metadata keep only true selected entries valid.
 - Scout provenance is fail-closed. Any incoming scout marked as GT, teacher, prediction-cache, or dense-backbone sourced is rejected before ledger creation.
 - The current full-code config still uses `deploy_scout_source="fallback_synthetic_precheck_only"` and `real_scout_unavailable=True`; this permits local/remote precheck only and is not a deploy-visible scout claim.
+- Clean-clone dependency: `opentad/datasets/transforms/pseudo_boundary.py` is included because the real `end_to_end.py` imports the shared pseudo-boundary helper. This is a transform dependency only; it does not change MDL-Knot selection semantics or merge MDL with C3/BVR/ABR routes.
 
 Local gates:
 

@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import runpy
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from opentad.acquisition.mdl_knot import (
 ROOT = Path(__file__).resolve().parents[1]
 ROUTE_LABEL = "DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3"
 CONFIG_PATH = ROOT / "configs" / "adatad" / "thumos" / "input_mdl_knot_dynamic_adapter_irregular_headv3.py"
+PSEUDO_BOUNDARY_PATH = ROOT / "opentad" / "datasets" / "transforms" / "pseudo_boundary.py"
 
 
 def test_pipeline_mock_sets_frame_inds_before_decode_and_records_valid_k():
@@ -36,6 +38,20 @@ def test_pipeline_mock_sets_frame_inds_before_decode_and_records_valid_k():
     assert updated["mdl_knot_valid_k"] == len(updated["mdl_knot_selected_positions"])
     assert len(updated["masks"]) == updated["mdl_knot_valid_k"]
     assert updated["mdl_knot_sparse_meta"]["position_unit"] == "original_dense_time_index"
+
+
+def test_clean_clone_pseudo_boundary_dependency_exists_without_torch_import():
+    assert PSEUDO_BOUNDARY_PATH.exists()
+    spec = importlib.util.spec_from_file_location("pseudo_boundary_dependency_check", PSEUDO_BOUNDARY_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    for name in (
+        "load_pseudo_boundary_cache",
+        "select_pseudo_boundary_hybrid_positions",
+        "select_pseudo_boundary_snap_positions",
+    ):
+        assert hasattr(module, name)
 
 
 def test_fixed_adapter_bridge_pads_frame_inds_without_counting_padding_as_valid():

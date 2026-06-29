@@ -51,3 +51,17 @@ Remaining locks:
 
 - Remote sync and N16R4 PRECHECK_ONLY remain blocked until the latest read-only review no longer reports blockers.
 - Training, evaluation, `tools/test.py`, stage/commit/push, mAP/runtime/FLOPs/deploy/paper claims remain locked.
+
+## Clean-Clone Pseudo-Boundary Dependency Fix
+
+Recorded 2026-06-30 Asia/Shanghai.
+
+Remote Linux PRECHECK on a sibling route exposed that clean full-code branches can fail importing `opentad.datasets.transforms.end_to_end` when `opentad/datasets/transforms/pseudo_boundary.py` is absent. MDL's real `end_to_end.py` also imports the same shared helper.
+
+Fix:
+
+- Added `opentad/datasets/transforms/pseudo_boundary.py` from the compatible OpenTAD lineage into the MDL owned worktree.
+- Added `load_pseudo_boundary_cache` as a compatibility alias for `load_boundary_scores`.
+- Added a torch-free dependency test that imports the file by path and checks `load_pseudo_boundary_cache`, `select_pseudo_boundary_hybrid_positions`, and `select_pseudo_boundary_snap_positions`.
+
+This is a clean-clone dependency repair only. It is not MDL algorithm logic, not C3/BVR/ABR route logic, and does not unlock training, evaluation, metric/runtime/deploy/paper claims, stage/commit/push, or `tools/test.py`.
