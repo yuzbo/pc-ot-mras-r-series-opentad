@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +13,22 @@ from tools.abr.audit_abr_pipeline_precheck import build_precheck_summary
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_pseudo_boundary_helper_exists_for_clean_clone_import_dependency():
+    helper_path = REPO_ROOT / "opentad" / "datasets" / "transforms" / "pseudo_boundary.py"
+    assert helper_path.exists()
+
+    spec = importlib.util.spec_from_file_location("abr_pseudo_boundary_helper", helper_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    for name in (
+        "load_pseudo_boundary_cache",
+        "select_pseudo_boundary_hybrid_positions",
+        "select_pseudo_boundary_snap_positions",
+    ):
+        assert callable(getattr(module, name, None)), name
 
 
 def test_apply_abr_to_results_sets_frame_inds_before_decode_and_keeps_padding_invalid():

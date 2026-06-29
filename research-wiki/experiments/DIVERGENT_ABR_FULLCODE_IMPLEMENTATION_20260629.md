@@ -119,3 +119,40 @@ Allowed next action:
 Still locked:
 
 - Full train, mAP claims, deploy claims, paper claims, runtime claims, and sparse-compute claims remain locked.
+
+## Linux PRECHECK Import Fix
+
+**Timestamp**: 2026-06-30 00:55:52 +08:00
+**Remote attempt**: protected hold `1118197` GPU1, `PRECHECK_ONLY`, logdir `/data/home/sczc063/run/yuzibo/abr_precheck_logs/abr_gpu1_precheck_retry3_20260630_004513`.
+**Commit tested remotely**: `48ed384`.
+**Remote failure**: real pytest reached ABR local tests but failed before ABR selector logic because the clean clone lacked `opentad/datasets/transforms/pseudo_boundary.py`, while `opentad/datasets/transforms/end_to_end.py` imports that shared transform helper.
+
+Fix:
+
+- Added `opentad/datasets/transforms/pseudo_boundary.py` to the ABR full-code worktree using the compatible shared transform helper lineage from `OpenTAD_Back`.
+- Kept it as a shared transform dependency, not as BVR/MDL/C3 route logic and not as an ABR algorithm change.
+- Added a path-level clean-clone dependency test in `tests/test_abr_pipeline_and_gate.py` that imports the helper without requiring torch and checks `load_pseudo_boundary_cache`, `select_pseudo_boundary_hybrid_positions`, and `select_pseudo_boundary_snap_positions`.
+
+Verification:
+
+- RED check before helper add: `python -m pytest tests/test_abr_pipeline_and_gate.py -q`
+  - Result: failed exactly at `test_pseudo_boundary_helper_exists_for_clean_clone_import_dependency` because `pseudo_boundary.py` did not exist.
+- GREEN focused check: `python -m pytest tests/test_abr_pipeline_and_gate.py -q`
+  - Result: `7 passed, 1 skipped in 1.03s`.
+- Full ABR check: `python -m pytest tests/test_abr_core.py tests/test_abr_pipeline_and_gate.py -q`
+  - Result: `14 passed, 1 skipped in 1.06s`.
+- `python -m py_compile opentad\datasets\transforms\pseudo_boundary.py opentad\datasets\transforms\end_to_end.py opentad\acquisition\abr\types.py opentad\acquisition\abr\integration.py opentad\acquisition\abr\validators.py tools\abr\audit_abr_pipeline_precheck.py tools\abr\validate_abr_launch_gate.py configs\adatad\thumos\input_abr_active_bracket_refinement_adapter_irregular_headv3.py tests\test_abr_core.py tests\test_abr_pipeline_and_gate.py`
+  - Result: pass.
+- `python tools\abr\audit_abr_pipeline_precheck.py --out-dir .tmp_abr_mock_precheck --overwrite --mock-only`
+  - Result: `PASS_MOCK_PRECHECK_ONLY`; `nonzero_window_ok=true`, `val_test_gt_rejection_ok=true`, `detector_forward_count=1`, `dynamic_k_nonconstant=true`, `real_sparse_handoff_ok=true`.
+- `python tools\abr\audit_abr_pipeline_precheck.py --out-dir .tmp_abr_real_precheck --overwrite`
+  - Result: fail-closed `LOCKED`; local Windows torch import still fails on `c10.dll` with WinError 1114.
+- `python tools\abr\validate_abr_launch_gate.py --precheck-json .tmp_abr_mock_precheck\abr_precheck_summary.json`
+  - Result: locked, because status is `PASS_MOCK_PRECHECK_ONLY`, not `PASS_PRECHECK_ONLY`.
+- `python tools\abr\validate_abr_launch_gate.py --precheck-json .tmp_abr_real_precheck\abr_precheck_summary.json`
+  - Result: locked, because status is `LOCKED`.
+
+Still locked:
+
+- No remote sync, Slurm, training, evaluation, `tools/test.py`, stage, commit, or push was run by this owner.
+- Linux/N16R4 `PRECHECK_ONLY` may be retried by the main process after commit/push. Full train, mAP claims, deploy claims, paper claims, runtime claims, and sparse-compute claims remain locked.
