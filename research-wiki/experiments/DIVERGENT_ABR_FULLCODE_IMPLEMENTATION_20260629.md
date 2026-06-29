@@ -156,3 +156,25 @@ Still locked:
 
 - No remote sync, Slurm, training, evaluation, `tools/test.py`, stage, commit, or push was run by this owner.
 - Linux/N16R4 `PRECHECK_ONLY` may be retried by the main process after commit/push. Full train, mAP claims, deploy claims, paper claims, runtime claims, and sparse-compute claims remain locked.
+
+## Linux/N16R4 PRECHECK_ONLY Pass
+
+**Timestamp**: 2026-06-30 01:02:47 +08:00
+**Remote logdir**: `/data/home/sczc063/run/yuzibo/abr_precheck_logs/abr_gpu1_precheck_0bab835_20260630_010247`
+**Remote clean clone**: `/data/home/sczc063/run/yuzibo/OpenTAD_ABR_Precheck_20260630_0bab835`
+**Commit tested**: `0bab835 Fix ABR clean-clone transform dependency`
+**Protected hold**: `1118197 pcot_dbg2g`, node `g0030`, `CUDA_VISIBLE_DEVICES=1`; parent hold was not released or cancelled.
+
+Result:
+
+- Real Linux/N16R4 ABR `PRECHECK_ONLY` passed after the clean-clone `pseudo_boundary.py` dependency fix.
+- Test result: `15 passed in 10.62s`.
+- Precheck summary: `status=PASS_PRECHECK_ONLY`, `precheck_validated=true`, `route_label=DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3`.
+- Summary fields: `detector_forward_count=1`, `dynamic_k_nonconstant=true`, `nonzero_window_ok=true`, `val_test_gt_rejection_ok=true`, `real_sparse_handoff_ok=true`, `forbidden_inputs_ok=true`, `pipeline_valid_k=24`, `easy_valid_k=13`, `rich_valid_k=24`.
+- Launch gate output: `allowed_next_action=REMOTE_PRECHECK_ONLY_REQUEST`, `still_locked=TRAIN_EVAL_SYNC_STAGE_COMMIT_PUSH`.
+
+Interpretation:
+
+- Linux/N16R4 `PRECHECK_ONLY` is now passed for commit `0bab835`.
+- This does not unlock full train, evaluation, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper claims, or sparse-compute claims.
+- No additional remote action, Slurm action, training, evaluation, `tools/test.py`, stage, commit, or push was performed by this owner in this documentation-only update.
