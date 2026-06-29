@@ -21,7 +21,13 @@ from opentad.acquisition.bvr_twb import (
     estimate_boundary_beliefs,
 )
 from opentad.acquisition.bvr_twb.types import BudgetConfig, ROUTE_LABEL
-from opentad.acquisition.bvr_twb.validators import LOCAL_GATHER_CLAIM_STATUS, validate_dynamicity_and_uniform_mimicry, validate_summary_claim_status
+from opentad.acquisition.bvr_twb.validators import (
+    LOCAL_GATHER_CLAIM_STATUS,
+    validate_candidate_packet_ledger,
+    validate_dynamicity_and_uniform_mimicry,
+    validate_selection_row_schema,
+    validate_summary_claim_status,
+)
 
 
 def _gaussian(length, center, width, height=1.0):
@@ -153,6 +159,10 @@ def build_ledgers(out_dir, overwrite=False, root=ROOT):
         max_gap=22,
     )
     dynamic_diag = validate_dynamicity_and_uniform_mimicry(bvr_ledgers, dynamic_enabled=True)
+    for row in candidate_rows:
+        validate_candidate_packet_ledger(row)
+    for row in decision_rows:
+        validate_selection_row_schema(row)
 
     write_jsonl(out / "bvr_twb_deploy_ledgers.jsonl", bvr_ledgers)
     write_jsonl(out / "bvr_twb_selection_rows.jsonl", decision_rows)

@@ -46,6 +46,8 @@ def test_no_leakage_rejects_gt_teacher_dense_prediction_and_cache():
             validate_no_leakage({key: [1]})
     with pytest.raises(ValueError, match="must be false"):
         validate_no_leakage({"provenance": {"selection_uses_gt": True}})
+    with pytest.raises(ValueError, match="forbidden leakage"):
+        validate_no_leakage({"outer": [{"nested": {"ground_truth": [0, 1]}}]})
 
 
 def test_state_scout_rejects_forbidden_metadata_recursively():
@@ -215,6 +217,57 @@ def test_deploy_ledger_validator_rejects_dense_handoff_and_bad_decode():
     bad_gap["selection_gap_diagnostics"] = build_selection_gap_diagnostics([0, 3, 6], 8, 1)
     with pytest.raises(ValueError, match="hard max-gap"):
         validate_deploy_ledger(bad_gap)
+
+
+def test_deploy_ledger_rejects_forged_belief_width_safe_trace():
+    dense = np.arange(16, dtype=np.float64).reshape(8, 2)
+    _, evidence = sparse_gather(dense, [0, 3, 6], temporal_dim=0)
+    meta = build_original_time_metadata(8, [0, 3, 6], fps=4.0)
+    ledger = {
+        "route_label": ROUTE_LABEL,
+        "method": "BVR-TWB",
+        "video_id": "v",
+        "split": "synthetic",
+        "window_id": 0,
+        "dense_T": 8,
+        "selected_positions": [0, 3, 6],
+        "selected_times_sec": meta["selected_times_sec"],
+        "claim_mode": "local_gather_smoke",
+        "valid_k": 3,
+        "scaffold_k": 1,
+        "min_k": 2,
+        "max_k": 4,
+        "budget_stop_reason": "belief_width_safe",
+        "selection_gap_diagnostics": build_selection_gap_diagnostics([0, 3, 6], 8, 3),
+        "bracket_summary": {
+            "active_belief_update_trace": [
+                {
+                    "bracket_id": 0,
+                    "updated_from_selected_witness": False,
+                    "belief_width_safe": True,
+                }
+            ],
+            "all_active_beliefs_updated_and_safe": False,
+        },
+        "original_time_metadata": meta,
+        "real_sparse_evidence": evidence,
+        "forbidden_fields_absent": {
+            "regret_label_absent": True,
+            "gt_fields_absent": True,
+            "teacher_fields_absent": True,
+            "prediction_cache_absent": True,
+        },
+        "provenance": {
+            "selection_uses_gt": False,
+            "selection_uses_teacher": False,
+            "selection_uses_prediction_cache": False,
+            "selection_uses_raw_detector_prediction": False,
+            "selection_uses_oracle_boundary": False,
+            "selection_uses_oracle_residual": False,
+        },
+    }
+    with pytest.raises(ValueError, match="belief_width_safe"):
+        validate_deploy_ledger(ledger)
 
 
 def test_controller_fails_closed_when_max_gap_infeasible_under_budget():

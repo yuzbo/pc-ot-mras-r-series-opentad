@@ -16,6 +16,11 @@ VALUE_COMPONENT_KEYS = {
     "low_actionness_component",
 }
 
+FORBIDDEN_DEPLOY_KEY_ALIASES = (
+    "ground_truth",
+    "label_cache",
+)
+
 
 def _walk_dict(obj, prefix=""):
     if isinstance(obj, dict):
@@ -51,7 +56,7 @@ def validate_route_identity(metadata, allow_tokens=None):
 def validate_no_leakage(metadata):
     for path, key, value in _walk_dict(metadata):
         key_l = str(key).lower()
-        for forbidden in FORBIDDEN_DEPLOY_KEYS:
+        for forbidden in tuple(FORBIDDEN_DEPLOY_KEYS) + FORBIDDEN_DEPLOY_KEY_ALIASES:
             if forbidden.lower() == key_l and value not in (None, False, [], {}):
                 raise ValueError(f"deploy/scout metadata contains forbidden leakage field at {path}")
         if key_l.startswith("selection_uses_") and bool(value):
@@ -274,6 +279,8 @@ def validate_deploy_ledger(ledger):
     validate_selected_positions(ledger["selected_positions"], dense_T, valid_k=valid_k)
     if ledger.get("budget_stop_reason") not in STOP_REASONS:
         raise ValueError(f"invalid budget_stop_reason: {ledger.get('budget_stop_reason')}")
+    if ledger.get("budget_stop_reason") == "belief_width_safe":
+        validate_belief_width_safe_stop_contract(ledger)
     validate_selection_gap_diagnostics(ledger)
     validate_original_time_metadata(ledger.get("original_time_metadata", ledger))
     validate_sparse_gather_evidence(
@@ -287,6 +294,21 @@ def validate_deploy_ledger(ledger):
     absent = ledger.get("forbidden_fields_absent", {})
     if not all(bool(value) for value in absent.values()):
         raise ValueError("forbidden_fields_absent flags must all be true")
+    return True
+
+
+def validate_belief_width_safe_stop_contract(ledger):
+    summary = ledger.get("bracket_summary", {})
+    active_trace = summary.get("active_belief_update_trace")
+    if not active_trace:
+        raise ValueError("belief_width_safe requires non-empty active_belief_update_trace")
+    if summary.get("all_active_beliefs_updated_and_safe") is not True:
+        raise ValueError("belief_width_safe requires all_active_beliefs_updated_and_safe is True")
+    for idx, row in enumerate(active_trace):
+        if row.get("updated_from_selected_witness") is not True:
+            raise ValueError(f"belief_width_safe active trace row {idx} is not updated from selected witness")
+        if row.get("belief_width_safe") is not True:
+            raise ValueError(f"belief_width_safe active trace row {idx} is not individually safe")
     return True
 
 

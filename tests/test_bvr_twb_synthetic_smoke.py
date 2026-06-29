@@ -1,6 +1,7 @@
 from collections import Counter
 
 import numpy as np
+import pytest
 
 from opentad.acquisition.bvr_twb.scaffold import gap_statistics
 from opentad.acquisition.bvr_twb.boundary_belief import estimate_boundary_beliefs
@@ -8,6 +9,7 @@ from opentad.acquisition.bvr_twb.state_scout import build_scout_from_actionness
 from opentad.acquisition.bvr_twb.value_predictor import PacketValuePredictor
 from opentad.acquisition.bvr_twb.validators import validate_deploy_ledger, validate_dynamicity_and_uniform_mimicry
 from opentad.acquisition.bvr_twb.witness_packets import build_witness_packets
+import tools.bvr_twb.build_synthetic_ledgers as synthetic_builder
 from tools.bvr_twb.build_synthetic_ledgers import build_ledgers, run_bvr_case, synthetic_cases
 
 
@@ -100,3 +102,25 @@ def test_synthetic_summary_keeps_claim_status_locked_and_reports_diagnostics(tmp
     assert summary["claim_mode"] == "local_gather_smoke"
     assert "mean_posterior_belief_width_p80" in summary
     assert "twb_no_regret_uniform_fallback_ratio" in summary
+
+
+def test_synthetic_builder_calls_candidate_schema_validator_before_write(tmp_path, monkeypatch):
+    def fail_closed(_row):
+        raise RuntimeError("candidate validator called")
+
+    monkeypatch.setattr(synthetic_builder, "validate_candidate_packet_ledger", fail_closed, raising=False)
+    with pytest.raises(RuntimeError, match="candidate validator called"):
+        synthetic_builder.build_ledgers(tmp_path / ".tmp_bvr_twb_candidate_gate", overwrite=True, root=tmp_path)
+
+
+def test_synthetic_builder_calls_selection_schema_validator_before_write(tmp_path, monkeypatch):
+    def pass_candidate(_row):
+        return True
+
+    def fail_closed(_row):
+        raise RuntimeError("selection validator called")
+
+    monkeypatch.setattr(synthetic_builder, "validate_candidate_packet_ledger", pass_candidate, raising=False)
+    monkeypatch.setattr(synthetic_builder, "validate_selection_row_schema", fail_closed, raising=False)
+    with pytest.raises(RuntimeError, match="selection validator called"):
+        synthetic_builder.build_ledgers(tmp_path / ".tmp_bvr_twb_selection_gate", overwrite=True, root=tmp_path)

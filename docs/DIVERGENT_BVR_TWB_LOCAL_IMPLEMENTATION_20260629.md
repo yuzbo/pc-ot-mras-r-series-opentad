@@ -48,5 +48,6 @@ Updated after the GitHub-only Rosetta GPT-5.5 Pro `PASS_ALLOW_LOCAL_FIX_IMPLEMEN
 - Matched controls inherit BVR max-gap by default and record random seed, jitter, per-case uniform overlap, scaffold-only policy, and `twb_no_regret` uniform fallback count/ratio.
 - Synthetic summaries add posterior belief width and fallback diagnostics while keeping `claim_status` exactly `local_gather_smoke_only_no_sparse_compute_or_metric_claim`.
 - Final-review blocker fix: `belief_width_safe` now requires every active bracket in `active_belief_update_trace` to be updated by selected witness packets and individually `belief_width_safe=True`. Uncovered active brackets are not excluded from the stop decision. `_infer_stop_reason` uses the same all-active-safe semantics.
+- Local hardening: deploy ledger validation now rejects forged `belief_width_safe` stops, nested leakage aliases such as `ground_truth`, and synthetic builder output is schema-validated before JSONL write.
 
 Still locked: remote sync, Slurm, training, validation/test evaluation, mAP, runtime/FLOPs, deploy claims, paper claims, C3/combo merge, T2 first-version dependency, and dense raw handoff sparse claims.
