@@ -125,6 +125,8 @@ class ActionFormer(SingleStageDetector):
 
         rpn_proposals, rpn_scores = self.rpn_head.forward_test(x, masks, **kwargs)
         predictions = rpn_proposals, rpn_scores
+        if self.with_frame_selector:
+            return dict(predictions=predictions, metas=metas)
         return predictions
 
     def get_optim_groups(self, cfg):

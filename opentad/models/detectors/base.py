@@ -29,12 +29,17 @@ class BaseDetector(torch.nn.Module):
         # step1: inference the model
         if infer_cfg.load_from_raw_predictions:  # easier and faster to tune the hyper parameter in postprocessing
             predictions = load_predictions(metas, infer_cfg)
+            post_metas = metas
         else:
             predictions = self.forward_test(inputs, masks, metas, infer_cfg)
+            post_metas = metas
+            if isinstance(predictions, dict):
+                post_metas = predictions.get("metas", metas)
+                predictions = predictions["predictions"]
 
             if infer_cfg.save_raw_prediction:  # save the predictions to disk
-                save_predictions(predictions, metas, infer_cfg.folder)
+                save_predictions(predictions, post_metas, infer_cfg.folder)
 
         # step2: detection post processing
-        results = self.post_processing(predictions, metas, post_cfg, **kwargs)
+        results = self.post_processing(predictions, post_metas, post_cfg, **kwargs)
         return results

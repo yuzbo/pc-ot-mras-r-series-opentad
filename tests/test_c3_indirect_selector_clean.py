@@ -1,5 +1,6 @@
 import torch
 
+from opentad.models.detectors.base import BaseDetector
 from opentad.models.builder import build_selector
 from opentad.models.selectors.c3_indirect_frame_selector import PCOTMRASCoarseActionnessFrameScout
 
@@ -108,3 +109,34 @@ def test_padding_duplicates_are_marked_invalid_when_valid_frames_are_short():
     assert outputs["masks"][0].tolist().count(True) == 3
     assert outputs["masks"][0, 3:].logical_not().all()
     assert outputs["metas"][0]["c3_indirect_selected_valid_len"] == 3
+
+
+def test_base_detector_postprocesses_with_selector_returned_metas():
+    class DummyDetector(BaseDetector):
+        def forward_test(self, inputs, masks, metas=None, infer_cfg=None):
+            selected_metas = [dict(metas[0], window_size=4, c3_indirect_fixed_axis=True)]
+            predictions = (
+                torch.tensor([[[0.0, 1.0]]]),
+                torch.tensor([[[0.9]]]),
+            )
+            return dict(predictions=predictions, metas=selected_metas)
+
+        def post_processing(self, predictions, metas, post_cfg, **kwargs):
+            assert metas[0]["window_size"] == 4
+            assert metas[0]["c3_indirect_fixed_axis"] is True
+            return {"used_window_size": metas[0]["window_size"]}
+
+    detector = DummyDetector()
+    infer_cfg = type("InferCfg", (), dict(load_from_raw_predictions=False, save_raw_prediction=False))()
+    post_cfg = object()
+    original_metas = [dict(video_name="video_0", window_size=8)]
+
+    results = detector.forward_detection(
+        torch.empty(1),
+        torch.empty(1),
+        original_metas,
+        infer_cfg,
+        post_cfg,
+    )
+
+    assert results == {"used_window_size": 4}
