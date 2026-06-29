@@ -15,6 +15,8 @@ FORBIDDEN_ROUTE_TOKENS = (
     "C3_ORIGINAL",
     "GlobalRank",
     "Interval",
+    "BOUNDARY" + "_MICROSCOPE",
+    "Boundary" + " Microscope",
 )
 
 
@@ -43,6 +45,11 @@ def assert_no_forbidden_selection_inputs(results: Mapping[str, Any], allow_gt_af
         "detector_feedback": "detector feedback",
         "raw_predictions": "detector feedback",
         "dense_backbone_features": "dense raw backbone handoff",
+        "gt_scout_curve": "GT-derived scout",
+        "gt_frame_signal": "GT-derived scout",
+        "teacher_scout_curve": "teacher-derived scout",
+        "prediction_scout_curve": "prediction-cache-derived scout",
+        "detector_scout_curve": "detector-feedback-derived scout",
     }
     for key, reason in forbidden.items():
         if key in results:
@@ -114,6 +121,7 @@ def validate_launch_gate_payload(payload: Mapping[str, Any]) -> Dict[str, str]:
         "nonzero_window_ok",
         "val_test_gt_rejection_ok",
         "dynamic_k_nonconstant",
+        "deploy_visible_scout_or_explicit_fallback_ok",
     )
     for key in required_true:
         if summary.get(key) is not True:

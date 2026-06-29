@@ -1,9 +1,9 @@
 _base_ = ["./input_random_fixed_50pct_adapter_irregular_headv3_x.py"]
 
 abr_route = dict(
-    route_label="DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3",
+    route_label="DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3",
     method="abr_active_bracket_refinement",
-    claim_status="fail_closed_candidate_only",
+    claim_status="precheck_only_fail_closed_candidate",
 )
 
 window_size = 384
@@ -28,7 +28,9 @@ abr_loader = dict(
         resolve_width=3,
         round2_min_width=8,
         outside_witness_offset=2,
-        route_label="DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3",
+        route_label="DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3",
+        allow_diagnostic_fallback_scout=True,
+        fallback_stage="PRECHECK_ONLY",
     ),
 )
 

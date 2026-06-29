@@ -38,8 +38,9 @@ def build_precheck_summary(require_torch: bool = True) -> dict:
         "window_size": 96,
         "feature_start_idx": 0,
         "feature_end_idx": 95,
+        "abr_scout_curve": rich,
     }
-    out = apply_abr_to_results(mock, config=cfg, scout_curve=rich)
+    out = apply_abr_to_results(mock, config=cfg)
     handoff = out["abr_selection_ledger"]["handoff"]
     assert_real_sparse_handoff(handoff)
     assert_no_forbidden_selection_inputs(mock)
@@ -52,11 +53,11 @@ def build_precheck_summary(require_torch: bool = True) -> dict:
         "fps": 25.0,
         "duration": 9.6,
         "snippet_stride": 1,
+        "abr_scout_curve": rich,
     }
     nonzero_out = apply_abr_to_results(
         nonzero_mock,
         config=cfg,
-        scout_curve=rich,
         dense_window=nonzero_dense_window,
     )
     nonzero_handoff = nonzero_out["abr_selection_ledger"]["handoff"]
@@ -84,13 +85,58 @@ def build_precheck_summary(require_torch: bool = True) -> dict:
         else:
             rejection_checks.append(False)
 
+    try:
+        apply_abr_to_results(
+            {
+                "video_name": "abr_precheck_formal_missing_scout_reject",
+                "total_frames": 64,
+                "avg_fps": 25.0,
+            },
+            config=cfg,
+        )
+    except ABRValidationError:
+        formal_missing_scout_rejected = True
+    else:
+        formal_missing_scout_rejected = False
+
+    fallback_cfg = ABRConfig(
+        k0=8,
+        k1_cap=14,
+        k2_cap=4,
+        max_total_k=32,
+        max_gap=16,
+        target_frame_num=40,
+        allow_diagnostic_fallback_scout=True,
+        fallback_stage="PRECHECK_ONLY",
+    )
+    fallback_out = apply_abr_to_results(
+        {
+            "video_name": "abr_precheck_explicit_fallback",
+            "total_frames": 96,
+            "avg_fps": 25.0,
+            "fps": 25.0,
+            "duration": 3.84,
+            "snippet_stride": 1,
+        },
+        config=fallback_cfg,
+    )
+
     dynamic_k_nonconstant = easy_result.valid_k != rich_result.valid_k
+    fallback_explicit = bool(fallback_out["abr_diagnostic_fallback_used"]) and str(
+        fallback_out["abr_scout_source"]
+    ).startswith("diagnostic_fallback:PRECHECK_ONLY")
     summary = {
         "real_sparse_handoff_ok": True,
         "forbidden_inputs_ok": True,
         "nonzero_window_ok": True,
         "val_test_gt_rejection_ok": all(rejection_checks),
         "dynamic_k_nonconstant": bool(dynamic_k_nonconstant),
+        "deploy_visible_scout_or_explicit_fallback_ok": bool(
+            out["abr_scout_source"] == "abr_scout_curve:deploy_visible"
+            and nonzero_out["abr_scout_source"] == "abr_scout_curve:deploy_visible"
+            and formal_missing_scout_rejected
+            and fallback_explicit
+        ),
         "detector_forward_count": int(rich_result.cost.detector_forward_count),
         "easy_valid_k": int(easy_result.valid_k),
         "rich_valid_k": int(rich_result.valid_k),
@@ -103,11 +149,17 @@ def build_precheck_summary(require_torch: bool = True) -> dict:
         "nonzero_window_valid_k": nonzero_valid_k,
         "nonzero_window_first_local": int(nonzero_local[0]),
         "nonzero_window_first_global": int(nonzero_global[0]),
+        "pipeline_scout_source": str(out["abr_scout_source"]),
+        "formal_missing_scout_rejected": bool(formal_missing_scout_rejected),
+        "diagnostic_fallback_source": str(fallback_out["abr_scout_source"]),
+        "diagnostic_fallback_used": bool(fallback_out["abr_diagnostic_fallback_used"]),
     }
     if not dynamic_k_nonconstant:
         raise ABRValidationError("dynamic K check failed: easy and rich cases selected identical K")
     if not all(rejection_checks):
         raise ABRValidationError("val/test GT rejection check failed")
+    if not summary["deploy_visible_scout_or_explicit_fallback_ok"]:
+        raise ABRValidationError("deploy-visible scout / explicit fallback gate failed")
     return {
         "route_label": ABR_ROUTE_LABEL,
         "method": "abr_active_bracket_refinement",
@@ -161,6 +213,7 @@ def main(argv=None) -> int:
                 "nonzero_window_ok": False,
                 "val_test_gt_rejection_ok": False,
                 "dynamic_k_nonconstant": False,
+                "deploy_visible_scout_or_explicit_fallback_ok": False,
                 "detector_forward_count": 0,
             },
         }

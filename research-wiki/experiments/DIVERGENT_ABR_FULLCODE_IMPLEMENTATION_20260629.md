@@ -4,7 +4,7 @@
 **Implementation worktree**: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_ABR_FullCode_Worktree_20260629`  
 **Branch**: `codex/divergent-abr-fullcode-20260629`  
 **Base commit**: `588b2729d7570732b4dc281aa4cd3a2dd7e784ac`  
-**Route label**: `DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3`
+**Route label**: `DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3`
 
 ## Supersession
 
@@ -169,7 +169,26 @@ Result:
 
 - Real Linux/N16R4 ABR `PRECHECK_ONLY` passed after the clean-clone `pseudo_boundary.py` dependency fix.
 - Test result: `15 passed in 10.62s`.
-- Precheck summary: `status=PASS_PRECHECK_ONLY`, `precheck_validated=true`, `route_label=DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3`.
+- Precheck summary: `status=PASS_PRECHECK_ONLY`, `precheck_validated=true`, route label now corrected to `DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3`.
+
+## 2026-06-30T03:53:23+08:00 - ABR route identity and real scout/probe repair
+
+**Decision**: direct implementation by the ABR single writable code owner, as explicitly assigned by the user for this stage.
+
+**Changes**:
+- Corrected ABR route identity to `DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3` in code, config, tests, validator, and active route documentation.
+- Added deploy-visible scout inputs for `abr_scout_curve`, deploy-visible frame signals, and low-cost frame features; formal missing-scout selection now fails closed.
+- Kept deterministic fallback only behind explicit `allow_diagnostic_fallback_scout=True` plus `fallback_stage="PRECHECK_ONLY"` / diagnostic tags.
+- Added metadata for `abr_scout_source` and `abr_diagnostic_fallback_used` into ABR handoff and collection.
+- Extended launch gate validation to accept the ABR config path and verify precheck-only lock semantics.
+
+**Stage status**: local/precheck candidate only. No remote sync, full training, mAP claim, runtime claim, deploy claim, or paper claim is unlocked.
+
+**Local verification**:
+- `python -m pytest tests/test_abr_core.py tests/test_abr_pipeline_and_gate.py -q`: `15 passed, 1 skipped in 1.30s`.
+- `python tools/abr/validate_abr_launch_gate.py --config configs/adatad/thumos/input_abr_active_bracket_refinement_adapter_irregular_headv3.py`: passed with `allowed_next_action=LOCAL_PRECHECK_ONLY_VALIDATION` and `still_locked=REMOTE_SYNC_FULL_TRAIN_MAPPAPER_CLAIM`.
+- `python tools/abr/audit_abr_pipeline_precheck.py --out-dir .tmp_abr_required_precheck --overwrite --mock-only`: `PASS_MOCK_PRECHECK_ONLY`; summary recorded `deploy_visible_scout_or_explicit_fallback_ok=true`, `formal_missing_scout_rejected=true`, and `diagnostic_fallback_source=diagnostic_fallback:PRECHECK_ONLY`.
+- `python tools/abr/audit_abr_pipeline_precheck.py --out-dir .tmp_abr_required_real_precheck --overwrite`: locked locally before ABR logic because torch import fails on `c10.dll` with Windows `WinError 1114`.
 - Summary fields: `detector_forward_count=1`, `dynamic_k_nonconstant=true`, `nonzero_window_ok=true`, `val_test_gt_rejection_ok=true`, `real_sparse_handoff_ok=true`, `forbidden_inputs_ok=true`, `pipeline_valid_k=24`, `easy_valid_k=13`, `rich_valid_k=24`.
 - Launch gate output: `allowed_next_action=REMOTE_PRECHECK_ONLY_REQUEST`, `still_locked=TRAIN_EVAL_SYNC_STAGE_COMMIT_PUSH`.
 

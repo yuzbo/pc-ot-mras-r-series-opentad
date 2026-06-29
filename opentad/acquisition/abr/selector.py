@@ -22,6 +22,7 @@ from .types import (
     BracketState,
 )
 from .validators import assert_no_forbidden_route_tokens, assert_provenance_clean
+from .validators import ABRValidationError
 
 
 def select_active_bracket_refinement(
@@ -30,6 +31,7 @@ def select_active_bracket_refinement(
     video_id: str = "unknown",
     window_id: str = "window0",
     scout_curve: Optional[Sequence[float]] = None,
+    scout_source: str = "unspecified",
     config: Optional[ABRConfig] = None,
 ) -> ABRSelectionResult:
     cfg = config or ABRConfig()
@@ -42,7 +44,7 @@ def select_active_bracket_refinement(
     provenance = dict(DEFAULT_PROVENANCE)
     assert_provenance_clean(provenance)
 
-    curve = _normalize_curve(scout_curve, dense_t, video_id)
+    curve, scout_source_detail, fallback_used = _normalize_curve(scout_curve, dense_t, video_id, cfg, scout_source)
     selected_meta: Dict[int, Tuple[int, str, int]] = {}
     round_ledgers: List[ABRRoundLedger] = []
     scout_ms = 0.0
@@ -67,6 +69,7 @@ def select_active_bracket_refinement(
             ["scaffold"] * len(r0_positions),
             [-1] * len(r0_positions),
             "round0_scaffold",
+            scout_source_detail,
             len(observed),
             scout_ms,
             cfg,
@@ -117,6 +120,7 @@ def select_active_bracket_refinement(
                 roles,
                 bracket_ids,
                 f"round{round_id}_probe",
+                scout_source_detail,
                 len(observed),
                 scout_ms,
                 cfg,
@@ -155,23 +159,44 @@ def select_active_bracket_refinement(
         brackets=brackets,
         cost=cost,
         provenance=provenance,
+        scout_source=scout_source_detail,
+        diagnostic_fallback_used=fallback_used,
         config=cfg,
     )
 
 
-def _normalize_curve(scout_curve: Optional[Sequence[float]], dense_t: int, video_id: str) -> List[float]:
+def _normalize_curve(
+    scout_curve: Optional[Sequence[float]],
+    dense_t: int,
+    video_id: str,
+    config: ABRConfig,
+    scout_source: str,
+) -> Tuple[List[float], str, bool]:
     if scout_curve is None:
-        return deterministic_fallback_scout(dense_t, video_id)
+        if not _diagnostic_fallback_allowed(config):
+            raise ABRValidationError(
+                "LOCKED: ABR requires deploy-visible scout/probe observations; "
+                "diagnostic fallback is disabled for this config"
+            )
+        return deterministic_fallback_scout(dense_t, video_id), f"diagnostic_fallback:{config.fallback_stage}", True
     curve = [float(v) for v in scout_curve]
     if len(curve) == dense_t:
-        return [max(0.0, min(1.0, value)) for value in curve]
+        return [max(0.0, min(1.0, value)) for value in curve], str(scout_source), False
     if len(curve) == 0:
-        return deterministic_fallback_scout(dense_t, video_id)
+        if not _diagnostic_fallback_allowed(config):
+            raise ABRValidationError("LOCKED: empty deploy-visible scout curve is not allowed")
+        return deterministic_fallback_scout(dense_t, video_id), f"diagnostic_fallback:{config.fallback_stage}", True
     resized = []
     for idx in range(dense_t):
         src = round(idx * (len(curve) - 1) / max(dense_t - 1, 1))
         resized.append(max(0.0, min(1.0, curve[int(src)])))
-    return resized
+    return resized, f"{scout_source}:resized_{len(curve)}_to_{dense_t}", False
+
+
+def _diagnostic_fallback_allowed(config: ABRConfig) -> bool:
+    if not bool(config.allow_diagnostic_fallback_scout):
+        return False
+    return str(config.fallback_stage).upper() in {"PRECHECK_ONLY", "MOCK_PRECHECK_ONLY", "DIAGNOSTIC_ONLY"}
 
 
 def _active_brackets_for_round(brackets: Sequence[BracketState], config: ABRConfig, round_id: int) -> List[BracketState]:
@@ -241,6 +266,7 @@ def _make_ledger(
     roles: Sequence[str],
     bracket_ids: Sequence[int],
     source: str,
+    source_detail: str,
     cumulative_k: int,
     cumulative_scout_ms: float,
     config: ABRConfig,
@@ -256,6 +282,7 @@ def _make_ledger(
         selected_roles=[str(role) for role in roles],
         selected_bracket_ids=[int(bracket_id) if bracket_id is not None else None for bracket_id in bracket_ids],
         selected_source=[source for _ in positions],
+        selected_source_detail=[source_detail for _ in positions],
         selected_cost_ms=[float(config.acquisition_cost_ms_per_position) for _ in positions],
         cumulative_k=int(cumulative_k),
         cumulative_scout_ms=float(cumulative_scout_ms),

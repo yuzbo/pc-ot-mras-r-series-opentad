@@ -55,6 +55,8 @@ class Collect:
             "abr_selected_roles",
             "abr_selection_ledger",
             "abr_dense_T",
+            "abr_scout_source",
+            "abr_diagnostic_fallback_used",
         ],
     ):
         self.inputs = inputs

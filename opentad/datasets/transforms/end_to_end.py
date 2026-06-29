@@ -832,6 +832,8 @@ class LoadFrames:
                 "abr_selection_ledger",
                 "abr_dense_T",
                 "abr_route_label",
+                "abr_scout_source",
+                "abr_diagnostic_fallback_used",
                 "irregular_selected_positions",
                 "irregular_selected_valid_len",
                 "irregular_native_axis",

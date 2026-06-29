@@ -84,9 +84,9 @@ def build_initial_brackets(curve: Sequence[float], scaffold: Sequence[int], conf
     for left_pos, right_pos in zip(sorted_scaffold[:-1], sorted_scaffold[1:]):
         left_state = states[left_pos]
         right_state = states[right_pos]
-        local = curve[left_pos : right_pos + 1]
-        local_uncertainty = max((1.0 - abs(float(v) - 0.5) * 2.0 for v in local), default=0.0)
-        local_derivative = max((abs(float(local[i]) - float(local[i - 1])) for i in range(1, len(local))), default=0.0)
+        observed_values = [float(curve[left_pos]), float(curve[right_pos])]
+        local_uncertainty = max((1.0 - abs(value - 0.5) * 2.0 for value in observed_values), default=0.0)
+        local_derivative = abs(observed_values[1] - observed_values[0])
         state_flip = left_state != right_state and "ambiguous" not in {left_state, right_state}
         uncertain = local_uncertainty >= (1.0 - config.uncertainty_band * 2.0)
         derivative_spike = local_derivative >= config.derivative_threshold

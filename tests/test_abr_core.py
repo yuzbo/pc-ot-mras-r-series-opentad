@@ -21,10 +21,13 @@ from opentad.acquisition.abr.validators import (
 
 
 def test_route_identity_is_isolated_from_forbidden_route_tokens():
-    assert ABR_ROUTE_LABEL == "DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3"
+    assert ABR_ROUTE_LABEL == "DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3"
     assert_no_forbidden_route_tokens({"route_label": ABR_ROUTE_LABEL, "method": "abr_active_bracket_refinement"})
     with pytest.raises(ABRValidationError):
         assert_no_forbidden_route_tokens({"method": "abr_active_bracket_refinement", "notes": "use GlobalRank helper"})
+    with pytest.raises(ABRValidationError):
+        old_label = "DIVERGENT_INNOVATION_" + "BOUNDARY" + "_MICROSCOPE_DO_NOT_MERGE_WITH_C3"
+        assert_no_forbidden_route_tokens({"route_label": old_label})
 
 
 def test_selection_outputs_sorted_unique_original_positions_and_no_leakage():
@@ -51,6 +54,8 @@ def test_selection_outputs_sorted_unique_original_positions_and_no_leakage():
         "selected_inputs_is_gathered": True,
     }
     assert result.cost.detector_forward_count == 1
+    assert result.scout_source == "unspecified"
+    assert result.diagnostic_fallback_used is False
     assert result.cost.selected_k == result.valid_k
     assert len({ledger.round_id for ledger in result.round_ledgers}) >= 2
     assert all(ledger.cumulative_k <= result.config.max_total_k for ledger in result.round_ledgers)

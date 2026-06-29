@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 
-ABR_ROUTE_LABEL = "DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3"
+ABR_ROUTE_LABEL = "DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3"
 
 DEFAULT_PROVENANCE = {
     "uses_gt": False,
@@ -39,6 +39,8 @@ class ABRConfig:
     scout_cost_ms_per_position: float = 0.015
     acquisition_cost_ms_per_position: float = 0.010
     route_label: str = ABR_ROUTE_LABEL
+    allow_diagnostic_fallback_scout: bool = False
+    fallback_stage: str = "FORMAL_LOCKED"
 
 
 @dataclass
@@ -86,6 +88,7 @@ class ABRRoundLedger:
     selected_bracket_ids: List[Optional[int]]
     selected_source: List[str]
     selected_cost_ms: List[float]
+    selected_source_detail: List[str]
     cumulative_k: int
     cumulative_scout_ms: float
     deadline_ms: float
@@ -126,6 +129,8 @@ class ABRSelectionResult:
     brackets: List[BracketState]
     cost: ABRCostSummary
     provenance: Dict[str, bool]
+    scout_source: str
+    diagnostic_fallback_used: bool
     config: ABRConfig
 
     def to_dict(self) -> Dict[str, Any]:
@@ -142,5 +147,7 @@ class ABRSelectionResult:
             "brackets": [bracket.to_dict(self.fps) for bracket in self.brackets],
             "cost": self.cost.to_dict(),
             "provenance": dict(self.provenance),
+            "scout_source": self.scout_source,
+            "diagnostic_fallback_used": bool(self.diagnostic_fallback_used),
             "config": asdict(self.config),
         }
