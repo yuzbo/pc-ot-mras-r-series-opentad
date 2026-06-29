@@ -1,0 +1,63 @@
+BVR-TWB / VOI-BBC 92ec024 launch gate file list
+Recorded: 2026-06-30T06:35:10+08:00
+Route label: DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3
+Owned branch: codex/divergent-bvr-twb-launchgate-92ec024-20260630
+Base implementation commit: 92ec024d1821897245a56f993ed040d97e894831
+
+Package files:
+research-wiki/experiments/DIVERGENT_BVR_TWB_92EC024_LAUNCH_GATE_PACKET_20260630.md
+logs/bvr_twb_92ec024_pro_launch_prompt_20260630.md
+logs/bvr_twb_92ec024_launch_gate_filelist_20260630.txt
+research-wiki/experiments/DIVERGENT_BVR_TWB_92EC024_PACKAGE_SELF_CHECK_20260630.md
+
+Primary implementation/config/review files for Pro:
+configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py
+opentad/models/detectors/irregular_actionformer.py
+opentad/models/utils/post_processing/utils.py
+tools/bvr_twb/validate_bvr_twb_geometry_contracts.py
+tools/bvr_twb/validate_bvr_twb_launch_gate.py
+tests/test_bvr_twb_geometry_contracts.py
+research-wiki/experiments/DIVERGENT_BVR_TWB_GEOMETRY_CONTRACT_FIX_20260630.md
+
+Additional context files:
+docs/DIVERGENT_BVR_TWB_LOCAL_IMPLEMENTATION_20260629.md
+opentad/acquisition/bvr_twb/__init__.py
+opentad/acquisition/bvr_twb/adapter_bridge.py
+opentad/acquisition/bvr_twb/boundary_belief.py
+opentad/acquisition/bvr_twb/budget_controller.py
+opentad/acquisition/bvr_twb/open_tad_bridge.py
+opentad/acquisition/bvr_twb/regret_labels.py
+opentad/acquisition/bvr_twb/trainable_value.py
+opentad/acquisition/bvr_twb/types.py
+opentad/acquisition/bvr_twb/validators.py
+opentad/acquisition/bvr_twb/witness_packets.py
+tests/test_bvr_twb_opentad_pipeline.py
+tests/test_bvr_twb_validators.py
+tests/test_bvr_twb_voi_bbc.py
+tests/test_bvr_twb_regression_stability.py
+tests/test_bvr_twb_sparse_forward_audit.py
+tests/test_bvr_twb_matched_controls.py
+
+Coordinator-provided remote evidence:
+remote clean precheck tree: /data/home/sczc063/run/yuzibo/OpenTAD_BVR_TWB_GeometryPrecheck_20260630_92ec024_20260630_062143
+remote log dir: /data/home/sczc063/run/yuzibo/bvr_twb_precheck_logs_20260630_92ec024_retry_20260630_062312
+remote branch: codex/divergent-bvr-twb-final-20260630
+remote HEAD: 92ec024
+remote tracked status: clean
+key lines: torch_runtime_contract passed; full_training_unlocked false; no_metric_claim true; no_training true; no_video_decode true; PRECHECK_EXIT=0
+tracker: main tracker row 1.998407 records PRECHECK_ONLY and still locked
+
+GitHub placeholders after package push:
+branch URL: https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-bvr-twb-launchgate-92ec024-20260630
+base implementation commit URL: https://github.com/yuzbo/pc-ot-mras-r-series-opentad/commit/92ec024d1821897245a56f993ed040d97e894831
+package commit URL: <fill after package commit/push>
+
+Strict locks:
+no mAP claim
+no runtime/FLOPs/latency claim
+no deployment-readiness claim
+no paper claim
+no true sparse-compute claim
+no tools/test.py
+no long train until Pro or explicit override
+no SSH/remote sync/Slurm/protected hold action from this package
