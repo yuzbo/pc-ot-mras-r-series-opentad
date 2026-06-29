@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -18,6 +19,31 @@ FORMAL_SCOUT_SOURCES = {
     "raw_rgb_lowres_scout",
 }
 FORMAL_VALUE_MODES = {"deploy_heuristic_voi"}
+REQUIRED_PRETRAIN_PATH = "pretrained/vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth"
+
+
+def _require_formal_pretrain(config_path, text):
+    escaped = re.escape(REQUIRED_PRETRAIN_PATH)
+    explicit_line = re.compile(rf"^\s*pretrain\s*=\s*['\"]{escaped}['\"]\s*,?\s*$", re.MULTILINE)
+    if not explicit_line.search(text):
+        raise ValueError(
+            "BVR-TWB formal config must explicitly declare VideoMAE-S pretrain path "
+            f"inside model.backbone.custom: {REQUIRED_PRETRAIN_PATH}"
+        )
+    try:
+        from mmengine.config import Config
+    except Exception as exc:
+        raise ValueError(f"BVR-TWB launch gate cannot verify resolved pretrain without mmengine: {exc}") from exc
+
+    cfg = Config.fromfile(str(config_path))
+    custom_cfg = cfg.model.backbone.custom
+    pretrain = custom_cfg.get("pretrain") if hasattr(custom_cfg, "get") else getattr(custom_cfg, "pretrain", None)
+    if pretrain != REQUIRED_PRETRAIN_PATH:
+        raise ValueError(
+            "BVR-TWB resolved config must retain VideoMAE-S pretrain path; "
+            f"got {pretrain!r}, expected {REQUIRED_PRETRAIN_PATH!r}"
+        )
+    return True
 
 
 def _required_string_set(summary, key):
@@ -44,6 +70,7 @@ def _config_text_is_clean(config_path):
     for token in FORBIDDEN_ROUTE_TOKENS:
         if token.lower() in normalized.lower():
             raise ValueError(f"BVR-TWB launch gate rejects forbidden route token in config: {token}")
+    _require_formal_pretrain(config_path, text)
     if f'bvr_twb_adapter_bridge_mode="{ADAPTER_FIXED_LENGTH_PADDED_BRIDGE}"' not in text and (
         f"bvr_twb_adapter_bridge_mode='{ADAPTER_FIXED_LENGTH_PADDED_BRIDGE}'" not in text
     ):

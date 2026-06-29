@@ -133,6 +133,7 @@ model = dict(
         ),
         custom=dict(
             _delete_=True,
+            pretrain="pretrained/vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth",
             norm_eval=True,
             freeze_backbone=True,
             trainable_backbone_keywords=["adapter", "Adapter"],

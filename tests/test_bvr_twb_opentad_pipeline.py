@@ -24,7 +24,7 @@ from opentad.acquisition.bvr_twb.trainable_value import (
 from opentad.acquisition.bvr_twb.types import FORBIDDEN_ROUTE_TOKENS, ROUTE_LABEL
 from opentad.acquisition.bvr_twb.validators import validate_bvr_twb_pipeline_ledger
 from tools.bvr_twb.audit_sparse_forward_precheck import safe_prepare_output_dir
-from tools.bvr_twb.validate_bvr_twb_launch_gate import validate_launch_gate
+from tools.bvr_twb.validate_bvr_twb_launch_gate import REQUIRED_PRETRAIN_PATH, validate_launch_gate
 
 WORKTREE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -265,10 +265,19 @@ def test_bvr_config_uses_dynamic_method_and_excludes_unapproved_route_tokens():
     assert "bvr_twb_require_deploy_visible_scout=True" in text
     assert "bvr_twb_allow_diagnostic_preview_fallback=False" in text
     assert 'bvr_twb_value_mode="deploy_heuristic_voi"' in text
+    assert f'pretrain="{REQUIRED_PRETRAIN_PATH}"' in text
     assert "diagnostic_deterministic_preview" not in text
     normalized = text.replace(ROUTE_LABEL, "").replace("checkpoint_interval", "checkpoint_period")
     for token in FORBIDDEN_ROUTE_TOKENS:
         assert token.lower() not in normalized.lower()
+
+
+def test_bvr_formal_config_resolves_videomae_s_pretrain_with_mmengine():
+    mmengine_config = pytest.importorskip("mmengine.config")
+    cfg = mmengine_config.Config.fromfile(
+        "configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py"
+    )
+    assert cfg.model.backbone.custom.pretrain == REQUIRED_PRETRAIN_PATH
 
 
 def test_opentad_pipeline_audit_cli_function_writes_valid_summary(tmp_path):
@@ -486,3 +495,16 @@ def test_launch_gate_rejects_c3_and_combo_tokens_in_config(tmp_path):
         bad_config.write_text(base_config + f"\n# forbidden route token {token}\n", encoding="utf-8")
         with pytest.raises(ValueError, match="forbidden route token"):
             validate_launch_gate(bad_config, summary)
+
+
+def test_launch_gate_rejects_formal_config_when_deleted_custom_block_drops_pretrain(tmp_path):
+    base_config = Path("configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py").read_text(encoding="utf-8")
+    bad_config = tmp_path / "bad_deleted_custom_without_pretrain.py"
+    bad_config.write_text(
+        base_config.replace(f'            pretrain="{REQUIRED_PRETRAIN_PATH}",\n', ""),
+        encoding="utf-8",
+    )
+    summary = tmp_path / "passed_summary.json"
+    _write_launch_gate_summary(summary)
+    with pytest.raises(ValueError, match="explicitly declare VideoMAE-S pretrain"):
+        validate_launch_gate(bad_config, summary)
