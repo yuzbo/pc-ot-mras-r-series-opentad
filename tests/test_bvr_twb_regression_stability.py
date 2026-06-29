@@ -27,8 +27,10 @@ def test_bvr_headv3_config_resolves_reg_log_distance_clamp():
     assert float(cfg.model.rpn_head.max_reg_log_distance) == pytest.approx(6.0)
     assert cfg.model.rpn_head.regression_head_fp32 is True
     assert cfg.model.rpn_head.regression_loss_fp32 is True
-    assert cfg.model.rpn_head.filter_invalid_regression_samples is True
+    assert cfg.model.rpn_head.filter_invalid_regression_samples is False
     assert float(cfg.model.rpn_head.min_regression_segment_length) == pytest.approx(1e-6)
+    assert cfg.solver.amp is False
+    assert cfg.solver.fp16_compress is False
 
 
 def test_regression_decode_clamps_huge_log_distance_and_backward_is_finite():

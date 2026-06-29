@@ -293,7 +293,7 @@ Changed surface:
 - When enabled, `pred_segments`, `gt_segments`, regression weights, and DIoU regression loss are computed in fp32 under a local autocast-disabled context.
 - Before regression loss, HeadV3 filters only invalid regression samples: non-finite predicted/target segments, non-finite weights, zero-length predicted/target segments, and reversed predicted/target segments. It does not skip the global step and does not suppress `cls_loss` or `boundary_loss`.
 - Debug state records the bad-regression filtering gate: total samples before filter, kept samples after filter, filtered count, and filtered ratio.
-- The BVR full-train candidate config enables these flags explicitly. Defaults remain unchanged for legacy/non-BVR configs.
+- The first BVR diagnostic config enabled these flags explicitly. Defaults remain unchanged for legacy/non-BVR configs; the later formal candidate update below keeps fp32 regression but disables invalid filtering after remote evidence showed the clean stable setting is AMP-off/no-filter.
 
 No global loss or IoU utility was changed. In particular, `opentad/models/losses/iou_loss.py` and `opentad/models/utils/iou_tools.py` remain untouched because the BVR-local HeadV3 fix is sufficient for this stage and avoids changing shared detector behavior.
 
@@ -339,3 +339,24 @@ Local-only follow-up on 2026-06-30 Asia/Shanghai after Linux focused pytest on c
 Minimal fix: the test fixture now sets `head.regression_head_fp32 = True` explicitly, matching the BVR config flag under test. Runtime HeadV3 behavior, config behavior, regression filtering logic, global IoU/loss code, evaluator/post-processing, selector, Adapter/backbone, and remote state were not changed.
 
 This fix only repairs local/Linux test coverage. It does not unlock staging, commit, push, remote sync, Slurm, formal full training, validation/test evaluation, mAP, runtime/FLOPs, deploy claim, paper claim, C3/combo merge, or any GPU non-finite-resolution claim.
+
+## BVR-TWB Formal Candidate AMP-Off / No-Filter Stability Update
+
+Local-only config update on 2026-06-30 Asia/Shanghai after three N16R4 GPU1 three-epoch diagnostic-only runs on commit `c2debc1`.
+
+Diagnostic evidence:
+
+- Default BVR config with `solver.amp=True`, regression fp32 enabled, and invalid-regression filtering enabled completed training but failed the stability gate. Log directory: `/data/home/sczc063/run/yuzibo/OpenTAD_BVR_TWB_StabilityFix_20260630_9b15fe3/logs/bvr_twb_stability_fix/grad_gpu1_c2debc1_20260630_0305_3epoch_diag`. Evidence: `DIAG_RC=0`, `NONFINITE_COUNT=4`, `TRAINING_OVER_COUNT=1`; non-finite gradients stayed in `module.rpn_head.reg_head.weight`. Some iterations had filter ratio `0.0`, and one had `4/8` samples filtered while non-finite still occurred, so filtering did not solve the AMP-scaled backward issue.
+- Same commit with cfg-options `solver.amp=False solver.fp16_compress=False` and filtering still enabled passed the stability gate. Log directory: `/data/home/sczc063/run/yuzibo/OpenTAD_BVR_TWB_StabilityFix_20260630_9b15fe3/logs/bvr_twb_stability_fix/grad_gpu1_c2debc1_20260630_0245_3epoch_ampoff_diag`. Evidence: `DIAG_RC=0`, `NONFINITE_COUNT=0`, `TRAINING_OVER_COUNT=1`. However, filter ratio was sometimes nonzero, so using filtering as formal behavior would create attribution risk.
+- Same commit with cfg-options `solver.amp=False solver.fp16_compress=False model.rpn_head.filter_invalid_regression_samples=False` passed cleanly. Log directory: `/data/home/sczc063/run/yuzibo/OpenTAD_BVR_TWB_StabilityFix_20260630_9b15fe3/logs/bvr_twb_stability_fix/grad_gpu1_c2debc1_20260630_0255_3epoch_ampoff_nofilter_diag`. Evidence: `DIAG_RC=0`, `NONFINITE_COUNT=0`, `TRAINING_OVER_COUNT=1`; debug confirmed `head_v3_invalid_regression_filter_enabled=False`, all regression samples were kept, and losses stayed finite.
+
+Formal candidate decision:
+
+- `input_bvr_twb_dynamic_adapter_irregular_headv3.py` now sets `solver.amp=False` and `solver.fp16_compress=False`.
+- The formal config keeps `model.rpn_head.max_reg_log_distance=6.0`, `regression_head_fp32=True`, and `regression_loss_fp32=True`.
+- The formal config sets `model.rpn_head.filter_invalid_regression_samples=False`.
+- The invalid-filter code remains available for diagnostics, but it is not part of the formal BVR full-train candidate because the clean diagnostic passed without filtering and avoids attribution drift from dropping regression samples.
+
+Changed surface for this update: BVR full-train candidate config, config assertions, and route documentation only. No HeadV3 runtime code, invalid-filter implementation, global loss/IoU code, evaluator/post-processing, dataset protocol, selector/acquisition policy, Adapter/backbone, remote state, Slurm script, or C3/combo file was changed.
+
+Still locked after this update: staging, commit, push, remote sync, Slurm, formal full training, validation/test evaluation, mAP, runtime/FLOPs, deploy claim, paper claim, C3/combo merge, and any claim that the route is final-stable beyond the diagnostic evidence above.

@@ -135,12 +135,14 @@ model = dict(
         max_reg_log_distance=6.0,
         regression_head_fp32=True,
         regression_loss_fp32=True,
-        filter_invalid_regression_samples=True,
+        filter_invalid_regression_samples=False,
         min_regression_segment_length=1e-6,
     ),
 )
 
 solver = dict(
+    amp=False,
+    fp16_compress=False,
     train=dict(batch_size=1, num_workers=2),
     val=dict(batch_size=1, num_workers=2),
     test=dict(batch_size=1, num_workers=2),
