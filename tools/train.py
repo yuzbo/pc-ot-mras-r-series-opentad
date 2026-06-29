@@ -143,6 +143,11 @@ def main():
 
     # override the max_epoch
     max_epoch = cfg.workflow.get("end_epoch", max_epoch)
+    max_train_iters = cfg.workflow.get("max_train_iters", None)
+    if max_train_iters is not None:
+        max_train_iters = int(max_train_iters)
+        if max_train_iters <= 0:
+            max_train_iters = None
 
     # resume: reset epoch, load checkpoint / best rmse
     if args.resume != None:
@@ -164,13 +169,29 @@ def main():
 
     # train the detector
     logger.info("Training Starts...\n")
+    if max_train_iters is not None:
+        logger.info(
+            "[Train]: workflow.max_train_iters runtime gate enabled; this run will execute at most %d train iterations "
+            "per process and skip checkpoint/val/eval after the gate is reached",
+            max_train_iters,
+        )
     val_loss_best = 1e6
     val_start_epoch = cfg.workflow.get("val_start_epoch", 0)
+    completed_train_iters = 0
     for epoch in range(resume_epoch + 1, max_epoch):
         train_loader.sampler.set_epoch(epoch)
+        remaining_train_iters = None
+        if max_train_iters is not None:
+            remaining_train_iters = max_train_iters - completed_train_iters
+            if remaining_train_iters <= 0:
+                logger.info(
+                    "[Train]: workflow.max_train_iters runtime gate already reached before epoch %d; stopping training",
+                    epoch,
+                )
+                break
 
         # train for one epoch
-        train_one_epoch(
+        completed_train_iters += train_one_epoch(
             train_loader,
             model,
             optimizer,
@@ -181,8 +202,17 @@ def main():
             clip_grad_l2norm=cfg.solver.clip_grad_norm,
             logging_interval=cfg.workflow.logging_interval,
             runtime_debug_interval=cfg.workflow.get("runtime_debug_interval", -1),
+            max_train_iters=remaining_train_iters,
             scaler=scaler,
         )
+        if max_train_iters is not None and completed_train_iters >= max_train_iters:
+            logger.info(
+                "[Train]: workflow.max_train_iters runtime gate reached after %d/%d train iterations; "
+                "skipping checkpoint/val/eval and ending training loop",
+                completed_train_iters,
+                max_train_iters,
+            )
+            break
 
         # save checkpoint
         save_checkpoint_enabled = not cfg.workflow.get("disable_checkpoint", False)

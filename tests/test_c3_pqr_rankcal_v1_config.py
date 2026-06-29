@@ -1,4 +1,8 @@
+import importlib.util
+import sys
+import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from mmengine.config import Config
@@ -22,6 +26,164 @@ def _load(config_path):
 
 def _load_frame_step(cfg, split):
     return next(step for step in cfg.dataset[split].pipeline if step["type"] == "LoadFrames")
+
+
+class _ListTrainLoader:
+    def __init__(self, length):
+        self._batches = [{} for _ in range(length)]
+
+    def __iter__(self):
+        return iter(self._batches)
+
+    def __len__(self):
+        return len(self._batches)
+
+
+class _StepCounterScheduler:
+    def __init__(self):
+        self.step_calls = 0
+
+    def get_last_lr(self):
+        return [1.0]
+
+    def step(self):
+        self.step_calls += 1
+
+
+class _Logger:
+    def info(self, *args, **kwargs):
+        pass
+
+    def error(self, *args, **kwargs):
+        pass
+
+
+class _FakeFinite:
+    def all(self):
+        return True
+
+    def __bool__(self):
+        return True
+
+
+class _FakeTensor:
+    def __init__(self, value=1.0):
+        self.value = value
+        self.data = self
+
+    def clone(self):
+        return _FakeTensor(self.value)
+
+    def div_(self, value):
+        self.value /= value
+        return self
+
+    def item(self):
+        return self.value
+
+    def backward(self):
+        pass
+
+
+class _FakeParam:
+    def __init__(self):
+        self.grad = _FakeTensor(0.0)
+
+
+class _FakeModel:
+    def __init__(self):
+        self.module = SimpleNamespace()
+        self.forward_calls = 0
+        self.param = _FakeParam()
+
+    def train(self):
+        pass
+
+    def named_parameters(self):
+        return [("param", self.param)]
+
+    def parameters(self):
+        return [self.param]
+
+    def __call__(self, **kwargs):
+        self.forward_calls += 1
+        return {"cost": _FakeTensor(1.0)}
+
+
+class _FakeOptimizer:
+    def __init__(self):
+        self.step_calls = 0
+        self.zero_grad_calls = 0
+
+    def zero_grad(self, set_to_none=False):
+        self.zero_grad_calls += 1
+
+    def step(self):
+        self.step_calls += 1
+
+
+class _Autocast:
+    def __init__(self, dtype=None, enabled=False):
+        pass
+
+    def __enter__(self):
+        return None
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+def _install_fake_train_engine_dependencies(monkeypatch):
+    fake_torch = types.ModuleType("torch")
+    fake_torch.float16 = object()
+    fake_torch.isfinite = lambda value: _FakeFinite()
+    fake_torch.cuda = SimpleNamespace(
+        amp=SimpleNamespace(autocast=_Autocast),
+        max_memory_allocated=lambda: 0,
+    )
+    fake_torch.distributed = SimpleNamespace(
+        is_available=lambda: False,
+        is_initialized=lambda: False,
+        get_rank=lambda: 0,
+    )
+    fake_torch.nn = SimpleNamespace(
+        utils=SimpleNamespace(clip_grad_norm_=lambda parameters, max_norm: None)
+    )
+
+    fake_misc = types.ModuleType("opentad.utils.misc")
+    fake_misc.AverageMeter = _AverageMeterForRuntimeGateTest
+    fake_misc.reduce_loss = lambda losses: losses
+
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "opentad", types.ModuleType("opentad"))
+    monkeypatch.setitem(sys.modules, "opentad.utils", types.ModuleType("opentad.utils"))
+    monkeypatch.setitem(sys.modules, "opentad.utils.misc", fake_misc)
+
+
+def _load_train_engine_for_runtime_gate_test(monkeypatch):
+    _install_fake_train_engine_dependencies(monkeypatch)
+    module_path = ROOT / "opentad/cores/train_engine.py"
+    spec = importlib.util.spec_from_file_location("c3_runtime_gate_train_engine_under_test", module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _AverageMeterForRuntimeGateTest:
+    def __init__(self):
+        self.values = []
+        self.avg = 0.0
+
+    def update(self, value):
+        self.values.append(value)
+        self.avg = sum(self.values) / len(self.values)
+
+
+def _make_runtime_gate_fixtures():
+    model = _FakeModel()
+    optimizer = _FakeOptimizer()
+    scheduler = _StepCounterScheduler()
+    return model, optimizer, scheduler
 
 
 @pytest.mark.parametrize("config_path", [PRECHECK_CONFIG, SHORTDIAG_CONFIG, EXACT_UNIFORM_CONFIG])
@@ -80,6 +242,54 @@ def test_pqr_rankcal_precheck_is_short_fail_closed_gate():
     assert cfg.pqr_rankcal_v1.build_only_status == "locked_by_baseline_import_dependencies"
     assert "Rearrange" in cfg.pqr_rankcal_v1.build_only_blockers
     assert "pseudo_boundary" in cfg.pqr_rankcal_v1.build_only_blockers
+
+
+def test_standard_train_launcher_consumes_max_train_iters_runtime_gate():
+    train_source = (ROOT / "tools/train.py").read_text(encoding="utf-8")
+
+    assert 'max_train_iters = cfg.workflow.get("max_train_iters", None)' in train_source
+    assert "remaining_train_iters = max_train_iters - completed_train_iters" in train_source
+    assert "max_train_iters=remaining_train_iters" in train_source
+    assert "skipping checkpoint/val/eval" in train_source
+
+
+def test_train_one_epoch_hard_stops_at_configured_max_train_iters(monkeypatch):
+    train_engine = _load_train_engine_for_runtime_gate_test(monkeypatch)
+    model, optimizer, scheduler = _make_runtime_gate_fixtures()
+
+    completed_iters = train_engine.train_one_epoch(
+        _ListTrainLoader(length=5),
+        model,
+        optimizer,
+        scheduler,
+        curr_epoch=0,
+        logger=_Logger(),
+        logging_interval=10,
+        max_train_iters=2,
+    )
+
+    assert completed_iters == 2
+    assert model.forward_calls == 2
+    assert scheduler.step_calls == 2
+
+
+def test_train_one_epoch_without_max_train_iters_keeps_full_epoch_behavior(monkeypatch):
+    train_engine = _load_train_engine_for_runtime_gate_test(monkeypatch)
+    model, optimizer, scheduler = _make_runtime_gate_fixtures()
+
+    completed_iters = train_engine.train_one_epoch(
+        _ListTrainLoader(length=5),
+        model,
+        optimizer,
+        scheduler,
+        curr_epoch=0,
+        logger=_Logger(),
+        logging_interval=10,
+    )
+
+    assert completed_iters == 5
+    assert model.forward_calls == 5
+    assert scheduler.step_calls == 5
 
 
 def test_exact_uniform_control_uses_real_stride2_adapter_backend_control():

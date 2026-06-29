@@ -8,6 +8,7 @@ the broader source for cross-route orchestration.
 
 | Time (+08:00) | Experiment / Config | Changed Surface | Status | Review / Gate State | Deployment / Result State | Next Action |
 | --- | --- | --- | --- | --- | --- | --- |
+| 2026-06-30 03:48:16 | `C3_PQR_RankCalV1_MaxIoU` / `workflow.max_train_iters` runtime gate | Standard local training launcher and train loop only; PQR validator/tests/docs; no CADF selector, no BH-SDC, no evaluator/postprocess change | Pro blocker fixed at local implementation layer; no remote/runtime training launched | Local focused runtime gate tests PASS (`3 passed`); full focused PQR pytest PASS (`16 passed, 3 skipped`); py_compile PASS; 3 validators PASS; still needs read-only subagent final review | No deployment, no Slurm, no SSH, no `tools/train.py` real run, no `tools/test.py`, no mAP evidence; N16R4 `1118197 pcot_dbg2g` untouched | Run required read-only subagent final review, then remote PRECHECK/2-iter smoke only if review passes; keep 8-epoch shortdiag and formal/full train locked |
 | 2026-06-30 03:38:34 | `C3_PQR_RankCalV1_MaxIoU` / `c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_precheck.py` | Detector-head quality/ranking calibration only; no CADF selector, no BH-SDC, no evaluator/postprocess change | GitHub-synced PRECHECK_ONLY evidence; Pro gate valid | Remote PRECHECK_ONLY evidence: py_compile PASS, 3 validators PASS, focused pytest `16 passed in 15.44s`; GPT-5.5 Pro verdict `FIX_BEFORE_RUNTIME` | Branch pushed to GitHub at `dca62cc24c0bef50e53135709820b6a66afe1422`; no training launched; no mAP/runtime/deploy/paper claim | Fix runtime gate so `workflow.max_train_iters=2` is consumed before any 2-iter smoke; keep 8-epoch shortdiag and formal/full train locked |
 
 ## 2026-06-30 GitHub Sync And Pro Gate
@@ -27,8 +28,22 @@ the broader source for cross-route orchestration.
 
 ## Current Locks
 
-- No runtime smoke is allowed until the iteration-limit gate is fixed.
-- No 8-epoch short diagnostic is allowed until a fixed 2-iter runtime smoke passes.
+- No runtime smoke is allowed until required read-only subagent final review and remote PRECHECK pass.
+- No 8-epoch short diagnostic is allowed until the reviewed 2-iter runtime smoke passes.
 - Formal/full training remains locked.
 - No `tools/test.py`, no metric claim, no official result claim, no paper/deploy claim.
 - N16R4 long-held parent allocation `1118197 pcot_dbg2g` was not touched.
+
+## 2026-06-30 Runtime Gate Fix
+
+- Evidence report: `research-wiki/experiments/c3_pqr_rankcal_v1_runtime_gate_fix_20260630.md`
+- Changed files: `tools/train.py`, `opentad/cores/train_engine.py`,
+  `tools/validate_c3_pqr_rankcal_v1_config.py`,
+  `tests/test_c3_pqr_rankcal_v1_config.py`, and PQR docs.
+- Strict random-fixed 50% contract: unchanged. The runtime gate only caps train
+  iterations for smoke/precheck use.
+- GT/teacher leakage risk: unchanged; validator still requires teacher/test-GT
+  disabled and raw-prediction cache disabled.
+- Current mAP evidence: none.
+- Next launch decision: still locked pending subagent final review and remote
+  PRECHECK/2-iter smoke. No remote action was performed in this fix.

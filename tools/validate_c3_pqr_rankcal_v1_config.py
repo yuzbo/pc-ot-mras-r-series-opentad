@@ -48,6 +48,14 @@ def _load_actionformer_init_args():
     raise AssertionError("Could not find ActionFormer.__init__ signature")
 
 
+def _load_top_level_function_args(source_path, function_name):
+    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == function_name:
+            return {arg.arg for arg in node.args.args}
+    raise AssertionError(f"Could not find {function_name} in {source_path.as_posix()}")
+
+
 def validate_detector_consumes_model_keys(cfg, config_path=None):
     assert cfg.model.type == "ActionFormer"
     assert "frame_selector" not in cfg.model, "model.frame_selector is not consumed by this snapshot's ActionFormer"
@@ -57,6 +65,23 @@ def validate_detector_consumes_model_keys(cfg, config_path=None):
     unknown = sorted(supplied - accepted)
     label = f" in {Path(config_path).as_posix()}" if config_path is not None else ""
     assert not unknown, f"unconsumed ActionFormer model key(s){label}: {unknown}"
+
+
+def validate_runtime_max_train_iters_gate_consumed():
+    train_path = ROOT / "tools/train.py"
+    train_source = train_path.read_text(encoding="utf-8")
+    assert 'max_train_iters = cfg.workflow.get("max_train_iters", None)' in train_source
+    assert "remaining_train_iters = max_train_iters - completed_train_iters" in train_source
+    assert "max_train_iters=remaining_train_iters" in train_source
+    assert "skipping checkpoint/val/eval" in train_source
+
+    train_engine_path = ROOT / "opentad/cores/train_engine.py"
+    train_engine_source = train_engine_path.read_text(encoding="utf-8")
+    train_one_epoch_args = _load_top_level_function_args(train_engine_path, "train_one_epoch")
+    assert "max_train_iters" in train_one_epoch_args
+    assert "max_train_iters = _normalize_max_train_iters(max_train_iters)" in train_engine_source
+    assert "completed_iters >= max_train_iters" in train_engine_source
+    assert "return completed_iters" in train_engine_source
 
 
 def _load_frame_step(cfg, split):
@@ -117,6 +142,7 @@ def validate_config(config_path):
     cfg = Config.fromfile(config_path)
     _validate_route(cfg)
     validate_detector_consumes_model_keys(cfg, config_path)
+    validate_runtime_max_train_iters_gate_consumed()
     _validate_quality_head(cfg)
 
     assert cfg.model.rpn_head.type == "ActionFormerHead"

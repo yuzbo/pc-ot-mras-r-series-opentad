@@ -66,6 +66,26 @@ def _grad_clip_parameters(model):
     return model.parameters()
 
 
+def _normalize_max_train_iters(max_train_iters):
+    if max_train_iters is None:
+        return None
+    max_train_iters = int(max_train_iters)
+    if max_train_iters <= 0:
+        return None
+    return max_train_iters
+
+
+def _log_max_train_iters_gate(logger, curr_epoch, iter_idx, completed_iters, max_train_iters):
+    logger.info(
+        "[Train]: max_train_iters runtime gate reached at epoch=%d iter=%d completed_iters=%d limit=%d; "
+        "leaving train_one_epoch early",
+        curr_epoch,
+        iter_idx,
+        completed_iters,
+        max_train_iters,
+    )
+
+
 def train_one_epoch(
     train_loader,
     model,
@@ -77,6 +97,7 @@ def train_one_epoch(
     clip_grad_l2norm=-1,
     logging_interval=200,
     runtime_debug_interval=-1,
+    max_train_iters=None,
     scaler=None,
 ):
     """Training the model for one epoch"""
@@ -84,6 +105,8 @@ def train_one_epoch(
     logger.info("[Train]: Epoch {:d} started".format(curr_epoch))
     losses_tracker = {}
     num_iters = len(train_loader)
+    completed_iters = 0
+    max_train_iters = _normalize_max_train_iters(max_train_iters)
     use_amp = False if scaler is None else True
 
     target = model.module if hasattr(model, "module") else model
@@ -92,6 +115,7 @@ def train_one_epoch(
 
     model.train()
     for iter_idx, data_dict in enumerate(train_loader):
+        completed_iters += 1
         optimizer.zero_grad()
 
         # current learning rate
@@ -112,6 +136,9 @@ def train_one_epoch(
                 iter_idx,
             )
             optimizer.zero_grad(set_to_none=True)
+            if max_train_iters is not None and completed_iters >= max_train_iters:
+                _log_max_train_iters_gate(logger, curr_epoch, iter_idx, completed_iters, max_train_iters)
+                break
             continue
 
         # compute the gradients
@@ -152,6 +179,9 @@ def train_one_epoch(
                     )
                 optimizer.zero_grad(set_to_none=True)
                 scaler.update()
+                if max_train_iters is not None and completed_iters >= max_train_iters:
+                    _log_max_train_iters_gate(logger, curr_epoch, iter_idx, completed_iters, max_train_iters)
+                    break
                 continue
             scaler.step(optimizer)
             scaler.update()
@@ -174,6 +204,9 @@ def train_one_epoch(
                         _format_debug_report(debug_report),
                     )
                 optimizer.zero_grad(set_to_none=True)
+                if max_train_iters is not None and completed_iters >= max_train_iters:
+                    _log_max_train_iters_gate(logger, curr_epoch, iter_idx, completed_iters, max_train_iters)
+                    break
                 continue
             optimizer.step()
 
@@ -221,6 +254,12 @@ def train_one_epoch(
                         iter_idx,
                         _format_debug_report(debug_report),
                     )
+
+        if max_train_iters is not None and completed_iters >= max_train_iters:
+            _log_max_train_iters_gate(logger, curr_epoch, iter_idx, completed_iters, max_train_iters)
+            break
+
+    return completed_iters
 
 
 def val_one_epoch(

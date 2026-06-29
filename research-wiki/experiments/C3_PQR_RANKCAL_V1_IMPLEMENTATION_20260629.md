@@ -114,6 +114,37 @@ record this as
 `build_only_status="locked_by_baseline_import_dependencies"` and limit the local
 PRECHECK_ONLY scope to config validation plus quality-head unit tests.
 
+## Runtime Gate Fix - 2026-06-30
+
+GPT-5.5 Pro accepted the route alignment and no-leakage boundary but returned
+`FIX_BEFORE_RUNTIME` because `workflow.max_train_iters=2` was only a config
+field. The standard `tools/train.py` / `train_one_epoch` path did not consume
+it, so the planned 2-iteration smoke was not enforceable.
+
+Fix applied in the same route-owned worktree:
+
+- `tools/train.py` now reads and normalizes `cfg.workflow.max_train_iters`.
+  Unset or `<=0` means default unchanged behavior. Positive `N` becomes a
+  global per-process train-iteration cap for the whole run.
+- `tools/train.py` tracks completed train iterations across epochs, passes the
+  remaining budget to `train_one_epoch`, and exits the training loop before
+  checkpoint/validation/evaluation once the gate is reached.
+- `opentad/cores/train_engine.py` now accepts optional `max_train_iters`, hard
+  stops the epoch loop after the requested number of attempted train batches,
+  logs the event, and returns the completed iteration count.
+- `tools/validate_c3_pqr_rankcal_v1_config.py` now fail-closed checks that the
+  standard launcher and epoch loop consume the runtime gate.
+- `tests/test_c3_pqr_rankcal_v1_config.py` now includes fake-runtime tests
+  proving `max_train_iters=2` stops at 2 and the unset default executes a full
+  fake epoch.
+
+Evidence report:
+`research-wiki/experiments/c3_pqr_rankcal_v1_runtime_gate_fix_20260630.md`.
+
+This fix does not alter CADF selector logic, BH-SDC, evaluator,
+post-processing, input sampling, PQR quality/ranking math, teacher/cache/GT
+use, or mAP claims.
+
 ## Local Verification
 
 Commands run in
