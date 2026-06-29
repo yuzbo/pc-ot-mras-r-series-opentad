@@ -1,0 +1,6 @@
+configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3_shortdiag.py
+tools/bvr_twb/validate_bvr_twb_shortdiag.py
+tests/test_bvr_twb_shortdiag.py
+logs/run_bvr_twb_478325a_shortdiag_n16r4.sh
+research-wiki/experiments/DIVERGENT_BVR_TWB_478325A_SHORT_DIAGNOSTIC_PLAN_20260630.md
+logs/bvr_twb_478325a_shortdiag_filelist_20260630.txt
