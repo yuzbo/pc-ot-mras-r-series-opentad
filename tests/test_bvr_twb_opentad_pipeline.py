@@ -93,6 +93,11 @@ def _loader(split="train", train_labels=False):
         bvr_twb_train_value_labels=train_labels,
         bvr_twb_feature_stride=2,
         bvr_twb_adapter_bridge_mode=ADAPTER_FIXED_LENGTH_PADDED_BRIDGE,
+        bvr_twb_scout_source="deploy_visible_raw_or_metadata_scout",
+        bvr_twb_require_deploy_visible_scout=True,
+        bvr_twb_allow_diagnostic_preview_fallback=False,
+        bvr_twb_scout_sample_count=16,
+        bvr_twb_value_mode="deploy_heuristic_voi",
     )
 
 
@@ -117,6 +122,13 @@ def test_bvr_loadframes_dynamic_subsample_outputs_sparse_sorted_metadata_and_lab
     assert transformed["irregular_selected_valid_len"] == float(ledger["dense_T"])
     assert ledger["original_time_metadata"]["selected_index_is_time"] is False
     assert ledger["temporal_decode_uses_original_time"] is True
+    assert ledger["preview_source"] == "deploy_visible_metadata_actionness"
+    assert ledger["scout_is_deploy_visible"] is True
+    assert ledger["deterministic_preview_fallback_used"] is False
+    assert ledger["diagnostic_preview_fallback_allowed"] is False
+    assert ledger["value_mode"] == "deploy_heuristic_voi"
+    assert ledger["value_model_used"] is False
+    assert ledger["value_labels_used_at_test"] is False
     assert transformed["bvr_twb_train_value_labels"]
     assert all(validate_regret_label_schema(row) for row in transformed["bvr_twb_train_value_labels"])
 
@@ -131,6 +143,47 @@ def test_bvr_loadframes_val_test_do_not_build_gt_value_labels_and_reject_if_requ
 
     with pytest.raises(ValueError, match="train_value_labels"):
         _loader(split="val", train_labels=True)(_results("val", with_gt=True))
+
+
+def test_bvr_formal_path_rejects_missing_deploy_visible_scout():
+    if TORCH_IMPORT_ERROR is not None:
+        pytest.skip(f"torch/OpenTAD pipeline unavailable locally: {TORCH_IMPORT_ERROR}")
+    results = _results("test", with_gt=False)
+    results.pop("bvr_twb_preview_actionness")
+    with pytest.raises(ValueError, match="requires a deploy-visible scout"):
+        _loader(split="test", train_labels=False)(results)
+
+
+def test_bvr_diagnostic_preview_fallback_is_explicit_and_not_formal():
+    if TORCH_IMPORT_ERROR is not None:
+        pytest.skip(f"torch/OpenTAD pipeline unavailable locally: {TORCH_IMPORT_ERROR}")
+    results = _results("test", with_gt=False)
+    results.pop("bvr_twb_preview_actionness")
+    transformed = LoadFrames(
+        num_clips=1,
+        method="bvr_twb_dynamic_subsample",
+        method_base="sliding_window",
+        keep_ratio=0.5,
+        target_len=32,
+        scale_factor=1,
+        remap_gt_to_selected_axis=False,
+        bvr_twb_split="test",
+        bvr_twb_min_keep=12,
+        bvr_twb_max_keep=32,
+        bvr_twb_max_gap=16,
+        bvr_twb_scaffold_k=4,
+        bvr_twb_feature_stride=2,
+        bvr_twb_adapter_bridge_mode=ADAPTER_FIXED_LENGTH_PADDED_BRIDGE,
+        bvr_twb_scout_source="diagnostic_deterministic_preview",
+        bvr_twb_require_deploy_visible_scout=False,
+        bvr_twb_allow_diagnostic_preview_fallback=True,
+        bvr_twb_value_mode="deploy_heuristic_voi",
+    )(results)
+    ledger = transformed["bvr_twb_ledger"]
+    assert ledger["deterministic_preview_fallback_used"] is True
+    assert ledger["diagnostic_preview_fallback_allowed"] is True
+    with pytest.raises(ValueError, match="diagnostic deterministic preview"):
+        validate_bvr_twb_pipeline_ledger(ledger)
 
 
 def test_regret_label_schema_and_trainable_value_loss():
@@ -208,6 +261,11 @@ def test_bvr_config_uses_dynamic_method_and_excludes_unapproved_route_tokens():
     assert 'ops="b n c (t1 t) h w -> (b t1) n c t h w"' in text
     assert 'ops="(b t1) c t -> b c (t1 t)"' in text
     assert "Interpolate" not in text
+    assert 'bvr_twb_scout_source="deploy_visible_raw_or_metadata_scout"' in text
+    assert "bvr_twb_require_deploy_visible_scout=True" in text
+    assert "bvr_twb_allow_diagnostic_preview_fallback=False" in text
+    assert 'bvr_twb_value_mode="deploy_heuristic_voi"' in text
+    assert "diagnostic_deterministic_preview" not in text
     normalized = text.replace(ROUTE_LABEL, "").replace("checkpoint_interval", "checkpoint_period")
     for token in FORBIDDEN_ROUTE_TOKENS:
         assert token.lower() not in normalized.lower()
@@ -221,6 +279,10 @@ def test_opentad_pipeline_audit_cli_function_writes_valid_summary(tmp_path):
         summary = run_pipeline_audit(out, overwrite=True)
         assert summary["all_validated"] is True
         assert summary["sparse_compute_claim"] is False
+        assert summary["preview_sources"] == ["deploy_visible_metadata_actionness"]
+        assert summary["deterministic_preview_fallback_used"] is False
+        assert summary["value_modes"] == ["deploy_heuristic_voi"]
+        assert summary["value_labels_used_at_test"] is False
         rows = [
             json.loads(line)
             for line in (out / "bvr_twb_opentad_pipeline_ledgers.jsonl").read_text(encoding="utf-8").splitlines()
@@ -274,6 +336,10 @@ def test_bvr_launch_gate_requires_unblocked_precheck_summary(tmp_path):
                 "adapter_bridge_mode": ADAPTER_FIXED_LENGTH_PADDED_BRIDGE,
                 "adapter_bridge_modes": [ADAPTER_FIXED_LENGTH_PADDED_BRIDGE],
                 "adapter_padding_counts_as_valid": False,
+                "preview_sources": ["deploy_visible_metadata_actionness"],
+                "deterministic_preview_fallback_used": False,
+                "value_modes": ["deploy_heuristic_voi"],
+                "value_labels_used_at_test": False,
             }
         ),
         encoding="utf-8",
@@ -352,6 +418,14 @@ def test_pipeline_ledger_accepts_adapter_bridge_padding_but_not_valid_padding():
         "detector_mask_len": bridge["detector_mask_len"],
         "detector_mask_true_count": bridge["detector_feature_valid_k"],
         "bvr_twb_feature_stride": 2,
+        "preview_source": "deploy_visible_metadata_actionness",
+        "scout_source": "deploy_visible_raw_or_metadata_scout",
+        "scout_is_deploy_visible": True,
+        "deterministic_preview_fallback_used": False,
+        "diagnostic_preview_fallback_allowed": False,
+        "value_mode": "deploy_heuristic_voi",
+        "value_model_used": False,
+        "value_labels_used_at_test": False,
     }
     assert validate_bvr_twb_pipeline_ledger(ledger)
     bad = dict(ledger, adapter_padding_counts_as_valid=True)
@@ -377,6 +451,10 @@ def test_launch_gate_rejects_c3_and_combo_tokens_in_config(tmp_path):
                 "adapter_bridge_mode": ADAPTER_FIXED_LENGTH_PADDED_BRIDGE,
                 "adapter_bridge_modes": [ADAPTER_FIXED_LENGTH_PADDED_BRIDGE],
                 "adapter_padding_counts_as_valid": False,
+                "preview_sources": ["deploy_visible_metadata_actionness"],
+                "deterministic_preview_fallback_used": False,
+                "value_modes": ["deploy_heuristic_voi"],
+                "value_labels_used_at_test": False,
             }
         ),
         encoding="utf-8",

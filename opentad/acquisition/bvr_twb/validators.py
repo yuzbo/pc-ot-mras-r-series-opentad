@@ -386,6 +386,14 @@ def validate_bvr_twb_pipeline_ledger(ledger):
         "detector_mask_true_count",
         "detector_feature_valid_k",
         "detector_feature_positions",
+        "preview_source",
+        "scout_source",
+        "scout_is_deploy_visible",
+        "deterministic_preview_fallback_used",
+        "diagnostic_preview_fallback_allowed",
+        "value_mode",
+        "value_model_used",
+        "value_labels_used_at_test",
     }
     missing = sorted(required.difference(ledger.keys()))
     if missing:
@@ -410,6 +418,26 @@ def validate_bvr_twb_pipeline_ledger(ledger):
         raise ValueError("BVR-TWB pipeline precheck forbids padding duplicates without adapter bridge metadata")
     if bool(ledger["sparse_compute_claim"]):
         raise ValueError("BVR-TWB local pipeline ledger cannot claim sparse compute")
+    if bool(ledger.get("deterministic_preview_fallback_used", False)):
+        raise ValueError("BVR-TWB formal pipeline ledger used diagnostic deterministic preview fallback")
+    if bool(ledger.get("diagnostic_preview_fallback_allowed", False)):
+        raise ValueError("BVR-TWB formal pipeline ledger must not allow diagnostic preview fallback")
+    if bool(ledger.get("scout_is_deploy_visible", False)) is not True:
+        raise ValueError("BVR-TWB formal pipeline requires deploy-visible scout evidence")
+    if ledger.get("preview_source") not in {"deploy_visible_metadata_actionness", "raw_rgb_lowres_scout"}:
+        raise ValueError(f"BVR-TWB unsupported formal preview_source: {ledger.get('preview_source')}")
+    if ledger.get("scout_source") not in {
+        "deploy_visible_raw_or_metadata_scout",
+        "deploy_visible_metadata_scout",
+        "raw_rgb_lowres_scout",
+    }:
+        raise ValueError(f"BVR-TWB unsupported formal scout_source: {ledger.get('scout_source')}")
+    if ledger.get("value_mode") != "deploy_heuristic_voi":
+        raise ValueError("BVR-TWB formal local/precheck path requires deploy_heuristic_voi value_mode")
+    if bool(ledger.get("value_model_used", False)):
+        raise ValueError("BVR-TWB formal local/precheck path must not silently use a learned value model")
+    if bool(ledger.get("value_labels_used_at_test", True)):
+        raise ValueError("BVR-TWB train-only value labels must not be used at test/deploy selection time")
     if not bool(ledger["temporal_decode_uses_original_time"]) or bool(ledger["selected_index_is_time"]):
         raise ValueError("BVR-TWB pipeline must preserve original-time decode")
     validate_original_time_metadata(ledger["original_time_metadata"])

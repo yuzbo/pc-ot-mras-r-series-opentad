@@ -231,6 +231,11 @@ class LoadFrames:
         bvr_twb_train_value_labels=False,
         bvr_twb_feature_stride=1,
         bvr_twb_adapter_bridge_mode="adapter_fixed_length_padded_bridge",
+        bvr_twb_scout_source="deploy_visible_raw_or_metadata_scout",
+        bvr_twb_require_deploy_visible_scout=True,
+        bvr_twb_allow_diagnostic_preview_fallback=False,
+        bvr_twb_scout_sample_count=32,
+        bvr_twb_value_mode="deploy_heuristic_voi",
     ):
         self.num_clips = num_clips
         self.scale_factor = scale_factor  # multiply by the frame number, if backbone has downsampling
@@ -268,6 +273,11 @@ class LoadFrames:
         self.bvr_twb_train_value_labels = bool(bvr_twb_train_value_labels)
         self.bvr_twb_feature_stride = int(max(bvr_twb_feature_stride, 1))
         self.bvr_twb_adapter_bridge_mode = bvr_twb_adapter_bridge_mode
+        self.bvr_twb_scout_source = bvr_twb_scout_source
+        self.bvr_twb_require_deploy_visible_scout = bool(bvr_twb_require_deploy_visible_scout)
+        self.bvr_twb_allow_diagnostic_preview_fallback = bool(bvr_twb_allow_diagnostic_preview_fallback)
+        self.bvr_twb_scout_sample_count = int(max(bvr_twb_scout_sample_count, 2))
+        self.bvr_twb_value_mode = bvr_twb_value_mode
 
     def _apply_trunc_window(self, feats, st, ed, gt_segments, gt_labels, offset=0):
         feats = feats[st:ed]
@@ -1100,6 +1110,11 @@ class LoadFrames:
                 fps=fps,
                 window_id=window_id,
                 train_value_labels=self.bvr_twb_train_value_labels,
+                scout_source=self.bvr_twb_scout_source,
+                require_deploy_visible_scout=self.bvr_twb_require_deploy_visible_scout,
+                allow_diagnostic_preview_fallback=self.bvr_twb_allow_diagnostic_preview_fallback,
+                scout_sample_count=self.bvr_twb_scout_sample_count,
+                value_mode=self.bvr_twb_value_mode,
             )
             keep_positions = bridge["keep_positions"].astype(np.int64)
             fresh_frame_idxs = bridge["selected_frame_inds"].astype(np.int64)

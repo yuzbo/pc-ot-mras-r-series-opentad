@@ -19,7 +19,7 @@ class PacketValuePredictor:
     """Deploy-visible heuristic and constant ablation value predictor."""
 
     def __init__(self, mode="heuristic_fallback", min_non_action_fraction=0.55):
-        if mode not in {"heuristic_fallback", "mock_constant_ablation"}:
+        if mode not in {"deploy_voi_heuristic", "heuristic_fallback", "mock_constant_ablation"}:
             raise ValueError(f"unsupported PacketValuePredictor mode: {mode}")
         self.mode = mode
         self.min_non_action_fraction = float(min_non_action_fraction)

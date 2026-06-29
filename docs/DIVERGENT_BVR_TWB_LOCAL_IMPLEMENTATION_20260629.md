@@ -360,3 +360,36 @@ Formal candidate decision:
 Changed surface for this update: BVR full-train candidate config, config assertions, and route documentation only. No HeadV3 runtime code, invalid-filter implementation, global loss/IoU code, evaluator/post-processing, dataset protocol, selector/acquisition policy, Adapter/backbone, remote state, Slurm script, or C3/combo file was changed.
 
 Still locked after this update: staging, commit, push, remote sync, Slurm, formal full training, validation/test evaluation, mAP, runtime/FLOPs, deploy claim, paper claim, C3/combo merge, and any claim that the route is final-stable beyond the diagnostic evidence above.
+
+## BVR-TWB / VOI-BBC Deploy-Visible Scout and VOI Value Gate Fix
+
+Route label: `DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3`.
+
+This local-code-owner fix removes the silent formal fallback where the OpenTAD bridge could synthesize a deterministic pseudo-preview from the sample key when no `bvr_twb_preview_actionness` was present. The formal/local-precheck path now requires a deploy-visible scout source:
+
+- `bvr_twb_scout_source="deploy_visible_raw_or_metadata_scout"`;
+- `bvr_twb_require_deploy_visible_scout=True`;
+- `bvr_twb_allow_diagnostic_preview_fallback=False`.
+
+The accepted formal scout sources are explicit deploy-visible preview metadata (`bvr_twb_preview_actionness`, `preview_actionness`, or `actionness_preview`) or a low-resolution raw-RGB scout from `video_reader` after `DecordInit`. The deterministic preview remains available only through the explicit diagnostic source `diagnostic_deterministic_preview` plus `allow_diagnostic_preview_fallback=True`; the formal pipeline validator and launch gate reject it.
+
+The value path is now explicit. The formal local/precheck candidate uses `bvr_twb_value_mode="deploy_heuristic_voi"`: a non-learned VOI-BBC value function with deploy-visible packet features and component diagnostics. Train-only regret/VOI labels are still generated only for train diagnostics/supervision evidence and are recorded as not used at test/deploy selection time. The learned value MLP remains available only behind `learned_packet_value`, which now requires an explicitly loaded `value_model`; it is not silently enabled by `model=None`.
+
+Local evidence for this fix:
+
+```powershell
+python -m pytest tests/test_bvr_twb_voi_bbc.py tests/test_bvr_twb_validators.py tests/test_bvr_twb_synthetic_smoke.py tests/test_bvr_twb_sparse_forward_audit.py tests/test_bvr_twb_regression_stability.py tests/test_bvr_twb_optimizer.py tests/test_bvr_twb_opentad_pipeline.py tests/test_bvr_twb_matched_controls.py -q
+```
+
+Result: `56 passed, 10 skipped`.
+
+Additional local precheck evidence:
+
+```powershell
+python tools/bvr_twb/audit_opentad_bvr_twb_pipeline.py --out-dir .tmp_bvr_twb_opentad_pipeline_audit --overwrite
+python tools/bvr_twb/validate_bvr_twb_launch_gate.py --config configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py
+```
+
+Results: pipeline audit `ledgers=3 all_validated=True sparse_compute_claim=False blocked=False`; launch gate `gate_pass=true`, `full_train_unlocked=false`, `remote_sync_unlocked_by_local_gate=false`. On this Windows machine the audit can fall back to a pure NumPy bridge+adapter ledger precheck if Torch DLL initialization fails; that fallback still rejects deterministic preview fallback and does not unlock training or metric claims.
+
+Still locked after this fix: remote sync, Slurm, protected hold changes, formal full training, validation/test evaluation, mAP, runtime/FLOPs, deploy claim, paper claim, Pro/full-train gate, final read-only review, C3/combo merge, and any claim that raw-RGB scout overhead or detector mAP is acceptable.

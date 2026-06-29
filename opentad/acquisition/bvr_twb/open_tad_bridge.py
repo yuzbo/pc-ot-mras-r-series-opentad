@@ -7,6 +7,7 @@ from .scaffold import build_scaffold_packets
 from .state_scout import build_scout_from_actionness
 from .trainable_value import LearnedPacketValueAdapter
 from .types import BudgetConfig, ROUTE_LABEL, sorted_unique_positions
+from .value_predictor import PacketValuePredictor
 from .validators import build_original_time_metadata, build_selection_gap_diagnostics, validate_no_leakage, validate_route_identity
 from .witness_packets import build_witness_packets
 
@@ -20,12 +21,109 @@ def _stable_seed(value):
     return int(total)
 
 
-def _preview_from_results(results, valid_len, sample_key):
+FORMAL_SCOUT_SOURCES = {
+    "deploy_visible_raw_or_metadata_scout",
+    "deploy_visible_metadata_scout",
+    "raw_rgb_lowres_scout",
+}
+
+DIAGNOSTIC_SCOUT_SOURCE = "diagnostic_deterministic_preview"
+
+DEPLOY_VALUE_MODES = {
+    "deploy_heuristic_voi",
+    "learned_packet_value",
+}
+
+
+def _preview_from_metadata(results, valid_len):
     for key in ("bvr_twb_preview_actionness", "preview_actionness", "actionness_preview"):
         if key in results:
             arr = np.asarray(results[key], dtype=np.float64).reshape(-1)
             if arr.size == valid_len:
-                return np.clip(arr, 0.0, 1.0), "provided_preview_actionness"
+                return np.clip(arr, 0.0, 1.0), "deploy_visible_metadata_actionness", key
+            raise ValueError(f"{key} length {arr.size} does not match dense window length {valid_len}")
+    return None, None, None
+
+
+def _frame_to_gray(frame, resize_long_side=48):
+    arr = np.asarray(frame)
+    if arr.ndim == 4:
+        arr = arr[0]
+    if arr.ndim == 2:
+        gray = arr.astype(np.float64)
+    elif arr.ndim == 3:
+        gray = arr[..., :3].astype(np.float64).mean(axis=2)
+    else:
+        raise ValueError("raw RGB scout frame must be HxW or HxWxC")
+    h, w = gray.shape[:2]
+    long_side = max(int(h), int(w), 1)
+    step = max(1, int(np.floor(long_side / float(max(resize_long_side, 1)))))
+    return gray[::step, ::step] / 255.0
+
+
+def _read_raw_frame(video_reader, frame_index):
+    frame_index = int(frame_index)
+    if hasattr(video_reader, "get_batch"):
+        batch = video_reader.get_batch([frame_index])
+        if hasattr(batch, "asnumpy"):
+            batch = batch.asnumpy()
+        return np.asarray(batch)[0]
+    frame = video_reader[frame_index]
+    if hasattr(frame, "asnumpy"):
+        frame = frame.asnumpy()
+    return np.asarray(frame)
+
+
+def _raw_rgb_lowres_preview(results, dense_window, valid_len, scout_sample_count=32):
+    video_reader = results.get("video_reader")
+    if video_reader is None:
+        return None, None, None
+    dense_window = np.asarray(dense_window, dtype=np.int64).reshape(-1)
+    sample_count = int(max(2, min(valid_len, scout_sample_count)))
+    sample_positions = np.unique(np.linspace(0, valid_len - 1, sample_count).round().astype(np.int64))
+    if sample_positions.size == 0:
+        return None, None, None
+
+    grays = []
+    for pos in sample_positions:
+        grays.append(_frame_to_gray(_read_raw_frame(video_reader, dense_window[int(pos)])))
+    means = np.asarray([float(gray.mean()) for gray in grays], dtype=np.float64)
+    contrasts = np.asarray([float(gray.std()) for gray in grays], dtype=np.float64)
+    motion = np.zeros(sample_positions.shape[0], dtype=np.float64)
+    for idx in range(1, len(grays)):
+        left = grays[idx - 1]
+        right = grays[idx]
+        h = min(left.shape[0], right.shape[0])
+        w = min(left.shape[1], right.shape[1])
+        if h > 0 and w > 0:
+            motion[idx] = float(np.mean(np.abs(left[:h, :w] - right[:h, :w])))
+    if motion.size > 1:
+        motion[0] = motion[1]
+
+    def norm(values):
+        values = np.asarray(values, dtype=np.float64)
+        lo = float(values.min())
+        hi = float(values.max())
+        if hi <= lo + 1e-12:
+            return np.zeros_like(values)
+        return (values - lo) / (hi - lo)
+
+    motion_n = norm(motion)
+    contrast_n = norm(contrasts)
+    mean_change_n = norm(np.abs(np.gradient(means))) if means.size > 1 else np.zeros_like(means)
+    sampled_preview = np.clip(0.55 * motion_n + 0.30 * contrast_n + 0.15 * mean_change_n, 0.0, 1.0)
+    x = np.arange(valid_len, dtype=np.float64)
+    preview = np.interp(x, sample_positions.astype(np.float64), sampled_preview)
+    motion_preview = np.interp(x, sample_positions.astype(np.float64), motion_n)
+    meta = {
+        "scout_sample_count": int(sample_positions.size),
+        "scout_positions": [int(pos) for pos in sample_positions.tolist()],
+        "scout_frame_inds": [int(dense_window[int(pos)]) for pos in sample_positions.tolist()],
+    }
+    return np.clip(preview, 0.0, 1.0), "raw_rgb_lowres_scout", (np.clip(motion_preview, 0.0, 1.0), meta)
+
+
+def _diagnostic_preview(valid_len, sample_key):
     rng = np.random.RandomState(_stable_seed(sample_key))
     x = np.linspace(0.0, 1.0, int(valid_len), dtype=np.float64)
     phase = rng.uniform(0.0, 2.0 * np.pi)
@@ -36,7 +134,56 @@ def _preview_from_results(results, valid_len, sample_key):
         width = rng.uniform(0.04, 0.12)
         height = rng.uniform(0.15, 0.38)
         bumps += height * np.exp(-((x - center) ** 2) / (2.0 * width**2))
-    return np.clip(base + bumps, 0.0, 1.0), "deploy_visible_deterministic_preview_fallback"
+    return np.clip(base + bumps, 0.0, 1.0), "diagnostic_deterministic_preview_fallback"
+
+
+def _preview_from_results(
+    results,
+    dense_window,
+    valid_len,
+    sample_key,
+    scout_source,
+    require_deploy_visible_scout,
+    allow_diagnostic_preview_fallback,
+    scout_sample_count,
+):
+    scout_source = str(scout_source or "deploy_visible_raw_or_metadata_scout")
+    if scout_source not in FORMAL_SCOUT_SOURCES and scout_source != DIAGNOSTIC_SCOUT_SOURCE:
+        raise ValueError(f"unsupported BVR-TWB scout source: {scout_source}")
+
+    if scout_source in {"deploy_visible_raw_or_metadata_scout", "deploy_visible_metadata_scout"}:
+        preview, source, key = _preview_from_metadata(results, valid_len)
+        if preview is not None:
+            return preview, source, None, {"metadata_key": key, "formal_scout_source": scout_source}
+
+    if scout_source in {"deploy_visible_raw_or_metadata_scout", "raw_rgb_lowres_scout"}:
+        preview, source, raw_extra = _raw_rgb_lowres_preview(
+            results,
+            dense_window=dense_window,
+            valid_len=valid_len,
+            scout_sample_count=scout_sample_count,
+        )
+        if preview is not None:
+            motion, raw_meta = raw_extra
+            raw_meta["formal_scout_source"] = scout_source
+            return preview, source, motion, raw_meta
+
+    if allow_diagnostic_preview_fallback or scout_source == DIAGNOSTIC_SCOUT_SOURCE:
+        preview, source = _diagnostic_preview(valid_len, sample_key)
+        return preview, source, None, {
+            "formal_scout_source": scout_source,
+            "diagnostic_only": True,
+            "deterministic_fallback_allowed": True,
+        }
+
+    if require_deploy_visible_scout:
+        raise ValueError(
+            "BVR-TWB formal path requires a deploy-visible scout. Provide "
+            "bvr_twb_preview_actionness/preview_actionness/actionness_preview metadata, "
+            "or run after DecordInit with video_reader for raw_rgb_lowres_scout. "
+            "Deterministic preview fallback is diagnostic/precheck-only and disabled here."
+        )
+    raise ValueError("BVR-TWB scout source unavailable and diagnostic fallback is disabled")
 
 
 def _build_budget_config(valid_len, target_frame_num, min_keep=None, max_keep=None, max_gap=None):
@@ -64,6 +211,11 @@ def build_bvr_twb_open_tad_selection(
     window_id=0,
     train_value_labels=False,
     value_model=None,
+    scout_source="deploy_visible_raw_or_metadata_scout",
+    require_deploy_visible_scout=True,
+    allow_diagnostic_preview_fallback=False,
+    scout_sample_count=32,
+    value_mode="deploy_heuristic_voi",
 ):
     validate_route_identity({"route_label": ROUTE_LABEL})
     selector_meta = {
@@ -86,17 +238,28 @@ def build_bvr_twb_open_tad_selection(
         f"{video_id}|bvr_twb|{split}|{int(dense_window[0])}|{int(dense_window[-1])}|"
         f"{valid_len}|{int(target_frame_num or 0)}"
     )
-    p_action, preview_source = _preview_from_results(results, valid_len, sample_key)
+    p_action, preview_source, raw_motion, scout_meta = _preview_from_results(
+        results,
+        dense_window=dense_window,
+        valid_len=valid_len,
+        sample_key=sample_key,
+        scout_source=scout_source,
+        require_deploy_visible_scout=require_deploy_visible_scout,
+        allow_diagnostic_preview_fallback=allow_diagnostic_preview_fallback,
+        scout_sample_count=scout_sample_count,
+    )
     motion = None
     if "bvr_twb_preview_motion" in results:
         motion = np.asarray(results["bvr_twb_preview_motion"], dtype=np.float64).reshape(-1)
         if motion.size != valid_len:
-            motion = None
+            raise ValueError("bvr_twb_preview_motion length must match dense window length")
+    elif raw_motion is not None:
+        motion = raw_motion
 
     scout = build_scout_from_actionness(
         p_action,
         motion_signal=motion,
-        metadata={"route_label": ROUTE_LABEL, "preview_source": preview_source},
+        metadata={"route_label": ROUTE_LABEL, "preview_source": preview_source, "scout_meta": scout_meta},
     )
     budget = _build_budget_config(valid_len, target_frame_num, min_keep=min_keep, max_keep=max_keep, max_gap=max_gap)
     scaffold = build_scaffold_packets(
@@ -119,7 +282,19 @@ def build_bvr_twb_open_tad_selection(
         start_packet_id=1000,
         max_gap=budget.max_gap,
     )
-    value_predictor = LearnedPacketValueAdapter(model=value_model)
+    value_mode = str(value_mode or "deploy_heuristic_voi")
+    if value_mode not in DEPLOY_VALUE_MODES:
+        raise ValueError(f"unsupported BVR-TWB value_mode: {value_mode}")
+    if value_mode == "learned_packet_value":
+        if value_model is None:
+            raise ValueError("BVR-TWB learned_packet_value mode requires an explicit loaded value_model")
+        value_predictor = LearnedPacketValueAdapter(model=value_model)
+        value_model_used = True
+    else:
+        if value_model is not None:
+            raise ValueError("BVR-TWB deploy_heuristic_voi mode must not receive value_model")
+        value_predictor = PacketValuePredictor(mode="deploy_voi_heuristic")
+        value_model_used = False
     value_predictor.score_packets(scaffold + candidates)
 
     regret_labels = []
@@ -172,6 +347,17 @@ def build_bvr_twb_open_tad_selection(
         "budget_stop_reason": selection.stop_reason,
         "selection_gap_diagnostics": build_selection_gap_diagnostics(keep_positions, valid_len, budget.max_gap),
         "preview_source": preview_source,
+        "scout_source": str(scout_source),
+        "scout_is_deploy_visible": preview_source in {
+            "deploy_visible_metadata_actionness",
+            "raw_rgb_lowres_scout",
+        },
+        "deterministic_preview_fallback_used": preview_source == "diagnostic_deterministic_preview_fallback",
+        "diagnostic_preview_fallback_allowed": bool(allow_diagnostic_preview_fallback),
+        "scout_meta": scout_meta,
+        "value_mode": value_mode,
+        "value_model_used": bool(value_model_used),
+        "value_labels_used_at_test": False,
         "num_brackets": int(len(brackets)),
         "num_candidate_packets": int(len(scaffold) + len(candidates)),
         "num_regret_labels": int(len(regret_labels)),
