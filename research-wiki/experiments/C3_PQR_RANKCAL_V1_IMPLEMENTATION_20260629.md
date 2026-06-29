@@ -145,6 +145,35 @@ This fix does not alter CADF selector logic, BH-SDC, evaluator,
 post-processing, input sampling, PQR quality/ranking math, teacher/cache/GT
 use, or mAP claims.
 
+## 2026-06-30 Clean Clone Dependency Completeness Fix
+
+Remote clean clone PRECHECK later failed at branch HEAD
+`30ea4f1a4970416ad744a2d5429b8b37fddb547d` with:
+
+```text
+ModuleNotFoundError: No module named 'opentad.models.backbones.time_aligned_rasterizer'
+```
+
+The error came from `opentad/models/backbones/vit_adapter.py:18` while running
+the three torch-backed tests in
+`tests/test_c3_pqr_rankcal_v1_quality_head.py`. The root cause was dependency
+completeness: `vit_adapter.py` imports `TimeAlignedRasterizer`, and the module
+exists in the local mainline implementation, but it had not been included in
+the PQR branch/clean clone.
+
+Fix applied in the same route-owned worktree:
+
+- added `opentad/models/backbones/time_aligned_rasterizer.py` from the existing
+  mainline local implementation;
+- kept `vit_adapter.py` as a hard import because this is a real Adapter TARA
+  dependency, not an optional diagnostic-only hook;
+- changed no PQR scoring math, quality-head target/fusion code, CADF selector,
+  BH-SDC, sampler, evaluator, post-processing, config inheritance, or launcher
+  behavior.
+
+This is a clean-clone dependency completeness fix only. It does not create a
+model-result claim, selector claim, smoke claim, or mAP claim.
+
 ## Local Verification
 
 Commands run in

@@ -1,5 +1,35 @@
 # Research Log
 
+## 2026-06-30 04:08:38 +08:00
+
+C3 PQR RankCal V1 clean-clone dependency completeness blocker fixed locally in
+the route-owned worktree `OpenTAD_C3PQRRankCal_Worktree_20260629`.
+
+- Route: `C3_MAINLINE_OPTIMIZATION` / `C3_ORIGINAL_OPTIMIZATION_ROUTE`.
+- Remote evidence: clean clone
+  `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQRRankCal_Precheck_20260630/github_clean_c3_pqr_rankcal_v1`
+  at HEAD `30ea4f1a4970416ad744a2d5429b8b37fddb547d` failed focused pytest
+  with `ModuleNotFoundError` for
+  `opentad.models.backbones.time_aligned_rasterizer` from
+  `opentad/models/backbones/vit_adapter.py:18`.
+- Root cause: `vit_adapter.py` imports a real Adapter TARA dependency, but the
+  module file was missing from the PQR branch/clean clone.
+- Fix: added `opentad/models/backbones/time_aligned_rasterizer.py` from the
+  existing mainline local implementation.
+- Changed surface: backbone dependency restoration only; no CADF selector,
+  BH-SDC, evaluator, postprocess, sampler, PQR scoring math, configs, or
+  launch/runtime control changed.
+- Strict random-fixed 50% contract: unchanged.
+- GT/teacher leakage risk: unchanged.
+- Local verification: py_compile exit 0; focused PQR pytest `16 passed, 3
+  skipped`; three PQR validators all printed
+  `PASS_C3_PQR_RANKCAL_V1_CONFIG`.
+- Local limitation: three torch-backed quality-head tests still skipped on
+  Windows due torch DLL import failure; Linux clean clone PRECHECK must rerun
+  those tests.
+- No SSH, Slurm, remote PRECHECK, smoke, training, evaluation, or remote write
+  was performed by this owner.
+
 ## 2026-06-30 03:48:16 +08:00
 
 C3 PQR RankCal V1 runtime gate blocker fixed locally in the route-owned

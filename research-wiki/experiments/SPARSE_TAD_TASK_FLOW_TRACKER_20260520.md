@@ -8,6 +8,7 @@ the broader source for cross-route orchestration.
 
 | Time (+08:00) | Experiment / Config | Changed Surface | Status | Review / Gate State | Deployment / Result State | Next Action |
 | --- | --- | --- | --- | --- | --- | --- |
+| 2026-06-30 04:08:38 | `C3_PQR_RankCalV1_MaxIoU` / clean-clone dependency completeness fix | Added missing backbone dependency module `opentad/models/backbones/time_aligned_rasterizer.py` only; no PQR scoring math, CADF selector, BH-SDC, sampler, evaluator, postprocess, or launch logic change | Remote clean clone PRECHECK import blocker addressed locally; no remote/runtime training launched | Local py_compile PASS; focused PQR pytest `16 passed, 3 skipped` with Windows torch-backed tests skipped due local torch DLL failure; 3 validators PASS; Linux clean clone must rerun failed torch-backed PRECHECK | No deployment, no SSH, no Slurm, no `tools/train.py` real run, no `tools/test.py`, no mAP evidence; N16R4 untouched | Commit/push this dependency completeness fix, then allow separate remote PRECHECK agent to rerun PRECHECK; keep smoke/training/eval locked here |
 | 2026-06-30 03:48:16 | `C3_PQR_RankCalV1_MaxIoU` / `workflow.max_train_iters` runtime gate | Standard local training launcher and train loop only; PQR validator/tests/docs; no CADF selector, no BH-SDC, no evaluator/postprocess change | Pro blocker fixed at local implementation layer; no remote/runtime training launched | Local focused runtime gate tests PASS (`3 passed`); full focused PQR pytest PASS (`16 passed, 3 skipped`); py_compile PASS; 3 validators PASS; still needs read-only subagent final review | No deployment, no Slurm, no SSH, no `tools/train.py` real run, no `tools/test.py`, no mAP evidence; N16R4 `1118197 pcot_dbg2g` untouched | Run required read-only subagent final review, then remote PRECHECK/2-iter smoke only if review passes; keep 8-epoch shortdiag and formal/full train locked |
 | 2026-06-30 03:38:34 | `C3_PQR_RankCalV1_MaxIoU` / `c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_precheck.py` | Detector-head quality/ranking calibration only; no CADF selector, no BH-SDC, no evaluator/postprocess change | GitHub-synced PRECHECK_ONLY evidence; Pro gate valid | Remote PRECHECK_ONLY evidence: py_compile PASS, 3 validators PASS, focused pytest `16 passed in 15.44s`; GPT-5.5 Pro verdict `FIX_BEFORE_RUNTIME` | Branch pushed to GitHub at `dca62cc24c0bef50e53135709820b6a66afe1422`; no training launched; no mAP/runtime/deploy/paper claim | Fix runtime gate so `workflow.max_train_iters=2` is consumed before any 2-iter smoke; keep 8-epoch shortdiag and formal/full train locked |
 
@@ -33,6 +34,35 @@ the broader source for cross-route orchestration.
 - Formal/full training remains locked.
 - No `tools/test.py`, no metric claim, no official result claim, no paper/deploy claim.
 - N16R4 long-held parent allocation `1118197 pcot_dbg2g` was not touched.
+
+## 2026-06-30 Clean Clone Dependency Completeness Fix
+
+- Remote failed evidence: clean clone
+  `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQRRankCal_Precheck_20260630/github_clean_c3_pqr_rankcal_v1`
+  at branch HEAD `30ea4f1a4970416ad744a2d5429b8b37fddb547d` failed focused
+  PRECHECK pytest with `ModuleNotFoundError: No module named
+  'opentad.models.backbones.time_aligned_rasterizer'` from
+  `opentad/models/backbones/vit_adapter.py:18`.
+- Root cause: `vit_adapter.py` has a real hard dependency on
+  `TimeAlignedRasterizer`, but the module file was absent from this PQR branch.
+  This was a clean-clone dependency completeness gap, not a PQR ranking/scoring
+  bug.
+- Changed file: `opentad/models/backbones/time_aligned_rasterizer.py` added
+  from the existing mainline local implementation used by Adapter TARA paths.
+- Changed surface: backbone dependency restoration only. No CADF selector,
+  BH-SDC, evaluator, postprocess, sampler, PQR scoring math, configs, or
+  launcher behavior was changed.
+- Strict random-fixed 50% contract: unchanged.
+- GT/teacher leakage risk: unchanged; no data path, teacher/cache, or GT
+  access code was touched.
+- Local verification: py_compile PASS; focused PQR pytest PASS with
+  `16 passed, 3 skipped`; three validators printed
+  `PASS_C3_PQR_RANKCAL_V1_CONFIG`.
+- Local limitation: Windows torch DLL import still skips the three torch-backed
+  quality-head tests locally, so Linux clean clone PRECHECK must rerun them.
+- Next launch decision: this owner does not launch remote PRECHECK, smoke, or
+  training. A separate remote PRECHECK agent may rerun PRECHECK after this
+  commit is pushed.
 
 ## 2026-06-30 Runtime Gate Fix
 
