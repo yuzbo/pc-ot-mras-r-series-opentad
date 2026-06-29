@@ -5,6 +5,7 @@ from mmengine.config import Config
 import pytest
 
 from opentad.models.builder import build_selector
+from tools.validate_c3_indirect_clean_config import validate_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,6 +92,11 @@ def test_cadf_densitymesh_64px_configs_only_change_scout_resolution():
     _assert_cadf_config(full, 64)
     assert smoke.workflow.max_train_iters == 2
     assert full.workflow.end_epoch == 60
+
+
+@pytest.mark.parametrize("config_path", [SMOKE32, FULL32, SMOKE64, FULL64])
+def test_cadf_densitymesh_configs_pass_shared_precheck_validator(config_path):
+    validate_config(config_path)
 
 
 def test_cadf_densitymesh_rejects_invalid_density_weight_configs():
@@ -187,3 +193,14 @@ def test_cadf_densitymesh_allows_boundary_density_weight_with_boundary_scout_hea
     )
 
     assert selector.scout.boundary_head is not None
+
+
+def test_shared_precheck_validator_rejects_boundary_density_without_boundary_head(tmp_path):
+    cfg = Config.fromfile(SMOKE32)
+    cfg.model.frame_selector.density_weights = dict(action=0.5, utility=0.4, boundary=0.1)
+    cfg.model.frame_selector.scout.with_boundary_head = False
+    bad_config = tmp_path / "bad_cadf_boundary_weight.py"
+    cfg.dump(bad_config)
+
+    with pytest.raises(AssertionError, match="boundary.*with_boundary_head"):
+        validate_config(bad_config)

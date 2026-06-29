@@ -2,6 +2,8 @@ from pathlib import Path
 
 from mmengine.config import Config
 
+from tools.validate_c3_indirect_clean_config import validate_config
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE_CONFIG = ROOT / "configs/adatad/thumos/c3_indirect_original_adatad_32px_a_short_smoke.py"
@@ -101,3 +103,8 @@ def test_full_train_config_keeps_protocol_but_unlocks_training_schedule():
         "p2head",
     ]:
         assert forbidden not in cfg_text
+
+
+def test_clean_c3_indirect_configs_pass_shared_precheck_validator():
+    validate_config(SMOKE_CONFIG)
+    validate_config(FULL_CONFIG)
