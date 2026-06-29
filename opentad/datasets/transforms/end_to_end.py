@@ -16,6 +16,12 @@ from .pseudo_boundary import (
     select_pseudo_boundary_snap_positions,
     slice_global_scores_for_window,
 )
+from opentad.acquisition.mdl_knot import (
+    MDL_KNOT_ROUTE_LABEL,
+    MDLKnotConfig,
+    apply_mdl_knot_to_dense_window,
+    build_deploy_scout_curve,
+)
 
 
 def _stable_string_seed(value):
@@ -221,6 +227,20 @@ class LoadFrames:
         pseudo_boundary_snap_distance=2,
         pseudo_boundary_min_score=0.0,
         pseudo_boundary_fallback="random_fixed",
+        mdl_knot_min_k=4,
+        mdl_knot_max_k=384,
+        mdl_knot_min_anchor_k=4,
+        mdl_knot_target_weighted_error=0.02,
+        mdl_knot_min_marginal_gain=1.0e-4,
+        mdl_knot_max_gap=32,
+        mdl_knot_transition_guard_radius=2,
+        mdl_knot_short_island_max_width=10,
+        mdl_knot_scout_key="mdl_knot_scout",
+        mdl_knot_bridge="fixed_pad",
+        mdl_knot_no_gt_selector=True,
+        mdl_knot_no_teacher=True,
+        mdl_knot_no_prediction_cache=True,
+        mdl_knot_no_dense_raw_backbone_handoff=True,
         fixed_trunc_start=None,
         fixed_trunc_gt_index=None,
     ):
@@ -250,6 +270,23 @@ class LoadFrames:
         self.pseudo_boundary_snap_distance = pseudo_boundary_snap_distance
         self.pseudo_boundary_min_score = pseudo_boundary_min_score
         self.pseudo_boundary_fallback = pseudo_boundary_fallback
+        self.mdl_knot_scout_key = mdl_knot_scout_key
+        self.mdl_knot_bridge = str(mdl_knot_bridge)
+        self.mdl_knot_no_gt_selector = bool(mdl_knot_no_gt_selector)
+        self.mdl_knot_no_teacher = bool(mdl_knot_no_teacher)
+        self.mdl_knot_no_prediction_cache = bool(mdl_knot_no_prediction_cache)
+        self.mdl_knot_no_dense_raw_backbone_handoff = bool(mdl_knot_no_dense_raw_backbone_handoff)
+        self.mdl_knot_config = MDLKnotConfig(
+            route_label=MDL_KNOT_ROUTE_LABEL,
+            min_k=int(mdl_knot_min_k),
+            max_k=int(mdl_knot_max_k),
+            min_anchor_k=int(mdl_knot_min_anchor_k),
+            target_weighted_error=float(mdl_knot_target_weighted_error),
+            min_marginal_gain=float(mdl_knot_min_marginal_gain),
+            max_gap=int(mdl_knot_max_gap),
+            transition_guard_radius=int(mdl_knot_transition_guard_radius),
+            short_island_max_width=int(mdl_knot_short_island_max_width),
+        )
         self.fixed_trunc_start = fixed_trunc_start
         self.fixed_trunc_gt_index = fixed_trunc_gt_index
 
@@ -607,6 +644,29 @@ class LoadFrames:
         results["irregular_selected_valid_len"] = float(valid_len) / scale
         results["irregular_native_axis"] = bool(not self.remap_gt_to_selected_axis)
 
+    def _build_mdl_knot_scout_curve(self, results, valid_len):
+        scout = results.get(self.mdl_knot_scout_key)
+        if scout is None:
+            # Fail-closed deploy-visible fallback for local prechecks only. Formal
+            # MDL-Knot runs should provide a real scout curve before DecordDecode.
+            p_action = np.full(valid_len, 0.10, dtype=np.float64)
+            if valid_len >= 4:
+                p_action[valid_len // 3 : 2 * valid_len // 3] = 0.25
+            return build_deploy_scout_curve(p_action=p_action, source="deploy_scout")
+        if hasattr(scout, "as_matrix"):
+            return scout
+        if isinstance(scout, dict):
+            return build_deploy_scout_curve(
+                p_action=scout["p_action"],
+                uncertainty=scout.get("uncertainty"),
+                temporal_change=scout.get("temporal_change", scout.get("change")),
+                persistence=scout.get("persistence"),
+                motion=scout.get("motion"),
+                source=scout.get("source", "deploy_scout"),
+                provenance=scout.get("provenance"),
+            )
+        return build_deploy_scout_curve(p_action=scout, source="deploy_scout")
+
     def _oracle_subsample_window(self, dense_frame_idxs, gt_segments, gt_labels, target_frame_num, profile):
         valid_len = int(len(dense_frame_idxs))
         if valid_len <= 0:
@@ -768,6 +828,7 @@ class LoadFrames:
             "stratified_random_fixed_subsample",
             "pseudo_boundary_hybrid_subsample",
             "pseudo_boundary_snap_subsample",
+            "mdl_knot_dynamic_subsample",
         ):
             assert results["snippet_stride"] >= self.scale_factor, "snippet_stride should be larger than scale_factor"
             assert (
@@ -848,7 +909,31 @@ class LoadFrames:
                 f"{int(dense_window[-1]) if valid_len > 0 else -1}|"
                 f"{valid_len}|{frame_num}"
             )
-            if self.method == "stratified_random_fixed_subsample":
+            if self.method == "mdl_knot_dynamic_subsample":
+                if self.mdl_knot_bridge != "fixed_pad":
+                    raise ValueError("mdl_knot_dynamic_subsample currently requires mdl_knot_bridge='fixed_pad'")
+                if not (
+                    self.mdl_knot_no_gt_selector
+                    and self.mdl_knot_no_teacher
+                    and self.mdl_knot_no_prediction_cache
+                    and self.mdl_knot_no_dense_raw_backbone_handoff
+                ):
+                    raise ValueError("MDL-Knot selector safety flags must all be enabled")
+                scout_curve = self._build_mdl_knot_scout_curve(results, valid_len)
+                apply_mdl_knot_to_dense_window(
+                    results=results,
+                    dense_window=dense_window.astype(np.int64).tolist(),
+                    scout_curve=scout_curve,
+                    config=self.mdl_knot_config,
+                    adapter_target_len=frame_num,
+                )
+                keep_positions = np.asarray(results["mdl_knot_selected_positions"], dtype=np.int64)
+                frame_idxs = np.asarray(results["frame_inds"], dtype=np.int64)
+                masks = torch.as_tensor(results["masks"], dtype=torch.bool)
+                self._set_irregular_axis_meta(results, keep_positions, valid_len)
+                results["mdl_knot_selector_used_gt"] = False
+                results["mdl_knot_route_label"] = MDL_KNOT_ROUTE_LABEL
+            elif self.method == "stratified_random_fixed_subsample":
                 keep_positions = self._select_stratified_random_fixed_positions(valid_len, frame_num, sample_key)
             elif self.method == "pseudo_boundary_hybrid_subsample":
                 boundary_scores = load_boundary_scores(
@@ -888,11 +973,13 @@ class LoadFrames:
                 )
             else:
                 keep_positions = self._select_random_fixed_positions(valid_len, frame_num, sample_key)
-            if keep_positions.size == 0:
-                keep_positions = np.array([0], dtype=np.int64)
 
-            frame_idxs = dense_window[keep_positions]
-            self._set_irregular_axis_meta(results, keep_positions, valid_len)
+            if self.method != "mdl_knot_dynamic_subsample":
+                if keep_positions.size == 0:
+                    keep_positions = np.array([0], dtype=np.int64)
+
+                frame_idxs = dense_window[keep_positions]
+                self._set_irregular_axis_meta(results, keep_positions, valid_len)
 
             if gt_segments is not None and gt_labels is not None:
                 if self.remap_gt_to_selected_axis:
@@ -905,7 +992,9 @@ class LoadFrames:
                 results["gt_segments"] = gt_segments / self.scale_factor
                 results["gt_labels"] = gt_labels
 
-            if len(frame_idxs) < frame_num:
+            if self.method == "mdl_knot_dynamic_subsample":
+                pass
+            elif len(frame_idxs) < frame_num:
                 valid_mask_len = min(
                     int(np.ceil(keep_positions.size / max(self.scale_factor, 1))),
                     int(np.ceil(frame_num / max(self.scale_factor, 1))),

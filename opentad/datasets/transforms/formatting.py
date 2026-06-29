@@ -47,6 +47,13 @@ class Collect:
             "irregular_selected_positions",
             "irregular_selected_valid_len",
             "irregular_native_axis",
+            "mdl_knot_route_label",
+            "mdl_knot_selected_positions",
+            "mdl_knot_selected_roles",
+            "mdl_knot_valid_k",
+            "mdl_knot_sparse_meta",
+            "mdl_knot_ledger",
+            "mdl_knot_selector_used_gt",
         ],
     ):
         self.inputs = inputs
