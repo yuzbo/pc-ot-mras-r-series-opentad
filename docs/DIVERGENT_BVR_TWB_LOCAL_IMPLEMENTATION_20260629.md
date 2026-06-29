@@ -279,3 +279,55 @@ The fix restores a minimal real `TimeAlignedRasterizer(nn.Module)` compatible wi
 Changed surface: Adapter/backbone helper module restoration only. No BVR selector, dataset, evaluator, post-processing, C3/ABR/MDL file, loss/assignment target, Slurm launcher, remote state, or metric-producing path was changed.
 
 Still locked after this clean-clone fix: remote sync, Slurm, formal full training, validation/test evaluation, mAP, runtime/FLOPs, deploy claim, paper claim, C3/combo merge, and any claim that TARA improves metrics. This fix only removes the clean-clone import blocker and preserves the existing zero-initialized residual safety gate.
+
+## BVR-TWB / VOI-BBC AMP Regression-Backward Stability Fix
+
+Route label: `DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3`.
+
+Local-only follow-up on 2026-06-30 Asia/Shanghai for the remaining `NONFINITE_COUNT=4` in `module.rpn_head.reg_head.weight` after commit `b172fa7`. The prior `max_reg_log_distance=6.0` fp32 decode clamp ruled out `expm1` forward overflow, and read-only diagnosis pointed to AMP-scaled backward through the HeadV3 regression branch and DIoU regression loss on a few bad or degenerate samples.
+
+Changed surface:
+
+- `IrregularActionFormerHeadV3` now has conservative default-off stability flags: `regression_head_fp32`, `regression_loss_fp32`, `filter_invalid_regression_samples`, and `min_regression_segment_length`.
+- When enabled, only the V3 regression branch/tower/head runs under a local autocast-disabled context and emits fp32 `reg_pred`; classification and boundary branches remain on their existing path.
+- When enabled, `pred_segments`, `gt_segments`, regression weights, and DIoU regression loss are computed in fp32 under a local autocast-disabled context.
+- Before regression loss, HeadV3 filters only invalid regression samples: non-finite predicted/target segments, non-finite weights, zero-length predicted/target segments, and reversed predicted/target segments. It does not skip the global step and does not suppress `cls_loss` or `boundary_loss`.
+- Debug state records the bad-regression filtering gate: total samples before filter, kept samples after filter, filtered count, and filtered ratio.
+- The BVR full-train candidate config enables these flags explicitly. Defaults remain unchanged for legacy/non-BVR configs.
+
+No global loss or IoU utility was changed. In particular, `opentad/models/losses/iou_loss.py` and `opentad/models/utils/iou_tools.py` remain untouched because the BVR-local HeadV3 fix is sufficient for this stage and avoids changing shared detector behavior.
+
+Focused regression coverage in `tests/test_bvr_twb_regression_stability.py` now checks:
+
+- BVR config resolves `max_reg_log_distance=6.0` plus the new BVR-only fp32/filter flags.
+- The inherited decode clamp still produces finite proposals and finite backward gradients for huge log-distance predictions.
+- Under autocast, HeadV3's regression branch emits fp32 outputs while leaving cls/boundary paths out of this fix.
+- Mixed fp16 regression samples with one valid segment plus zero-length, reversed, NaN, and Inf proposal samples produce finite losses and finite gradients; only the four bad regression samples are filtered, while `cls_loss` and `boundary_loss` remain present.
+
+Local command evidence from this worktree:
+
+```powershell
+python -m pytest tests/test_bvr_twb_regression_stability.py -q
+```
+
+Result: `1 passed, 3 skipped in 0.59s` in the current Windows environment. The skipped cases are Linux/torch numeric tests because local torch import still fails with the known Windows `torch/lib/c10.dll` initialization error.
+
+```powershell
+python -m pytest tests/test_bvr_twb_optimizer.py tests/test_bvr_twb_opentad_pipeline.py tests/test_bvr_twb_voi_bbc.py tests/test_bvr_twb_regression_stability.py -q
+```
+
+Result: `21 passed, 8 skipped in 1.57s`. The skipped cases are torch/OpenTAD import-dependent checks in the current Windows environment.
+
+```powershell
+python -m py_compile opentad/models/dense_heads/irregular_actionformer_head_v3.py tests/test_bvr_twb_regression_stability.py configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py
+```
+
+Result: passed with exit code `0`.
+
+```powershell
+git diff --check
+```
+
+Result: passed with exit code `0`; Git printed only Windows LF-to-CRLF working-copy warnings for the three changed files.
+
+Still locked after this fix: staging, commit, push, remote sync, Slurm, formal full training, validation/test evaluation, mAP, runtime/FLOPs, deploy claim, paper claim, C3/combo merge, global loss changes, evaluator/post-processing changes, and any claim that the non-finite gradient issue is resolved on GPU. The next allowed step is read-only final review, and if that passes, a remote three-epoch diagnostic-only rerun to verify `NONFINITE_COUNT=0` or collect exact remaining evidence.

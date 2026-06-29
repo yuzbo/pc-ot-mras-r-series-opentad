@@ -131,7 +131,13 @@ model = dict(
         ),
     ),
     projection=dict(max_seq_len=window_size),
-    rpn_head=dict(max_reg_log_distance=6.0),
+    rpn_head=dict(
+        max_reg_log_distance=6.0,
+        regression_head_fp32=True,
+        regression_loss_fp32=True,
+        filter_invalid_regression_samples=True,
+        min_regression_segment_length=1e-6,
+    ),
 )
 
 solver = dict(

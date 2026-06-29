@@ -1,4 +1,5 @@
 import math
+from contextlib import nullcontext
 
 import torch
 import torch.nn as nn
@@ -41,6 +42,10 @@ class IrregularActionFormerHeadV3(IrregularActionFormerHeadV2):
         soft_scale_cost_weight=0.5,
         reg_denom_floor=0.5,
         max_reg_log_distance=None,
+        regression_head_fp32=False,
+        regression_loss_fp32=False,
+        filter_invalid_regression_samples=False,
+        min_regression_segment_length=1e-6,
         geometry_hidden_channels=128,
         geometry_scale=0.25,
         boundary_loss_weight=0.2,
@@ -58,6 +63,10 @@ class IrregularActionFormerHeadV3(IrregularActionFormerHeadV2):
         self.boundary_predictor_kernel_size = boundary_predictor_kernel_size
         self.use_boundary_aux = boundary_loss_weight > 0
         self.boundary_inference = self._build_boundary_inference_cfg(boundary_inference)
+        self.regression_head_fp32 = bool(regression_head_fp32)
+        self.regression_loss_fp32 = bool(regression_loss_fp32)
+        self.filter_invalid_regression_samples = bool(filter_invalid_regression_samples)
+        self.min_regression_segment_length = float(min_regression_segment_length)
         super().__init__(
             num_classes=num_classes,
             in_channels=in_channels,
@@ -159,6 +168,15 @@ class IrregularActionFormerHeadV3(IrregularActionFormerHeadV2):
         feat = feat * mask.unsqueeze(1).to(feat.dtype)
         return feat
 
+    def _regression_autocast_context(self, enabled, tensor):
+        if not enabled:
+            return nullcontext()
+        if tensor.device.type == "cuda":
+            return torch.cuda.amp.autocast(enabled=False)
+        if hasattr(torch, "autocast"):
+            return torch.autocast(device_type=tensor.device.type, enabled=False)
+        return nullcontext()
+
     def _forward_single_level(self, feat, mask, level_idx, temporal_grid):
         feat = self._apply_geometry_modulation(feat, mask, temporal_grid)
 
@@ -167,10 +185,16 @@ class IrregularActionFormerHeadV3(IrregularActionFormerHeadV2):
         branch_mask = mask
         for cls_conv, reg_conv in zip(self.cls_convs, self.reg_convs):
             cls_feat, _ = cls_conv(cls_feat, branch_mask)
-            reg_feat, _ = reg_conv(reg_feat, branch_mask)
+            with self._regression_autocast_context(self.regression_head_fp32, reg_feat):
+                reg_conv_input = reg_feat.float() if self.regression_head_fp32 else reg_feat
+                reg_feat, _ = reg_conv(reg_conv_input, branch_mask)
 
         cls_pred = self.cls_head(cls_feat)
-        reg_pred = F.relu(self.scale[level_idx](self.reg_head(reg_feat)))
+        with self._regression_autocast_context(self.regression_head_fp32, reg_feat):
+            reg_head_input = reg_feat.float() if self.regression_head_fp32 else reg_feat
+            reg_pred = F.relu(self.scale[level_idx](self.reg_head(reg_head_input)))
+            if self.regression_head_fp32:
+                reg_pred = reg_pred.float()
 
         boundary_pred = None
         if self.use_boundary_aux:
@@ -590,6 +614,37 @@ class IrregularActionFormerHeadV3(IrregularActionFormerHeadV2):
             )
         return boundary_targets
 
+    def _prepare_regression_loss_inputs(self, pred_segments, gt_segments, reg_weight, valid_mask):
+        if self.regression_loss_fp32:
+            pred_segments = pred_segments.float()
+            gt_segments = gt_segments.float()
+            reg_weight = reg_weight.float()
+
+        base_reg_mask = torch.logical_and(reg_weight > 0, valid_mask)
+        if not self.filter_invalid_regression_samples:
+            count = int(base_reg_mask.sum().item())
+            stats = dict(total=count, kept=count, filtered=0, ratio=0.0)
+            return pred_segments, gt_segments, reg_weight, base_reg_mask, stats
+
+        min_len = pred_segments.new_tensor(self.min_regression_segment_length)
+        pred_len = pred_segments[..., 1] - pred_segments[..., 0]
+        gt_len = gt_segments[..., 1] - gt_segments[..., 0]
+        finite_pair = torch.isfinite(pred_segments).all(dim=-1) & torch.isfinite(gt_segments).all(dim=-1)
+        finite_weight = torch.isfinite(reg_weight)
+        positive_length = (pred_len > min_len) & (gt_len > min_len)
+        safe_reg_mask = base_reg_mask & finite_pair & finite_weight & positive_length
+
+        total = int(base_reg_mask.sum().item())
+        kept = int(safe_reg_mask.sum().item())
+        filtered = total - kept
+        stats = dict(
+            total=total,
+            kept=kept,
+            filtered=filtered,
+            ratio=float(filtered / max(total, 1)),
+        )
+        return pred_segments, gt_segments, reg_weight, safe_reg_mask, stats
+
     def losses(self, cls_pred, reg_pred, boundary_pred, mask_list, points, gt_segments, gt_labels):
         raw_gt_segments = gt_segments
         gt_cls, gt_reg, reg_weight, target_debug = self.prepare_targets(points, gt_segments, gt_labels)
@@ -625,13 +680,28 @@ class IrregularActionFormerHeadV3(IrregularActionFormerHeadV2):
         pred_segments = self.get_refined_proposals(points, reg_pred)
         gt_segments = self.get_refined_proposals(points, gt_reg_split)
 
-        reg_mask = torch.logical_and(reg_weight > 0, valid_mask)
+        pred_segments, gt_segments, reg_weight, reg_mask, reg_filter_stats = self._prepare_regression_loss_inputs(
+            pred_segments,
+            gt_segments,
+            reg_weight,
+            valid_mask,
+        )
         if reg_mask.any():
-            reg_loss_raw = self.reg_loss(pred_segments[reg_mask], gt_segments[reg_mask], reduction="none").reshape(-1)
+            with self._regression_autocast_context(self.regression_loss_fp32, pred_segments):
+                reg_loss_raw = self.reg_loss(
+                    pred_segments[reg_mask],
+                    gt_segments[reg_mask],
+                    reduction="none",
+                ).reshape(-1)
             reg_loss = (reg_loss_raw * reg_weight[reg_mask]).sum()
             reg_loss /= loss_normalizer
         else:
-            reg_loss = pred_segments.sum() * 0
+            finite_pred_segments = torch.where(
+                torch.isfinite(pred_segments),
+                pred_segments,
+                pred_segments.new_zeros(()),
+            )
+            reg_loss = finite_pred_segments.sum() * 0
 
         if self.loss_weight > 0:
             reg_loss_weight = self.loss_weight
@@ -673,6 +743,15 @@ class IrregularActionFormerHeadV3(IrregularActionFormerHeadV2):
             debug_state["head_v2_loss_normalizer"] = float(
                 loss_normalizer.item() if torch.is_tensor(loss_normalizer) else loss_normalizer
             )
+            debug_state["head_v3_regression_head_fp32_enabled"] = bool(self.regression_head_fp32)
+            debug_state["head_v3_regression_loss_fp32_enabled"] = bool(self.regression_loss_fp32)
+            debug_state["head_v3_invalid_regression_filter_enabled"] = bool(
+                self.filter_invalid_regression_samples
+            )
+            debug_state["head_v3_regression_samples_total_before_filter"] = reg_filter_stats["total"]
+            debug_state["head_v3_regression_samples_kept_after_filter"] = reg_filter_stats["kept"]
+            debug_state["head_v3_bad_regression_samples_filtered"] = reg_filter_stats["filtered"]
+            debug_state["head_v3_bad_regression_samples_filter_ratio"] = reg_filter_stats["ratio"]
             debug_state["head_v3_boundary_mass_total"] = boundary_mass
             debug_state["head_v3_boundary_positive_count_total"] = boundary_pos_count
             self._latest_debug_state = debug_state
