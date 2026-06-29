@@ -1,0 +1,21 @@
+﻿{
+    "command":  "rosetta run --pro --port 9223 --host 127.0.0.1 --recall bvr-twb-478325a-launch-gate-20260630 --attach \"research-wiki/experiments/DIVERGENT_BVR_TWB_478325A_LAUNCH_GATE_PACKET_20260630.md\" --attach \"logs/bvr_twb_478325a_launch_gate_filelist_20260630.txt\" --attach \"logs/bvr_twb_478325a_pro_launch_prompt_20260630.md\" \"请阅读三个附件和其中的 GitHub 分支/文件名。按 prompt 要求给出 Context verdict / Model evidence / Inspected materials / Verdict / Blocking findings / Non-blocking findings / Required fixes or next experiments / Accepted launch/sync/review/Slurm decision。\"",
+    "start_iso":  "2026-06-29T23:14:48.8215894Z",
+    "end_iso":  "2026-06-29T23:23:14.6637048Z",
+    "timezone":  "Asia/Shanghai",
+    "elapsed_seconds":  505.842,
+    "exit_code":  0,
+    "recall_id":  "bvr-twb-478325a-launch-gate-20260630",
+    "cdp_host":  "127.0.0.1",
+    "cdp_port":  9223,
+    "requested_model":  "gpt-5.5",
+    "requested_reasoning_effort":  "high",
+    "requested_speed":  "normal/no Fast/no priority",
+    "used_pro_flag":  true,
+    "cdp_9333_default_deviation":  "Used 9223 instead of protocol default 9333 because user requested 9223 and probe showed 9223 reachable while 9333 was not open.",
+    "stderr_contains_gpt_5_5_pro":  true,
+    "stderr_contains_conversation":  true,
+    "stderr_contains_message":  true,
+    "stdout_chars":  13051,
+    "stderr_chars":  527
+}
