@@ -267,3 +267,15 @@ Changed surface: detector head numeric decode path and BVR full-train candidate 
 Focused regression coverage added in `tests/test_bvr_twb_regression_stability.py`: config inheritance resolves the clamp, and a Linux torch test checks that huge `reg_pred=1000` values produce finite refined proposals and finite backward gradients under the clamped decode path.
 
 Still locked after this fix: remote sync, Slurm, formal full training, validation/test evaluation, mAP, runtime/FLOPs, deploy claim, paper claim, C3/combo merge, and any claim that the non-finite gradient issue is fully resolved on GPU before a reviewed remote diagnostic rerun.
+
+## Clean-Clone Linux Import Blocker Fix
+
+Route label: `DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3`.
+
+Local-only stability follow-up on 2026-06-30 Asia/Shanghai: the clean GitHub/Linux clone was missing `opentad/models/backbones/time_aligned_rasterizer.py` while `vit_adapter.py` imports `TimeAlignedRasterizer`. This caused focused clean-clone pytest/import to fail before any BVR-TWB pipeline code could be validated.
+
+The fix restores a minimal real `TimeAlignedRasterizer(nn.Module)` compatible with the existing Adapter call path: `source_to_uniform`, `uniform_to_source`, and `mix_with_source`. The implementation reads Adapter time features, linearly maps irregular source tokens to a uniform work axis, maps the branch output back to source positions, and keeps the safety contract `source + self.branch_scale * (target - source)`. The default `residual=True` and `residual_init=0.0` keep the TARA branch zero-gated so baseline behavior is unchanged unless a later config deliberately opens `branch_scale`.
+
+Changed surface: Adapter/backbone helper module restoration only. No BVR selector, dataset, evaluator, post-processing, C3/ABR/MDL file, loss/assignment target, Slurm launcher, remote state, or metric-producing path was changed.
+
+Still locked after this clean-clone fix: remote sync, Slurm, formal full training, validation/test evaluation, mAP, runtime/FLOPs, deploy claim, paper claim, C3/combo merge, and any claim that TARA improves metrics. This fix only removes the clean-clone import blocker and preserves the existing zero-initialized residual safety gate.
