@@ -1,0 +1,2 @@
+scripts/run_adapter_quality_rescore.sh text eol=lf
+scripts/supervise_adapter_quality.sh text eol=lf
