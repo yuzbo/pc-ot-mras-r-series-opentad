@@ -6,6 +6,7 @@ dataset
 /logs/
 /exps/
 /trash/
+.tmp_bvr_twb*/
 
 # ignore annotation
 !/data/
