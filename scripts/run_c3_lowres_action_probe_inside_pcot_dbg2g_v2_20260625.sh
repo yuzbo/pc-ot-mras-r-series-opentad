@@ -25,7 +25,7 @@ print("torch", torch.__version__, "cuda_available", torch.cuda.is_available(), "
 PY
 
 python -u tools/bata/train_lowres_action_probe.py \
-  --config configs/adatad/thumos/pc_ot_mras_prebackbone_c3_physical_grid_actionformer_full_train_n16r4.py \
+  --config configs/adatad/thumos/pc_ot_mras_a_uniform_scaffold_small_actionness_strict_maxgap_c3_physical_grid_actionformer_n16r4.py \
   --out-dir "${OUT_DIR}" \
   --device cuda \
   --epochs 10 \
@@ -37,8 +37,8 @@ python -u tools/bata/train_lowres_action_probe.py \
   --mobilenet-sizes 32 64 \
   --mobilenet-weights-path /data/home/sczc063/run/yuzibo/projects/c3_lowres_action_probe/logs/mobilenet_v3_small-047dcff4.pth \
   --no-freeze-backbone \
-  --max-train-batches 0 \
-  --max-val-batches 0 \
+  --max-train-batches 50 \
+  --max-val-batches 20 \
   --log-every-batches 10 \
   --fast-lowres-pipeline \
   --probe-window-size 384 \

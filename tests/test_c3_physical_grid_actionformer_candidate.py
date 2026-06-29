@@ -663,6 +663,8 @@ def test_coarse_actionness_candidate_points_expose_components_roles_and_mixed_fi
     assert "dense_fill" not in selected_roles
     assert len(candidate_points) == 8
     assert any(len(point["eligible_roles"]) >= 2 for point in candidate_points)
+    mixed_eligible = [point for point in candidate_points if "coarse_mixed_fill" in point["eligible_roles"]]
+    assert 0 < len(mixed_eligible) < len(candidate_points)
     for point in candidate_points:
         assert set(
             [

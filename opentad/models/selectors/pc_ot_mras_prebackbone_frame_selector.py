@@ -2579,7 +2579,13 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         quota: Mapping[str, int],
     ) -> list[str]:
         eligible: list[str] = []
-        for role in ("coarse_action", "coarse_uncertainty", "coarse_change", "coarse_background"):
+        for role in (
+            "coarse_action",
+            "coarse_uncertainty",
+            "coarse_change",
+            "coarse_background",
+            "coarse_mixed_fill",
+        ):
             count = max(0, int(quota.get(role, 0)))
             if count <= 0:
                 continue
@@ -2589,8 +2595,6 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             top = ranked[:count].detach().cpu().tolist()
             if int(candidate_idx) in {int(item) for item in top}:
                 eligible.append(role)
-        if ranked_by_score.get("coarse_mixed_fill") is not None:
-            eligible.append("coarse_mixed_fill")
         return eligible
 
     def _coarse_candidate_points_for_batch(
@@ -2834,13 +2838,17 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                     continue
                 final_role_by_candidate[int(candidate_idx)] = role
                 source_score_role_by_candidate[int(candidate_idx)] = score_key
+            candidate_role_quota = dict(quota)
+            candidate_role_quota["coarse_mixed_fill"] = sum(
+                1 for _pos, _candidate_idx, role, _score_key in rows if role == "coarse_mixed_fill"
+            )
             candidate_points = self._coarse_candidate_points_for_batch(
                 scores=scores,
                 candidate_valid=candidate_valid,
                 candidate_dense_indices=candidate_dense_indices,
                 batch_idx=batch_idx,
                 ranked_by_score=ranked_by_score,
-                quota=quota,
+                quota=candidate_role_quota,
                 final_role_by_candidate=final_role_by_candidate,
                 source_score_role_by_candidate=source_score_role_by_candidate,
             )

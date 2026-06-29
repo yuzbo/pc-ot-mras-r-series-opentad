@@ -10,6 +10,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PROBE_PATH = ROOT / "tools" / "bata" / "train_lowres_action_probe.py"
+LOWRES_PROBE_SCRIPT = ROOT / "scripts" / "run_c3_lowres_action_probe_inside_pcot_dbg2g_v2_20260625.sh"
 
 
 def load_probe_module():
@@ -137,13 +138,23 @@ def test_build_action_targets_marks_frames_inside_any_gt_segment():
     assert target == [[0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0]]
 
 
-def test_c3_lowres_action_probe_wrapper_source_reuses_boundary_difficulty_reader_for_action_logits():
+def test_c3_lowres_action_probe_wrapper_source_defaults_to_coarse_actionness_reader_for_action_logits():
     probe = load_probe_module()
 
     source = Path(probe.__file__).read_text(encoding="utf-8")
-    assert "PCOTMRASBoundaryDifficultyTemporalFrameScout" in source
+    assert probe.DEFAULT_READER_TYPE == "PCOTMRASCoarseActionnessFrameScout"
+    assert "PCOTMRASCoarseActionnessFrameScout" in source
     assert "build_selector(reader_cfg)" in source
     assert 'reader_outputs["action_logits"]' in source
+
+
+def test_lowres_action_probe_rejects_unsupported_reader_instead_of_falling_back():
+    probe = load_probe_module()
+
+    cfg = types.SimpleNamespace(model={"frame_selector": {"reader": {"type": "UnknownReader"}}})
+
+    with pytest.raises(ValueError, match="action probe expects"):
+        probe._reader_cfg_from_config(cfg)
 
 
 def test_binary_action_metrics_report_perfect_and_inverted_rankings():
@@ -380,6 +391,28 @@ def test_sampling_quality_metrics_report_boundary_coverage_and_gap():
     assert metrics["selected_run_lengths_by_window"] == [[2, 1]]
 
 
+def test_indirect_boundary_support_counts_each_gt_boundary_once():
+    probe = load_probe_module()
+
+    payload = probe.compute_indirect_selection_quality_from_logits(
+        logits=[[4.0, 3.9, 3.8, -6.0, -6.0, -6.0]],
+        target=[[0.0, 0.0, 1.0, 1.0, 1.0, 0.0]],
+        valid=[[True, True, True, True, True, True]],
+        gt_segments=[[[2.0, 5.0]]],
+        sample_ids=["duplicate_near_boundary"],
+        budget=3,
+        boundary_radius=1,
+    )
+
+    row = payload["per_sample_rows"][0]
+    selected = row["selected_positions"]
+    expected_hits = probe._boundary_hit_count(selected, [2.0, 5.0], radius=1)
+    expected_support = expected_hits / 2.0
+    assert expected_support <= 1.0
+    assert payload["indirect"]["boundary_support_r1"] == expected_support
+    assert row["boundary_support_r1"] == expected_support
+
+
 def test_sampling_quality_run_metrics_are_stable_for_empty_selection():
     probe = load_probe_module()
 
@@ -562,7 +595,30 @@ def test_parse_args_supports_mobilenetv3_32_64_probe_without_detector_path():
     assert args.probe_model == "mobilenetv3"
     assert args.mobilenet_sizes == [32, 64]
     assert args.coverage_only is True
+    assert "pc_ot_mras_a_uniform_scaffold_small_actionness_strict_maxgap" in args.config
+    assert args.max_train_batches == 50
+    assert args.max_val_batches == 50
     assert not hasattr(args, "detector_checkpoint")
+
+
+def test_parse_args_accepts_zero_batch_caps_as_explicit_unlimited_probe_mode():
+    probe = load_probe_module()
+
+    args = probe.parse_args(["--max-train-batches", "0", "--max-val-batches", "0"])
+
+    assert args.max_train_batches == 0
+    assert args.max_val_batches == 0
+
+
+def test_lowres_probe_v2_launcher_uses_c3_a_config_and_positive_batch_caps():
+    text = LOWRES_PROBE_SCRIPT.read_text(encoding="utf-8")
+
+    assert "pc_ot_mras_a_uniform_scaffold_small_actionness_strict_maxgap" in text
+    assert "--mobilenet-sizes 32 64" in text
+    assert "--max-train-batches 50" in text
+    assert "--max-val-batches 20" in text
+    assert "--max-train-batches 0" not in text
+    assert "--max-val-batches 0" not in text
 
 
 def test_parse_args_exposes_seed_for_reproducible_probe_runs():

@@ -539,6 +539,7 @@ def test_physical_grid_full_train_launcher_is_single_gpu_fail_closed():
     assert EXACT_UNIFORM_CONFIG.name in text
     assert UNIFORM_BIAS_CONFIG.name in text
     assert A_CONFIG.name in text
+    assert 'CONFIG="${CONFIG:-$CONFIG_REVIEWED_A}"' in text
     assert '"$CONFIG_REVIEWED_A") ;;' in text
     assert "resolved_identity route=$ROUTE_ID variant=$VARIANT_ID stage=$STAGE_ID" in text
     assert "PRECHECK_ONLY=\"${PRECHECK_ONLY:-1}\"" in text

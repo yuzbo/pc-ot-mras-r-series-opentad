@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 
-DEFAULT_READER_TYPE = "PCOTMRASBoundaryDifficultyTemporalFrameScout"
+DEFAULT_READER_TYPE = "PCOTMRASCoarseActionnessFrameScout"
+DEFAULT_PROBE_CONFIG = (
+    "configs/adatad/thumos/"
+    "pc_ot_mras_a_uniform_scaffold_small_actionness_strict_maxgap_c3_physical_grid_actionformer_n16r4.py"
+)
 SUPPORTED_C3_READER_TYPES = {
     "PCOTMRASBoundaryDifficultyTemporalFrameScout",
     "PCOTMRASCoarseActionnessFrameScout",
@@ -205,6 +209,34 @@ def _safe_div(numerator: Any, denominator: Any) -> float | None:
     if den == 0.0:
         return None
     return num / den
+
+
+def _gt_boundaries(segments: Sequence[Any]) -> list[float]:
+    boundaries: list[float] = []
+    for segment in segments:
+        if len(segment) != 2:
+            raise ValueError("each gt segment must contain [start, end]")
+        boundaries.extend([float(segment[0]), float(segment[1])])
+    return boundaries
+
+
+def _boundary_hit_count(selected: Sequence[int], boundaries: Sequence[float], radius: int | float) -> int:
+    selected_positions = [float(idx) for idx in selected]
+    radius = float(radius)
+    return sum(
+        1
+        for boundary in boundaries
+        if any(abs(position - float(boundary)) <= radius for position in selected_positions)
+    )
+
+
+def _boundary_support(hit_count: int, boundary_count: int) -> float | None:
+    if int(boundary_count) <= 0:
+        return None
+    support = float(hit_count) / float(boundary_count)
+    if not 0.0 <= support <= 1.0:
+        raise ValueError(f"boundary support must lie in [0, 1], got {support}")
+    return support
 
 
 def _resolve_budget(valid_count: int, *, budget: int | None, budget_fraction: float | None) -> int:
@@ -521,15 +553,11 @@ def compute_sampling_quality_from_logits(
         total_positive += len(positive_indices)
         selected_unique_positive += sum(1 for idx in positive_indices if idx in selected_set)
 
-        for segment in segments:
-            if len(segment) != 2:
-                raise ValueError("each gt segment must contain [start, end]")
-            for boundary in (float(segment[0]), float(segment[1])):
-                boundary_total += 1
-                if any(abs(float(idx) - boundary) <= float(boundary_radius) for idx in selected):
-                    boundary_hits += 1
+        boundaries = _gt_boundaries(segments)
+        boundary_total += len(boundaries)
+        boundary_hits += _boundary_hit_count(selected, boundaries, boundary_radius)
 
-    support = None if boundary_total <= 0 else boundary_hits / float(boundary_total)
+    support = _boundary_support(boundary_hits, boundary_total)
     mean_selected_count = sum(selected_counts) / float(max(len(selected_counts), 1))
     mean_budget_fraction = sum(budget_fractions) / float(max(len(budget_fractions), 1))
     mean_run_count = sum(run_counts) / float(max(len(run_counts), 1))
@@ -632,9 +660,8 @@ def compute_indirect_selection_quality_from_logits(
         valid_indices = [idx for idx, is_valid in enumerate(valid_mask) if is_valid]
         resolved_budget = _resolve_budget(len(valid_indices), budget=budget, budget_fraction=budget_fraction)
 
-        boundaries = [float(boundary) for segment in segments for boundary in segment]
-        for boundary in boundaries:
-            boundary_total += 1
+        boundaries = _gt_boundaries(segments)
+        boundary_total += len(boundaries)
 
         boundary_candidates = _select_top_indices(bundle["boundary_score"], valid_mask, resolved_budget)
         action_candidates = _select_top_indices(bundle["action_score"], valid_mask, resolved_budget)
@@ -703,8 +730,6 @@ def compute_indirect_selection_quality_from_logits(
             if distance is not None:
                 all_selected_distances.append(float(distance))
                 boundary_selected_distances.append(float(distance))
-            if any(abs(float(idx) - boundary) <= float(boundary_radius) for boundary in boundaries):
-                boundary_hits += 1
             if float(target_row[idx]) >= 0.5:
                 action_selected_count += 1
             else:
@@ -716,10 +741,8 @@ def compute_indirect_selection_quality_from_logits(
 
         action_total += sum(1 for idx in valid_indices if float(target_row[idx]) >= 0.5)
         background_total += sum(1 for idx in valid_indices if float(target_row[idx]) < 0.5)
-        sample_boundary_hits = 0
-        for boundary in boundaries:
-            if any(abs(float(idx) - boundary) <= float(boundary_radius) for idx in selected):
-                sample_boundary_hits += 1
+        sample_boundary_hits = _boundary_hit_count(selected, boundaries, boundary_radius)
+        boundary_hits += sample_boundary_hits
         if boundaries and sample_boundary_hits == 0:
             zero_boundary_support_count += 1
 
@@ -770,8 +793,8 @@ def compute_indirect_selection_quality_from_logits(
                 "roles": selected_roles,
                 "selected_role_details": sample_selected_scores,
                 "boundary_radius": int(boundary_radius),
-                "boundary_support_r1": sample_boundary_hits / float(len(boundaries)) if boundaries else None,
-                "baseline_boundary_support_r1": None
+                f"boundary_support_r{int(boundary_radius)}": _boundary_support(sample_boundary_hits, len(boundaries)),
+                f"baseline_boundary_support_r{int(boundary_radius)}": None
                 if not boundaries
                 else sum(
                     1
@@ -793,14 +816,16 @@ def compute_indirect_selection_quality_from_logits(
             }
         )
 
-    indirect_support = None if boundary_total <= 0 else boundary_hits / float(boundary_total)
+    boundary_key = f"boundary_support_r{int(boundary_radius)}"
+    boundary_at_key = f"boundary_support@{int(boundary_radius)}"
+    indirect_support = _boundary_support(boundary_hits, boundary_total)
     indirect_metrics = {
         "budget": None if budget is None else int(budget),
         "budget_fraction": _safe_div(selected_count_total, sum(sum(1 for is_valid in row if bool(is_valid)) for row in valid_rows)),
         "selected_count": selected_count_total / float(max(len(selected_indices), 1)),
         "selected_indices": selected_indices,
-        "boundary_support_r1": indirect_support,
-        "boundary_support@1": indirect_support,
+        boundary_key: indirect_support,
+        boundary_at_key: indirect_support,
         "zero_support_rate": None if indirect_support is None else 1.0 - indirect_support,
         "mean_selected_run_length": None if not selected_run_lengths_all else sum(selected_run_lengths_all) / float(len(selected_run_lengths_all)),
         "mean_selected_distance_to_boundary": None if not all_selected_distances else sum(all_selected_distances) / float(len(all_selected_distances)),
@@ -819,9 +844,9 @@ def compute_indirect_selection_quality_from_logits(
         "indirect": indirect_metrics,
         "per_sample_rows": per_sample_rows,
         "delta": {
-            "boundary_support_r1": None
-            if baseline_metrics["boundary_support_r1"] is None or indirect_metrics["boundary_support_r1"] is None
-            else indirect_metrics["boundary_support_r1"] - baseline_metrics["boundary_support_r1"],
+            boundary_key: None
+            if baseline_metrics[boundary_key] is None or indirect_metrics[boundary_key] is None
+            else indirect_metrics[boundary_key] - baseline_metrics[boundary_key],
             "action_positive_coverage": None
             if baseline_metrics["action_positive_coverage"] is None or indirect_metrics["action_positive_coverage"] is None
             else indirect_metrics["action_positive_coverage"] - baseline_metrics["action_positive_coverage"],
@@ -1286,6 +1311,8 @@ def train_one_epoch(
                 loss=loss_sum / float(max(batch_count, 1)),
                 last_loss=float(loss.detach().cpu().item()),
             )
+    if batch_count <= 0:
+        raise ValueError("train_one_epoch processed zero batches; check max_train_batches and the dataloader")
     stats = {
         "loss": loss_sum / float(max(batch_count, 1)),
         "batches": batch_count,
@@ -1357,7 +1384,11 @@ def evaluate(
                     batch=batch_count,
                     expected_batches=total_batches,
                 )
+    if batch_count <= 0:
+        raise ValueError("evaluate processed zero validation batches; check max_val_batches and the dataloader")
     metrics = compute_binary_action_metrics(all_logits, all_targets, all_valid)
+    metrics["target_positive_frames"] = metrics["positive_count"]
+    metrics["target_negative_frames"] = metrics["negative_count"]
     metrics["sampling_quality"] = compute_sampling_quality_from_logits(
         logits=all_logits,
         target=all_targets,
@@ -1568,7 +1599,9 @@ def _reader_cfg_from_config(cfg: Any) -> dict[str, Any]:
     reader_cfg = dict(selector.get("reader", default_reader_cfg()))
     reader_cfg.setdefault("type", DEFAULT_READER_TYPE)
     if reader_cfg["type"] not in SUPPORTED_C3_READER_TYPES:
-        reader_cfg["type"] = DEFAULT_READER_TYPE
+        raise ValueError(
+            f"action probe expects one of {sorted(SUPPORTED_C3_READER_TYPES)}, got {reader_cfg['type']}"
+        )
     return reader_cfg
 
 
@@ -1581,7 +1614,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train/evaluate a C3 low-res action-vs-background frame probe.")
     parser.add_argument(
         "--config",
-        default="configs/adatad/thumos/pc_ot_mras_prebackbone_c3_physical_grid_actionformer_full_train_n16r4.py",
+        default=DEFAULT_PROBE_CONFIG,
         help="C3 config used only for reader settings and data pipeline.",
     )
     parser.add_argument("--out-dir", default="logs/lowres_action_probe", help="Output directory for summary.json.")
@@ -1605,8 +1638,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--coverage-budget", type=int, default=None)
     parser.add_argument("--boundary-radius", type=int, default=1)
     parser.add_argument("--sample-jsonl", default=None, help="Optional path for per-sample indirect-selection JSONL export.")
-    parser.add_argument("--max-train-batches", type=int, default=50)
-    parser.add_argument("--max-val-batches", type=int, default=50)
+    parser.add_argument("--max-train-batches", type=int, default=50, help="0 means no artificial train-batch cap.")
+    parser.add_argument("--max-val-batches", type=int, default=50, help="0 means no artificial val-batch cap.")
     parser.add_argument("--log-every-batches", type=int, default=10)
     parser.add_argument("--ann-file", default=None, help="Optional local THUMOS annotation override.")
     parser.add_argument("--class-map", default=None, help="Optional local category_idx.txt override.")
@@ -1619,7 +1652,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--fast-lowres-pipeline", action="store_true", help="Replace video augmentation with 32x32 probe pipeline.")
     parser.add_argument("--probe-window-size", type=int, default=None, help="Optional shorter frame window for fast local diagnostics.")
     parser.add_argument("--save-checkpoint", action="store_true")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if int(args.max_train_batches) < 0:
+        parser.error("--max-train-batches must be >= 0")
+    if int(args.max_val_batches) < 0:
+        parser.error("--max-val-batches must be >= 0")
+    return args
 
 
 def _build_probe_model(args: argparse.Namespace, cfg: Any, *, spatial_size: int):
@@ -1832,7 +1870,7 @@ def _run_probe_experiment(
         "config": str(args.config),
         "dataset_overrides": dataset_overrides,
         "pipeline_rewrites": pipeline_rewrites,
-        "reader_type": DEFAULT_READER_TYPE if args.probe_model == "c3-reader" else None,
+        "reader_type": reader_cfg.get("type") if reader_cfg is not None else None,
         "reader_cfg": reader_cfg,
         "probe_model": args.probe_model,
         "spatial_size": int(spatial_size),
