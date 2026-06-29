@@ -22,13 +22,13 @@ def _features_for_pos(scout, bracket, pos, selected_positions=None):
         "short_action_risk": float(max(scout.short_action_risk[int(pos)], bracket.short_action_risk)),
         "two_sided_state_contrast": float(bracket.two_sided_state_contrast),
         "bracket_width_frames": float(bracket.width_frames),
-        "gap_if_omitted_frames": float(max(nearest_gap, bracket.width_frames)),
+        "gap_if_omitted_frames": float(nearest_gap),
         "gap_risk": float(bracket.gap_risk),
         "belief_entropy": float(bracket.entropy),
     }
 
 
-def _packet(packet_id, role, source, pos, scout, bracket, video_id, window_id, split, rank, reason, required=False):
+def _packet(packet_id, role, source, pos, scout, bracket, video_id, window_id, split, rank, reason, required=False, selected_positions=None):
     return CandidatePacket(
         packet_id=int(packet_id),
         video_id=video_id,
@@ -43,7 +43,7 @@ def _packet(packet_id, role, source, pos, scout, bracket, video_id, window_id, s
         visibility=float(np.clip(1.0 - 0.35 * bracket.entropy, 0.0, 1.0)),
         rank=int(rank),
         reason=reason,
-        feature_summary=_features_for_pos(scout, bracket, _clip_pos(pos, scout.dense_T)),
+        feature_summary=_features_for_pos(scout, bracket, _clip_pos(pos, scout.dense_T), selected_positions=selected_positions),
         required_for_role_coverage=bool(required),
     )
 
@@ -56,8 +56,10 @@ def build_witness_packets(
     window_id=0,
     split="synthetic",
     start_packet_id=1000,
+    max_gap=None,
 ):
     scaffold_positions = [] if scaffold_positions is None else list(scaffold_positions)
+    max_gap = int(max_gap if max_gap is not None else max(3, scout.dense_T // 8))
     packets = []
     next_id = int(start_packet_id)
     for bracket in brackets:
@@ -99,16 +101,17 @@ def build_witness_packets(
                     rank=len(packets),
                     reason=reason,
                     required=required,
+                    selected_positions=scaffold_positions,
                 )
             )
             next_id += 1
 
     stats = gap_statistics(scaffold_positions, scout.dense_T) if scaffold_positions else {"max_gap": scout.dense_T}
-    if stats["max_gap"] > max(3, scout.dense_T // 8):
+    if stats["max_gap"] > max_gap:
         ordered = sorted(scaffold_positions)
         edges = [-1] + ordered + [int(scout.dense_T)]
         for left, right in zip(edges[:-1], edges[1:]):
-            if right - left - 1 <= max(3, scout.dense_T // 8):
+            if right - left - 1 <= max_gap:
                 continue
             midpoint = _clip_pos((left + right) // 2, scout.dense_T)
             fake_bracket = BracketState(
@@ -147,9 +150,9 @@ def build_witness_packets(
                 rank=len(packets),
                 reason="residual_gap_bridge_candidate",
                 required=True,
+                selected_positions=scaffold_positions,
             )
             packet.max_gap_repair = True
             packets.append(packet)
             next_id += 1
     return packets
-

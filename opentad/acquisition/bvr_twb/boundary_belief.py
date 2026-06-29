@@ -102,3 +102,57 @@ def estimate_boundary_beliefs(
             )
         )
     return brackets
+
+
+def required_witness_roles_for_bracket(bracket):
+    if bracket.kind == "start_like":
+        return {"transition_before", "transition_center", "action_core"}
+    if bracket.kind == "end_like":
+        return {"transition_center", "transition_after", "action_core"}
+    if bracket.kind == "action_island":
+        return {"transition_before", "transition_after", "short_action_guard"}
+    if bracket.kind == "unknown_transition":
+        return {"transition_before", "transition_center", "transition_after", "ambiguity_probe"}
+    return {"transition_center"}
+
+
+def update_boundary_belief_trace(brackets, selected_packets, safe_width=None):
+    selected_by_bracket = {}
+    for packet in selected_packets:
+        if packet.bracket_id is None:
+            continue
+        selected_by_bracket.setdefault(packet.bracket_id, []).append(packet)
+
+    trace = []
+    for bracket in brackets:
+        required = required_witness_roles_for_bracket(bracket)
+        selected = selected_by_bracket.get(bracket.bracket_id, [])
+        roles = {packet.role for packet in selected}
+        positions = sorted({pos for packet in selected for pos in packet.positions})
+        role_coverage = len(required.intersection(roles)) / float(max(len(required), 1))
+        center_hit = any(abs(int(pos) - int(bracket.center_pos)) <= 1 for pos in positions)
+        two_sided = bool({"transition_before", "transition_after"}.issubset(roles))
+        short_guard = bool("short_action_guard" in roles)
+        reduction = 0.45 * role_coverage + 0.18 * float(center_hit) + 0.12 * float(two_sided) + 0.10 * float(short_guard)
+        if not selected:
+            reduction = 0.0
+        posterior_width = float(max(1.0, float(bracket.width_p80_frames) * (1.0 - min(reduction, 0.72))))
+        posterior_entropy = float(max(0.0, float(bracket.entropy) * (1.0 - min(reduction, 0.60))))
+        trace.append(
+            {
+                "bracket_id": int(bracket.bracket_id),
+                "kind": bracket.kind,
+                "initial_width_p80_frames": float(bracket.width_p80_frames),
+                "posterior_width_p80_frames": posterior_width,
+                "initial_entropy": float(bracket.entropy),
+                "posterior_entropy": posterior_entropy,
+                "required_roles": sorted(required),
+                "selected_roles": sorted(roles),
+                "role_coverage": float(role_coverage),
+                "center_hit": bool(center_hit),
+                "two_sided_witness": bool(two_sided),
+                "updated_from_selected_witness": bool(selected),
+                "belief_width_safe": bool(safe_width is not None and posterior_width <= float(safe_width)),
+            }
+        )
+    return trace

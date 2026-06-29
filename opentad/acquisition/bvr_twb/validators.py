@@ -5,6 +5,17 @@ import numpy as np
 from .scaffold import gap_statistics
 from .types import FORBIDDEN_DEPLOY_KEYS, FORBIDDEN_ROUTE_TOKENS, ROUTE_LABEL, STOP_REASONS, sorted_unique_positions
 
+LOCAL_GATHER_CLAIM_STATUS = "local_gather_smoke_only_no_sparse_compute_or_metric_claim"
+
+VALUE_COMPONENT_KEYS = {
+    "belief_width_gain",
+    "role_gain",
+    "gap_gain",
+    "short_action_gain",
+    "redundancy_repulsion_penalty",
+    "low_actionness_component",
+}
+
 
 def _walk_dict(obj, prefix=""):
     if isinstance(obj, dict):
@@ -141,6 +152,79 @@ def validate_sparse_gather_evidence(evidence, dense_T, valid_k, require_detector
     return True
 
 
+def validate_summary_claim_status(summary, claim_mode="local_gather_smoke"):
+    status = summary.get("claim_status")
+    if claim_mode == "local_gather_smoke":
+        if status != LOCAL_GATHER_CLAIM_STATUS:
+            raise ValueError(f"claim_status must stay locked as {LOCAL_GATHER_CLAIM_STATUS}, got {status}")
+    elif claim_mode == "sparse_forward_audit":
+        if status == LOCAL_GATHER_CLAIM_STATUS:
+            raise ValueError("sparse_forward_audit summary cannot reuse local gather claim_status")
+    else:
+        raise ValueError(f"unsupported claim_mode: {claim_mode}")
+    return True
+
+
+def validate_value_components(components):
+    if not isinstance(components, dict):
+        raise ValueError("value_components must be a dict")
+    missing = sorted(VALUE_COMPONENT_KEYS.difference(components.keys()))
+    if missing:
+        raise ValueError(f"value_components missing fields: {missing}")
+    for key in VALUE_COMPONENT_KEYS:
+        value = float(components[key])
+        if not np.isfinite(value):
+            raise ValueError(f"value_components contains non-finite field: {key}")
+    return True
+
+
+def validate_candidate_packet_ledger(row):
+    required = {
+        "route_label",
+        "method",
+        "packet_id",
+        "video_id",
+        "window_id",
+        "split",
+        "packet_source",
+        "packet_role",
+        "packet_positions",
+        "packet_cost_frames",
+        "rank",
+        "reason",
+        "value_components",
+    }
+    missing = sorted(required.difference(row.keys()))
+    if missing:
+        raise ValueError(f"candidate packet ledger missing fields: {missing}")
+    validate_route_identity(row)
+    validate_selected_positions(row["packet_positions"], row.get("dense_T", max(row["packet_positions"]) + 1))
+    validate_value_components(row["value_components"])
+    if float(row["packet_cost_frames"]) <= 0:
+        raise ValueError("candidate packet cost must be positive")
+    return True
+
+
+def validate_selection_row_schema(row):
+    required = {
+        "selected_decision",
+        "selected_decision_subreason",
+        "constraint_state",
+        "value_components",
+    }
+    missing = sorted(required.difference(row.keys()))
+    if missing:
+        raise ValueError(f"selection row missing fields: {missing}")
+    validate_value_components(row["value_components"])
+    state = row["constraint_state"]
+    if not isinstance(state, dict):
+        raise ValueError("constraint_state must be a dict")
+    for key in ("max_gap_ok", "budget_ok", "duplicate"):
+        if key not in state:
+            raise ValueError(f"constraint_state missing field: {key}")
+    return True
+
+
 def build_selection_gap_diagnostics(selected_positions, dense_T, max_allowed_gap):
     stats = gap_statistics(selected_positions, dense_T)
     max_allowed_gap = int(max_allowed_gap)
@@ -184,12 +268,22 @@ def validate_deploy_ledger(ledger):
     validate_no_leakage(ledger)
     dense_T = int(ledger["dense_T"])
     valid_k = int(ledger["valid_k"])
+    claim_mode = ledger.get("claim_mode")
+    if claim_mode not in {"local_gather_smoke", "sparse_forward_audit"}:
+        raise ValueError(f"deploy ledger requires explicit claim_mode, got {claim_mode}")
     validate_selected_positions(ledger["selected_positions"], dense_T, valid_k=valid_k)
     if ledger.get("budget_stop_reason") not in STOP_REASONS:
         raise ValueError(f"invalid budget_stop_reason: {ledger.get('budget_stop_reason')}")
     validate_selection_gap_diagnostics(ledger)
     validate_original_time_metadata(ledger.get("original_time_metadata", ledger))
-    validate_sparse_gather_evidence(ledger["real_sparse_evidence"], dense_T=dense_T, valid_k=valid_k, require_detector_forward=False)
+    validate_sparse_gather_evidence(
+        ledger["real_sparse_evidence"],
+        dense_T=dense_T,
+        valid_k=valid_k,
+        require_detector_forward=claim_mode == "sparse_forward_audit",
+    )
+    if claim_mode == "local_gather_smoke" and bool(ledger["real_sparse_evidence"].get("sparse_compute_claim", False)):
+        raise ValueError("local_gather_smoke claim_mode cannot claim sparse compute")
     absent = ledger.get("forbidden_fields_absent", {})
     if not all(bool(value) for value in absent.values()):
         raise ValueError("forbidden_fields_absent flags must all be true")
@@ -231,11 +325,14 @@ def validate_dynamicity_and_uniform_mimicry(ledgers, dynamic_enabled=True, max_u
         raise ValueError("dynamic controller collapsed to constant-K across synthetic cases")
     if dynamic_enabled and stops.get("budget_cap", 0) == len(ledgers):
         raise ValueError("dynamic controller is budget-cap-only")
+    if max(overlaps) >= float(max_uniform_overlap):
+        raise ValueError("BVR-TWB selection has a per-case exact-uniform overlap violation")
     if float(np.mean(overlaps)) >= float(max_uniform_overlap):
         raise ValueError("BVR-TWB selection overlaps exact-uniform too strongly")
     return {
         "k_values": ks,
         "stop_reason_counts": dict(stops),
         "mean_uniform_overlap": float(np.mean(overlaps)),
+        "per_case_uniform_overlap": [float(value) for value in overlaps],
         "max_scaffold_ratio": float(max(scaffold_ratios)),
     }

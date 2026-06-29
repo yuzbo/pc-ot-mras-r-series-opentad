@@ -34,3 +34,19 @@ Expected output files:
 - `.tmp_bvr_twb_ledgers/summary.json`
 
 Evidence status: local ledger and gather smoke only. No detector metric, FLOPs, latency, deployment readiness, or paper claim is unlocked by this implementation.
+
+## Local Pro-Fix Update
+
+Updated after the GitHub-only Rosetta GPT-5.5 Pro `PASS_ALLOW_LOCAL_FIX_IMPLEMENTATION` decision:
+
+- Boundary belief now records a posterior `belief_update_trace` after selected witness packets. `belief_width_safe` is based on updated witness evidence, not only initial bracket width.
+- The controller records per-add `constraint_state`, `selected_decision_subreason`, marginal value components, duplicate/budget/gap checks, and incremental max-gap repair rows.
+- Value scoring exposes component diagnostics: `belief_width_gain`, `role_gain`, `gap_gain`, `short_action_gain`, `redundancy_repulsion_penalty`, and `low_actionness_component`.
+- Witness packet gap features receive scaffold/selected positions, and residual `gap_bridge` candidate generation uses the explicit BVR `max_gap` contract.
+- StateScout deploy metadata rejection is recursive over nested dict/list structures.
+- Deploy ledgers now carry explicit `claim_mode`. The local mode remains `local_gather_smoke`; sparse compute remains locked unless a future `sparse_forward_audit` proves `detector_forward_temporal_len == valid_k < dense_T` and no dense raw handoff.
+- Matched controls inherit BVR max-gap by default and record random seed, jitter, per-case uniform overlap, scaffold-only policy, and `twb_no_regret` uniform fallback count/ratio.
+- Synthetic summaries add posterior belief width and fallback diagnostics while keeping `claim_status` exactly `local_gather_smoke_only_no_sparse_compute_or_metric_claim`.
+- Final-review blocker fix: `belief_width_safe` now requires every active bracket in `active_belief_update_trace` to be updated by selected witness packets and individually `belief_width_safe=True`. Uncovered active brackets are not excluded from the stop decision. `_infer_stop_reason` uses the same all-active-safe semantics.
+
+Still locked: remote sync, Slurm, training, validation/test evaluation, mAP, runtime/FLOPs, deploy claims, paper claims, C3/combo merge, T2 first-version dependency, and dense raw handoff sparse claims.

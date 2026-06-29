@@ -9,6 +9,7 @@ from .validators import (
     build_original_time_metadata,
     build_selection_gap_diagnostics,
     exact_uniform_positions,
+    overlap_ratio,
     validate_deploy_ledger,
 )
 
@@ -78,10 +79,11 @@ def _ensure_gap_safe_same_k(positions, dense_T, k, max_gap):
     return positions
 
 
-def _build_control_ledger(name, positions, dense_T, fps, video_id, window_id, split, dense_inputs, scaffold_k=0, max_gap=None):
+def _build_control_ledger(name, positions, dense_T, fps, video_id, window_id, split, dense_inputs, scaffold_k=0, max_gap=None, extra=None):
     positions = sorted_unique_positions(positions, dense_T)
     if max_gap is None:
         max_gap = int(dense_T)
+    extra = {} if extra is None else dict(extra)
     _, evidence = sparse_gather(dense_inputs, positions, temporal_dim=0, detector_forward_exists=False)
     metadata = build_original_time_metadata(
         dense_T=dense_T,
@@ -101,6 +103,7 @@ def _build_control_ledger(name, positions, dense_T, fps, video_id, window_id, sp
         "selected_positions": positions,
         "selected_times_sec": metadata["selected_times_sec"],
         "selected_positions_unit": "original_dense_index",
+        "claim_mode": "local_gather_smoke",
         "valid_k": int(len(positions)),
         "scaffold_k": int(scaffold_k),
         "min_k": int(len(positions)),
@@ -136,7 +139,9 @@ def _build_control_ledger(name, positions, dense_T, fps, video_id, window_id, sp
         },
         "uses_same_gather_time_validator_path": True,
         "dense_handoff_used": False,
+        "uniform_overlap_ratio": overlap_ratio(positions, exact_uniform_positions(dense_T, len(positions))),
     }
+    ledger.update(extra)
     validate_deploy_ledger(ledger)
     return ledger
 
@@ -149,7 +154,7 @@ def build_matched_controls(
     random_seed=17,
     mean_k=None,
     scaffold_k=4,
-    max_gap=16,
+    max_gap=None,
 ):
     ledgers = list(bvr_ledgers)
     if not ledgers:
@@ -163,6 +168,7 @@ def build_matched_controls(
     for row in ledgers:
         dense_T = int(row["dense_T"])
         k = int(row["valid_k"])
+        case_max_gap = int(max_gap if max_gap is not None else row["selection_gap_diagnostics"]["max_allowed_gap"])
         video_id = row["video_id"]
         window_id = int(row.get("window_id", 0))
         split = row.get("split", "synthetic")
@@ -180,7 +186,8 @@ def build_matched_controls(
                 window_id,
                 split,
                 dense_inputs,
-                max_gap=max_gap,
+                max_gap=case_max_gap,
+                extra={"control_policy": "same_k_uniform"},
             )
         )
         controls.append(
@@ -193,26 +200,34 @@ def build_matched_controls(
                 window_id,
                 split,
                 dense_inputs,
-                max_gap=max_gap,
+                max_gap=case_max_gap,
+                extra={"control_policy": "same_mean_k_exact_uniform"},
             )
         )
+        random_control_seed = int(random_seed + _stable_seed(video_id))
+        random_jitter = max(1, int(case_max_gap) // 4) if k > 2 else 0
         controls.append(
             _build_control_ledger(
                 "random_same_k",
-                _gap_safe_random_same_k(dense_T, k, random_seed + _stable_seed(video_id), max_gap),
+                _gap_safe_random_same_k(dense_T, k, random_control_seed, case_max_gap),
                 dense_T,
                 fps,
                 video_id,
                 window_id,
                 split,
                 dense_inputs,
-                max_gap=max_gap,
+                max_gap=case_max_gap,
+                extra={
+                    "control_policy": "random_same_k_gap_safe_jitter",
+                    "control_random_seed": random_control_seed,
+                    "control_jitter": int(random_jitter),
+                },
             )
         )
         scaffold_packets = build_scaffold_packets(
             dense_T=dense_T,
             scaffold_k=min(scaffold_k, max(k, 1)),
-            max_gap=max_gap,
+            max_gap=case_max_gap,
             video_id=video_id,
             window_id=window_id,
             split=split,
@@ -223,7 +238,7 @@ def build_matched_controls(
         controls.append(
             _build_control_ledger(
                 "scaffold_only",
-                _ensure_gap_safe_same_k(scaffold_positions, dense_T, max(1, min(len(scaffold_positions), k)), max_gap),
+                _ensure_gap_safe_same_k(scaffold_positions, dense_T, max(1, min(len(scaffold_positions), k)), case_max_gap),
                 dense_T,
                 fps,
                 video_id,
@@ -231,7 +246,8 @@ def build_matched_controls(
                 split,
                 dense_inputs,
                 scaffold_k=len(scaffold_positions[: max(1, min(len(scaffold_positions), k))]),
-                max_gap=max_gap,
+                max_gap=case_max_gap,
+                extra={"control_policy": "scaffold_only_max_gap_repaired"},
             )
         )
         candidates = list(candidate_packets_by_video.get(video_id, []))
@@ -245,6 +261,7 @@ def build_matched_controls(
             ),
         )
         twb_positions = []
+        uniform_fallback_count = 0
         for packet in twb_order:
             for pos in packet.positions:
                 if pos not in twb_positions:
@@ -255,19 +272,28 @@ def build_matched_controls(
             for pos in _uniform_same_k(dense_T, k):
                 if pos not in twb_positions:
                     twb_positions.append(pos)
+                    uniform_fallback_count += 1
                 if len(twb_positions) >= k:
                     break
+        ensured_twb = _ensure_gap_safe_same_k(twb_positions, dense_T, k, case_max_gap)
+        if ensured_twb == _uniform_same_k(dense_T, k) and sorted_unique_positions(twb_positions, dense_T)[:k] != ensured_twb:
+            uniform_fallback_count = k
         controls.append(
             _build_control_ledger(
                 "twb_no_regret",
-                _ensure_gap_safe_same_k(twb_positions, dense_T, k, max_gap),
+                ensured_twb,
                 dense_T,
                 fps,
                 video_id,
                 window_id,
                 split,
                 dense_inputs,
-                max_gap=max_gap,
+                max_gap=case_max_gap,
+                extra={
+                    "control_policy": "twb_no_regret_gap_safe",
+                    "uniform_fallback_count": int(uniform_fallback_count),
+                    "uniform_fallback_ratio": float(uniform_fallback_count) / float(max(k, 1)),
+                },
             )
         )
     return controls

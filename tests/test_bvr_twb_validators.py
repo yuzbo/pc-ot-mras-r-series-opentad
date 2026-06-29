@@ -4,17 +4,21 @@ import pytest
 from opentad.acquisition.bvr_twb.budget_controller import DynamicBudgetController
 from opentad.acquisition.bvr_twb.scaffold import build_scaffold_packets
 from opentad.acquisition.bvr_twb.sparse_gather import sparse_gather
-from opentad.acquisition.bvr_twb.types import BudgetConfig, ROUTE_LABEL
+from opentad.acquisition.bvr_twb.state_scout import build_scout_from_actionness
+from opentad.acquisition.bvr_twb.types import BudgetConfig, CandidatePacket, ROUTE_LABEL
 from opentad.acquisition.bvr_twb.validators import (
     build_original_time_metadata,
     build_selection_gap_diagnostics,
+    validate_candidate_packet_ledger,
     validate_deploy_ledger,
     validate_dynamicity_and_uniform_mimicry,
     validate_no_leakage,
     validate_original_time_metadata,
     validate_route_identity,
     validate_selected_positions,
+    validate_selection_row_schema,
     validate_sparse_gather_evidence,
+    validate_summary_claim_status,
 )
 
 
@@ -42,6 +46,14 @@ def test_no_leakage_rejects_gt_teacher_dense_prediction_and_cache():
             validate_no_leakage({key: [1]})
     with pytest.raises(ValueError, match="must be false"):
         validate_no_leakage({"provenance": {"selection_uses_gt": True}})
+
+
+def test_state_scout_rejects_forbidden_metadata_recursively():
+    with pytest.raises(ValueError, match="forbidden"):
+        build_scout_from_actionness(
+            [0.1, 0.2, 0.1, 0.3],
+            metadata={"outer": [{"safe": True}, {"nested": {"teacher_logits": [0.3]}}]},
+        )
 
 
 def test_selected_positions_are_sorted_unique_original_dense_indices():
@@ -86,6 +98,72 @@ def test_sparse_gather_fingerprint_and_local_status_contracts():
     with pytest.raises(ValueError, match="smaller than dense_T"):
         validate_sparse_gather_evidence(dense_handoff, dense_T=10, valid_k=10)
 
+    _, audited = sparse_gather(
+        dense,
+        [0, 3, 7],
+        temporal_dim=0,
+        detector_forward_exists=True,
+        detector_forward_temporal_len=3,
+    )
+    assert audited["status"] == "detector_forward_sparse_audited"
+    assert validate_sparse_gather_evidence(audited, dense_T=10, valid_k=3, require_detector_forward=True)
+    bad_forward = dict(audited, detector_forward_temporal_len=10)
+    with pytest.raises(ValueError, match="temporal length must equal valid_k"):
+        validate_sparse_gather_evidence(bad_forward, dense_T=10, valid_k=3, require_detector_forward=True)
+    bad_dense = dict(audited, dense_raw_backbone_handoff=True)
+    with pytest.raises(ValueError, match="dense_raw_backbone_handoff"):
+        validate_sparse_gather_evidence(bad_dense, dense_T=10, valid_k=3, require_detector_forward=True)
+
+
+def test_candidate_packet_and_selection_rows_require_component_schema():
+    packet = CandidatePacket(
+        packet_id=7,
+        video_id="v",
+        window_id=0,
+        split="synthetic",
+        source="twb",
+        role="transition_center",
+        positions=[3],
+        dense_T=12,
+        reason="center witness",
+        feature_summary={"gap_if_omitted_frames": 4.0},
+    )
+    row = packet.to_ledger_dict()
+    row["value_components"] = {
+        "belief_width_gain": 0.2,
+        "role_gain": 0.1,
+        "gap_gain": 0.0,
+        "short_action_gain": 0.0,
+        "redundancy_repulsion_penalty": 0.0,
+        "low_actionness_component": 0.03,
+    }
+    assert validate_candidate_packet_ledger(row)
+    bad_packet = dict(row)
+    bad_packet.pop("packet_positions")
+    with pytest.raises(ValueError, match="candidate packet ledger missing"):
+        validate_candidate_packet_ledger(bad_packet)
+
+    selection_row = {
+        "selected_decision": "selected",
+        "selected_decision_subreason": "marginal_gain_positive",
+        "constraint_state": {"max_gap_ok": True, "budget_ok": True, "duplicate": False},
+        "value_components": row["value_components"],
+    }
+    assert validate_selection_row_schema(selection_row)
+    bad_selection = dict(selection_row)
+    bad_selection.pop("selected_decision_subreason")
+    with pytest.raises(ValueError, match="selection row missing"):
+        validate_selection_row_schema(bad_selection)
+
+
+def test_summary_claim_status_is_locked_for_local_gather_smoke():
+    assert validate_summary_claim_status(
+        {"claim_status": "local_gather_smoke_only_no_sparse_compute_or_metric_claim"},
+        claim_mode="local_gather_smoke",
+    )
+    with pytest.raises(ValueError, match="claim_status"):
+        validate_summary_claim_status({"claim_status": "metric_claim_unlocked"}, claim_mode="local_gather_smoke")
+
 
 def test_deploy_ledger_validator_rejects_dense_handoff_and_bad_decode():
     dense = np.arange(16, dtype=np.float64).reshape(8, 2)
@@ -100,6 +178,7 @@ def test_deploy_ledger_validator_rejects_dense_handoff_and_bad_decode():
         "dense_T": 8,
         "selected_positions": [0, 3, 6],
         "selected_times_sec": meta["selected_times_sec"],
+        "claim_mode": "local_gather_smoke",
         "valid_k": 3,
         "scaffold_k": 1,
         "min_k": 2,
@@ -156,6 +235,32 @@ def test_controller_fails_closed_when_max_gap_infeasible_under_budget():
             video_id="infeasible_gap",
             split="synthetic",
         )
+
+
+def test_gap_repair_rows_are_incremental_and_equal_max_gap_is_safe():
+    scaffold = build_scaffold_packets(
+        dense_T=64,
+        scaffold_k=2,
+        max_gap=64,
+        video_id="gap_incremental",
+        split="synthetic",
+    )
+    controller = DynamicBudgetController(BudgetConfig(min_k=2, max_k=9, max_gap=15))
+    result = controller.select(
+        scaffold_packets=scaffold,
+        candidate_packets=[],
+        brackets=[],
+        dense_T=64,
+        video_id="gap_incremental",
+        split="synthetic",
+    )
+    repair_rows = [row for row in result.ledger_rows if row["selected_decision"] == "selected_gap_guard"]
+    assert len(repair_rows) >= 2
+    after_lengths = [len(row["selected_after_positions"]) for row in repair_rows]
+    assert after_lengths == sorted(after_lengths)
+    assert all((b - a) == 1 for a, b in zip(after_lengths, after_lengths[1:]))
+    assert result.deploy_ledger["selection_gap_diagnostics"]["max_gap"] == 15
+    assert result.stop_reason != "gap_guard"
 
 
 def test_dynamicity_gate_rejects_constant_k_budget_cap_and_uniform_mimicry():

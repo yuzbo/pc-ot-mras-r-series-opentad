@@ -181,6 +181,7 @@ class CandidatePacket:
             "video_id": self.video_id,
             "window_id": int(self.window_id),
             "split": self.split,
+            "dense_T": int(self.dense_T),
             "packet_source": self.source,
             "packet_role": self.role,
             "bracket_id": self.bracket_id,
@@ -190,6 +191,7 @@ class CandidatePacket:
             "expected_belief_reduction": None if value is None else float(value.expected_belief_reduction),
             "value_uncertainty": None if value is None else float(value.value_uncertainty),
             "value_per_cost": None if value is None else float(value.value_per_cost),
+            "value_components": {} if value is None else dict(value.diagnostics.get("value_components", {})),
             "rank": int(self.rank),
             "reason": self.reason,
         }
@@ -262,4 +264,3 @@ class SelectionResult:
     ledger_rows: List[Dict[str, object]]
     deploy_ledger: Dict[str, object]
     stop_reason: str
-

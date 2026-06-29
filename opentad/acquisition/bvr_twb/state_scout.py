@@ -35,10 +35,20 @@ def _scaled_change(values, scale=0.35):
 def _reject_forbidden_metadata(metadata):
     if not metadata:
         return
-    lower_keys = {str(key).lower() for key in metadata.keys()}
-    for forbidden in FORBIDDEN_DEPLOY_KEYS:
-        if forbidden.lower() in lower_keys:
-            raise ValueError(f"StateScout deploy metadata contains forbidden key: {forbidden}")
+    stack = [("", metadata)]
+    while stack:
+        prefix, current = stack.pop()
+        if isinstance(current, dict):
+            for key, value in current.items():
+                path = f"{prefix}.{key}" if prefix else str(key)
+                key_l = str(key).lower()
+                for forbidden in FORBIDDEN_DEPLOY_KEYS:
+                    if forbidden.lower() == key_l:
+                        raise ValueError(f"StateScout deploy metadata contains forbidden key at {path}: {forbidden}")
+                stack.append((path, value))
+        elif isinstance(current, (list, tuple)):
+            for idx, value in enumerate(current):
+                stack.append((f"{prefix}[{idx}]", value))
 
 
 def build_scout_from_actionness(

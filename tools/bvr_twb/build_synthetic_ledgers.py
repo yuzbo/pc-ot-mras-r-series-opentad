@@ -21,7 +21,7 @@ from opentad.acquisition.bvr_twb import (
     estimate_boundary_beliefs,
 )
 from opentad.acquisition.bvr_twb.types import BudgetConfig, ROUTE_LABEL
-from opentad.acquisition.bvr_twb.validators import validate_dynamicity_and_uniform_mimicry
+from opentad.acquisition.bvr_twb.validators import LOCAL_GATHER_CLAIM_STATUS, validate_dynamicity_and_uniform_mimicry, validate_summary_claim_status
 
 
 def _gaussian(length, center, width, height=1.0):
@@ -79,6 +79,7 @@ def run_bvr_case(name, p_action, motion_signal=None, fps=30.0):
         video_id=name,
         split="synthetic",
         start_packet_id=100,
+        max_gap=22,
     )
     predictor = PacketValuePredictor(mode="heuristic_fallback")
     predictor.score_packets(scaffold + candidates)
@@ -127,8 +128,8 @@ def safe_prepare_output_dir(out_dir, overwrite=False, root=ROOT):
     return resolved_out
 
 
-def build_ledgers(out_dir, overwrite=False):
-    out = safe_prepare_output_dir(out_dir, overwrite=overwrite)
+def build_ledgers(out_dir, overwrite=False, root=ROOT):
+    out = safe_prepare_output_dir(out_dir, overwrite=overwrite, root=root)
 
     bvr_ledgers = []
     decision_rows = []
@@ -159,14 +160,29 @@ def build_ledgers(out_dir, overwrite=False):
     write_jsonl(out / "bvr_twb_matched_controls.jsonl", controls)
     summary = {
         "route_label": ROUTE_LABEL,
+        "claim_mode": "local_gather_smoke",
         "num_cases": len(bvr_ledgers),
         "k_values": [row["valid_k"] for row in bvr_ledgers],
         "mean_k": float(np.mean([row["valid_k"] for row in bvr_ledgers])),
         "stop_reasons": dict(Counter(row["budget_stop_reason"] for row in bvr_ledgers)),
         "dynamicity": dynamic_diag,
         "controls": dict(Counter(row["control_name"] for row in controls)),
-        "claim_status": "local_gather_smoke_only_no_sparse_compute_or_metric_claim",
+        "mean_initial_belief_width_p80": float(
+            np.mean([row["bracket_summary"]["initial_mean_belief_width_p80"] for row in bvr_ledgers])
+        ),
+        "mean_posterior_belief_width_p80": float(
+            np.mean([row["bracket_summary"]["posterior_mean_belief_width_p80"] for row in bvr_ledgers])
+        ),
+        "mean_uniform_overlap": float(dynamic_diag["mean_uniform_overlap"]),
+        "twb_no_regret_uniform_fallback_count": int(
+            sum(row.get("uniform_fallback_count", 0) for row in controls if row["control_name"] == "twb_no_regret")
+        ),
+        "twb_no_regret_uniform_fallback_ratio": float(
+            np.mean([row.get("uniform_fallback_ratio", 0.0) for row in controls if row["control_name"] == "twb_no_regret"])
+        ),
+        "claim_status": LOCAL_GATHER_CLAIM_STATUS,
     }
+    validate_summary_claim_status(summary, claim_mode="local_gather_smoke")
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     return summary
 
