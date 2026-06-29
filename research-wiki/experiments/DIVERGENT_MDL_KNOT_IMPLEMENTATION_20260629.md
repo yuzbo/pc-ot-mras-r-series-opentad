@@ -103,3 +103,29 @@ Fix:
 Still locked:
 
 - No remote sync, Slurm, training, evaluation, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper, or sparse-compute claim is unlocked by this local repair.
+
+## 2026-06-30 Remote PRECHECK_ONLY After Route-Identity Repair
+
+Recorded 2026-06-30T04:16:12+08:00.
+
+Current commit: `dc0c9cb`.
+GitHub branch: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-mdl-knot-fullcode-20260629`.
+Remote clone: `/data/home/sczc063/run/yuzibo/OpenTAD_MDLKnot_Final_20260630_dc0c9cb`.
+Remote log dir: `logs/precheck_20260630_mdl_dc0c9cb/`.
+
+Verification:
+
+- Local tests: `22 passed, 1 skipped`.
+- Local and final read-only review: `PASS_SUBAGENT_FINAL_REVIEW_ONLY`.
+- N16R4 login-node gate:
+  - `python tools/mdl_knot/validate_mdl_knot_launch_gate.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py`: `PRECHECK_ONLY_REQUEST_ALLOWED`.
+- N16R4 login-node audit:
+  - `python tools/mdl_knot/audit_mdl_knot_pipeline_precheck.py --out-dir logs/precheck_20260630_mdl_dc0c9cb/audit --overwrite`: wrote `VALIDATED_PRECHECK_SUMMARY=logs/precheck_20260630_mdl_dc0c9cb/audit/mdl_knot_precheck_summary.json`.
+- N16R4 gate with summary:
+  - `python tools/mdl_knot/validate_mdl_knot_launch_gate.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py --precheck-summary logs/precheck_20260630_mdl_dc0c9cb/audit/mdl_knot_precheck_summary.json`: `PRECHECK_ONLY_REQUEST_ALLOWED`.
+
+The current formal scout source is `raw_frame_motion_scout_with_metadata_fallback`, synthetic fallback is disabled for formal config, and all split safety flags report no GT selector, no teacher, no prediction cache, and no dense raw backbone handoff.
+
+Still locked:
+
+- Slurm, `tools/train.py`, `tools/test.py`, evaluation, detector mAP, runtime/FLOPs, deployment readiness, paper claims, and any C3/combo mixing.
