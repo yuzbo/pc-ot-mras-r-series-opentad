@@ -2,18 +2,34 @@ from collections import Counter
 
 import numpy as np
 
+from .adapter_bridge import ADAPTER_FIXED_LENGTH_PADDED_BRIDGE, build_detector_feature_centers_from_raw
 from .scaffold import gap_statistics
 from .types import FORBIDDEN_DEPLOY_KEYS, FORBIDDEN_ROUTE_TOKENS, ROUTE_LABEL, STOP_REASONS, sorted_unique_positions
 
 LOCAL_GATHER_CLAIM_STATUS = "local_gather_smoke_only_no_sparse_compute_or_metric_claim"
+SPARSE_FORWARD_SHAPE_ONLY_CLAIM_STATUS = "sparse_forward_precheck_shape_only_no_metric_claim"
+SPARSE_FORWARD_REAL_MODULE_CLAIM_STATUS = "sparse_forward_precheck_real_module_no_metric_claim"
+
+SPARSE_FORWARD_PASS_SHAPE_ONLY = "PASS_LOCAL_SHAPE_ONLY_NO_SPARSE_COMPUTE_CLAIM"
+SPARSE_FORWARD_PASS_REAL_MODULE = "PASS_REAL_MODULE_FORWARD_NO_METRIC_CLAIM"
+
+SPARSE_FORWARD_FAIL_DENSE_RAW_HANDOFF = "FAIL_DENSE_RAW_HANDOFF"
+SPARSE_FORWARD_FAIL_BACKBONE_DENSE_CHUNK_COUNT = "FAIL_BACKBONE_DENSE_CHUNK_COUNT"
+SPARSE_FORWARD_FAIL_DETECTOR_PAD_CONFUSED_AS_VALID = "FAIL_DETECTOR_PAD_CONFUSED_AS_VALID"
+SPARSE_FORWARD_FAIL_ORIGINAL_TIME_DECODE_MISSING = "FAIL_ORIGINAL_TIME_DECODE_MISSING"
+SPARSE_FORWARD_FAIL_LEAKAGE_FIELD_PRESENT = "FAIL_LEAKAGE_FIELD_PRESENT"
+SPARSE_FORWARD_FAIL_ROUTE_MIXING = "FAIL_ROUTE_MIXING"
+SPARSE_FORWARD_FAIL_SPARSE_CLAIM_UNLOCKED = "FAIL_SPARSE_COMPUTE_CLAIM_UNLOCKED"
 
 VALUE_COMPONENT_KEYS = {
-    "belief_width_gain",
-    "role_gain",
-    "gap_gain",
-    "short_action_gain",
-    "redundancy_repulsion_penalty",
-    "low_actionness_component",
+    "expected_entropy_reduction",
+    "expected_width_reduction",
+    "expected_gap_risk_reduction",
+    "short_action_value",
+    "two_sided_witness_value",
+    "predicted_regret",
+    "value_per_cost",
+    "actionness_component",
 }
 
 FORBIDDEN_DEPLOY_KEY_ALIASES = (
@@ -157,6 +173,327 @@ def validate_sparse_gather_evidence(evidence, dense_T, valid_k, require_detector
     return True
 
 
+def _fail_sparse_forward(code, message):
+    raise ValueError(f"{code}: {message}")
+
+
+def _require_sparse_forward_fields(ledger, required):
+    missing = sorted(key for key in required if key not in ledger)
+    if missing:
+        _fail_sparse_forward("FAIL_SPARSE_FORWARD_LEDGER_MISSING_FIELD", f"missing fields: {missing}")
+
+
+def _int_field(ledger, key):
+    try:
+        return int(ledger[key])
+    except (TypeError, ValueError, KeyError) as exc:
+        _fail_sparse_forward("FAIL_SPARSE_FORWARD_LEDGER_BAD_FIELD", f"{key} must be an integer")
+        raise exc
+
+
+def validate_sparse_forward_ledger(ledger, allow_sparse_compute_claim=False):
+    required = {
+        "route_label",
+        "claim_status",
+        "audit_mode",
+        "selector_method",
+        "selection_unit",
+        "dense_T",
+        "selected_positions",
+        "valid_k",
+        "raw_frame_inds_in",
+        "decoded_frame_count",
+        "decoded_unique_count",
+        "padded_duplicate_count",
+        "dense_raw_backbone_handoff",
+        "selected_inputs_is_gathered",
+        "backbone_input_shape_before_preprocess",
+        "backbone_input_shape_after_preprocess",
+        "dense_backbone_chunk_count",
+        "backbone_forward_chunk_count",
+        "time_embed_valid_count",
+        "time_embed_total_count",
+        "post_backbone_feature_len",
+        "detector_prepad_feature_len",
+        "detector_pad_len",
+        "detector_mask_true_count",
+        "rpn_valid_temporal_len",
+        "temporal_decode_uses_original_time",
+        "original_time_metadata",
+        "sparse_compute_claim",
+        "forbidden_deploy_fields_absent",
+        "module_forward_evidence",
+    }
+    _require_sparse_forward_fields(ledger, required)
+
+    try:
+        validate_route_identity(ledger)
+    except ValueError as exc:
+        _fail_sparse_forward(SPARSE_FORWARD_FAIL_ROUTE_MIXING, str(exc))
+    try:
+        validate_no_leakage(ledger)
+    except ValueError as exc:
+        _fail_sparse_forward(SPARSE_FORWARD_FAIL_LEAKAGE_FIELD_PRESENT, str(exc))
+
+    dense_T = _int_field(ledger, "dense_T")
+    valid_k = _int_field(ledger, "valid_k")
+    if not (0 < valid_k < dense_T):
+        _fail_sparse_forward("FAIL_SPARSE_FORWARD_VALID_K", "valid_k must satisfy 0 < valid_k < dense_T")
+    if ledger.get("selection_unit") not in {"frame", "tubelet", "feature"}:
+        _fail_sparse_forward("FAIL_SPARSE_FORWARD_SELECTION_UNIT", "selection_unit must be frame, tubelet, or feature")
+    try:
+        validate_selected_positions(ledger["selected_positions"], dense_T, valid_k=valid_k)
+    except ValueError as exc:
+        _fail_sparse_forward("FAIL_SPARSE_FORWARD_SELECTED_POSITIONS", str(exc))
+
+    sparse_compute_claim = bool(ledger.get("sparse_compute_claim", False))
+    if sparse_compute_claim and not allow_sparse_compute_claim:
+        _fail_sparse_forward(
+            SPARSE_FORWARD_FAIL_SPARSE_CLAIM_UNLOCKED,
+            "local sparse-forward precheck cannot unlock sparse_compute_claim",
+        )
+    if ledger.get("claim_status") == SPARSE_FORWARD_SHAPE_ONLY_CLAIM_STATUS and sparse_compute_claim:
+        _fail_sparse_forward(
+            SPARSE_FORWARD_FAIL_SPARSE_CLAIM_UNLOCKED,
+            "shape-only claim_status cannot claim sparse compute",
+        )
+    if ledger.get("claim_status") not in {
+        SPARSE_FORWARD_SHAPE_ONLY_CLAIM_STATUS,
+        SPARSE_FORWARD_REAL_MODULE_CLAIM_STATUS,
+    }:
+        _fail_sparse_forward("FAIL_SPARSE_FORWARD_CLAIM_STATUS", f"unsupported claim_status: {ledger.get('claim_status')}")
+
+    raw_frame_inds = [int(pos) for pos in ledger.get("raw_frame_inds_in", [])]
+    decoded_frame_count = _int_field(ledger, "decoded_frame_count")
+    decoded_unique_count = _int_field(ledger, "decoded_unique_count")
+    padded_duplicate_count = _int_field(ledger, "padded_duplicate_count")
+    dense_positions = list(range(dense_T))
+    if bool(ledger.get("dense_raw_backbone_handoff", True)):
+        _fail_sparse_forward(SPARSE_FORWARD_FAIL_DENSE_RAW_HANDOFF, "dense_raw_backbone_handoff must be false")
+    if not bool(ledger.get("selected_inputs_is_gathered", False)):
+        _fail_sparse_forward(SPARSE_FORWARD_FAIL_DENSE_RAW_HANDOFF, "selected_inputs_is_gathered must be true")
+    if raw_frame_inds == dense_positions or decoded_unique_count >= dense_T:
+        _fail_sparse_forward(SPARSE_FORWARD_FAIL_DENSE_RAW_HANDOFF, "raw decode saw the dense window")
+    if decoded_frame_count != len(raw_frame_inds):
+        _fail_sparse_forward("FAIL_SPARSE_FORWARD_RAW_DECODE_COUNT", "decoded_frame_count must equal raw_frame_inds_in length")
+    if decoded_unique_count != len(set(raw_frame_inds)):
+        _fail_sparse_forward("FAIL_SPARSE_FORWARD_RAW_DECODE_COUNT", "decoded_unique_count must equal unique raw indices")
+    if decoded_frame_count - decoded_unique_count != padded_duplicate_count:
+        _fail_sparse_forward("FAIL_SPARSE_FORWARD_RAW_DECODE_COUNT", "padded_duplicate_count must match duplicate raw indices")
+    if any(pos < 0 or pos >= dense_T for pos in raw_frame_inds):
+        _fail_sparse_forward("FAIL_SPARSE_FORWARD_RAW_DECODE_COUNT", "raw_frame_inds_in contains out-of-range positions")
+
+    dense_backbone_chunk_count = _int_field(ledger, "dense_backbone_chunk_count")
+    backbone_forward_chunk_count = _int_field(ledger, "backbone_forward_chunk_count")
+    if dense_backbone_chunk_count <= 0:
+        _fail_sparse_forward("FAIL_SPARSE_FORWARD_BACKBONE_CHUNK_COUNT", "dense_backbone_chunk_count must be positive")
+    if backbone_forward_chunk_count == dense_backbone_chunk_count and valid_k < dense_backbone_chunk_count:
+        _fail_sparse_forward(
+            SPARSE_FORWARD_FAIL_BACKBONE_DENSE_CHUNK_COUNT,
+            "backbone forward chunk count equals dense chunk count while valid_k is sparse",
+        )
+    if backbone_forward_chunk_count != valid_k:
+        _fail_sparse_forward(
+            SPARSE_FORWARD_FAIL_BACKBONE_DENSE_CHUNK_COUNT,
+            "backbone forward chunk count must equal sparse valid_k for this precheck",
+        )
+    if _int_field(ledger, "time_embed_valid_count") != valid_k:
+        _fail_sparse_forward("FAIL_SPARSE_FORWARD_TIME_EMBED_COUNT", "time_embed_valid_count must equal valid_k")
+    if _int_field(ledger, "time_embed_total_count") < valid_k:
+        _fail_sparse_forward("FAIL_SPARSE_FORWARD_TIME_EMBED_COUNT", "time_embed_total_count cannot be smaller than valid_k")
+    if _int_field(ledger, "post_backbone_feature_len") != valid_k:
+        _fail_sparse_forward(
+            SPARSE_FORWARD_FAIL_BACKBONE_DENSE_CHUNK_COUNT,
+            "post_backbone_feature_len must equal sparse valid_k",
+        )
+    if bool(ledger.get("post_backbone_interpolated_to_dense", False)):
+        _fail_sparse_forward(
+            SPARSE_FORWARD_FAIL_BACKBONE_DENSE_CHUNK_COUNT,
+            "post-backbone interpolation to dense is not valid sparse-forward evidence",
+        )
+
+    detector_prepad_feature_len = _int_field(ledger, "detector_prepad_feature_len")
+    detector_pad_len = _int_field(ledger, "detector_pad_len")
+    detector_mask_true_count = _int_field(ledger, "detector_mask_true_count")
+    rpn_valid_temporal_len = _int_field(ledger, "rpn_valid_temporal_len")
+    if detector_prepad_feature_len != valid_k:
+        _fail_sparse_forward(
+            SPARSE_FORWARD_FAIL_DETECTOR_PAD_CONFUSED_AS_VALID,
+            "detector_prepad_feature_len must equal valid_k",
+        )
+    if detector_pad_len < detector_prepad_feature_len:
+        _fail_sparse_forward(
+            SPARSE_FORWARD_FAIL_DETECTOR_PAD_CONFUSED_AS_VALID,
+            "detector_pad_len cannot be smaller than detector_prepad_feature_len",
+        )
+    if detector_mask_true_count != valid_k or rpn_valid_temporal_len != valid_k:
+        _fail_sparse_forward(
+            SPARSE_FORWARD_FAIL_DETECTOR_PAD_CONFUSED_AS_VALID,
+            "detector/RPN valid temporal counts must equal valid_k",
+        )
+    if detector_pad_len > detector_prepad_feature_len and detector_mask_true_count == detector_pad_len:
+        _fail_sparse_forward(
+            SPARSE_FORWARD_FAIL_DETECTOR_PAD_CONFUSED_AS_VALID,
+            "detector pad length was counted as valid mask length",
+        )
+
+    if not bool(ledger.get("temporal_decode_uses_original_time", False)):
+        _fail_sparse_forward(SPARSE_FORWARD_FAIL_ORIGINAL_TIME_DECODE_MISSING, "temporal decode must use original time")
+    try:
+        validate_original_time_metadata(ledger["original_time_metadata"])
+    except ValueError as exc:
+        _fail_sparse_forward(SPARSE_FORWARD_FAIL_ORIGINAL_TIME_DECODE_MISSING, str(exc))
+
+    if bool(ledger.get("forbidden_deploy_fields_absent")) is not True:
+        _fail_sparse_forward(SPARSE_FORWARD_FAIL_LEAKAGE_FIELD_PRESENT, "forbidden_deploy_fields_absent must be true")
+
+    if bool(ledger.get("module_forward_evidence", False)):
+        verdict = SPARSE_FORWARD_PASS_REAL_MODULE
+    else:
+        verdict = SPARSE_FORWARD_PASS_SHAPE_ONLY
+    return {
+        "verdict": verdict,
+        "claim_status": ledger["claim_status"],
+        "sparse_compute_claim": sparse_compute_claim,
+        "valid_k": valid_k,
+        "dense_T": dense_T,
+    }
+
+
+def validate_bvr_twb_pipeline_ledger(ledger):
+    required = {
+        "route_label",
+        "method",
+        "split",
+        "dense_T",
+        "selected_positions",
+        "selected_frame_inds",
+        "raw_selected_positions",
+        "valid_k",
+        "budget_stop_reason",
+        "selection_gap_diagnostics",
+        "original_time_metadata",
+        "temporal_decode_uses_original_time",
+        "selected_index_is_time",
+        "dense_raw_backbone_handoff",
+        "selected_inputs_is_gathered",
+        "padding_duplicate_count",
+        "sparse_compute_claim",
+        "claim_status",
+        "selector_provenance",
+        "adapter_bridge_mode",
+        "detector_mask_len",
+        "detector_mask_true_count",
+        "detector_feature_valid_k",
+        "detector_feature_positions",
+    }
+    missing = sorted(required.difference(ledger.keys()))
+    if missing:
+        raise ValueError(f"BVR-TWB pipeline ledger missing fields: {missing}")
+    validate_route_identity(ledger)
+    validate_no_leakage(ledger.get("selector_provenance", {}))
+    dense_T = int(ledger["dense_T"])
+    valid_k = int(ledger["valid_k"])
+    validate_selected_positions(ledger["selected_positions"], dense_T, valid_k=valid_k)
+    if len(ledger["selected_frame_inds"]) != valid_k:
+        raise ValueError("BVR-TWB selected_frame_inds length must equal valid_k")
+    if valid_k >= dense_T:
+        raise ValueError("BVR-TWB dynamic pipeline must keep valid_k < dense_T")
+    if bool(ledger["dense_raw_backbone_handoff"]):
+        raise ValueError("BVR-TWB pipeline ledger has dense raw handoff")
+    if not bool(ledger["selected_inputs_is_gathered"]):
+        raise ValueError("BVR-TWB pipeline ledger must mark selected inputs gathered")
+    adapter_mode = ledger.get("adapter_bridge_mode")
+    if adapter_mode == ADAPTER_FIXED_LENGTH_PADDED_BRIDGE:
+        _validate_adapter_fixed_length_bridge_ledger(ledger, valid_k)
+    elif int(ledger["padding_duplicate_count"]) != 0:
+        raise ValueError("BVR-TWB pipeline precheck forbids padding duplicates without adapter bridge metadata")
+    if bool(ledger["sparse_compute_claim"]):
+        raise ValueError("BVR-TWB local pipeline ledger cannot claim sparse compute")
+    if not bool(ledger["temporal_decode_uses_original_time"]) or bool(ledger["selected_index_is_time"]):
+        raise ValueError("BVR-TWB pipeline must preserve original-time decode")
+    validate_original_time_metadata(ledger["original_time_metadata"])
+    validate_selection_gap_diagnostics(ledger)
+    provenance = ledger["selector_provenance"]
+    if any(bool(provenance.get(key, False)) for key in provenance):
+        raise ValueError("BVR-TWB selector provenance must not use GT/teacher/cache/oracle shortcuts")
+    if "bracket_summary" in ledger:
+        validate_belief_update_trace_schema(ledger["bracket_summary"].get("belief_update_trace", []))
+    validate_detector_feature_positions(ledger)
+    return True
+
+
+def validate_detector_feature_positions(ledger):
+    positions = np.asarray(ledger.get("detector_feature_positions", []), dtype=np.float32).reshape(-1)
+    detector_feature_valid_k = int(ledger.get("detector_feature_valid_k", ledger.get("detector_mask_true_count", 0)))
+    detector_mask_true_count = int(ledger.get("detector_mask_true_count", detector_feature_valid_k))
+    if positions.shape[0] != detector_feature_valid_k:
+        raise ValueError("detector_feature_positions length must equal detector_feature_valid_k")
+    if detector_feature_valid_k != detector_mask_true_count:
+        raise ValueError("detector_feature_valid_k must equal detector_mask_true_count")
+    feature_stride = int(max(int(ledger.get("bvr_twb_feature_stride", 1)), 1))
+    raw_positions = ledger.get("raw_selected_positions", ledger.get("selected_positions", []))
+    expected = build_detector_feature_centers_from_raw(raw_positions, feature_stride=feature_stride)
+    if expected.shape[0] != positions.shape[0]:
+        raise ValueError("detector feature center count does not match raw selected positions and feature_stride")
+    if not np.allclose(positions, expected, atol=1e-5):
+        raise ValueError("detector_feature_positions must be grouped centers from raw selected positions")
+    if ledger.get("adapter_bridge_mode") == ADAPTER_FIXED_LENGTH_PADDED_BRIDGE and feature_stride > 1:
+        if positions.shape[0] >= int(ledger.get("valid_k", 0)) and int(ledger.get("valid_k", 0)) > 1:
+            raise ValueError("adapter bridge detector positions must be feature/tubelet centers, not raw positions")
+    return True
+
+
+def _validate_adapter_fixed_length_bridge_ledger(ledger, valid_k):
+    required = {
+        "adapter_target_frame_num",
+        "adapter_input_frame_count",
+        "adapter_padded_frame_inds",
+        "adapter_padded_positions",
+        "adapter_valid_raw_mask",
+        "adapter_padding_duplicate_count",
+        "adapter_padding_counts_as_valid",
+        "adapter_fixed_length_padded_bridge",
+    }
+    missing = sorted(required.difference(ledger.keys()))
+    if missing:
+        raise ValueError(f"adapter_fixed_length_padded_bridge ledger missing fields: {missing}")
+    target = int(ledger["adapter_target_frame_num"])
+    input_count = int(ledger["adapter_input_frame_count"])
+    if target <= 0 or input_count != target:
+        raise ValueError("adapter fixed-length bridge requires adapter_input_frame_count == adapter_target_frame_num > 0")
+    if len(ledger["adapter_padded_frame_inds"]) != input_count:
+        raise ValueError("adapter_padded_frame_inds length must equal adapter_input_frame_count")
+    if len(ledger["adapter_padded_positions"]) != input_count:
+        raise ValueError("adapter_padded_positions length must equal adapter_input_frame_count")
+    raw_mask = [bool(value) for value in ledger["adapter_valid_raw_mask"]]
+    if len(raw_mask) != input_count:
+        raise ValueError("adapter_valid_raw_mask length must equal adapter_input_frame_count")
+    if sum(raw_mask) != int(valid_k):
+        raise ValueError("adapter_valid_raw_mask true count must equal sparse valid_k")
+    pad_count = int(ledger["adapter_padding_duplicate_count"])
+    if pad_count != input_count - int(valid_k):
+        raise ValueError("adapter_padding_duplicate_count must equal adapter_input_frame_count - valid_k")
+    if int(ledger["padding_duplicate_count"]) != pad_count:
+        raise ValueError("padding_duplicate_count must mirror adapter padding duplicate count")
+    if bool(ledger["adapter_padding_counts_as_valid"]):
+        raise ValueError("adapter padding duplicates must not count as valid")
+    if bool(ledger.get("adapter_fixed_length_padded_bridge")) is not True:
+        raise ValueError("adapter_fixed_length_padded_bridge must be true for adapter bridge mode")
+    detector_mask_len = int(ledger["detector_mask_len"])
+    detector_mask_true_count = int(ledger["detector_mask_true_count"])
+    detector_feature_valid_k = int(ledger.get("detector_feature_valid_k", detector_mask_true_count))
+    if detector_mask_len <= 0 or detector_mask_true_count != detector_feature_valid_k:
+        raise ValueError("detector mask true count must equal detector_feature_valid_k")
+    if len(ledger.get("detector_feature_positions", [])) != detector_feature_valid_k:
+        raise ValueError("detector_feature_positions length must equal detector_feature_valid_k")
+    if not (0 < detector_mask_true_count <= detector_mask_len):
+        raise ValueError("detector mask true count must be within detector mask length")
+    if bool(ledger.get("sparse_compute_claim", False)):
+        raise ValueError("adapter fixed-length padded bridge cannot claim sparse compute")
+    return True
+
+
 def validate_summary_claim_status(summary, claim_mode="local_gather_smoke"):
     status = summary.get("claim_status")
     if claim_mode == "local_gather_smoke":
@@ -183,6 +520,31 @@ def validate_value_components(components):
     return True
 
 
+def validate_voi_component_balance(components, max_actionness_fraction=0.45):
+    validate_value_components(components)
+    total_abs = max(sum(abs(float(value)) for value in components.values()), 1e-9)
+    actionness_fraction = abs(float(components.get("actionness_component", 0.0))) / total_abs
+    if actionness_fraction > float(max_actionness_fraction):
+        raise ValueError(
+            "VOI-BBC value components are actionness-only dominated: "
+            f"actionness_fraction={actionness_fraction:.3f}"
+        )
+    non_action_mass = sum(
+        abs(float(components.get(key, 0.0)))
+        for key in (
+            "expected_entropy_reduction",
+            "expected_width_reduction",
+            "expected_gap_risk_reduction",
+            "short_action_value",
+            "two_sided_witness_value",
+            "predicted_regret",
+        )
+    )
+    if non_action_mass <= 0.0:
+        raise ValueError("VOI-BBC value components require non-actionness contribution")
+    return {"actionness_fraction": float(actionness_fraction), "non_action_mass": float(non_action_mass)}
+
+
 def validate_candidate_packet_ledger(row):
     required = {
         "route_label",
@@ -205,6 +567,7 @@ def validate_candidate_packet_ledger(row):
     validate_route_identity(row)
     validate_selected_positions(row["packet_positions"], row.get("dense_T", max(row["packet_positions"]) + 1))
     validate_value_components(row["value_components"])
+    validate_voi_component_balance(row["value_components"])
     if float(row["packet_cost_frames"]) <= 0:
         raise ValueError("candidate packet cost must be positive")
     return True
@@ -227,6 +590,10 @@ def validate_selection_row_schema(row):
     for key in ("max_gap_ok", "budget_ok", "duplicate"):
         if key not in state:
             raise ValueError(f"constraint_state missing field: {key}")
+    if "belief_risk_before" in row and "belief_risk_after" in row:
+        if float(row["belief_risk_after"]) > float(row["belief_risk_before"]) + 1e-6:
+            raise ValueError("selection row belief risk increased after selected witness")
+    validate_voi_component_balance(row["value_components"])
     return True
 
 
@@ -281,6 +648,7 @@ def validate_deploy_ledger(ledger):
         raise ValueError(f"invalid budget_stop_reason: {ledger.get('budget_stop_reason')}")
     if ledger.get("budget_stop_reason") == "belief_width_safe":
         validate_belief_width_safe_stop_contract(ledger)
+    validate_voi_bbc_stop_contract(ledger)
     validate_selection_gap_diagnostics(ledger)
     validate_original_time_metadata(ledger.get("original_time_metadata", ledger))
     validate_sparse_gather_evidence(
@@ -309,6 +677,60 @@ def validate_belief_width_safe_stop_contract(ledger):
             raise ValueError(f"belief_width_safe active trace row {idx} is not updated from selected witness")
         if row.get("belief_width_safe") is not True:
             raise ValueError(f"belief_width_safe active trace row {idx} is not individually safe")
+    return True
+
+
+def validate_belief_update_trace_schema(trace):
+    if not isinstance(trace, list):
+        raise ValueError("belief_update_trace must be a list")
+    required = {
+        "bracket_id",
+        "initial_entropy",
+        "posterior_entropy",
+        "initial_width_p80_frames",
+        "posterior_width_p80_frames",
+        "posterior_credible_width_frames",
+        "initial_risk_mass",
+        "posterior_risk_mass",
+        "two_sided_witness_coverage",
+        "updated_by_selected_witness",
+        "belief_width_safe",
+    }
+    for idx, row in enumerate(trace):
+        missing = sorted(required.difference(row.keys()))
+        if missing:
+            raise ValueError(f"belief_update_trace row {idx} missing fields: {missing}")
+        if bool(row.get("belief_width_safe")) and not bool(row.get("updated_by_selected_witness")):
+            raise ValueError("belief_width_safe cannot be forged without selected witness update")
+        if float(row["posterior_entropy"]) > float(row["initial_entropy"]) + 1e-6:
+            raise ValueError("posterior entropy cannot exceed initial entropy")
+        if float(row["posterior_width_p80_frames"]) > float(row["initial_width_p80_frames"]) + 1e-6:
+            raise ValueError("posterior credible width cannot exceed initial width")
+        if float(row["posterior_risk_mass"]) > float(row["initial_risk_mass"]) + 1e-6:
+            raise ValueError("posterior risk mass cannot exceed initial risk mass")
+    return True
+
+
+def validate_voi_bbc_stop_contract(ledger):
+    summary = ledger.get("bracket_summary", {})
+    trace = summary.get("belief_update_trace", [])
+    validate_belief_update_trace_schema(trace)
+    stop = ledger.get("budget_stop_reason")
+    diagnostics = ledger.get("selection_gap_diagnostics", {})
+    if stop in {"belief_width_safe", "risk_constraints_satisfied"}:
+        if bool(diagnostics.get("coverage_violation", False)):
+            raise ValueError(f"{stop} cannot have a max-gap coverage violation")
+        if stop == "risk_constraints_satisfied":
+            if float(summary.get("max_posterior_risk_mass", 1.0)) > 0.45:
+                raise ValueError("risk_constraints_satisfied requires low posterior risk mass")
+    if stop == "regret_saturation":
+        trace_summary = ledger.get("controller_trace_summary", {})
+        if not bool(trace_summary.get("regret_saturation_seen", False)):
+            raise ValueError("regret_saturation stop requires controller trace evidence")
+    if stop == "gap_guard" and not bool(diagnostics.get("coverage_violation", False)):
+        # gap_guard can also appear when repair consumed the remaining budget.
+        if ledger.get("valid_k", 0) < ledger.get("max_k", 0):
+            raise ValueError("gap_guard stop without violation requires budget exhaustion evidence")
     return True
 
 

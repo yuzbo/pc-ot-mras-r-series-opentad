@@ -77,6 +77,7 @@ def build_scaffold_packets(
     packets = []
     for rank, pos in enumerate(repaired):
         is_bridge = int(pos) in bridge_set
+        is_endpoint = int(pos) in {0, int(dense_T) - 1}
         packets.append(
             CandidatePacket(
                 packet_id=int(start_packet_id + rank),
@@ -90,20 +91,23 @@ def build_scaffold_packets(
                 cost_frames=1.0,
                 visibility=1.0,
                 rank=rank,
-                reason="hard_max_gap_repair" if is_bridge else "thin_endpoint_scaffold",
+                reason="risk_constrained_gap_candidate" if is_bridge else "low_cost_scaffold_safety_candidate",
                 feature_summary={
                     "mean_actionness": 0.0,
                     "max_transition": 0.0,
-                    "mean_uncertainty": 0.0,
+                    "mean_uncertainty": 0.05 if is_endpoint else 0.0,
                     "persistence": 1.0,
                     "short_action_risk": 0.0,
                     "two_sided_state_contrast": 0.0,
                     "bracket_width_frames": 0.0,
                     "gap_if_omitted_frames": float(max_gap if is_bridge else 0),
+                    "gap_risk": float(1.0 if is_bridge else 0.15 if is_endpoint else 0.05),
+                    "belief_entropy": 0.0,
+                    "safety_floor_candidate": 1.0 if is_endpoint else 0.0,
                 },
-                required_for_scaffold=not is_bridge,
+                required_for_scaffold=False,
+                safety_floor=bool(is_endpoint),
                 max_gap_repair=is_bridge,
             )
         )
     return packets
-

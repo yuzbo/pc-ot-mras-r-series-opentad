@@ -47,6 +47,16 @@ class Collect:
             "irregular_selected_positions",
             "irregular_selected_valid_len",
             "irregular_native_axis",
+            "bvr_twb_ledger",
+            "bvr_twb_raw_selected_positions",
+            "bvr_twb_raw_selected_valid_len",
+            "bvr_twb_detector_feature_positions",
+            "bvr_twb_detector_feature_valid_len",
+            "bvr_twb_selected_positions",
+            "bvr_twb_selected_valid_len",
+            "bvr_twb_dense_valid_len",
+            "bvr_twb_train_value_labels",
+            "bvr_twb_candidate_count",
         ],
     ):
         self.inputs = inputs

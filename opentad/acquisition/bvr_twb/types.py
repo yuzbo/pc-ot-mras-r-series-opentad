@@ -6,10 +6,13 @@ import numpy as np
 
 ROUTE_LABEL = "DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3"
 METHOD_NAME = "BVR-TWB"
+VOI_BBC_SPEC_NAME = "VOI-BBC"
 
 STOP_REASONS = {
+    "regret_saturation",
     "value_saturation",
     "belief_width_safe",
+    "risk_constraints_satisfied",
     "gap_guard",
     "budget_cap",
     "candidate_exhausted",
@@ -147,6 +150,7 @@ class CandidatePacket:
     predicted_value: Optional[PacketValue] = None
     required_for_scaffold: bool = False
     required_for_role_coverage: bool = False
+    safety_floor: bool = False
     max_gap_repair: bool = False
     route_label: str = ROUTE_LABEL
 
@@ -187,6 +191,7 @@ class CandidatePacket:
             "bracket_id": self.bracket_id,
             "packet_positions": list(self.positions),
             "packet_cost_frames": float(self.cost_frames),
+            "safety_floor": bool(self.safety_floor),
             "predicted_regret": None if value is None else float(value.predicted_regret),
             "expected_belief_reduction": None if value is None else float(value.expected_belief_reduction),
             "value_uncertainty": None if value is None else float(value.value_uncertainty),
@@ -245,7 +250,11 @@ class BudgetConfig:
     max_gap: int
     min_marginal_value: float = 0.08
     safe_belief_width: float = 5.0
+    safe_entropy: float = 0.42
+    safe_risk_mass: float = 0.40
     require_two_sided_witness: bool = True
+    scaffold_as_candidate: bool = True
+    low_risk_scaffold_mandatory: bool = False
     route_label: str = ROUTE_LABEL
 
     def __post_init__(self):

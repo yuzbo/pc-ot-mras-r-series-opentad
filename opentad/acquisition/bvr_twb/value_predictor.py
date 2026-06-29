@@ -28,12 +28,14 @@ class PacketValuePredictor:
         features = packet.feature_summary
         if self.mode == "mock_constant_ablation":
             components = {
-                "belief_width_gain": 0.25,
-                "role_gain": ROLE_BONUS.get(packet.role, 0.0) * 0.10,
-                "gap_gain": 0.05,
-                "short_action_gain": 0.0,
-                "redundancy_repulsion_penalty": 0.0,
-                "low_actionness_component": 0.20,
+                "expected_entropy_reduction": 0.20,
+                "expected_width_reduction": 0.20,
+                "expected_gap_risk_reduction": 0.05,
+                "short_action_value": 0.0,
+                "two_sided_witness_value": ROLE_BONUS.get(packet.role, 0.0) * 0.10,
+                "predicted_regret": 0.25,
+                "value_per_cost": 0.0,
+                "actionness_component": 0.0,
             }
             value = sum(components.values())
             expected_belief = 0.25
@@ -48,26 +50,42 @@ class PacketValuePredictor:
             gap_risk = float(features.get("gap_risk", features.get("gap_if_omitted_frames", 0.0) / 64.0))
             actionness = float(features.get("mean_actionness", 0.0))
             width_term = float(np.clip(bracket_width / 24.0, 0.0, 1.0))
+            entropy = float(features.get("belief_entropy", uncertainty_feat))
+            two_sided_role = float(packet.role in {"transition_before", "transition_after", "transition_center", "ambiguity_probe"})
+            two_sided = float(features.get("two_sided_state_contrast", 0.0)) * two_sided_role
+            predicted_regret = (
+                0.18 * transition
+                + 0.16 * uncertainty_feat
+                + 0.13 * width_term
+                + 0.12 * short_risk
+                + 0.10 * np.clip(gap_risk, 0.0, 1.0)
+                + role_bonus
+            )
             components = {
-                "belief_width_gain": 0.22 * transition + 0.18 * uncertainty_feat + 0.12 * width_term + 0.15 * contrast,
-                "role_gain": role_bonus,
-                "gap_gain": 0.12 * np.clip(gap_risk, 0.0, 1.0),
-                "short_action_gain": 0.16 * short_risk,
-                "redundancy_repulsion_penalty": -0.08
-                * float(features.get("gap_if_omitted_frames", 99.0) <= 1.0),
-                "low_actionness_component": 0.05 * (1.0 - actionness) * max(transition, uncertainty_feat),
+                "expected_entropy_reduction": 0.20 * entropy + 0.10 * uncertainty_feat + 0.08 * transition,
+                "expected_width_reduction": 0.18 * width_term + 0.10 * contrast + 0.06 * transition,
+                "expected_gap_risk_reduction": 0.14 * np.clip(gap_risk, 0.0, 1.0),
+                "short_action_value": 0.17 * short_risk,
+                "two_sided_witness_value": 0.14 * two_sided + 0.06 * float(packet.role in {"transition_before", "transition_after"}),
+                "predicted_regret": predicted_regret,
+                "value_per_cost": 0.0,
+                "actionness_component": 0.03 * actionness * float(packet.role == "action_core"),
             }
+            if float(features.get("gap_if_omitted_frames", 99.0)) <= 1.0:
+                components["expected_gap_risk_reduction"] -= 0.08
             value = sum(components.values())
             expected_belief = float(np.clip(0.35 * transition + 0.30 * uncertainty_feat + 0.20 * contrast + 0.15 * short_risk, 0.0, 1.0))
             uncertainty = float(np.clip(0.55 * uncertainty_feat + 0.25 * (1.0 - contrast) + 0.20 * width_term, 0.0, 1.0))
 
         cost = max(float(packet.cost_frames), 1e-6)
+        value_no_vpc = float(sum(v for k, v in components.items() if k != "value_per_cost"))
+        components["value_per_cost"] = float(np.clip(value_no_vpc, 0.0, 2.0) / cost)
         packet.predicted_value = PacketValue(
-            predicted_regret=float(np.clip(value, 0.0, 2.0)),
+            predicted_regret=float(np.clip(components.get("predicted_regret", value_no_vpc), 0.0, 2.0)),
             expected_belief_reduction=float(np.clip(expected_belief, 0.0, 1.0)),
             value_uncertainty=float(np.clip(uncertainty, 0.0, 1.0)),
-            value_per_cost=float(np.clip(value, 0.0, 2.0) / cost),
-            diagnostics=self._diagnostics(packet, value, components),
+            value_per_cost=float(components["value_per_cost"]),
+            diagnostics=self._diagnostics(packet, value_no_vpc, components),
         )
         return packet.predicted_value
 
@@ -77,15 +95,13 @@ class PacketValuePredictor:
         return packets
 
     def _diagnostics(self, packet, value, components):
-        action_component = max(0.0, float(value) - float(sum(components.values())) + 0.0)
-        action_component += 0.0
-        total = max(float(value), 1e-9)
-        non_action = 1.0
-        if "low_actionness_component" not in components:
-            non_action = 1.0 - action_component / total
+        action_component = abs(float(components.get("actionness_component", 0.0)))
+        total_abs = max(sum(abs(float(val)) for val in components.values()), 1e-9)
+        non_action = 1.0 - action_component / total_abs
         return {
-            "actionness_component_fraction": float(action_component / total),
+            "actionness_component_fraction": float(action_component / total_abs),
             "non_action_component_fraction": float(non_action),
+            "voi_non_action_component_fraction": float(non_action),
             "value_components": {key: float(val) for key, val in components.items()},
         }
 
@@ -122,12 +138,18 @@ class PacketValuePredictor:
             packet.predicted_value.diagnostics.get("non_action_component_fraction", 0.0)
             for packet in packets
         ]
+        action_fracs = [
+            packet.predicted_value.diagnostics.get("actionness_component_fraction", 0.0)
+            for packet in packets
+        ]
         mean_non_action = float(np.mean(non_action_fracs)) if non_action_fracs else 0.0
-        passes = bool(overlap < 0.92 and mean_non_action >= self.min_non_action_fraction)
+        max_action_fraction = float(max(action_fracs) if action_fracs else 0.0)
+        passes = bool(mean_non_action >= self.min_non_action_fraction and max_action_fraction <= (1.0 - self.min_non_action_fraction))
         return {
             "passes": passes,
             "top_overlap": float(overlap),
             "mean_non_action_fraction": mean_non_action,
+            "max_actionness_component_fraction": max_action_fraction,
             "mode": self.mode,
         }
 

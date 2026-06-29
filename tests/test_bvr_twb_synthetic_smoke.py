@@ -60,12 +60,14 @@ def test_packet_value_predictor_keeps_actionness_low_weight():
     ]
     component_keys = set(candidates[0].predicted_value.diagnostics["value_components"])
     assert {
-        "belief_width_gain",
-        "role_gain",
-        "gap_gain",
-        "short_action_gain",
-        "redundancy_repulsion_penalty",
-        "low_actionness_component",
+        "expected_entropy_reduction",
+        "expected_width_reduction",
+        "expected_gap_risk_reduction",
+        "short_action_value",
+        "two_sided_witness_value",
+        "predicted_regret",
+        "value_per_cost",
+        "actionness_component",
     }.issubset(component_keys)
     assert np.mean(action_fractions) < 0.18
     assert any(packet.role.startswith("transition") for packet in result.selected_packets)

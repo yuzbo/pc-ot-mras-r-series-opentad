@@ -132,12 +132,14 @@ def test_candidate_packet_and_selection_rows_require_component_schema():
     )
     row = packet.to_ledger_dict()
     row["value_components"] = {
-        "belief_width_gain": 0.2,
-        "role_gain": 0.1,
-        "gap_gain": 0.0,
-        "short_action_gain": 0.0,
-        "redundancy_repulsion_penalty": 0.0,
-        "low_actionness_component": 0.03,
+        "expected_entropy_reduction": 0.2,
+        "expected_width_reduction": 0.1,
+        "expected_gap_risk_reduction": 0.0,
+        "short_action_value": 0.0,
+        "two_sided_witness_value": 0.03,
+        "predicted_regret": 0.2,
+        "value_per_cost": 0.2,
+        "actionness_component": 0.0,
     }
     assert validate_candidate_packet_ledger(row)
     bad_packet = dict(row)
