@@ -331,3 +331,11 @@ git diff --check
 Result: passed with exit code `0`; Git printed only Windows LF-to-CRLF working-copy warnings for the three changed files.
 
 Still locked after this fix: staging, commit, push, remote sync, Slurm, formal full training, validation/test evaluation, mAP, runtime/FLOPs, deploy claim, paper claim, C3/combo merge, global loss changes, evaluator/post-processing changes, and any claim that the non-finite gradient issue is resolved on GPU. The next allowed step is read-only final review, and if that passes, a remote three-epoch diagnostic-only rerun to verify `NONFINITE_COUNT=0` or collect exact remaining evidence.
+
+## BVR-TWB Regression Stability Test Fixture Fix
+
+Local-only follow-up on 2026-06-30 Asia/Shanghai after Linux focused pytest on commit `1e82ce6` found one fixture failure in `test_headv3_regression_loss_filters_bad_fp16_samples_and_keeps_other_losses`. Root cause was test-only synthetic construction via `object.__new__(IrregularActionFormerHeadV3)`, which bypassed `__init__` and did not set `regression_head_fp32` before HeadV3 debug-state export read the attribute.
+
+Minimal fix: the test fixture now sets `head.regression_head_fp32 = True` explicitly, matching the BVR config flag under test. Runtime HeadV3 behavior, config behavior, regression filtering logic, global IoU/loss code, evaluator/post-processing, selector, Adapter/backbone, and remote state were not changed.
+
+This fix only repairs local/Linux test coverage. It does not unlock staging, commit, push, remote sync, Slurm, formal full training, validation/test evaluation, mAP, runtime/FLOPs, deploy claim, paper claim, C3/combo merge, or any GPU non-finite-resolution claim.

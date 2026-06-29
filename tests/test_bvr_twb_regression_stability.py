@@ -103,6 +103,7 @@ def test_headv3_regression_loss_filters_bad_fp16_samples_and_keeps_other_losses(
     head = object.__new__(IrregularActionFormerHeadV3)
     torch.nn.Module.__init__(head)
     head.train()
+    head.regression_head_fp32 = True
     head.regression_loss_fp32 = True
     head.filter_invalid_regression_samples = True
     head.min_regression_segment_length = 1e-6
