@@ -242,3 +242,16 @@ After the chunk positional-embedding fix, the N16R4 GPU1 diagnostic smoke advanc
 - Caveat: `NONFINITE_COUNT=3`; non-finite gradient skip diagnostics occurred in `rpn_head.reg_head.weight`. This did not crash the diagnostic smoke, but it remains a formal-full-train risk to inspect before unlocking long training.
 
 This smoke is execution evidence only. It does not unlock mAP, runtime/FLOPs, deploy readiness, paper claims, or true sparse-compute claims. Full train remains locked until the coordinator / Pro / explicit user gate allows it for this route stage.
+
+## Three-Epoch Gradient Stability Diagnostic Evidence
+
+The N16R4 GPU1 three-epoch gradient-stability diagnostic completed after the one-epoch smoke:
+
+- Remote log directory: `/data/home/sczc063/run/yuzibo/OpenTAD_BVR_TWB_Precheck_20260629_224944/logs/bvr_twb_grad_stability/grad_gpu1_20260630_001442_3epoch_diag`.
+- Protected hold: Slurm job `1118197` (`pcot_dbg2g`), node `g0030`, `CUDA_VISIBLE_DEVICES=1`; the parent hold was not released or cancelled.
+- Completion markers: `GRAD_DIAG_RC=0`, `GRAD_DIAG_DONE=1`, and `Training Over...`.
+- Counts: `nonfinite=4`, `runtime_errors=0`, `training_over=1`, `epoch_lines=3`.
+- Progress reached epoch 2: `[002][00199/00199]`.
+- Final visible loss line: `Loss=1.7851 cls_loss=0.5739 reg_loss=0.6661 boundary_loss=0.5451 lr_det=6.0e-05 mem=1422MB`.
+
+Interpretation: the shape/runtime/positional-embedding blocker is resolved, and a short multi-epoch diagnostic can run to completion on GPU1. However, four skipped non-finite gradients in `module.rpn_head.reg_head.weight` remain a formal-full-train stability risk. This diagnostic still does not unlock full train, mAP, runtime/FLOPs, deploy readiness, paper claims, or true sparse-compute claims; those remain locked pending the coordinator / Pro / explicit user gate.
