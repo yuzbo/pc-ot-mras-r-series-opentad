@@ -302,6 +302,31 @@ def test_opentad_pipeline_audit_rejects_outside_worktree_output(tmp_path):
         safe_prepare_output_dir(tmp_path / ".tmp_bvr_twb_opentad_pipeline", overwrite=True)
 
 
+def _write_launch_gate_summary(path, overrides=None, omit=()):
+    summary = {
+        "route_label": ROUTE_LABEL,
+        "blocked": False,
+        "all_validated": True,
+        "sparse_compute_claim": False,
+        "no_training": True,
+        "no_metric_claim": True,
+        "adapter_bridge_mode": ADAPTER_FIXED_LENGTH_PADDED_BRIDGE,
+        "adapter_bridge_modes": [ADAPTER_FIXED_LENGTH_PADDED_BRIDGE],
+        "adapter_padding_counts_as_valid": False,
+        "preview_sources": ["deploy_visible_metadata_actionness"],
+        "scout_sources": ["deploy_visible_raw_or_metadata_scout"],
+        "deterministic_preview_fallback_used": False,
+        "value_modes": ["deploy_heuristic_voi"],
+        "value_labels_used_at_test": False,
+    }
+    if overrides:
+        summary.update(overrides)
+    for key in omit:
+        summary.pop(key, None)
+    path.write_text(json.dumps(summary), encoding="utf-8")
+    return path
+
+
 def test_bvr_launch_gate_requires_unblocked_precheck_summary(tmp_path):
     config = Path("configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py")
     blocked = tmp_path / "blocked_summary.json"
@@ -324,29 +349,45 @@ def test_bvr_launch_gate_requires_unblocked_precheck_summary(tmp_path):
         validate_launch_gate(config, blocked)
 
     passed = tmp_path / "passed_summary.json"
-    passed.write_text(
-        json.dumps(
-            {
-                "route_label": ROUTE_LABEL,
-                "blocked": False,
-                "all_validated": True,
-                "sparse_compute_claim": False,
-                "no_training": True,
-                "no_metric_claim": True,
-                "adapter_bridge_mode": ADAPTER_FIXED_LENGTH_PADDED_BRIDGE,
-                "adapter_bridge_modes": [ADAPTER_FIXED_LENGTH_PADDED_BRIDGE],
-                "adapter_padding_counts_as_valid": False,
-                "preview_sources": ["deploy_visible_metadata_actionness"],
-                "deterministic_preview_fallback_used": False,
-                "value_modes": ["deploy_heuristic_voi"],
-                "value_labels_used_at_test": False,
-            }
-        ),
-        encoding="utf-8",
-    )
+    _write_launch_gate_summary(passed)
     result = validate_launch_gate(config, passed)
     assert result["allowed_next_action"] == "FINAL_READ_ONLY_REVIEW_THEN_LINUX_PRECHECK_ONLY"
     assert result["full_train_unlocked"] is False
+
+
+def test_bvr_launch_gate_fail_closed_on_missing_or_bad_scout_and_value_summary(tmp_path):
+    config = Path("configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py")
+    cases = [
+        ("missing_preview_sources", {}, ("preview_sources",), "preview_sources"),
+        ("missing_value_modes", {}, ("value_modes",), "value_modes"),
+        ("missing_scout_sources", {}, ("scout_sources",), "scout_sources"),
+        ("empty_preview_sources", {"preview_sources": []}, (), "non-empty preview_sources"),
+        ("empty_value_modes", {"value_modes": []}, (), "non-empty value_modes"),
+        ("empty_scout_sources", {"scout_sources": []}, (), "non-empty scout_sources"),
+        (
+            "diagnostic_preview_source",
+            {"preview_sources": ["diagnostic_deterministic_preview_fallback"]},
+            (),
+            "non-formal preview sources",
+        ),
+        (
+            "diagnostic_scout_source",
+            {"scout_sources": ["diagnostic_deterministic_preview"]},
+            (),
+            "non-formal scout sources",
+        ),
+        ("unexpected_value_mode", {"value_modes": ["learned_packet_value"]}, (), "unexpected value_modes"),
+        (
+            "mixed_value_modes",
+            {"value_modes": ["deploy_heuristic_voi", "mock_constant_ablation"]},
+            (),
+            "unexpected value_modes",
+        ),
+    ]
+    for name, overrides, omit, pattern in cases:
+        path = _write_launch_gate_summary(tmp_path / f"{name}.json", overrides=overrides, omit=omit)
+        with pytest.raises(ValueError, match=pattern):
+            validate_launch_gate(config, path)
 
 
 def test_adapter_fixed_length_padded_bridge_keeps_valid_k_sparse_and_padding_invalid():
@@ -439,26 +480,7 @@ def test_pipeline_ledger_accepts_adapter_bridge_padding_but_not_valid_padding():
 def test_launch_gate_rejects_c3_and_combo_tokens_in_config(tmp_path):
     base_config = Path("configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py").read_text(encoding="utf-8")
     summary = tmp_path / "passed_summary.json"
-    summary.write_text(
-        json.dumps(
-            {
-                "route_label": ROUTE_LABEL,
-                "blocked": False,
-                "all_validated": True,
-                "sparse_compute_claim": False,
-                "no_training": True,
-                "no_metric_claim": True,
-                "adapter_bridge_mode": ADAPTER_FIXED_LENGTH_PADDED_BRIDGE,
-                "adapter_bridge_modes": [ADAPTER_FIXED_LENGTH_PADDED_BRIDGE],
-                "adapter_padding_counts_as_valid": False,
-                "preview_sources": ["deploy_visible_metadata_actionness"],
-                "deterministic_preview_fallback_used": False,
-                "value_modes": ["deploy_heuristic_voi"],
-                "value_labels_used_at_test": False,
-            }
-        ),
-        encoding="utf-8",
-    )
+    _write_launch_gate_summary(summary)
     for token in ("C3", "COMBO"):
         bad_config = tmp_path / f"bad_{token}.py"
         bad_config.write_text(base_config + f"\n# forbidden route token {token}\n", encoding="utf-8")

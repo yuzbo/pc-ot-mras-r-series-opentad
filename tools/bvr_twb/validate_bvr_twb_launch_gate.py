@@ -11,6 +11,29 @@ from opentad.acquisition.bvr_twb.adapter_bridge import ADAPTER_FIXED_LENGTH_PADD
 from opentad.acquisition.bvr_twb.types import FORBIDDEN_ROUTE_TOKENS, ROUTE_LABEL
 
 
+FORMAL_PREVIEW_SOURCES = {"deploy_visible_metadata_actionness", "raw_rgb_lowres_scout"}
+FORMAL_SCOUT_SOURCES = {
+    "deploy_visible_raw_or_metadata_scout",
+    "deploy_visible_metadata_scout",
+    "raw_rgb_lowres_scout",
+}
+FORMAL_VALUE_MODES = {"deploy_heuristic_voi"}
+
+
+def _required_string_set(summary, key):
+    if key not in summary:
+        raise ValueError(f"BVR-TWB launch gate requires {key} evidence in precheck summary")
+    values = summary[key]
+    if isinstance(values, str) or not isinstance(values, (list, tuple, set)):
+        raise ValueError(f"BVR-TWB launch gate requires {key} to be a non-empty list/set of strings")
+    values = set(values)
+    if not values:
+        raise ValueError(f"BVR-TWB launch gate requires non-empty {key} evidence")
+    if any(not isinstance(value, str) or not value for value in values):
+        raise ValueError(f"BVR-TWB launch gate requires {key} entries to be non-empty strings")
+    return values
+
+
 def _config_text_is_clean(config_path):
     text = Path(config_path).read_text(encoding="utf-8")
     if "bvr_twb_dynamic_subsample" not in text:
@@ -64,13 +87,16 @@ def validate_launch_gate(config_path, precheck_summary_path):
         raise ValueError("BVR-TWB launch gate requires adapter_fixed_length_padded_bridge precheck evidence")
     if summary.get("adapter_padding_counts_as_valid") is not False:
         raise ValueError("BVR-TWB launch gate requires adapter padding duplicates to be invalid")
-    preview_sources = set(summary.get("preview_sources", []))
-    if not preview_sources.issubset({"deploy_visible_metadata_actionness", "raw_rgb_lowres_scout"}):
+    preview_sources = _required_string_set(summary, "preview_sources")
+    if not preview_sources.issubset(FORMAL_PREVIEW_SOURCES):
         raise ValueError(f"BVR-TWB launch gate rejects non-formal preview sources: {sorted(preview_sources)}")
+    scout_sources = _required_string_set(summary, "scout_sources")
+    if not scout_sources.issubset(FORMAL_SCOUT_SOURCES):
+        raise ValueError(f"BVR-TWB launch gate rejects non-formal scout sources: {sorted(scout_sources)}")
     if bool(summary.get("deterministic_preview_fallback_used", False)):
         raise ValueError("BVR-TWB launch gate rejects deterministic preview fallback")
-    value_modes = set(summary.get("value_modes", []))
-    if value_modes and value_modes != {"deploy_heuristic_voi"}:
+    value_modes = _required_string_set(summary, "value_modes")
+    if value_modes != FORMAL_VALUE_MODES:
         raise ValueError(f"BVR-TWB launch gate rejects unexpected value_modes: {sorted(value_modes)}")
     if bool(summary.get("value_labels_used_at_test", False)):
         raise ValueError("BVR-TWB launch gate rejects value labels used at test/deploy")
