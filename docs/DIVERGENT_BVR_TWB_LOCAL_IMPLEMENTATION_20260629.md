@@ -393,3 +393,40 @@ python tools/bvr_twb/validate_bvr_twb_launch_gate.py --config configs/adatad/thu
 Results: pipeline audit `ledgers=3 all_validated=True sparse_compute_claim=False blocked=False`; launch gate `gate_pass=true`, `full_train_unlocked=false`, `remote_sync_unlocked_by_local_gate=false`. On this Windows machine the audit can fall back to a pure NumPy bridge+adapter ledger precheck if Torch DLL initialization fails; that fallback still rejects deterministic preview fallback and does not unlock training or metric claims.
 
 Still locked after this fix: remote sync, Slurm, protected hold changes, formal full training, validation/test evaluation, mAP, runtime/FLOPs, deploy claim, paper claim, Pro/full-train gate, final read-only review, C3/combo merge, and any claim that raw-RGB scout overhead or detector mAP is acceptable.
+
+## 2026-06-30 Final-Code Gate Repair And Remote PRECHECK_ONLY
+
+Recorded 2026-06-30T04:16:12+08:00.
+
+Current commits:
+
+- `393e890fca4d046538d7a204f70e226f875817bf`: deploy-visible scout/value gate repair.
+- `569765513992914fa4a02982505692dd9681c266`: fail-closed launch-summary repair.
+
+GitHub branch: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-bvr-twb-final-20260630`.
+Remote clone: `/data/home/sczc063/run/yuzibo/OpenTAD_BVR_TWB_Final_20260630_5697655`.
+Remote log dir: `logs/precheck_20260630_bvr_5697655/`.
+
+Final-code repair summary:
+
+- Formal path no longer silently creates pseudo-preview from sample key.
+- Formal path requires deploy-visible preview metadata or low-resolution raw-RGB scout.
+- Deterministic preview remains diagnostic/precheck-only and is rejected by formal validator/gate.
+- Formal local/precheck value mode is `deploy_heuristic_voi`.
+- `learned_packet_value` requires an explicitly loaded `value_model`; train-only regret labels are not used for test/deploy selection claims.
+- Launch gate now fail-closes if `preview_sources`, `scout_sources`, or `value_modes` are missing, empty, diagnostic, or unexpected; `value_modes` must be exactly `{"deploy_heuristic_voi"}`.
+
+Verification:
+
+- Local BVR route tests after final gate repair: `57 passed, 10 skipped`.
+- Final read-only review after blocker fix: `PASS_SUBAGENT_FINAL_REVIEW_ONLY`.
+- N16R4 login-node gate:
+  - `python tools/bvr_twb/validate_bvr_twb_launch_gate.py --config configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py`: `gate_pass=true`, `full_train_unlocked=false`, `remote_sync_unlocked_by_local_gate=false`.
+- N16R4 login-node audit:
+  - `python tools/bvr_twb/audit_opentad_bvr_twb_pipeline.py --out-dir logs/precheck_20260630_bvr_5697655/bvr_twb_audit_v3 --overwrite`: `ledgers=3 all_validated=True sparse_compute_claim=False blocked=False`.
+- N16R4 gate with summary:
+  - `python tools/bvr_twb/validate_bvr_twb_launch_gate.py --config configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py --precheck-summary logs/precheck_20260630_bvr_5697655/bvr_twb_audit_v3/summary.json`: `gate_pass=true`, `full_train_unlocked=false`, `remote_sync_unlocked_by_local_gate=false`.
+
+Still locked:
+
+- Slurm, protected hold changes, `tools/train.py`, `tools/test.py`, validation/test evaluation, detector mAP, runtime/FLOPs, deployment readiness, paper claims, C3/combo mixing, and any claim that raw-RGB scout overhead or detector mAP is acceptable.
