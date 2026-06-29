@@ -57,6 +57,15 @@ ALLOWED_C3_PHYSICAL_GRID_IDENTITIES = {
         "uses_learned_boundary_head": False,
         "policy_kind": "uniform_biased_coarse_actionness",
     },
+    "pc_ot_mras_a_uniform_scaffold_small_actionness_strict_maxgap_c3_physical_grid_actionformer": {
+        "variant_id": "C3-A-UniformScaffoldSmallActionnessStrictMaxGap-PreBackbone-OriginalAdaTAD",
+        "stage_id": "c3_a_uniform_scaffold_small_actionness_strict_maxgap_fixed384_n16r4",
+        "selection_strategy": "coarse_actionness_uncertainty",
+        "scope_selection_strategy": "uniform_scaffold_small_actionness_strict_maxgap",
+        "selector_reader": "PCOTMRASCoarseActionnessFrameScout",
+        "uses_learned_boundary_head": False,
+        "policy_kind": "uniform_scaffold_small_actionness_strict_maxgap",
+    },
 }
 
 PADDING_DATASET_CONSTRUCTOR_KWARGS = frozenset(
@@ -256,6 +265,18 @@ def validate_config(cfg_path: str | Path) -> bool:
                 int(selector.max_gap_guard_count) <= 24,
                 "uniform-biased policy guard must leave uncertainty quota reachable",
             )
+        elif policy_kind == "uniform_scaffold_small_actionness_strict_maxgap":
+            _require(
+                scope.budget_protocol == "fixed384_over_dense768_uniform_scaffold_small_actionness_strict_maxgap_guard12",
+                "A-line budget protocol mismatch",
+            )
+            _require(int(selector.coarse_uniform_count) == 288, "A-line requires 288 uniform anchors")
+            _require(int(selector.coarse_action_count) == 72, "A-line requires 72 action slots")
+            _require(int(selector.coarse_uncertainty_count) == 24, "A-line requires 24 uncertainty slots")
+            _require(int(selector.coarse_change_count) == 0, "A-line must disable change quota")
+            _require(int(selector.coarse_background_count) == 0, "A-line must disable background quota")
+            _require(int(selector.max_dense_gap) == 3, "A-line requires max_dense_gap=3")
+            _require(int(selector.max_gap_guard_count) == 12, "A-line requires max_gap_guard_count=12")
         else:
             raise ValueError(f"unsupported C3 policy kind {policy_kind}")
     _require(int(selector.reader.in_dim) == int(selector.descriptor_dim), "selector reader.in_dim must match descriptor_dim")
@@ -357,6 +378,8 @@ def validate_gate_payload(
     _require(payload.get("active_sha256_manifest_sha256") == active_manifest_sha256, "active manifest sha mismatch")
     _require(payload.get("resolved_config_sha256") == resolved_config_sha256, "resolved config sha mismatch")
     _require(payload.get("pretrained_sha256") == pretrained_sha256, "pretrained sha mismatch")
+    pretrained_resolved_path = str(payload.get("pretrained_resolved_path") or "")
+    _require(pretrained_resolved_path.startswith("/"), "pretrained_resolved_path must be a resolved absolute remote path")
 
     for key in (
         "allow_tools_train",

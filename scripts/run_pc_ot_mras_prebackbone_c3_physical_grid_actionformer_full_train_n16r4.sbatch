@@ -23,6 +23,7 @@ CONFIG_REVIEWED="configs/adatad/thumos/pc_ot_mras_prebackbone_c3_physical_grid_a
 CONFIG_REVIEWED_COARSE="configs/adatad/thumos/pc_ot_mras_coarse_actionness_uncertainty_c3_physical_grid_actionformer_n16r4.py"
 CONFIG_REVIEWED_EXACT_UNIFORM="configs/adatad/thumos/pc_ot_mras_exact_uniform_c3_physical_grid_actionformer_n16r4.py"
 CONFIG_REVIEWED_UNIFORM_BIAS="configs/adatad/thumos/pc_ot_mras_uniform_biased_coarse_actionness_c3_physical_grid_actionformer_n16r4.py"
+CONFIG_REVIEWED_A="configs/adatad/thumos/pc_ot_mras_a_uniform_scaffold_small_actionness_strict_maxgap_c3_physical_grid_actionformer_n16r4.py"
 CONFIG="${CONFIG:-$CONFIG_REVIEWED}"
 PRECHECK_ONLY="${PRECHECK_ONLY:-1}"
 ALLOW_C3_PHYSICAL_GRID_FULL_TRAIN="${ALLOW_C3_PHYSICAL_GRID_FULL_TRAIN:-0}"
@@ -34,7 +35,7 @@ SEED="${SEED:-20260625}"
 SLURM_JOB_ID_FOR_PORT="${SLURM_JOB_ID:-0}"
 MASTER_PORT="${MASTER_PORT:-$((43100 + (SLURM_JOB_ID_FOR_PORT % 20000)))}"
 PRETRAINED_PATH_REVIEWED="pretrained/vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth"
-PRETRAINED_PATH="${PRETRAINED_PATH:-$PRETRAINED_PATH_REVIEWED}"
+PRETRAINED_PATH="${C3_PRETRAINED_PATH:-${PRETRAINED_PATH:-$PRETRAINED_PATH_REVIEWED}}"
 RUN_TAG="${RUN_TAG:-c3_physical_grid_full_${SLURM_JOB_ID:-nojob}_$(date '+%Y%m%d_%H%M%S')}"
 
 case "$RUN_TAG" in
@@ -83,7 +84,6 @@ export THUMOS14_ANNOTATION_PATH="${THUMOS14_ANNOTATION_PATH:-$YUZIBO_ROOT/thumos
 export THUMOS14_CLASS_MAP="${THUMOS14_CLASS_MAP:-$YUZIBO_ROOT/thumos14/annotations/category_idx.txt}"
 export THUMOS14_TRAIN_DATA_PATH="${THUMOS14_TRAIN_DATA_PATH:-$YUZIBO_ROOT/thumos14/train}"
 export THUMOS14_TEST_DATA_PATH="${THUMOS14_TEST_DATA_PATH:-$YUZIBO_ROOT/thumos14/test}"
-export PC_OT_MRAS_PREBACKBONE_C3_PRETRAINED_PATH="$PRETRAINED_PATH"
 export PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_JSONL="$C3_SELECTOR_METADATA_JSONL"
 export PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_MAX_ROWS="$C3_SELECTOR_METADATA_MAX_ROWS"
 
@@ -188,8 +188,8 @@ if [ "$MASTER_PORT" -lt 1024 ] || [ "$MASTER_PORT" -gt 65535 ]; then
   fail "MASTER_PORT must be between 1024 and 65535; got $MASTER_PORT"
 fi
 case "$CONFIG" in
-  "$CONFIG_REVIEWED"|"$CONFIG_REVIEWED_COARSE"|"$CONFIG_REVIEWED_EXACT_UNIFORM"|"$CONFIG_REVIEWED_UNIFORM_BIAS") ;;
-  *) fail "reviewed only for $CONFIG_REVIEWED, $CONFIG_REVIEWED_COARSE, $CONFIG_REVIEWED_EXACT_UNIFORM, or $CONFIG_REVIEWED_UNIFORM_BIAS; got $CONFIG" ;;
+  "$CONFIG_REVIEWED"|"$CONFIG_REVIEWED_COARSE"|"$CONFIG_REVIEWED_EXACT_UNIFORM"|"$CONFIG_REVIEWED_UNIFORM_BIAS"|"$CONFIG_REVIEWED_A") ;;
+  *) fail "reviewed only for $CONFIG_REVIEWED, $CONFIG_REVIEWED_COARSE, $CONFIG_REVIEWED_EXACT_UNIFORM, $CONFIG_REVIEWED_UNIFORM_BIAS, or $CONFIG_REVIEWED_A; got $CONFIG" ;;
 esac
 
 EXPECTED_GIT_BRANCH="${OPENTAD_C3_PHYSICAL_GRID_EXPECTED_BRANCH:-codex/c3-physical-grid-head-20260625}"
@@ -204,6 +204,17 @@ log "git_branch=$GIT_BRANCH git_head=$GIT_HEAD"
 log "config=$CONFIG"
 log "run_root=$RUN_ROOT"
 test -f "$CONFIG" || fail "missing reviewed config: $CONFIG"
+
+PRETRAINED_RESOLVED_PATH="$(readlink -f "$PRETRAINED_PATH" 2>/dev/null || true)"
+if [ -z "$PRETRAINED_RESOLVED_PATH" ]; then
+  case "$PRETRAINED_PATH" in
+    /*) PRETRAINED_RESOLVED_PATH="$PRETRAINED_PATH" ;;
+    *) PRETRAINED_RESOLVED_PATH="$REPO/$PRETRAINED_PATH" ;;
+  esac
+fi
+test -f "$PRETRAINED_RESOLVED_PATH" || fail "missing pretrained file: $PRETRAINED_RESOLVED_PATH (from PRETRAINED_PATH=$PRETRAINED_PATH)"
+export PC_OT_MRAS_PREBACKBONE_C3_PRETRAINED_PATH="$PRETRAINED_RESOLVED_PATH"
+log "resolved_pretrained_path=$PRETRAINED_RESOLVED_PATH"
 
 read VARIANT_ID ROUTE_ID STAGE_ID <<EOF
 $(python - "$CONFIG" <<'PY'
@@ -274,19 +285,18 @@ fi
 test -f opentad/models/selectors/pc_ot_mras_prebackbone_frame_selector.py || fail "missing pre-backbone selector runtime: opentad/models/selectors/pc_ot_mras_prebackbone_frame_selector.py"
 test -f tools/bata/analyze_pc_ot_mras_selector_posttrain_diagnostics.py || fail "missing selector diagnostic producer"
 test -f tools/bata/validate_pc_ot_mras_c3_diagnostic_gate.py || fail "missing C3 posttrain diagnostic gate"
-test -f "$PRETRAINED_PATH" || fail "missing pretrained file: $PRETRAINED_PATH"
 test -f "$THUMOS14_ANNOTATION_PATH" || fail "missing annotation: $THUMOS14_ANNOTATION_PATH"
 test -f "$THUMOS14_CLASS_MAP" || fail "missing class map: $THUMOS14_CLASS_MAP"
 test -d "$THUMOS14_TRAIN_DATA_PATH" || fail "missing train data dir: $THUMOS14_TRAIN_DATA_PATH"
 test -d "$THUMOS14_TEST_DATA_PATH" || fail "missing test data dir: $THUMOS14_TEST_DATA_PATH"
 
-PRETRAINED_SHA256="$(sha256sum "$PRETRAINED_PATH" | awk '{print $1}')"
-python - "$GATE_JSON" "$ACTIVE_MANIFEST_SHA256" "$RESOLVED_CONFIG_SHA256" "$PRETRAINED_SHA256" "$ROUTE_ID" "$VARIANT_ID" "$STAGE_ID" <<'PY'
+PRETRAINED_SHA256="$(sha256sum "$PRETRAINED_RESOLVED_PATH" | awk '{print $1}')"
+python - "$GATE_JSON" "$ACTIVE_MANIFEST_SHA256" "$RESOLVED_CONFIG_SHA256" "$PRETRAINED_SHA256" "$PRETRAINED_RESOLVED_PATH" "$ROUTE_ID" "$VARIANT_ID" "$STAGE_ID" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-path, manifest, resolved, pretrained, route, variant, stage = sys.argv[1:8]
+path, manifest, resolved, pretrained, pretrained_resolved, route, variant, stage = sys.argv[1:9]
 payload = {
     "decision": "ALLOW_C3_PHYSICAL_GRID_FULL_TRAIN",
     "route": route,
@@ -337,6 +347,7 @@ payload = {
     "active_sha256_manifest_sha256": manifest,
     "resolved_config_sha256": resolved,
     "pretrained_sha256": pretrained,
+    "pretrained_resolved_path": pretrained_resolved,
 }
 Path(path).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
@@ -375,6 +386,7 @@ torchrun --nproc_per_node=1 --master_port="$MASTER_PORT" \
   dataset.val.data_path="$THUMOS14_TEST_DATA_PATH" \
   dataset.test.data_path="$THUMOS14_TEST_DATA_PATH" \
   evaluation.ground_truth_filename="$THUMOS14_ANNOTATION_PATH" \
+  model.backbone.custom.pretrain="$PRETRAINED_RESOLVED_PATH" \
   2>&1 | tee "$TRAIN_STDOUT"
 
 grep -q "Training Over" "$TRAIN_STDOUT" || fail "train stdout does not show clean Training Over"

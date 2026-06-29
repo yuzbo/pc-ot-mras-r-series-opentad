@@ -35,6 +35,14 @@ DENSE_TRACK_KEYS = (
     "redundancy_logits",
     "value_logits",
     "risk_logits",
+    "p_action",
+    "entropy",
+    "p_change",
+    "margin",
+    "boundary_score",
+    "action_score",
+    "background_score",
+    "role_overlap",
 )
 FORBIDDEN_KEY_TOKENS = (
     "gt",

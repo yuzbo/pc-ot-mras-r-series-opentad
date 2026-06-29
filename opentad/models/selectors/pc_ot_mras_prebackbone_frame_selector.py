@@ -930,6 +930,11 @@ class PCOTMRASCoarseActionnessFrameScout(nn.Module):
         entropy_score = entropy_score.masked_fill(~valid, 0.0)
         uncertainty_score = uncertainty_score.masked_fill(~valid, 0.0)
         change_score = change_score.masked_fill(~valid, 0.0)
+        margin_score = (1.0 - (2.0 * action_prob.float().clamp(1.0e-6, 1.0 - 1.0e-6) - 1.0).abs()).clamp(
+            0.0,
+            1.0,
+        )
+        margin_score = margin_score.masked_fill(~valid, 0.0)
         background_context_score = ((1.0 - action_prob) * (1.0 - uncertainty_score)).masked_fill(~valid, 0.0)
 
         normalizer = self.action_bias_weight + self.uncertainty_bias_weight + self.change_bias_weight
@@ -949,9 +954,14 @@ class PCOTMRASCoarseActionnessFrameScout(nn.Module):
             "actionness_logits": action_logits,
             "value_logits": action_logits,
             "action_prob": action_prob,
+            "p_action": action_prob,
             "entropy_score": entropy_score,
+            "entropy": entropy_score,
+            "margin_score": margin_score,
+            "margin": margin_score,
             "uncertainty_score": uncertainty_score,
             "change_score": change_score,
+            "p_change": change_score,
             "transition_score": change_score,
             "background_context_score": background_context_score,
             "frame_selection_logits": frame_selection_logits,
@@ -2523,8 +2533,10 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         prob = torch.sigmoid(action_logits.float()).masked_fill(~valid, 0.0)
         eps = 1.0e-6
         prob_safe = prob.clamp(min=eps, max=1.0 - eps)
-        entropy = -(prob_safe * prob_safe.log() + (1.0 - prob_safe) * (1.0 - prob_safe).log()) / math.log(2.0)
-        margin_uncertainty = 1.0 - (2.0 * prob_safe - 1.0).abs()
+        entropy = (
+            -(prob_safe * prob_safe.log() + (1.0 - prob_safe) * (1.0 - prob_safe).log()) / math.log(2.0)
+        ).masked_fill(~valid, 0.0)
+        margin_uncertainty = (1.0 - (2.0 * prob_safe - 1.0).abs()).clamp(0.0, 1.0).masked_fill(~valid, 0.0)
         uncertainty = torch.maximum(entropy, margin_uncertainty).clamp(0.0, 1.0).masked_fill(~valid, 0.0)
 
         adjacent_valid = valid[:, 1:] & valid[:, :-1]
@@ -2545,6 +2557,10 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         ) / normalizer
         mixed = mixed.masked_fill(~valid, 0.0)
         scores = {
+            "p_action": prob,
+            "entropy": entropy,
+            "margin": margin_uncertainty,
+            "p_change": change,
             "coarse_action": prob,
             "coarse_uncertainty": uncertainty,
             "coarse_change": change,
@@ -2554,6 +2570,77 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
         for name, value in scores.items():
             _require_finite(value, f"{name} score", error_type=ValueError)
         return scores
+
+    @staticmethod
+    def _coarse_candidate_eligible_roles(
+        *,
+        candidate_idx: int,
+        ranked_by_score: Mapping[str, torch.Tensor],
+        quota: Mapping[str, int],
+    ) -> list[str]:
+        eligible: list[str] = []
+        for role in ("coarse_action", "coarse_uncertainty", "coarse_change", "coarse_background"):
+            count = max(0, int(quota.get(role, 0)))
+            if count <= 0:
+                continue
+            ranked = ranked_by_score.get(role)
+            if ranked is None:
+                continue
+            top = ranked[:count].detach().cpu().tolist()
+            if int(candidate_idx) in {int(item) for item in top}:
+                eligible.append(role)
+        if ranked_by_score.get("coarse_mixed_fill") is not None:
+            eligible.append("coarse_mixed_fill")
+        return eligible
+
+    def _coarse_candidate_points_for_batch(
+        self,
+        *,
+        scores: Mapping[str, torch.Tensor],
+        candidate_valid: torch.Tensor,
+        candidate_dense_indices: torch.Tensor,
+        batch_idx: int,
+        ranked_by_score: Mapping[str, torch.Tensor],
+        quota: Mapping[str, int],
+        final_role_by_candidate: Mapping[int, str],
+        source_score_role_by_candidate: Mapping[int, str | None],
+    ) -> list[dict[str, Any]]:
+        valid_mask = candidate_valid[batch_idx].detach().bool()
+        dense_indices = candidate_dense_indices[batch_idx].detach()
+        points: list[dict[str, Any]] = []
+        component_keys = (
+            "p_action",
+            "entropy",
+            "p_change",
+            "margin",
+            "coarse_uncertainty",
+            "coarse_background",
+            "coarse_mixed_fill",
+        )
+        for candidate_idx in range(int(valid_mask.numel())):
+            is_valid = bool(valid_mask[candidate_idx].item())
+            components = {}
+            for key in component_keys:
+                value = scores[key][batch_idx, candidate_idx].detach().cpu().item()
+                components[key] = float(value)
+            points.append(
+                {
+                    "candidate_idx": int(candidate_idx),
+                    "dense_index": int(dense_indices[candidate_idx].detach().cpu().item()),
+                    "valid": is_valid,
+                    "final_role": final_role_by_candidate.get(candidate_idx),
+                    "source_score_role": source_score_role_by_candidate.get(candidate_idx),
+                    "eligible_roles": self._coarse_candidate_eligible_roles(
+                        candidate_idx=candidate_idx,
+                        ranked_by_score=ranked_by_score,
+                        quota=quota,
+                    )
+                    if is_valid
+                    else [],
+                    "components": components,
+                }
+            )
+        return points
 
     @staticmethod
     def _scaled_coarse_quota(configured: Mapping[str, int], budget: int) -> dict[str, int]:
@@ -2657,7 +2744,8 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 valid_positions=valid_positions,
                 count=quota["coarse_uniform"],
             ):
-                add_pos(int(pos_tensor.item()), None, "coarse_uniform", None)
+                pos = int(pos_tensor.item())
+                add_pos(pos, pos_to_candidate.get(pos), "coarse_uniform", None)
 
             guard_enabled = bool(getattr(self, "max_dense_gap", 0) > 0 and getattr(self, "max_gap_guard_count", 0) > 0)
             for pos_tensor in self._max_gap_guard_positions(
@@ -2665,7 +2753,8 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 count=min(int(getattr(self, "max_gap_guard_count", 0)), output_valid_len),
                 max_gap=int(getattr(self, "max_dense_gap", 0)),
             ):
-                add_pos(int(pos_tensor.item()), None, "coarse_max_gap_guard", None)
+                pos = int(pos_tensor.item())
+                add_pos(pos, pos_to_candidate.get(pos), "coarse_max_gap_guard", None)
 
             ranked_by_score: dict[str, torch.Tensor] = {}
             rank_position_by_score: dict[str, dict[int, int]] = {}
@@ -2714,7 +2803,7 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                     if len(rows) >= output_valid_len:
                         break
                     pos = int(pos_tensor.item())
-                    add_pos(pos, pos_to_candidate.get(pos), "dense_fill", "coarse_mixed_fill")
+                    add_pos(pos, pos_to_candidate.get(pos), "coarse_mixed_fill", "coarse_mixed_fill")
 
             if len(rows) != output_valid_len:
                 raise ValueError(
@@ -2738,6 +2827,23 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             role_counts: dict[str, int] = {}
             for _pos, _candidate_idx, role, _score_key in rows:
                 role_counts[role] = role_counts.get(role, 0) + 1
+            final_role_by_candidate: dict[int, str] = {}
+            source_score_role_by_candidate: dict[int, str | None] = {}
+            for _pos, candidate_idx, role, score_key in rows:
+                if candidate_idx is None:
+                    continue
+                final_role_by_candidate[int(candidate_idx)] = role
+                source_score_role_by_candidate[int(candidate_idx)] = score_key
+            candidate_points = self._coarse_candidate_points_for_batch(
+                scores=scores,
+                candidate_valid=candidate_valid,
+                candidate_dense_indices=candidate_dense_indices,
+                batch_idx=batch_idx,
+                ranked_by_score=ranked_by_score,
+                quota=quota,
+                final_role_by_candidate=final_role_by_candidate,
+                source_score_role_by_candidate=source_score_role_by_candidate,
+            )
             max_gap_guard_meta.append(
                 {
                     "enabled": guard_enabled,
@@ -2760,6 +2866,9 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                         "uncertainty": float(self.coarse_uncertainty_weight),
                         "change": float(self.coarse_change_weight),
                     },
+                    "candidate_points": candidate_points,
+                    "mixed_fill_role": "coarse_mixed_fill",
+                    "dense_fill_compat_count": 0,
                     "deploy_time_signals": [
                         "actionness_logits",
                         "p_action",
@@ -3436,6 +3545,9 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
                 batch_idx=batch_idx,
                 valid_len=int(valid_len),
             ),
+            "selector_candidate_points": list(
+                meta.get("pc_ot_mras_prebackbone_coarse_actionness_policy", {}).get("candidate_points", [])
+            ),
             "packet_roles": list(meta.get("pc_ot_mras_prebackbone_selected_roles", [])),
             "irregular_selected_positions": list(meta.get("irregular_selected_positions", [])),
             "irregular_dense_valid_len": int(valid_len),
@@ -3626,6 +3738,9 @@ class PCOTMRASPreBackboneFrameSelector(nn.Module):
             )
             for output_key, score_key in (
                 ("p_action", "coarse_action"),
+                ("entropy", "entropy"),
+                ("margin", "margin"),
+                ("p_change", "coarse_change"),
                 ("uncertainty", "coarse_uncertainty"),
                 ("change", "coarse_change"),
                 ("background", "coarse_background"),

@@ -608,6 +608,102 @@ def test_coarse_actionness_uncertainty_plan_uses_classification_uncertainty_role
     assert plan["coarse_policy_meta"][0]["uses_gt"] is False
 
 
+def test_coarse_actionness_candidate_points_expose_components_roles_and_mixed_fill(tmp_path, monkeypatch):
+    PCOTMRASPreBackboneFrameSelector = _install_prebackbone_selector_or_skip()
+    selector = PCOTMRASPreBackboneFrameSelector(
+        reader=dict(
+            type="PCOTMRASCoarseActionnessFrameScout",
+            in_dim=4,
+            hidden_dim=4,
+            num_slots=6,
+            temporal_layers=1,
+            temporal_kernel_size=3,
+            dilations=(1,),
+            dropout=0.0,
+        ),
+        target_len=6,
+        dense_window_size=8,
+        descriptor_dim=4,
+        selection_strategy="coarse_actionness_uncertainty",
+        coarse_uniform_count=0,
+        coarse_action_count=2,
+        coarse_uncertainty_count=1,
+        coarse_change_count=1,
+        coarse_background_count=0,
+        max_dense_gap=0,
+        max_gap_guard_count=0,
+        remap_gt_to_selected_axis=False,
+        straight_through_detector_loss=False,
+    )
+    candidate_valid = torch.ones(1, 8, dtype=torch.bool)
+    candidate_dense_indices = torch.arange(8, dtype=torch.long).unsqueeze(0)
+    valid = candidate_valid.clone()
+    action_logits = torch.tensor([[0.0, 6.0, -6.0, 0.0, 6.0, -6.0, -6.0, -6.0]])
+
+    scores = selector._coarse_actionness_scores(
+        reader_outputs={"actionness_logits": action_logits},
+        candidate_valid=candidate_valid,
+    )
+    for key in ("p_action", "entropy", "p_change", "margin"):
+        assert key in scores
+        assert scores[key].shape == candidate_valid.shape
+
+    plan = selector._coarse_actionness_uncertainty_transport_plan(
+        reader_outputs={"actionness_logits": action_logits},
+        valid=valid,
+        candidate_valid=candidate_valid,
+        candidate_dense_indices=candidate_dense_indices,
+        training=False,
+    )
+    policy = plan["coarse_policy_meta"][0]
+    candidate_points = policy["candidate_points"]
+    selected_roles = plan["selected_roles"][0][:6]
+
+    assert "coarse_mixed_fill" in selected_roles
+    assert "dense_fill" not in selected_roles
+    assert len(candidate_points) == 8
+    assert any(len(point["eligible_roles"]) >= 2 for point in candidate_points)
+    for point in candidate_points:
+        assert set(
+            [
+                "candidate_idx",
+                "dense_index",
+                "valid",
+                "final_role",
+                "source_score_role",
+                "eligible_roles",
+                "components",
+            ]
+        ).issubset(point)
+        assert point["candidate_idx"] == point["dense_index"]
+        assert point["valid"] is True
+        components = point["components"]
+        for key in ("p_action", "entropy", "p_change", "margin"):
+            assert key in components
+            assert 0.0 <= components[key] <= 1.0
+
+    dump_path = tmp_path / "selector_metadata.jsonl"
+    monkeypatch.setenv("PC_OT_MRAS_PREBACKBONE_SELECTOR_METADATA_JSONL", str(dump_path))
+    meta = {"pc_ot_mras_prebackbone_coarse_actionness_policy": policy}
+    selector._append_metadata_dump_row(
+        meta=meta,
+        batch_idx=0,
+        selected_dense_indices=[int(item) for item in plan["selected_positions"][0][:6].tolist()],
+        valid_len=8,
+        gt_segments=None,
+        reader_outputs={"actionness_logits": action_logits},
+        candidate_valid=candidate_valid,
+        candidate_dense_indices=candidate_dense_indices,
+        training=False,
+    )
+    row = json.loads(dump_path.read_text(encoding="utf-8").strip())
+    components = row["selector_score_components"]
+    for key in ("p_action", "entropy", "p_change", "margin"):
+        assert key in components
+        assert len(components[key]) == 8
+    assert row["selector_candidate_points"] == candidate_points
+
+
 def test_exact_uniform_c3_config_plan_uses_only_uniform_roles_with_dense_coverage():
     PCOTMRASPreBackboneFrameSelector = _install_prebackbone_selector_or_skip()
     cfg = load_mmengine_config_or_skip(
