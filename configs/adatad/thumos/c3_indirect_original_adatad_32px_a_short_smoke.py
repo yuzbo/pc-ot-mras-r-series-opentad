@@ -139,7 +139,7 @@ solver = dict(
     clip_grad_norm=1,
     amp=True,
     fp16_compress=True,
-    static_graph=False,
+    static_graph=True,
     ema=False,
 )
 

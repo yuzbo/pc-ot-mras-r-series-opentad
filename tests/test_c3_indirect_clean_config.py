@@ -61,3 +61,4 @@ def test_train_smoke_controls_are_fail_closed():
     assert cfg.workflow.disable_checkpoint is True
     assert cfg.workflow.val_eval_interval == -1
     assert cfg.solver.train.batch_size == 1
+    assert cfg.solver.static_graph is True
