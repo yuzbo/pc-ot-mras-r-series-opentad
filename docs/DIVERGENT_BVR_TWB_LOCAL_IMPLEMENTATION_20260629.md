@@ -214,3 +214,31 @@ Claim and launch boundary after this pass:
 - The Adapter compatibility bridge remains explicitly `adapter_fixed_length_padded_bridge`; it is not a true sparse-compute claim.
 - Full training, Slurm long run, validation/test evaluation, mAP, runtime/FLOPs, deploy readiness, paper claims, and true sparse-backbone/detector sparse-compute claims remain locked.
 - Unlocking full train still requires the formal full-train gate, including the required review/Pro/explicit override path for this route stage.
+
+## Train Smoke Blocker Fix: Adapter Chunk Positional Embedding
+
+The first N16R4 train smoke after the optimizer fix reached the first training batch, then failed in `vit_adapter.py` at `x = x + pos_embed` with a token-count mismatch: `9600` actual tokens versus `800` positional-embedding tokens. Root cause: the BVR config had replaced the inherited Adapter custom pipeline with `_delete_=True` and removed the original 16-frame chunking pre-processing. VideoMAE's positional embedding is defined for one 16-frame clip (`8` tubelet tokens times `10x10` spatial tokens = `800`), while the BVR candidate was sending the whole fixed-length Adapter bridge window directly into one VideoMAE forward.
+
+The route fix restores the Adapter-required chunk contract without restoring dense temporal interpolation:
+
+- `input_bvr_twb_dynamic_adapter_irregular_headv3.py` now defines `chunk_num = window_size * scale_factor // 16`.
+- The backbone custom config restores `pre_processing_pipeline` with `b n c (t1 t) h w -> (b t1) n c t h w`, so the Adapter sees 16-frame chunks and `pos_embed` stays aligned.
+- The `post_processing_pipeline` keeps `Reduce` and adds `(b t1) c t -> b c (t1 t)` to reassemble tubelet features for the detector.
+- Dense `Interpolate` remains absent. The detector sees the tubelet feature sequence produced from selected/padded Adapter input, and BVR ledgers still mark `sparse_compute_claim=false`.
+- The fix does not change `LoadFrames` selection: BVR still selects sparse raw frames before `DecordDecode`; hold-last padding remains explicit Adapter compatibility input and does not count as fresh valid observations.
+
+Focused local regression now asserts that the BVR config keeps chunking, reassembles chunks, and does not reintroduce dense interpolation. This unlocks another read-only review / remote train-smoke retry, not formal full train, mAP, runtime/FLOPs, deploy, paper, or true sparse-compute claims.
+
+## One-Epoch Diagnostic Smoke Evidence
+
+After the chunk positional-embedding fix, the N16R4 GPU1 diagnostic smoke advanced through one diagnostic epoch:
+
+- Remote worktree: `/data/home/sczc063/run/yuzibo/OpenTAD_BVR_TWB_Precheck_20260629_224944`.
+- Remote log directory: `/data/home/sczc063/run/yuzibo/OpenTAD_BVR_TWB_Precheck_20260629_224944/logs/bvr_twb_train_smoke/smoke_gpu1_20260629_235750_chunk_fix`.
+- Protected hold: Slurm job `1118197`, node `g0030`, `CUDA_VISIBLE_DEVICES=1`; parent hold was not released.
+- Remote tests before smoke: `60 passed in 22.48s`.
+- Result: one diagnostic epoch reached `[000][00199/00199]` and `Training Over...`.
+- Cleared blocker: `POS_EMBED_COUNT=0`, `RUNTIME_COUNT=0`, and no `9600 vs 800` positional-embedding crash.
+- Caveat: `NONFINITE_COUNT=3`; non-finite gradient skip diagnostics occurred in `rpn_head.reg_head.weight`. This did not crash the diagnostic smoke, but it remains a formal-full-train risk to inspect before unlocking long training.
+
+This smoke is execution evidence only. It does not unlock mAP, runtime/FLOPs, deploy readiness, paper claims, or true sparse-compute claims. Full train remains locked until the coordinator / Pro / explicit user gate allows it for this route stage.

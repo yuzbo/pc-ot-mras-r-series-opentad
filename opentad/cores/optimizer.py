@@ -10,18 +10,31 @@ def build_optimizer(cfg, model, logger):
         return build_vit_optimizer(cfg, model, logger)
 
     # set the backbone's optim_groups: SHOULD ONLY CONTAIN BACKBONE PARAMS
+    backbone_cfg = cfg.pop("backbone", None)
     if hasattr(model.module, "backbone"):  # if backbone exists
         if model.module.backbone.freeze_backbone == False:  # not frozen
             assert (
-                "backbone" in cfg.keys()
+                backbone_cfg is not None
             ), "Freeze_backbone is set to False, but backbone parameters is not provided in the optimizer config."
-            backbone_cfg = cfg["backbone"]
-            cfg.pop("backbone")
             backbone_optim_groups = get_backbone_optim_groups(backbone_cfg, model, logger)
 
         else:  # frozen backbone
-            backbone_optim_groups = []
-            logger.info(f"Freeze the backbone...")
+            has_trainable_backbone_params = any(param.requires_grad for param in model.module.backbone.parameters())
+            if has_trainable_backbone_params:
+                assert (
+                    backbone_cfg is not None
+                ), "Frozen backbone has trainable parameters, but backbone optimizer config is not provided."
+                backbone_optim_groups = get_backbone_optim_groups(
+                    backbone_cfg,
+                    model,
+                    logger,
+                    trainable_only=True,
+                )
+                _assert_trainable_backbone_params_are_optimized(backbone_optim_groups, model)
+                logger.info("Freeze the backbone except trainable backbone parameters...")
+            else:
+                backbone_optim_groups = []
+                logger.info(f"Freeze the backbone...")
     else:
         backbone_optim_groups = []
 
@@ -56,7 +69,32 @@ def build_optimizer(cfg, model, logger):
     return optimizer
 
 
-def get_backbone_optim_groups(cfg, model, logger):
+def _assert_trainable_backbone_params_are_optimized(backbone_optim_groups, model):
+    trainable = {
+        name: param
+        for name, param in model.module.backbone.named_parameters()
+        if param.requires_grad
+    }
+    assert len(trainable) > 0, "Frozen backbone trainable optimizer check requires trainable parameters."
+
+    grouped_param_ids = {
+        id(param)
+        for group in backbone_optim_groups
+        for param in group.get("params", [])
+    }
+    assert len(grouped_param_ids) > 0, (
+        "Frozen backbone has trainable parameters, but backbone optimizer config "
+        "matched no non-empty parameter group."
+    )
+
+    missing = [name for name, param in trainable.items() if id(param) not in grouped_param_ids]
+    assert len(missing) == 0, (
+        "Frozen backbone trainable parameters are not covered by backbone optimizer config: "
+        + ", ".join(missing)
+    )
+
+
+def get_backbone_optim_groups(cfg, model, logger, trainable_only=False):
     """Example:
     backbone = dict(
         lr=1e-5,
@@ -85,6 +123,9 @@ def get_backbone_optim_groups(cfg, model, logger):
     name_list = []
     # split the backbone parameters into different groups
     for name, param in model.module.backbone.named_parameters():
+        if trainable_only and not param.requires_grad:
+            continue
+
         # loop the exclude_name_list
         is_exclude = False
         if len(exclude_name_list) > 0:
@@ -130,11 +171,12 @@ def get_backbone_optim_groups(cfg, model, logger):
 
     if len(custom_name_list) > 0:
         for i, custom_name in enumerate(custom_name_list):
-            backbone_optim_groups.append(
-                dict(
-                    params=custom_params_list[i],
-                    lr=cfg["custom"][i]["lr"],
-                    weight_decay=cfg["custom"][i]["weight_decay"],
+            if len(custom_params_list[i]) > 0 or not trainable_only:
+                backbone_optim_groups.append(
+                    dict(
+                        params=custom_params_list[i],
+                        lr=cfg["custom"][i]["lr"],
+                        weight_decay=cfg["custom"][i]["weight_decay"],
+                    )
                 )
-            )
     return backbone_optim_groups

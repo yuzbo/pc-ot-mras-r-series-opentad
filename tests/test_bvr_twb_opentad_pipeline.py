@@ -204,6 +204,10 @@ def test_bvr_config_uses_dynamic_method_and_excludes_unapproved_route_tokens():
     path = Path("configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py")
     text = path.read_text(encoding="utf-8")
     assert "bvr_twb_dynamic_subsample" in text
+    assert "chunk_num = window_size * scale_factor // 16" in text
+    assert 'ops="b n c (t1 t) h w -> (b t1) n c t h w"' in text
+    assert 'ops="(b t1) c t -> b c (t1 t)"' in text
+    assert "Interpolate" not in text
     normalized = text.replace(ROUTE_LABEL, "").replace("checkpoint_interval", "checkpoint_period")
     for token in FORBIDDEN_ROUTE_TOKENS:
         assert token.lower() not in normalized.lower()

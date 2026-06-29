@@ -5,6 +5,7 @@ route_label = "DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3"
 window_size = 192
 dense_window_size = 384
 scale_factor = 1
+chunk_num = window_size * scale_factor // 16
 
 dataset = dict(
     train=dict(
@@ -120,8 +121,12 @@ model = dict(
             norm_eval=True,
             freeze_backbone=True,
             trainable_backbone_keywords=["adapter", "Adapter"],
+            pre_processing_pipeline=[
+                dict(type="Rearrange", keys=["frames"], ops="b n c (t1 t) h w -> (b t1) n c t h w", t1=chunk_num),
+            ],
             post_processing_pipeline=[
                 dict(type="Reduce", keys=["feats"], ops="b n c t h w -> b c t", reduction="mean"),
+                dict(type="Rearrange", keys=["feats"], ops="(b t1) c t -> b c (t1 t)", t1=chunk_num),
             ],
         ),
     ),
