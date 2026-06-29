@@ -2,13 +2,13 @@
 
 Date: 2026-06-29 Asia/Shanghai
 
-Route label: `DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3`
+Route label: `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`
 
 Owned full-code implementation worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_MDLKnot_FullCode_Worktree_20260629`
 
 Superseded evidence-only worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_MDLKnot_Worktree_20260629`
 
-Status: implementation and precheck tooling with Linux/N16R4 PRECHECK_ONLY passed on 2026-06-30. Remote sync, Slurm, training, evaluation, `tools/test.py`, stage, commit, push, mAP/runtime/FLOPs/deploy/paper/sparse-compute claims remain locked.
+Status: local/precheck final-code candidate after route-identity and deploy-visible scout repair. The earlier Linux/N16R4 PRECHECK_ONLY evidence remains historical; remote sync, Slurm, training, evaluation, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper/sparse-compute claims remain locked.
 
 Changed surface:
 
@@ -23,12 +23,13 @@ Changed surface:
 Implemented components:
 
 - `ScoutCurve`, `KnotLedger`, `SparseTemporalMeta`, objective terms, provenance checks.
-- Deploy-visible scout builder from actionness, uncertainty, change, persistence, optional motion.
+- Deploy-visible scout builders from explicit action-state curves, lightweight raw-frame motion probes, or frame metadata fallback.
 - Weighted reconstruction objective, complexity penalty, long-gap risk, short-island duration risk, transition risk.
 - Greedy selector with candidate pool from residuals, transitions, uncertainty, gap midpoints, short islands, endpoints, and scaffold anchors.
 - Matched controls: per-video same-K uniform, mean-K exact-uniform, random same-K, scaffold-only, MDL-only, MDL plus transition/gap/duration risk.
 - Real sparse handoff validator and OpenTAD `LoadFrames`/`Collect` integration surface.
 - Synthetic/offline ledger builder, precheck audit tool, launch gate validator.
+- Synthetic fallback is diagnostic-only and disabled in the formal route config.
 
 No claims:
 
@@ -86,3 +87,19 @@ Interpretation:
 - The passing gate only authorizes the PRECHECK_ONLY evidence state.
 - It does not unlock full train, evaluation, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper, or sparse-compute claims.
 - Gate output still locks remote_sync, Slurm, training, evaluation, `tools/test.py`, stage, commit, push, and all metric/runtime/deploy/paper claims.
+
+## Local Final-Code Candidate Repair
+
+Recorded 2026-06-30 Asia/Shanghai.
+
+Fix:
+
+- Replaced the route identity with `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`.
+- Changed the route config from synthetic fallback precheck-only scout to `raw_frame_motion_scout_with_metadata_fallback`.
+- Added raw-frame motion and frame-metadata scout builders with explicit no-GT/no-teacher/no-cache provenance.
+- Kept synthetic curves only as `synthetic_precheck_diagnostic` for offline audit/precheck tooling.
+- Updated the launch gate to validate the config directly via `--config` and reject synthetic formal scout, old route labels, C3/combo/oracle drift, missing safety flags, and summary mismatches.
+
+Still locked:
+
+- No remote sync, Slurm, training, evaluation, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper, or sparse-compute claim is unlocked by this local repair.

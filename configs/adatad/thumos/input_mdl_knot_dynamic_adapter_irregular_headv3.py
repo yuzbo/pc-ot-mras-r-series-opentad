@@ -1,7 +1,7 @@
 _base_ = ["./input_random_fixed_50pct_adapter_irregular_headv3_x.py"]
 
-route_label = "DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3"
-route_status = "LOCAL_PRECHECK_ONLY_NO_REMOTE_NO_TRAINING_NO_METRIC_CLAIMS"
+route_label = "DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3"
+route_status = "LOCAL_FINAL_CODE_CANDIDATE_PRECHECK_GATE_LOCKED_NO_REMOTE_NO_TRAINING_NO_METRIC_CLAIMS"
 
 annotation_path = "/root/autodl-tmp/annotations/thumos_14_anno.json"
 class_map = "/root/autodl-tmp/annotations/category_idx.txt"
@@ -15,8 +15,11 @@ scale_factor = 1
 mdl_knot_acquisition = dict(
     method="mdl_knot_dynamic_subsample",
     bridge="fixed_pad",
-    deploy_scout_source="fallback_synthetic_precheck_only",
-    real_scout_unavailable=True,
+    deploy_scout_source="raw_frame_motion_scout_with_metadata_fallback",
+    real_scout_unavailable=False,
+    synthetic_fallback_allowed=False,
+    scout_stride=8,
+    scout_max_frames=96,
     changed_surface=dict(
         input_sampling=True,
         dynamic_budget_policy=True,
@@ -59,6 +62,10 @@ _mdl_load_train = dict(
     mdl_knot_max_k=mdl_knot_acquisition["max_k"],
     mdl_knot_target_weighted_error=mdl_knot_acquisition["target_weighted_error"],
     mdl_knot_max_gap=mdl_knot_acquisition["max_gap"],
+    mdl_knot_deploy_scout_source=mdl_knot_acquisition["deploy_scout_source"],
+    mdl_knot_scout_stride=mdl_knot_acquisition["scout_stride"],
+    mdl_knot_scout_max_frames=mdl_knot_acquisition["scout_max_frames"],
+    mdl_knot_allow_synthetic_fallback=mdl_knot_acquisition["synthetic_fallback_allowed"],
     mdl_knot_no_gt_selector=True,
     mdl_knot_no_teacher=True,
     mdl_knot_no_prediction_cache=True,
@@ -79,6 +86,10 @@ _mdl_load_eval = dict(
     mdl_knot_max_k=mdl_knot_acquisition["max_k"],
     mdl_knot_target_weighted_error=mdl_knot_acquisition["target_weighted_error"],
     mdl_knot_max_gap=mdl_knot_acquisition["max_gap"],
+    mdl_knot_deploy_scout_source=mdl_knot_acquisition["deploy_scout_source"],
+    mdl_knot_scout_stride=mdl_knot_acquisition["scout_stride"],
+    mdl_knot_scout_max_frames=mdl_knot_acquisition["scout_max_frames"],
+    mdl_knot_allow_synthetic_fallback=mdl_knot_acquisition["synthetic_fallback_allowed"],
     mdl_knot_no_gt_selector=True,
     mdl_knot_no_teacher=True,
     mdl_knot_no_prediction_cache=True,
@@ -145,4 +156,4 @@ dataset = dict(
     ),
 )
 
-work_dir = "exps/thumos/adatad/input_mdl_knot_dynamic_adapter_irregular_headv3_locked_precheck_only"
+work_dir = "exps/thumos/adatad/input_mdl_knot_dynamic_adapter_irregular_headv3_local_final_code_candidate"

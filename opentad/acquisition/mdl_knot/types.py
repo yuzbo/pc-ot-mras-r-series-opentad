@@ -6,7 +6,7 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 
 
-MDL_KNOT_ROUTE_LABEL = "DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3"
+MDL_KNOT_ROUTE_LABEL = "DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3"
 
 FORBIDDEN_SOURCE_TOKENS = (
     "C3",
@@ -268,4 +268,3 @@ class KnotLedger:
             "control_name": self.control_name,
             "selection_history": list(self.selection_history),
         }
-

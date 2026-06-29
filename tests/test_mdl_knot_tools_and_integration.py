@@ -5,18 +5,21 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from opentad.acquisition.mdl_knot import (
     MDLKnotConfig,
     apply_mdl_knot_to_dense_window,
+    build_frame_metadata_scout_curve,
+    build_raw_frame_motion_scout_curve,
     build_synthetic_scout_curve,
     greedy_mdl_knot_select,
 )
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ROUTE_LABEL = "DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3"
+ROUTE_LABEL = "DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3"
 CONFIG_PATH = ROOT / "configs" / "adatad" / "thumos" / "input_mdl_knot_dynamic_adapter_irregular_headv3.py"
 PSEUDO_BOUNDARY_PATH = ROOT / "opentad" / "datasets" / "transforms" / "pseudo_boundary.py"
 
@@ -113,7 +116,8 @@ def test_mdl_knot_config_overrides_real_dataset_pipelines_without_dead_standalon
     assert cfg["dataset"]["test"]["pipeline"][-1]["keys"] == ["masks"]
     assert "gt_segments" in cfg["dataset"]["val"]["pipeline"][-1]["keys"]
     assert cfg["mdl_knot_acquisition"]["no_val_test_gt_selector"] is True
-    assert cfg["mdl_knot_acquisition"]["deploy_scout_source"] == "fallback_synthetic_precheck_only"
+    assert cfg["mdl_knot_acquisition"]["deploy_scout_source"] == "raw_frame_motion_scout_with_metadata_fallback"
+    assert cfg["mdl_knot_acquisition"]["synthetic_fallback_allowed"] is False
 
 
 def test_real_loadframes_mdl_knot_branch_sets_sparse_frame_inds_before_decode():
@@ -127,13 +131,14 @@ def test_real_loadframes_mdl_knot_branch_sets_sparse_frame_inds_before_decode():
 
     from opentad.datasets.transforms.end_to_end import LoadFrames
 
-    curve = build_synthetic_scout_curve("short_islands", dense_t=128)
     loader = LoadFrames(
         method="mdl_knot_dynamic_subsample",
         method_base="sliding_window",
         scale_factor=1,
         mdl_knot_max_k=40,
         mdl_knot_target_weighted_error=0.01,
+        mdl_knot_deploy_scout_source="frame_metadata_scout",
+        mdl_knot_allow_synthetic_fallback=False,
     )
     results = {
         "video_name": "video_test_0002",
@@ -143,13 +148,6 @@ def test_real_loadframes_mdl_knot_branch_sets_sparse_frame_inds_before_decode():
         "window_size": 128,
         "feature_start_idx": 0,
         "feature_end_idx": 127,
-        "mdl_knot_scout": {
-            "p_action": curve.p_action,
-            "uncertainty": curve.uncertainty,
-            "temporal_change": curve.temporal_change,
-            "persistence": curve.persistence,
-            "source": "deploy_scout",
-        },
     }
 
     out = loader(results)
@@ -164,6 +162,32 @@ def test_real_loadframes_mdl_knot_branch_sets_sparse_frame_inds_before_decode():
     assert int(out["masks"].sum().item()) == valid_k
     assert out["mdl_knot_padding_counts_as_valid"] is False
     assert out["mdl_knot_selector_used_gt"] is False
+    assert out["mdl_knot_deploy_scout_source"] == "frame_metadata_scout"
+    assert out["mdl_knot_deploy_scout_provenance"]["metadata_only"] is True
+
+
+def test_raw_frame_motion_scout_builder_is_deploy_visible_and_non_synthetic():
+    frames = []
+    for idx in range(6):
+        frame = np.zeros((16, 16, 3), dtype=np.uint8)
+        frame[:, :, 0] = idx * 20
+        frame[4:8, 4:8, 1] = idx * 30
+        frames.append(frame)
+    curve = build_raw_frame_motion_scout_curve(frames, probe_positions=[0, 3, 6, 9, 12, 15], dense_t=16)
+
+    assert curve.source == "raw_frame_motion_scout"
+    assert curve.dense_t == 16
+    assert curve.provenance["uses_raw_frame_probe"] is True
+    assert curve.provenance["uses_gt"] is False
+    assert max(curve.temporal_change) > 0.0
+
+
+def test_frame_metadata_scout_is_real_but_marked_metadata_only():
+    curve = build_frame_metadata_scout_curve(dense_t=16, total_frames=160, duration=5.0, fps=30.0)
+
+    assert curve.source == "frame_metadata_scout"
+    assert curve.provenance["metadata_only"] is True
+    assert curve.provenance["uses_gt"] is False
 
 
 def test_launch_gate_locked_until_precheck_passes(tmp_path):
@@ -171,9 +195,7 @@ def test_launch_gate_locked_until_precheck_passes(tmp_path):
     cmd = [
         sys.executable,
         str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
-        "--route-label",
-        ROUTE_LABEL,
-        "--precheck-summary",
+        "--config",
         str(missing),
     ]
     proc = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True)
@@ -220,8 +242,8 @@ def test_launch_gate_unlocks_only_for_valid_precheck_summary(tmp_path):
     cmd = [
         sys.executable,
         str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
-        "--route-label",
-        ROUTE_LABEL,
+        "--config",
+        str(CONFIG_PATH),
         "--precheck-summary",
         str(out_dir / "mdl_knot_precheck_summary.json"),
     ]
@@ -240,7 +262,6 @@ def test_launch_gate_rejects_non_mdl_config_evidence_and_forbidden_tokens(tmp_pa
             "training": True,
             "evaluation": True,
             "tools_test_py": True,
-            "stage_commit_push": True,
         },
         "no_claims": {"mAP": True, "runtime": True, "FLOPs": True, "deploy": True, "paper": True},
         "cases": {"a": {"valid_k": 4}, "b": {"valid_k": 7}},
@@ -249,7 +270,8 @@ def test_launch_gate_rejects_non_mdl_config_evidence_and_forbidden_tokens(tmp_pa
             "dataset_pipelines_use_mdl": False,
             "load_methods": {"train": "random_fixed_subsample", "val": "random_fixed_subsample", "test": "random_fixed_subsample"},
             "forbidden_route_token_hits": [],
-            "deploy_scout_source": "fallback_synthetic_precheck_only",
+            "deploy_scout_source": "raw_frame_motion_scout_with_metadata_fallback",
+            "synthetic_fallback_allowed": False,
             "no_metric_runtime_deploy_claims": True,
         },
     }
@@ -259,6 +281,8 @@ def test_launch_gate_rejects_non_mdl_config_evidence_and_forbidden_tokens(tmp_pa
         [
             sys.executable,
             str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
+            "--config",
+            str(CONFIG_PATH),
             "--route-label",
             ROUTE_LABEL,
             "--precheck-summary",
@@ -278,6 +302,8 @@ def test_launch_gate_rejects_non_mdl_config_evidence_and_forbidden_tokens(tmp_pa
         [
             sys.executable,
             str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
+            "--config",
+            str(CONFIG_PATH),
             "--route-label",
             ROUTE_LABEL,
             "--precheck-summary",
@@ -310,7 +336,6 @@ def test_launch_gate_rejects_missing_tools_test_lock_random_fixed_and_combo(tmp_
             "slurm": True,
             "training": True,
             "evaluation": True,
-            "stage_commit_push": True,
         },
         "no_claims": {"mAP": True, "runtime": True, "FLOPs": True, "deploy": True, "paper": True},
         "cases": {"a": {"valid_k": 4}, "b": {"valid_k": 7}},
@@ -326,8 +351,9 @@ def test_launch_gate_rejects_missing_tools_test_lock_random_fixed_and_combo(tmp_
             "safety": safety,
             "forbidden_route_token_hits": [],
             "drift_tokens": [],
-            "deploy_scout_source": "fallback_synthetic_precheck_only",
-            "real_scout_unavailable": True,
+            "deploy_scout_source": "raw_frame_motion_scout_with_metadata_fallback",
+            "real_scout_unavailable": False,
+            "synthetic_fallback_allowed": False,
             "no_metric_runtime_deploy_claims": True,
         },
     }
@@ -337,6 +363,8 @@ def test_launch_gate_rejects_missing_tools_test_lock_random_fixed_and_combo(tmp_
         [
             sys.executable,
             str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
+            "--config",
+            str(CONFIG_PATH),
             "--route-label",
             ROUTE_LABEL,
             "--precheck-summary",
@@ -356,6 +384,8 @@ def test_launch_gate_rejects_missing_tools_test_lock_random_fixed_and_combo(tmp_
         [
             sys.executable,
             str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
+            "--config",
+            str(CONFIG_PATH),
             "--route-label",
             ROUTE_LABEL,
             "--precheck-summary",
@@ -374,6 +404,8 @@ def test_launch_gate_rejects_missing_tools_test_lock_random_fixed_and_combo(tmp_
         [
             sys.executable,
             str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
+            "--config",
+            str(CONFIG_PATH),
             "--route-label",
             ROUTE_LABEL,
             "--precheck-summary",

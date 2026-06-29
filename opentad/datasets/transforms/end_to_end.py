@@ -21,6 +21,9 @@ from opentad.acquisition.mdl_knot import (
     MDLKnotConfig,
     apply_mdl_knot_to_dense_window,
     build_deploy_scout_curve,
+    build_frame_metadata_scout_curve,
+    build_raw_frame_motion_scout_curve,
+    build_synthetic_scout_curve,
 )
 
 
@@ -236,6 +239,10 @@ class LoadFrames:
         mdl_knot_transition_guard_radius=2,
         mdl_knot_short_island_max_width=10,
         mdl_knot_scout_key="mdl_knot_scout",
+        mdl_knot_deploy_scout_source="raw_frame_motion_scout_with_metadata_fallback",
+        mdl_knot_scout_stride=8,
+        mdl_knot_scout_max_frames=96,
+        mdl_knot_allow_synthetic_fallback=False,
         mdl_knot_bridge="fixed_pad",
         mdl_knot_no_gt_selector=True,
         mdl_knot_no_teacher=True,
@@ -271,6 +278,10 @@ class LoadFrames:
         self.pseudo_boundary_min_score = pseudo_boundary_min_score
         self.pseudo_boundary_fallback = pseudo_boundary_fallback
         self.mdl_knot_scout_key = mdl_knot_scout_key
+        self.mdl_knot_deploy_scout_source = str(mdl_knot_deploy_scout_source)
+        self.mdl_knot_scout_stride = int(mdl_knot_scout_stride)
+        self.mdl_knot_scout_max_frames = int(mdl_knot_scout_max_frames)
+        self.mdl_knot_allow_synthetic_fallback = bool(mdl_knot_allow_synthetic_fallback)
         self.mdl_knot_bridge = str(mdl_knot_bridge)
         self.mdl_knot_no_gt_selector = bool(mdl_knot_no_gt_selector)
         self.mdl_knot_no_teacher = bool(mdl_knot_no_teacher)
@@ -644,15 +655,80 @@ class LoadFrames:
         results["irregular_selected_valid_len"] = float(valid_len) / scale
         results["irregular_native_axis"] = bool(not self.remap_gt_to_selected_axis)
 
-    def _build_mdl_knot_scout_curve(self, results, valid_len):
+    def _to_numpy_frame(self, frame):
+        if hasattr(frame, "asnumpy"):
+            return frame.asnumpy()
+        if torch.is_tensor(frame):
+            return frame.detach().cpu().numpy()
+        return np.asarray(frame)
+
+    def _read_mdl_knot_probe_frames(self, reader, frame_indices):
+        frame_indices = [int(v) for v in frame_indices]
+        if len(frame_indices) == 0:
+            return []
+        if hasattr(reader, "get_batch"):
+            batch = reader.get_batch(frame_indices)
+            batch = self._to_numpy_frame(batch)
+            return [batch[idx] for idx in range(batch.shape[0])]
+        frames = []
+        for frame_idx in frame_indices:
+            frames.append(self._to_numpy_frame(reader[frame_idx]))
+        return frames
+
+    def _build_mdl_knot_metadata_scout_curve(self, results, dense_window):
+        valid_len = int(len(dense_window))
+        return build_frame_metadata_scout_curve(
+            dense_t=valid_len,
+            time_index=np.asarray(dense_window, dtype=np.int64).tolist(),
+            total_frames=int(results.get("total_frames", valid_len)),
+            duration=results.get("duration"),
+            fps=results.get("avg_fps", results.get("fps")),
+            source="frame_metadata_scout",
+            provenance={
+                "video_name": results.get("video_name", "unknown"),
+                "scout_policy": self.mdl_knot_deploy_scout_source,
+            },
+        )
+
+    def _build_mdl_knot_raw_frame_scout_curve(self, results, dense_window):
+        reader = results.get("video_reader")
+        if reader is None:
+            reader = results.get("decord_reader")
+        if reader is None:
+            return None
+        valid_len = int(len(dense_window))
+        if valid_len < 2:
+            return None
+        stride = max(int(self.mdl_knot_scout_stride), 1)
+        probe_positions = np.arange(0, valid_len, stride, dtype=np.int64)
+        if probe_positions[-1] != valid_len - 1:
+            probe_positions = np.concatenate([probe_positions, np.asarray([valid_len - 1], dtype=np.int64)])
+        max_frames = max(int(self.mdl_knot_scout_max_frames), 2)
+        if probe_positions.size > max_frames:
+            probe_positions = np.unique(np.rint(np.linspace(0, valid_len - 1, num=max_frames)).astype(np.int64))
+        frame_indices = np.asarray(dense_window, dtype=np.int64)[probe_positions]
+        try:
+            probe_frames = self._read_mdl_knot_probe_frames(reader, frame_indices.tolist())
+        except Exception as exc:
+            results["mdl_knot_raw_frame_scout_error"] = str(exc)
+            return None
+        return build_raw_frame_motion_scout_curve(
+            probe_frames=probe_frames,
+            probe_positions=probe_positions.tolist(),
+            dense_t=valid_len,
+            source="raw_frame_motion_scout",
+            provenance={
+                "video_name": results.get("video_name", "unknown"),
+                "scout_policy": self.mdl_knot_deploy_scout_source,
+                "raw_probe_stride": stride,
+                "raw_probe_max_frames": max_frames,
+                "raw_probe_frame_indices": frame_indices.astype(int).tolist(),
+            },
+        )
+
+    def _build_mdl_knot_scout_curve(self, results, dense_window):
+        valid_len = int(len(dense_window))
         scout = results.get(self.mdl_knot_scout_key)
-        if scout is None:
-            # Fail-closed deploy-visible fallback for local prechecks only. Formal
-            # MDL-Knot runs should provide a real scout curve before DecordDecode.
-            p_action = np.full(valid_len, 0.10, dtype=np.float64)
-            if valid_len >= 4:
-                p_action[valid_len // 3 : 2 * valid_len // 3] = 0.25
-            return build_deploy_scout_curve(p_action=p_action, source="deploy_scout")
         if hasattr(scout, "as_matrix"):
             return scout
         if isinstance(scout, dict):
@@ -665,7 +741,28 @@ class LoadFrames:
                 source=scout.get("source", "deploy_scout"),
                 provenance=scout.get("provenance"),
             )
-        return build_deploy_scout_curve(p_action=scout, source="deploy_scout")
+        if scout is not None:
+            return build_deploy_scout_curve(p_action=scout, source="explicit_deploy_scout")
+
+        policy = self.mdl_knot_deploy_scout_source
+        if policy in ("raw_frame_motion_scout", "raw_frame_motion_scout_with_metadata_fallback"):
+            curve = self._build_mdl_knot_raw_frame_scout_curve(results, dense_window)
+            if curve is not None:
+                return curve
+            if policy == "raw_frame_motion_scout_with_metadata_fallback":
+                return self._build_mdl_knot_metadata_scout_curve(results, dense_window)
+            if not self.mdl_knot_allow_synthetic_fallback:
+                raise ValueError("MDL-Knot raw_frame_motion_scout unavailable and synthetic fallback is disabled")
+
+        if policy == "frame_metadata_scout":
+            return self._build_mdl_knot_metadata_scout_curve(results, dense_window)
+
+        if policy == "synthetic_precheck_diagnostic" and self.mdl_knot_allow_synthetic_fallback:
+            return build_synthetic_scout_curve("two_islands", dense_t=valid_len)
+
+        if self.mdl_knot_allow_synthetic_fallback:
+            return build_synthetic_scout_curve("two_islands", dense_t=valid_len)
+        raise ValueError(f"unsupported or unavailable MDL-Knot deploy scout source: {policy}")
 
     def _oracle_subsample_window(self, dense_frame_idxs, gt_segments, gt_labels, target_frame_num, profile):
         valid_len = int(len(dense_frame_idxs))
@@ -919,7 +1016,7 @@ class LoadFrames:
                     and self.mdl_knot_no_dense_raw_backbone_handoff
                 ):
                     raise ValueError("MDL-Knot selector safety flags must all be enabled")
-                scout_curve = self._build_mdl_knot_scout_curve(results, valid_len)
+                scout_curve = self._build_mdl_knot_scout_curve(results, dense_window)
                 apply_mdl_knot_to_dense_window(
                     results=results,
                     dense_window=dense_window.astype(np.int64).tolist(),
@@ -933,6 +1030,8 @@ class LoadFrames:
                 self._set_irregular_axis_meta(results, keep_positions, valid_len)
                 results["mdl_knot_selector_used_gt"] = False
                 results["mdl_knot_route_label"] = MDL_KNOT_ROUTE_LABEL
+                results["mdl_knot_deploy_scout_source"] = scout_curve.source
+                results["mdl_knot_deploy_scout_provenance"] = dict(scout_curve.provenance)
             elif self.method == "stratified_random_fixed_subsample":
                 keep_positions = self._select_stratified_random_fixed_positions(valid_len, frame_num, sample_key)
             elif self.method == "pseudo_boundary_hybrid_subsample":

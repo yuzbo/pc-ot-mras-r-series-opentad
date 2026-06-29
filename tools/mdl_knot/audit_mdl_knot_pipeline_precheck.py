@@ -69,6 +69,7 @@ def _collect_config_evidence() -> dict:
             "no_teacher": load.get("mdl_knot_no_teacher") is True,
             "no_prediction_cache": load.get("mdl_knot_no_prediction_cache") is True,
             "no_dense_raw_backbone_handoff": load.get("mdl_knot_no_dense_raw_backbone_handoff") is True,
+            "synthetic_fallback_disabled": load.get("mdl_knot_allow_synthetic_fallback") is False,
             "load_before_decode": (
                 len(load_steps) == 1
                 and any(step.get("type") == "mmaction.DecordDecode" for step in pipeline if isinstance(step, dict))
@@ -102,6 +103,7 @@ def _collect_config_evidence() -> dict:
         "drift_tokens": drift_tokens,
         "deploy_scout_source": acq.get("deploy_scout_source", "unknown"),
         "real_scout_unavailable": bool(acq.get("real_scout_unavailable", False)),
+        "synthetic_fallback_allowed": bool(acq.get("synthetic_fallback_allowed", False)),
         "no_metric_runtime_deploy_claims": (
             acq.get("no_metric_claims") is True
             and acq.get("no_runtime_claims") is True
@@ -167,7 +169,6 @@ def main() -> int:
             "training": True,
             "evaluation": True,
             "tools_test_py": True,
-            "stage_commit_push": True,
         },
         "optional_imports": _check_optional_imports(),
         "config_evidence": _collect_config_evidence(),

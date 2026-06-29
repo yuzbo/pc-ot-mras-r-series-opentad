@@ -17,7 +17,7 @@ from opentad.acquisition.mdl_knot import (
 )
 
 
-ROUTE_LABEL = "DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3"
+ROUTE_LABEL = "DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3"
 
 
 def test_route_identity_has_exact_label_and_rejects_c3_source():
@@ -155,3 +155,10 @@ def test_deploy_scout_builder_uses_only_deploy_visible_inputs():
     assert curve.dense_t == 5
     assert curve.provenance["uses_gt"] is False
     assert curve.temporal_change[2] > curve.temporal_change[0]
+
+
+def test_synthetic_scout_is_labeled_diagnostic_only():
+    curve = build_synthetic_scout_curve("two_islands", dense_t=32)
+
+    assert curve.source == "synthetic_precheck_diagnostic"
+    assert curve.provenance["synthetic_precheck_only"] is True

@@ -54,6 +54,8 @@ class Collect:
             "mdl_knot_sparse_meta",
             "mdl_knot_ledger",
             "mdl_knot_selector_used_gt",
+            "mdl_knot_deploy_scout_source",
+            "mdl_knot_deploy_scout_provenance",
         ],
     ):
         self.inputs = inputs
