@@ -1,0 +1,167 @@
+# C3 PQR RankCal V1 Implementation - 2026-06-29
+
+## Scope
+
+Route: `C3_MAINLINE_OPTIMIZATION` / `C3_ORIGINAL_OPTIMIZATION_ROUTE`.
+
+Variant: `C3_PQR_RankCalV1_MaxIoU`.
+
+Changed surface: detector-head proposal ranking calibration through the existing
+`AnchorFreeHead` quality-head path.
+
+Important boundary after read-only review fix: this clean `588b272` snapshot
+does not contain `PCOTMRASIndirectPreBackboneFrameSelector`, and
+`ActionFormer`/`SingleStageDetector` do not consume `model.frame_selector`.
+Therefore this implementation is a real, buildable Adapter + ActionFormer
+backend ranking-calibration control, not a C3 selector input experiment. A C3
+selector-input version must be moved later into a tree that actually contains
+the C3 selector implementation and detector wiring.
+
+This route does not change CADF selector logic, sampler code, backbone,
+projection, neck, primary assignment, primary regression, NMS parameters, raw
+prediction cache use, teacher use, test-time GT use, dynamic budgeting, or
+physical-time post-processing.
+
+## Implemented
+
+- Added fail-closed PQR RankCal V1 backend-calibration configs:
+  - `configs/adatad/thumos/c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_precheck.py`
+  - `configs/adatad/thumos/c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_shortdiag.py`
+  - `configs/adatad/thumos/c3_indirect_original_adatad_32px_a_exact_uniform_backend_control_pqr_rankcal_v1_shortdiag.py`
+- The first two configs inherit from the real
+  `input_random_fixed_50pct_adapter.py` Adapter backend.
+- The third config is a real stride-2 uniform Adapter backend control. It does
+  not claim to alter any selector quota.
+- Reused the existing `AnchorFreeHead` quality-head framework:
+  - `target_mode="max_iou"`
+  - `loss_weight=0.03`
+  - `score_alpha=0.10`
+  - neutral quality init with `weight_init=0.0` and `bias_init=4.59511985013459`
+- Added `tools/validate_c3_pqr_rankcal_v1_config.py`.
+- Added focused config and quality-head tests.
+
+## Safety Gates
+
+The validator requires:
+
+- route label `C3_MAINLINE_OPTIMIZATION`;
+- route family `C3_ORIGINAL_OPTIMIZATION_ROUTE`;
+- no route labels containing `BH`, `BH-SDC`, `BH_SDC`, `DIVERGENT`, or `CADF`;
+- raw prediction cache disabled;
+- teacher and test-GT flags disabled;
+- physical-time postprocess claim disabled;
+- `max_seg_num=2000`;
+- quality target `max_iou`;
+- quality `loss_weight` in `[0.02, 0.05]`;
+- quality `score_alpha` in `[0.05, 0.15]`;
+- no `model.frame_selector`;
+- no unconsumed top-level `cfg.model` keys relative to the current
+  `ActionFormer.__init__` signature;
+- either random-fixed Adapter 50% backend or stride-2 uniform Adapter 50%
+  backend;
+- no selector-quota claim in the exact/uniform backend control.
+
+## Read-Only Review Fix
+
+Blocking issue 1 was valid: the earlier configs parsed but were not buildable
+in this snapshot because they introduced `model.frame_selector` without a
+registered selector or detector consumer.
+
+Blocking issue 2 was valid: the first validator checked the synthetic
+`frame_selector` fields and could pass a config that the current detector would
+ignore or reject.
+
+Fix applied:
+
+- removed all `model.frame_selector` blocks from PQR configs;
+- changed the main PQR configs to inherit from current buildable Adapter +
+  ActionFormer configs;
+- changed the exact-uniform control into a real stride-2 uniform Adapter backend
+  control;
+- added validator static signature guard for `ActionFormer.__init__`;
+- added tests that reject any unconsumed `frame_selector`.
+
+## Remote PRECHECK_ONLY Follow-Up
+
+Remote PRECHECK_ONLY on Linux exposed one test-fixture bug after the config and
+static validator gates passed:
+
+- remote py_compile: pass;
+- three config validator invocations: pass;
+- focused pytest: `12 passed, 3 failed`;
+- all three failures were torch-backed quality-head behavior tests.
+
+Root cause: the test helper instantiated `AnchorFreeHead(loss=...)` with a
+plain Python `dict`, while the current production constructor expects the same
+attribute-style loss config used by real configs (`loss.cls_loss` and
+`loss.reg_loss`). This was a test fixture/config-object mismatch, not a PQR
+production behavior requirement.
+
+Fix applied:
+
+- changed the quality-head test helper to pass an `mmengine.config.ConfigDict`
+  loss config with `cls_loss` and `reg_loss`;
+- added a focused fixture test so future edits do not silently reintroduce a
+  plain dict;
+- did not change production `AnchorFreeHead` behavior for this mismatch.
+
+The optional no-data build-only check remains locked by baseline clean-snapshot
+import dependencies rather than by PQR-added fields. In the current `588b272`
+tree, detector/config build first exposes missing `Rearrange` transform
+registration, and after that is patched externally it exposes missing
+`opentad.datasets.transforms.pseudo_boundary`. The PQR validator and configs now
+record this as
+`build_only_status="locked_by_baseline_import_dependencies"` and limit the local
+PRECHECK_ONLY scope to config validation plus quality-head unit tests.
+
+## Local Verification
+
+Commands run in
+`E:\DeskTop\TAD\temrefuse-tad\OpenTAD_C3PQRRankCal_Worktree_20260629`:
+
+```powershell
+python -m pytest tests/test_c3_pqr_rankcal_v1_config.py tests/test_c3_pqr_rankcal_v1_quality_head.py -q
+```
+
+Result after the PRECHECK_ONLY fixture fix: `13 passed, 3 skipped, 1 warning`.
+The 3 skipped tests are torch-backed quality-head behavior tests. Local Windows
+torch import fails with
+`[WinError 1114] ... c10.dll`, so the tests record that environment blocker
+instead of pretending the torch path passed locally.
+
+```powershell
+python -m py_compile opentad\models\dense_heads\anchor_free_head.py tools\validate_c3_pqr_rankcal_v1_config.py tests\test_c3_pqr_rankcal_v1_config.py tests\test_c3_pqr_rankcal_v1_quality_head.py configs\adatad\thumos\c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_precheck.py configs\adatad\thumos\c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_shortdiag.py configs\adatad\thumos\c3_indirect_original_adatad_32px_a_exact_uniform_backend_control_pqr_rankcal_v1_shortdiag.py
+```
+
+Result: pass.
+
+```powershell
+python tools\validate_c3_pqr_rankcal_v1_config.py configs\adatad\thumos\c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_precheck.py
+python tools\validate_c3_pqr_rankcal_v1_config.py configs\adatad\thumos\c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_shortdiag.py
+python tools\validate_c3_pqr_rankcal_v1_config.py configs\adatad\thumos\c3_indirect_original_adatad_32px_a_exact_uniform_backend_control_pqr_rankcal_v1_shortdiag.py
+```
+
+Result: all three print `PASS_C3_PQR_RANKCAL_V1_CONFIG`.
+
+```powershell
+git diff --check
+```
+
+Result: pass.
+
+Additional untracked-file whitespace check:
+
+```powershell
+$files = git ls-files --others --exclude-standard
+foreach ($f in $files) { git diff --check --no-index -- $empty $f }
+```
+
+Result: pass, with only LF-to-CRLF warnings from Git on Windows.
+
+## Remaining Risk
+
+- Local torch-backed behavioral tests could not execute because of the Windows
+  torch DLL failure. They should be rerun in a working torch environment before
+  remote PRECHECK_ONLY.
+- This is a ranking-calibration diagnostic, not an mAP-gain claim.
+- Remote sync, Slurm, training, Pro, and Gemini were not started.
