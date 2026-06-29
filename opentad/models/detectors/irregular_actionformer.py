@@ -131,15 +131,64 @@ class IrregularActionFormer(BaseDetector):
             cell_right=right[None],
         )
 
+    def _is_bvr_twb_meta(self, meta):
+        if meta is None:
+            return False
+        if "bvr_twb_ledger" in meta:
+            return True
+        return any(str(key).startswith("bvr_twb_") for key in meta.keys())
+
+    def _bvr_twb_temporal_grid_from_meta(self, meta, mask):
+        required = ("bvr_twb_detector_feature_positions", "bvr_twb_detector_feature_valid_len")
+        missing = [key for key in required if key not in meta or meta.get(key) is None]
+        if missing:
+            raise ValueError(
+                "BVR-TWB detector temporal grid requires "
+                "bvr_twb_detector_feature_positions and bvr_twb_detector_feature_valid_len; "
+                f"missing={missing}"
+            )
+        if not bool(meta.get("irregular_native_axis", False)):
+            raise ValueError(
+                "BVR-TWB detector temporal grid requires irregular_native_axis=True "
+                "because remap_gt_to_selected_axis=False keeps Head coordinates on the native dense axis."
+            )
+
+        pos = torch.as_tensor(
+            meta["bvr_twb_detector_feature_positions"],
+            device=mask.device,
+            dtype=torch.float32,
+        ).flatten()
+        if pos.numel() == 0:
+            raise ValueError("BVR-TWB detector temporal grid received empty bvr_twb_detector_feature_positions")
+
+        mask_valid = int(mask.bool().sum().item())
+        if mask_valid != int(pos.numel()):
+            raise ValueError(
+                "BVR-TWB detector temporal grid mask true count must equal detector feature position count: "
+                f"mask_true={mask_valid}, positions={int(pos.numel())}"
+            )
+
+        valid_len = max(int(round(float(meta["bvr_twb_detector_feature_valid_len"]))), 1)
+        if valid_len <= float(pos.max().item()):
+            raise ValueError(
+                "BVR-TWB detector temporal grid native valid length must exceed the last detector feature position: "
+                f"valid_len={valid_len}, last_position={float(pos.max().item())}"
+            )
+        return self._build_center_grid_from_positions(pos, valid_len, mask)
+
     def _temporal_grid_from_metas(self, metas, masks):
         if metas is None:
             return None
-        if not all(("irregular_selected_positions" in meta) for meta in metas):
+        if not all((self._is_bvr_twb_meta(meta) or "irregular_selected_positions" in meta) for meta in metas):
             return None
 
         grids = []
         target_len = masks.shape[1]
         for meta, mask in zip(metas, masks):
+            if self._is_bvr_twb_meta(meta):
+                grids.append(self._bvr_twb_temporal_grid_from_meta(meta, mask))
+                continue
+
             pos = meta.get("irregular_selected_positions", None)
             valid_len = meta.get("irregular_selected_valid_len", None)
             if pos is None or valid_len is None:

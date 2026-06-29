@@ -145,6 +145,11 @@ def convert_to_seconds(segments, meta):
         snippet_stride = meta["snippet_stride"]
         offset_frames = meta["offset_frames"]
         window_start_frame = meta["window_start_frame"] if "window_start_frame" in meta.keys() else 0
+        if "bvr_twb_detector_feature_positions" in meta and not meta.get("irregular_native_axis", False):
+            raise ValueError(
+                "BVR-TWB post-processing requires irregular_native_axis=True; "
+                "segments must already be in native detector-feature coordinates."
+            )
         irregular_positions = meta.get("irregular_selected_positions", None)
         irregular_valid_len = meta.get("irregular_selected_valid_len", None)
         if irregular_positions is not None and irregular_valid_len is not None and not meta.get("irregular_native_axis", False):
