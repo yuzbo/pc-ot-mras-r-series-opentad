@@ -1,0 +1,90 @@
+Route label:
+DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3
+
+Route:
+BVR-TWB / VOI-BBC
+
+Implementation branch:
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-bvr-twb-pretrainfix-20260630
+
+Implementation commit:
+478325af8da10646f747f955a54378d53fffd3ef
+
+Stale package replaced:
+92ec024d1821897245a56f993ed040d97e894831
+
+Primary changed files from 92ec024 to 478325a:
+M configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py
+A research-wiki/experiments/DIVERGENT_BVR_TWB_PRETRAIN_GATE_FIX_20260630.md
+M tests/test_bvr_twb_opentad_pipeline.py
+M tools/bvr_twb/validate_bvr_twb_launch_gate.py
+
+GitHub blob paths to inspect on branch codex/divergent-bvr-twb-pretrainfix-20260630:
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/tools/bvr_twb/validate_bvr_twb_launch_gate.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/tests/test_bvr_twb_opentad_pipeline.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/research-wiki/experiments/DIVERGENT_BVR_TWB_PRETRAIN_GATE_FIX_20260630.md
+
+Route-purpose context files:
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/docs/DIVERGENT_BVR_TWB_LOCAL_IMPLEMENTATION_20260629.md
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/opentad/acquisition/bvr_twb/types.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/opentad/acquisition/bvr_twb/boundary_belief.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/opentad/acquisition/bvr_twb/witness_packets.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/opentad/acquisition/bvr_twb/budget_controller.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/opentad/acquisition/bvr_twb/value_predictor.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/opentad/acquisition/bvr_twb/open_tad_bridge.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/opentad/acquisition/bvr_twb/validators.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/opentad/acquisition/bvr_twb/regret_labels.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/opentad/acquisition/bvr_twb/adapter_bridge.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/opentad/models/detectors/irregular_actionformer.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/opentad/models/utils/post_processing/utils.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/tools/bvr_twb/validate_bvr_twb_geometry_contracts.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/tests/test_bvr_twb_voi_bbc.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/tests/test_bvr_twb_validators.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/tests/test_bvr_twb_geometry_contracts.py
+https://github.com/yuzbo/pc-ot-mras-r-series-opentad/blob/codex/divergent-bvr-twb-pretrainfix-20260630/tests/test_bvr_twb_regression_stability.py
+
+Required Pro decision:
+Decide whether BVR-TWB / VOI-BBC can proceed to formal full training after 478325a, or must first run a short diagnostic/smoke.
+
+Required response headings:
+Context verdict
+Model evidence
+Inspected materials
+Verdict
+Blocking findings
+Non-blocking findings
+Required fixes or next experiments
+Accepted launch/sync/review/Slurm decision
+
+Current local evidence:
+26 passed, 12 skipped
+gate_pass=true
+full_train_unlocked=false
+remote_sync_unlocked_by_local_gate=false
+sparse_compute_claim=false
+
+Remote PRECHECK_ONLY evidence supplied for review:
+/data/home/sczc063/run/yuzibo/OpenTAD_BVR_TWB_PretrainFix_20260630_478325a
+/data/home/sczc063/run/yuzibo/bvr_twb_pretrainfix_precheck_logs_20260630_478325a
+precheck_retry_py310_20260630_065630_+0800.log
+remote commit exactly 478325a
+data -> ../OpenTAD_Back_check/data
+pretrained -> ../pretrained
+required pretrained file exists about 87M
+validator pass
+geometry precheck pass
+focused pytest 2 passed
+no training
+no mAP
+no runtime/FLOPs claim
+no sparse compute claim
+
+Remaining locks:
+true sparse raw-frame handoff / sparse-forward not proven
+BVR not long-train unlocked by local gate
+no metric claim
+no runtime/FLOPs claim
+prior cf662dd collapse may be invalidated by missing pretrain but still raises diagnostic risk
+resource availability must be rechecked before Slurm
+protected hold 1118197 must not be released
