@@ -197,3 +197,32 @@ Interpretation:
 - Linux/N16R4 `PRECHECK_ONLY` is now passed for commit `0bab835`.
 - This does not unlock full train, evaluation, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper claims, or sparse-compute claims.
 - No additional remote action, Slurm action, training, evaluation, `tools/test.py`, stage, commit, or push was performed by this owner in this documentation-only update.
+
+## 2026-06-30 Route-Identity Repair And Remote PRECHECK_ONLY
+
+Recorded 2026-06-30T04:16:12+08:00.
+
+Current commit: `8a03456382dbd73b8239de71aa2a5dbbdad1fce5`.
+GitHub branch: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-abr-fullcode-20260629`.
+Remote clone: `/data/home/sczc063/run/yuzibo/OpenTAD_ABR_Final_20260630_8a03456`.
+Remote log dir: `logs/precheck_20260630_abr_8a03456/`.
+
+Changes since the earlier `0bab835` evidence:
+
+- Route identity is now exactly `DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3`; the previous Boundary-Microscope label was removed from current ABR code/config/tests/docs.
+- Formal missing-scout path fails closed.
+- Diagnostic fallback remains allowed only for explicit PRECHECK/diagnostic use.
+- Sparse handoff keeps sorted unique selected observations, prefix valid masks, raw selected `frame_inds`, and no dense raw backbone handoff claim.
+
+Verification:
+
+- Local tests: `15 passed, 1 skipped`.
+- Local launch gate: `allowed_next_action=LOCAL_PRECHECK_ONLY_VALIDATION`, `still_locked=REMOTE_SYNC_FULL_TRAIN_MAPPAPER_CLAIM`.
+- Final read-only review: `PASS_SUBAGENT_FINAL_REVIEW_ONLY`.
+- N16R4 login-node PRECHECK_ONLY:
+  - `python tools/abr/validate_abr_launch_gate.py --config configs/adatad/thumos/input_abr_active_bracket_refinement_adapter_irregular_headv3.py`: passed with route label `DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3`.
+  - `python tools/abr/audit_abr_pipeline_precheck.py --out-dir logs/precheck_20260630_abr_8a03456/audit --overwrite`: `status=PASS_PRECHECK_ONLY`, `precheck_validated=true`, `formal_missing_scout_rejected=true`, `real_sparse_handoff_ok=true`, `val_test_gt_rejection_ok=true`.
+
+Still locked:
+
+- Slurm, `tools/train.py`, `tools/test.py`, evaluation, detector mAP, runtime/FLOPs, deployment readiness, paper claims, and any C3/combo mixing.
