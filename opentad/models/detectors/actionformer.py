@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from ..builder import DETECTORS
+from ..builder import DETECTORS, build_selector
 from .single_stage import SingleStageDetector
 from ..bricks import Scale, AffineDropPath
 
@@ -14,6 +14,7 @@ class ActionFormer(SingleStageDetector):
         rpn_head,
         neck=None,
         backbone=None,
+        frame_selector=None,
     ):
         super().__init__(
             backbone=backbone,
@@ -21,6 +22,8 @@ class ActionFormer(SingleStageDetector):
             projection=projection,
             rpn_head=rpn_head,
         )
+        if frame_selector is not None:
+            self.frame_selector = build_selector(frame_selector)
 
         n_mha_win_size = self.projection.n_mha_win_size
         if isinstance(n_mha_win_size, int):
@@ -39,6 +42,10 @@ class ActionFormer(SingleStageDetector):
             if max_div_factor < stride:
                 max_div_factor = stride
         self.max_div_factor = max_div_factor
+
+    @property
+    def with_frame_selector(self):
+        return hasattr(self, "frame_selector") and self.frame_selector is not None
 
     def pad_data(self, inputs, masks):
         feat_len = inputs.shape[-1]
@@ -60,6 +67,15 @@ class ActionFormer(SingleStageDetector):
 
     def forward_train(self, inputs, masks, metas, gt_segments, gt_labels, **kwargs):
         losses = dict()
+        if self.with_frame_selector:
+            selector_outputs = self.frame_selector.forward_train(inputs, masks, metas, gt_segments, gt_labels)
+            inputs = selector_outputs["inputs"]
+            masks = selector_outputs["masks"]
+            metas = selector_outputs["metas"]
+            gt_segments = selector_outputs["gt_segments"]
+            gt_labels = selector_outputs["gt_labels"]
+            losses.update(selector_outputs.get("losses", {}))
+
         if self.with_backbone:
             x = self.backbone(inputs)
         else:
@@ -88,6 +104,12 @@ class ActionFormer(SingleStageDetector):
         return losses
 
     def forward_test(self, inputs, masks, metas=None, infer_cfg=None, **kwargs):
+        if self.with_frame_selector:
+            selector_outputs = self.frame_selector.forward_test(inputs, masks, metas)
+            inputs = selector_outputs["inputs"]
+            masks = selector_outputs["masks"]
+            metas = selector_outputs["metas"]
+
         if self.with_backbone:
             x = self.backbone(inputs)
         else:
@@ -110,8 +132,8 @@ class ActionFormer(SingleStageDetector):
         # see https://github.com/karpathy/minGPT/blob/master/mingpt/model.py#L134
         decay = set()
         no_decay = set()
-        whitelist_weight_modules = (nn.Linear, nn.Conv1d)
-        blacklist_weight_modules = (nn.LayerNorm, nn.GroupNorm)
+        whitelist_weight_modules = (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d)
+        blacklist_weight_modules = (nn.LayerNorm, nn.GroupNorm, nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)
 
         # loop over all modules / params
         for mn, m in self.named_modules():

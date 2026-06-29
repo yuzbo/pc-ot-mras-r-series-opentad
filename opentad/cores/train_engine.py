@@ -15,6 +15,7 @@ def train_one_epoch(
     clip_grad_l2norm=-1,
     logging_interval=200,
     scaler=None,
+    max_train_iters=None,
 ):
     """Training the model for one epoch"""
 
@@ -25,6 +26,9 @@ def train_one_epoch(
 
     model.train()
     for iter_idx, data_dict in enumerate(train_loader):
+        if max_train_iters is not None and iter_idx >= max_train_iters:
+            logger.info(f"[Train]: max_train_iters={max_train_iters} reached, stop epoch early")
+            break
         optimizer.zero_grad()
 
         # current learning rate

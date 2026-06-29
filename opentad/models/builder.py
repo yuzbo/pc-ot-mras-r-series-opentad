@@ -13,6 +13,7 @@ TRANSFORMERS = MODELS
 LOSSES = MODELS
 DETECTORS = MODELS
 MATCHERS = MODELS
+SELECTORS = MODELS
 
 
 def build_detector(cfg):
@@ -68,3 +69,8 @@ def build_matcher(cfg):
 def build_loss(cfg):
     """Build loss."""
     return LOSSES.build(cfg)
+
+
+def build_selector(cfg):
+    """Build pre-backbone selector."""
+    return SELECTORS.build(cfg)
