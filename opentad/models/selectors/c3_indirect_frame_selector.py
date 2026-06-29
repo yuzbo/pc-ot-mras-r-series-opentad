@@ -1,4 +1,6 @@
 import copy
+import math
+import numbers
 
 import torch
 import torch.nn as nn
@@ -161,6 +163,7 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         self.density_alpha = float(density_alpha)
         self.density_temperature = float(density_temperature)
         self.density_weights = density_weights or dict(action=0.35, uncertainty=0.25, change=0.25, utility=0.15, boundary=0.0)
+        self._validate_density_config(self.density_weights, scout)
         self.density_entropy_floor = float(density_entropy_floor)
         self.density_entropy_loss_weight = float(density_entropy_loss_weight)
         self.density_repulsion_loss_weight = float(density_repulsion_loss_weight)
@@ -172,6 +175,36 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         self.actionness_loss_weight = float(actionness_loss_weight)
 
         self.scout = SELECTORS.build(scout)
+
+    def _validate_density_config(self, density_weights, scout):
+        allowed_keys = {"action", "uncertainty", "change", "utility", "boundary"}
+        unknown_keys = set(density_weights) - allowed_keys
+        if unknown_keys:
+            raise ValueError(f"density_weights contains unsupported keys: {sorted(unknown_keys)}")
+
+        total_weight = 0.0
+        for name, value in density_weights.items():
+            if isinstance(value, bool) or not isinstance(value, numbers.Real):
+                raise ValueError(f"density_weights must be numeric, got {name}={value!r}")
+            weight = float(value)
+            if not math.isfinite(weight):
+                raise ValueError(f"density_weights must be finite, got {name}={weight}")
+            if weight < 0.0:
+                raise ValueError(f"density_weights must be non-negative, got {name}={weight}")
+            total_weight += weight
+        if total_weight <= 0.0:
+            raise ValueError("density_weights must sum to a positive value")
+
+        boundary_weight = float(density_weights.get("boundary", 0.0))
+        if boundary_weight <= 0.0:
+            return
+        has_boundary_head = False
+        if isinstance(scout, dict):
+            has_boundary_head = bool(scout.get("with_boundary_head", False))
+        else:
+            has_boundary_head = getattr(scout, "boundary_head", None) is not None
+        if not has_boundary_head:
+            raise ValueError("CADF/DensityMesh boundary density weight requires scout.with_boundary_head=True")
 
     def forward_train(self, inputs, masks, metas, gt_segments, gt_labels):
         dense_masks = self._normalize_dense_masks(masks, inputs)
@@ -362,13 +395,19 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         utility_logits = scout_outputs.get("utility_logits", torch.zeros_like(action_logits))
         boundary_logits = scout_outputs.get("boundary_logits", torch.zeros_like(action_logits))
 
+        action_score = self._robust_normalize_rows(action_logits, dense_masks)
+        entropy_score = self._robust_normalize_rows(entropy, dense_masks)
+        change_score = self._robust_normalize_rows(change, dense_masks)
+        utility_score = self._robust_normalize_rows(utility_logits, dense_masks)
+        boundary_score = self._robust_normalize_rows(boundary_logits, dense_masks)
+
         weights = self.density_weights
         acquisition_logits = (
-            float(weights.get("action", 0.0)) * action_logits
-            + float(weights.get("uncertainty", 0.0)) * entropy
-            + float(weights.get("change", 0.0)) * change
-            + float(weights.get("utility", 0.0)) * utility_logits
-            + float(weights.get("boundary", 0.0)) * boundary_logits
+            float(weights.get("action", 0.0)) * action_score
+            + float(weights.get("uncertainty", 0.0)) * entropy_score
+            + float(weights.get("change", 0.0)) * change_score
+            + float(weights.get("utility", 0.0)) * utility_score
+            + float(weights.get("boundary", 0.0)) * boundary_score
         )
         acquisition_logits = acquisition_logits.masked_fill(~dense_masks, -20.0)
         temperature = max(self.density_temperature, 1e-4)
@@ -381,6 +420,20 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         density = density * dense_masks.to(dtype=density.dtype)
         density = density / density.sum(dim=1, keepdim=True).clamp_min(1e-6)
         return density, acquisition_logits
+
+    def _robust_normalize_rows(self, values, dense_masks, clamp_value=5.0):
+        normalized = torch.zeros_like(values)
+        for row_idx in range(values.shape[0]):
+            row_mask = dense_masks[row_idx]
+            if row_mask.sum().item() <= 1:
+                continue
+            valid_values = values[row_idx][row_mask]
+            center = valid_values.median()
+            mad = (valid_values - center).abs().median()
+            scale = (mad * 1.4826).clamp_min(1e-6)
+            row = ((values[row_idx] - center) / scale).clamp(-clamp_value, clamp_value)
+            normalized[row_idx] = row.masked_fill(~row_mask, 0.0)
+        return normalized
 
     def _inverse_cdf_select_one(self, density, valid_idx):
         if self.target_len <= 0:
@@ -427,7 +480,7 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         used = set()
         repaired = []
         repair_mask = []
-        density_order = valid_idx[valid_density.argsort(descending=True)].tolist()
+        valid_positions = {int(idx): pos for pos, idx in enumerate(valid_idx.tolist())}
         for idx in selected.tolist():
             idx = int(idx)
             if idx not in used:
@@ -436,10 +489,17 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
                 repair_mask.append(0.0)
                 continue
             replacement = None
-            for cand in density_order:
-                cand = int(cand)
-                if cand not in used:
-                    replacement = cand
+            center_pos = valid_positions.get(idx, 0)
+            for radius in range(1, int(valid_idx.numel()) + 1):
+                candidate_positions = [center_pos - radius, center_pos + radius]
+                for cand_pos in candidate_positions:
+                    if cand_pos < 0 or cand_pos >= valid_idx.numel():
+                        continue
+                    cand = int(valid_idx[cand_pos].item())
+                    if cand not in used:
+                        replacement = cand
+                        break
+                if replacement is not None:
                     break
             if replacement is None:
                 replacement = idx
@@ -478,6 +538,7 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
                 "max_gap": max_gap,
                 "mean_gap": mean_gap,
                 "repair_fraction": float(repair_mask[row_idx].float().mean().item()) if repair_mask.numel() > 0 else 0.0,
+                "repair_count": int(repair_mask[row_idx].float().sum().item()) if repair_mask.numel() > 0 else 0,
             }
             if density is not None:
                 valid_density = density[row_idx][row_valid]
@@ -633,8 +694,9 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
             pos = valid_selected.to(device=segments.device, dtype=segments.dtype)
             starts = torch.searchsorted(pos, segments[:, 0].contiguous(), right=False)
             ends = torch.searchsorted(pos, segments[:, 1].contiguous(), right=True)
-            starts = starts.clamp(0, self.target_len - 1).to(dtype=segments.dtype)
-            ends = ends.clamp(0, self.target_len).to(dtype=segments.dtype)
+            selected_valid_len = int(valid_selected.numel())
+            starts = starts.clamp(0, selected_valid_len - 1).to(dtype=segments.dtype)
+            ends = ends.clamp(0, selected_valid_len).to(dtype=segments.dtype)
             new_segments = torch.stack([starts, ends], dim=1)
             keep = new_segments[:, 1] > new_segments[:, 0]
             remapped_segments.append(new_segments[keep])
@@ -663,6 +725,9 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
             if self.strategy == "cadf_density_mesh_st":
                 new_meta["c3_density_mesh_alpha"] = min(max(self.density_alpha, 0.0), 1.0)
                 new_meta["c3_density_mesh_temperature"] = self.density_temperature
+                new_meta["c3_density_mesh_nonuniform_selection"] = True
+                new_meta["c3_backend_uses_average_stride"] = True
+                new_meta["c3_physical_coords_unused_by_backend"] = True
                 if selection_diagnostics is not None:
                     diag = selection_diagnostics[batch_idx]
                     new_meta["c3_density_mesh_max_gap"] = diag["max_gap"]

@@ -1,6 +1,10 @@
 from pathlib import Path
+import math
 
 from mmengine.config import Config
+import pytest
+
+from opentad.models.builder import build_selector
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,3 +91,99 @@ def test_cadf_densitymesh_64px_configs_only_change_scout_resolution():
     _assert_cadf_config(full, 64)
     assert smoke.workflow.max_train_iters == 2
     assert full.workflow.end_epoch == 60
+
+
+def test_cadf_densitymesh_rejects_invalid_density_weight_configs():
+    base = dict(
+        type="PCOTMRASIndirectPreBackboneFrameSelector",
+        target_len=4,
+        dense_window_size=8,
+        selection_unit=1,
+        scout_spatial_size=4,
+        strategy="cadf_density_mesh_st",
+        scout=dict(
+            type="PCOTMRASCADFDensityFrameScout",
+            in_channels=48,
+            hidden_channels=8,
+            num_layers=1,
+            with_boundary_head=False,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="density_weights"):
+        build_selector(dict(base, density_weights=dict(action=-0.1, utility=1.0)))
+    with pytest.raises(ValueError, match="density_weights"):
+        build_selector(dict(base, density_weights=dict(action=0.0, utility=0.0, boundary=0.0)))
+
+
+def test_cadf_densitymesh_boundary_density_weight_requires_boundary_scout_head():
+    with pytest.raises(ValueError, match="boundary"):
+        build_selector(
+            dict(
+                type="PCOTMRASIndirectPreBackboneFrameSelector",
+                target_len=4,
+                dense_window_size=8,
+                selection_unit=1,
+                scout_spatial_size=4,
+                strategy="cadf_density_mesh_st",
+                density_weights=dict(action=0.5, utility=0.4, boundary=0.1),
+                scout=dict(
+                    type="PCOTMRASCADFDensityFrameScout",
+                    in_channels=48,
+                    hidden_channels=8,
+                    num_layers=1,
+                    with_boundary_head=False,
+                ),
+            )
+        )
+
+
+def test_cadf_densitymesh_rejects_unknown_nonfinite_and_nonnumeric_density_weight_keys():
+    base = dict(
+        type="PCOTMRASIndirectPreBackboneFrameSelector",
+        target_len=4,
+        dense_window_size=8,
+        selection_unit=1,
+        scout_spatial_size=4,
+        strategy="cadf_density_mesh_st",
+        scout=dict(
+            type="PCOTMRASCADFDensityFrameScout",
+            in_channels=48,
+            hidden_channels=8,
+            num_layers=1,
+            with_boundary_head=False,
+        ),
+    )
+
+    invalid_weights = [
+        dict(action=0.5, utility=0.4, saliency=0.1),
+        dict(action=math.nan, utility=1.0),
+        dict(action=math.inf, utility=1.0),
+        dict(action="0.5", utility=0.5),
+    ]
+    for density_weights in invalid_weights:
+        with pytest.raises(ValueError, match="density_weights"):
+            build_selector(dict(base, density_weights=density_weights))
+
+
+def test_cadf_densitymesh_allows_boundary_density_weight_with_boundary_scout_head():
+    selector = build_selector(
+        dict(
+            type="PCOTMRASIndirectPreBackboneFrameSelector",
+            target_len=4,
+            dense_window_size=8,
+            selection_unit=1,
+            scout_spatial_size=4,
+            strategy="cadf_density_mesh_st",
+            density_weights=dict(action=0.5, utility=0.4, boundary=0.1),
+            scout=dict(
+                type="PCOTMRASCADFDensityFrameScout",
+                in_channels=48,
+                hidden_channels=8,
+                num_layers=1,
+                with_boundary_head=True,
+            ),
+        )
+    )
+
+    assert selector.scout.boundary_head is not None
