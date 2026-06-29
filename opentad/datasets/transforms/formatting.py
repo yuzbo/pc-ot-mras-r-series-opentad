@@ -47,6 +47,14 @@ class Collect:
             "irregular_selected_positions",
             "irregular_selected_valid_len",
             "irregular_native_axis",
+            "abr_route_label",
+            "abr_selected_valid_k",
+            "abr_selected_positions",
+            "abr_selected_rounds",
+            "abr_selected_bracket_ids",
+            "abr_selected_roles",
+            "abr_selection_ledger",
+            "abr_dense_T",
         ],
     ):
         self.inputs = inputs

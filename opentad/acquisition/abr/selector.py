@@ -1,0 +1,265 @@
+from __future__ import annotations
+
+from typing import Dict, List, Optional, Sequence, Tuple
+
+from .policy import (
+    build_initial_brackets,
+    build_round0_scaffold,
+    deterministic_fallback_scout,
+    propose_probe_positions,
+    refine_or_split_bracket,
+    score_bracket_priority,
+    sorted_unique_in_range,
+    state_at_position,
+)
+from .types import (
+    ABRConfig,
+    ABRCostSummary,
+    ABRRoundLedger,
+    ABRSelectionResult,
+    ABR_ROUTE_LABEL,
+    DEFAULT_PROVENANCE,
+    BracketState,
+)
+from .validators import assert_no_forbidden_route_tokens, assert_provenance_clean
+
+
+def select_active_bracket_refinement(
+    dense_t: int,
+    fps: float = 25.0,
+    video_id: str = "unknown",
+    window_id: str = "window0",
+    scout_curve: Optional[Sequence[float]] = None,
+    config: Optional[ABRConfig] = None,
+) -> ABRSelectionResult:
+    cfg = config or ABRConfig()
+    dense_t = int(dense_t)
+    if dense_t <= 0:
+        raise ValueError("dense_t must be positive")
+    if cfg.route_label != ABR_ROUTE_LABEL:
+        raise ValueError(f"ABR route label mismatch: {cfg.route_label}")
+    assert_no_forbidden_route_tokens({"route_label": cfg.route_label, "method": "abr_active_bracket_refinement"})
+    provenance = dict(DEFAULT_PROVENANCE)
+    assert_provenance_clean(provenance)
+
+    curve = _normalize_curve(scout_curve, dense_t, video_id)
+    selected_meta: Dict[int, Tuple[int, str, int]] = {}
+    round_ledgers: List[ABRRoundLedger] = []
+    scout_ms = 0.0
+    acquisition_ms = 0.0
+    stop_reason = "saturated"
+
+    r0_positions = build_round0_scaffold(dense_t, cfg)
+    observed = set(r0_positions)
+    for pos in r0_positions:
+        selected_meta[pos] = (0, "scaffold", -1)
+    scout_ms += len(r0_positions) * cfg.scout_cost_ms_per_position
+    brackets = build_initial_brackets(curve, r0_positions, cfg)
+    stop_reason = "no_brackets" if not brackets else "round0_complete"
+    round_ledgers.append(
+        _make_ledger(
+            video_id,
+            window_id,
+            dense_t,
+            fps,
+            0,
+            r0_positions,
+            ["scaffold"] * len(r0_positions),
+            [-1] * len(r0_positions),
+            "round0_scaffold",
+            len(observed),
+            scout_ms,
+            cfg,
+            stop_reason,
+        )
+    )
+
+    for round_id, per_round_cap in ((1, cfg.k1_cap), (2, cfg.k2_cap)):
+        if round_id == 2 and not cfg.round2_enabled:
+            stop_reason = "round2_disabled"
+            break
+        active = _active_brackets_for_round(brackets, cfg, round_id)
+        if not active:
+            stop_reason = "no_brackets"
+            break
+        if len(observed) >= cfg.max_total_k:
+            stop_reason = "budget_cap"
+            break
+        if scout_ms + acquisition_ms >= cfg.deadline_ms:
+            stop_reason = "deadline"
+            break
+
+        probes, roles, bracket_ids = _select_round_probes(active, observed, dense_t, cfg, round_id, per_round_cap)
+        remaining = max(cfg.max_total_k - len(observed), 0)
+        probes = probes[:remaining]
+        roles = roles[:remaining]
+        bracket_ids = bracket_ids[:remaining]
+        if not probes:
+            stop_reason = "saturated"
+            break
+
+        for pos, role, bracket_id in zip(probes, roles, bracket_ids):
+            observed.add(pos)
+            selected_meta[pos] = (round_id, role, bracket_id)
+        scout_ms += len(probes) * cfg.scout_cost_ms_per_position
+        acquisition_ms += len(probes) * cfg.acquisition_cost_ms_per_position
+        observations = {pos: state_at_position(curve, pos, cfg) for pos in observed}
+        brackets = _refine_brackets(brackets, observations, cfg, round_id)
+        stop_reason = _round_stop_reason(brackets, cfg, round_id)
+        round_ledgers.append(
+            _make_ledger(
+                video_id,
+                window_id,
+                dense_t,
+                fps,
+                round_id,
+                probes,
+                roles,
+                bracket_ids,
+                f"round{round_id}_probe",
+                len(observed),
+                scout_ms,
+                cfg,
+                stop_reason,
+            )
+        )
+        if scout_ms + acquisition_ms >= cfg.deadline_ms:
+            stop_reason = "deadline"
+            break
+
+    selected_positions = sorted_unique_in_range(observed, dense_t)
+    selected_rounds = [selected_meta[pos][0] for pos in selected_positions]
+    selected_roles = [selected_meta[pos][1] for pos in selected_positions]
+    selected_bracket_ids = [selected_meta[pos][2] for pos in selected_positions]
+    cost = ABRCostSummary(
+        rounds_used=len(round_ledgers),
+        selected_k=len(selected_positions),
+        mean_selected_fraction=len(selected_positions) / float(dense_t),
+        scout_ms=scout_ms,
+        acquisition_wait_ms=acquisition_ms,
+        detector_forward_count=1,
+        deadline_ms=float(cfg.deadline_ms),
+        total_latency_proxy_ms=scout_ms + acquisition_ms,
+        stop_reason=stop_reason,
+    )
+    return ABRSelectionResult(
+        route_label=ABR_ROUTE_LABEL,
+        selected_positions=selected_positions,
+        selected_rounds=selected_rounds,
+        selected_roles=selected_roles,
+        selected_bracket_ids=selected_bracket_ids,
+        valid_k=len(selected_positions),
+        dense_T=dense_t,
+        fps=float(fps),
+        round_ledgers=round_ledgers,
+        brackets=brackets,
+        cost=cost,
+        provenance=provenance,
+        config=cfg,
+    )
+
+
+def _normalize_curve(scout_curve: Optional[Sequence[float]], dense_t: int, video_id: str) -> List[float]:
+    if scout_curve is None:
+        return deterministic_fallback_scout(dense_t, video_id)
+    curve = [float(v) for v in scout_curve]
+    if len(curve) == dense_t:
+        return [max(0.0, min(1.0, value)) for value in curve]
+    if len(curve) == 0:
+        return deterministic_fallback_scout(dense_t, video_id)
+    resized = []
+    for idx in range(dense_t):
+        src = round(idx * (len(curve) - 1) / max(dense_t - 1, 1))
+        resized.append(max(0.0, min(1.0, curve[int(src)])))
+    return resized
+
+
+def _active_brackets_for_round(brackets: Sequence[BracketState], config: ABRConfig, round_id: int) -> List[BracketState]:
+    active = [b for b in brackets if b.status in {"active", "narrowed", "stale"}]
+    if round_id == 2:
+        active = [b for b in active if b.width >= config.round2_min_width and b.priority >= 0.5]
+    for bracket in active:
+        bracket.priority = score_bracket_priority(bracket, config)
+    return sorted(active, key=lambda b: (-b.priority, b.left, b.right))
+
+
+def _select_round_probes(
+    brackets: Sequence[BracketState],
+    observed: set[int],
+    dense_t: int,
+    config: ABRConfig,
+    round_id: int,
+    per_round_cap: int,
+) -> Tuple[List[int], List[str], List[int]]:
+    probes: List[int] = []
+    roles: List[str] = []
+    bracket_ids: List[int] = []
+    planned = set(observed)
+    for bracket in brackets:
+        for pos, role in propose_probe_positions(bracket, planned, dense_t, config, round_id):
+            if len(probes) >= max(int(per_round_cap), 0):
+                return probes, roles, bracket_ids
+            if pos in planned:
+                continue
+            planned.add(pos)
+            probes.append(pos)
+            roles.append(role)
+            bracket_ids.append(bracket.bracket_id)
+    return probes, roles, bracket_ids
+
+
+def _refine_brackets(
+    brackets: Sequence[BracketState],
+    observations: Dict[int, str],
+    config: ABRConfig,
+    round_id: int,
+) -> List[BracketState]:
+    updated: List[BracketState] = []
+    for bracket in brackets:
+        updated.extend(refine_or_split_bracket(bracket, observations, config, round_id))
+    return sorted(updated, key=lambda b: (b.left, b.right, b.bracket_id))
+
+
+def _round_stop_reason(brackets: Sequence[BracketState], config: ABRConfig, round_id: int) -> str:
+    if not brackets:
+        return "no_brackets"
+    unresolved = [b for b in brackets if b.status not in {"resolved", "split"} and b.width > config.resolve_width]
+    if not unresolved:
+        return "saturated"
+    if round_id >= 2:
+        return "round2_bound"
+    return "active"
+
+
+def _make_ledger(
+    video_id: str,
+    window_id: str,
+    dense_t: int,
+    fps: float,
+    round_id: int,
+    positions: Sequence[int],
+    roles: Sequence[str],
+    bracket_ids: Sequence[int],
+    source: str,
+    cumulative_k: int,
+    cumulative_scout_ms: float,
+    config: ABRConfig,
+    stop_reason: str,
+) -> ABRRoundLedger:
+    return ABRRoundLedger(
+        video_id=video_id,
+        window_id=window_id,
+        dense_T=int(dense_t),
+        fps=float(fps),
+        round_id=int(round_id),
+        selected_positions=[int(pos) for pos in positions],
+        selected_roles=[str(role) for role in roles],
+        selected_bracket_ids=[int(bracket_id) if bracket_id is not None else None for bracket_id in bracket_ids],
+        selected_source=[source for _ in positions],
+        selected_cost_ms=[float(config.acquisition_cost_ms_per_position) for _ in positions],
+        cumulative_k=int(cumulative_k),
+        cumulative_scout_ms=float(cumulative_scout_ms),
+        deadline_ms=float(config.deadline_ms),
+        stop_reason=stop_reason,
+        provenance=dict(DEFAULT_PROVENANCE),
+    )

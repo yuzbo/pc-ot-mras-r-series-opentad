@@ -16,6 +16,8 @@ from .pseudo_boundary import (
     select_pseudo_boundary_snap_positions,
     slice_global_scores_for_window,
 )
+from opentad.acquisition.abr import ABRConfig
+from opentad.acquisition.abr.integration import apply_abr_to_results
 
 
 def _stable_string_seed(value):
@@ -221,6 +223,8 @@ class LoadFrames:
         pseudo_boundary_snap_distance=2,
         pseudo_boundary_min_score=0.0,
         pseudo_boundary_fallback="random_fixed",
+        abr_config=None,
+        abr_allow_gt_after_selection=False,
         fixed_trunc_start=None,
         fixed_trunc_gt_index=None,
     ):
@@ -250,6 +254,8 @@ class LoadFrames:
         self.pseudo_boundary_snap_distance = pseudo_boundary_snap_distance
         self.pseudo_boundary_min_score = pseudo_boundary_min_score
         self.pseudo_boundary_fallback = pseudo_boundary_fallback
+        self.abr_config = dict(abr_config or {})
+        self.abr_allow_gt_after_selection = bool(abr_allow_gt_after_selection)
         self.fixed_trunc_start = fixed_trunc_start
         self.fixed_trunc_gt_index = fixed_trunc_gt_index
 
@@ -762,6 +768,91 @@ class LoadFrames:
                 masks = torch.cat([torch.ones(valid_len), torch.zeros(window_size - valid_len)]).bool()
             else:
                 masks = torch.ones(window_size).bool()
+
+        elif self.method == "abr_active_bracket_refinement":
+            assert results["snippet_stride"] >= self.scale_factor, "snippet_stride should be larger than scale_factor"
+            assert (
+                results["snippet_stride"] % self.scale_factor == 0
+            ), "snippet_stride should be divisible by scale_factor"
+
+            frame_stride = results["snippet_stride"] // self.scale_factor
+            dense_frame_idxs = np.arange(0, total_frames, frame_stride)
+            gt_segments = results["gt_segments"] * self.scale_factor if "gt_segments" in results else None
+            gt_labels = results["gt_labels"] if "gt_labels" in results else None
+
+            if self.method_base == "random_trunc":
+                if gt_segments is None or gt_labels is None:
+                    raise ValueError("ABR with random_trunc requires train gt_segments and gt_labels for windowing")
+                if self.trunc_len is None and self.target_len is None:
+                    raise ValueError("ABR requires trunc_len or target_len when method_base='random_trunc'")
+                target_len = int(self.target_len) if self.target_len is not None else int(self.trunc_len)
+                source_len = int(self.source_len) if self.source_len is not None else int(target_len)
+                dense_window, gt_segments, gt_labels = self.random_trunc(
+                    dense_frame_idxs,
+                    trunc_len=int(source_len * self.scale_factor),
+                    gt_segments=gt_segments,
+                    gt_labels=gt_labels,
+                )
+            elif self.method_base == "sliding_window":
+                if "window_size" not in results:
+                    raise ValueError("ABR with sliding_window requires window_size in results")
+                target_len = int(self.target_len) if self.target_len is not None else int(results["window_size"])
+                start_idx = min(results["feature_start_idx"] * self.scale_factor, len(dense_frame_idxs))
+                end_idx = min((results["feature_end_idx"] + 1) * self.scale_factor, len(dense_frame_idxs))
+                dense_window = dense_frame_idxs[start_idx:end_idx]
+            else:
+                raise ValueError("ABR requires method_base='random_trunc' or 'sliding_window'")
+
+            valid_len = int(len(dense_window))
+            if valid_len <= 0:
+                raise RuntimeError("ABR received an empty dense window")
+
+            abr_config = dict(self.abr_config)
+            abr_config.setdefault("target_frame_num", int(target_len * self.scale_factor))
+            selection_results = {key: value for key, value in results.items() if key not in ("gt_segments", "gt_labels")}
+            selection_results["scale_factor"] = self.scale_factor
+            selection_results["window_size"] = valid_len
+            selection_results["feature_start_idx"] = 0
+            selection_results["feature_end_idx"] = valid_len - 1
+            selection_results = apply_abr_to_results(
+                selection_results,
+                config=ABRConfig(**abr_config),
+                allow_gt_after_selection=False,
+                dense_window=dense_window,
+            )
+            abr_keys = [
+                "abr_selected_positions",
+                "abr_selected_positions_window_local",
+                "abr_selected_positions_original_dense",
+                "abr_frame_inds_raw",
+                "abr_selected_valid_k",
+                "abr_selected_rounds",
+                "abr_selected_bracket_ids",
+                "abr_selected_roles",
+                "abr_selection_ledger",
+                "abr_dense_T",
+                "abr_route_label",
+                "irregular_selected_positions",
+                "irregular_selected_valid_len",
+                "irregular_native_axis",
+            ]
+            for key in abr_keys:
+                results[key] = selection_results[key]
+
+            frame_idxs = selection_results["frame_inds"]
+            frame_num = int(frame_idxs.shape[0])
+            masks = torch.as_tensor(selection_results["masks"], dtype=torch.bool)
+
+            if gt_segments is not None and gt_labels is not None:
+                if self.remap_gt_to_selected_axis:
+                    gt_segments, gt_labels = self._remap_gt_to_selected_axis(
+                        gt_segments=gt_segments,
+                        gt_labels=gt_labels,
+                        kept_positions=np.asarray(results["abr_selected_positions"], dtype=np.int64),
+                        valid_len=valid_len,
+                    )
+                results["gt_segments"] = gt_segments / self.scale_factor
+                results["gt_labels"] = gt_labels
 
         elif self.method in (
             "random_fixed_subsample",
