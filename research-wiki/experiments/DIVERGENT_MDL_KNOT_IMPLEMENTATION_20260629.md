@@ -8,7 +8,7 @@ Owned full-code implementation worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_M
 
 Superseded evidence-only worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_MDLKnot_Worktree_20260629`
 
-Status: local implementation and precheck tooling only. Remote sync, Slurm, training, evaluation, `tools/test.py`, stage, commit, push, mAP/runtime/FLOPs/deploy/paper claims remain locked.
+Status: implementation and precheck tooling with Linux/N16R4 PRECHECK_ONLY passed on 2026-06-30. Remote sync, Slurm, training, evaluation, `tools/test.py`, stage, commit, push, mAP/runtime/FLOPs/deploy/paper/sparse-compute claims remain locked.
 
 Changed surface:
 
@@ -49,8 +49,8 @@ Accepted blockers fixed:
 
 Remaining locks:
 
-- Remote sync and N16R4 PRECHECK_ONLY remain blocked until the latest read-only review no longer reports blockers.
-- Training, evaluation, `tools/test.py`, stage/commit/push, mAP/runtime/FLOPs/deploy/paper claims remain locked.
+- The earlier N16R4 PRECHECK_ONLY blocker is superseded by the 2026-06-30 clean-clone evidence below.
+- Remote sync, Slurm, training, evaluation, `tools/test.py`, stage/commit/push, and mAP/runtime/FLOPs/deploy/paper/sparse-compute claims remain locked.
 
 ## Clean-Clone Pseudo-Boundary Dependency Fix
 
@@ -65,3 +65,24 @@ Fix:
 - Added a torch-free dependency test that imports the file by path and checks `load_pseudo_boundary_cache`, `select_pseudo_boundary_hybrid_positions`, and `select_pseudo_boundary_snap_positions`.
 
 This is a clean-clone dependency repair only. It is not MDL algorithm logic, not C3/BVR/ABR route logic, and does not unlock training, evaluation, metric/runtime/deploy/paper claims, stage/commit/push, or `tools/test.py`.
+
+## Linux/N16R4 PRECHECK_ONLY Passed
+
+Recorded 2026-06-30 Asia/Shanghai.
+
+Evidence:
+
+- Remote logdir: `/data/home/sczc063/run/yuzibo/mdl_knot_precheck_logs/mdl_gpu1_precheck_20260630_010030`
+- Remote clean clone: `/data/home/sczc063/run/yuzibo/OpenTAD_MDLKnot_Precheck_20260630_6e8b698`
+- Commit tested: `6e8b698 Fix MDL-Knot clean-clone transform dependency`
+- Protected hold: `1118197 pcot_dbg2g`, node `g0030`, `CUDA_VISIBLE_DEVICES=1`; parent hold was not released or cancelled.
+- Test result: `20 passed in 46.43s`
+- Precheck summary generated at `logs/mdl_knot_precheck_gpu1/mdl_knot_precheck_summary.json`
+- Gate output: `PRECHECK_ONLY_REQUEST_ALLOWED`
+
+Interpretation:
+
+- Linux/N16R4 PRECHECK_ONLY passed after the clean-clone dependency fix.
+- The passing gate only authorizes the PRECHECK_ONLY evidence state.
+- It does not unlock full train, evaluation, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper, or sparse-compute claims.
+- Gate output still locks remote_sync, Slurm, training, evaluation, `tools/test.py`, stage, commit, push, and all metric/runtime/deploy/paper claims.

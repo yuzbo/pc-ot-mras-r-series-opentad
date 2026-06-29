@@ -6,7 +6,7 @@ Implementation target: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_MDLKnot_FullCode_Wo
 
 Superseded evidence-only worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_MDLKnot_Worktree_20260629`
 
-This first implementation is local-only and fail-closed. It implements a trainable/precheckable sparse acquisition surface, but it does not approve remote sync, Slurm, training, evaluation, runtime/FLOPs, deploy, paper, or metric claims.
+This first implementation remains fail-closed. Linux/N16R4 PRECHECK_ONLY passed on 2026-06-30 after the clean-clone dependency fix, but this does not approve remote sync, Slurm, training, evaluation, runtime/FLOPs, deploy, paper, sparse-compute, or metric claims.
 
 Implemented surfaces:
 
@@ -36,3 +36,18 @@ Local gates:
 - `python tools/mdl_knot/audit_mdl_knot_pipeline_precheck.py --out-dir .tmp_mdl_knot_precheck --overwrite`
 - `python tools/mdl_knot/validate_mdl_knot_launch_gate.py --route-label DIVERGENT_INNOVATION_EVENT_SURPRISE_DO_NOT_MERGE_WITH_C3 --precheck-summary .tmp_mdl_knot_precheck/mdl_knot_precheck_summary.json`
 - `python -m py_compile` on route files and tools.
+
+Linux/N16R4 PRECHECK_ONLY evidence:
+
+Recorded 2026-06-30 Asia/Shanghai.
+
+- Remote logdir: `/data/home/sczc063/run/yuzibo/mdl_knot_precheck_logs/mdl_gpu1_precheck_20260630_010030`
+- Remote clean clone: `/data/home/sczc063/run/yuzibo/OpenTAD_MDLKnot_Precheck_20260630_6e8b698`
+- Commit tested: `6e8b698 Fix MDL-Knot clean-clone transform dependency`
+- Protected hold: `1118197 pcot_dbg2g`, node `g0030`, `CUDA_VISIBLE_DEVICES=1`; parent hold was not released or cancelled.
+- Result: `20 passed in 46.43s`
+- Precheck summary: `logs/mdl_knot_precheck_gpu1/mdl_knot_precheck_summary.json`
+- Gate output: `PRECHECK_ONLY_REQUEST_ALLOWED`
+- Gate still locks: remote_sync, Slurm, training, evaluation, `tools/test.py`, stage, commit, push, mAP/runtime/FLOPs/deploy/paper claims.
+
+Interpretation: Linux/N16R4 PRECHECK_ONLY passed after the clean-clone dependency fix. This still does not unlock full train, evaluation, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper, or sparse-compute claims.
