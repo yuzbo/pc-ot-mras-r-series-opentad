@@ -317,3 +317,50 @@ Current unlock state:
   and coordinator deployment check.
 - Formal/full train, `tools/test.py`, official evaluation, mAP, runtime/FLOPs,
   deploy, paper, and sparse-compute claims: still locked.
+
+## 2026-06-30 GPU0 Speedfix Short Diagnostic Deployment
+
+Timestamp: `2026-06-30 21:47:33 +08:00`.
+
+Code commit deployed:
+
+- GitHub branch: `codex/divergent-mdl-knot-realdiag-20260630`
+- Commit: `be65889`
+- Commit message:
+  `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3 speed audit handoff modes`
+
+Remote clone:
+
+`/data/home/sczc063/run/yuzibo/OpenTAD_MDLKnot_RealDiag_20260630_fd2977f`
+
+Deployment scope:
+
+- Parent hold: `1118197 pcot_dbg2g`, preserved.
+- Node: `g0030`.
+- GPU binding: `CUDA_VISIBLE_DEVICES=0`.
+- GPU1 was not used.
+- Run tier: `SHORT_DIAGNOSTIC_ONLY`.
+- No evaluation, no `tools/test.py`, no checkpoint/mAP/runtime/FLOPs/deploy/
+  paper/sparse-compute claim.
+
+Run directory:
+
+`/data/home/sczc063/run/yuzibo/OpenTAD_MDLKnot_RealDiag_20260630_fd2977f/logs/mdl_knot_shortdiag_gpu0_speedfix_be65889_20260630_214733_+0800`
+
+Launch command used `srun --overlap --jobid=1118197` with job name
+`mdl_speedfix_g0`.
+
+Startup health check:
+
+- `parajobs` still shows parent hold `1118197 pcot_dbg2g` running on `g0030`.
+- `launcher_srun.log` entered `run_mdl_knot_shortdiag_n16r4.sh` and printed
+  the MDL route label and short diagnostic scope.
+- The run was in the script's focused pytest/gate phase at first check; no
+  immediate environment crash, CUDA OOM, old dense-passthrough validator error,
+  or traceback was observed in the startup window.
+
+Next monitoring policy:
+
+Do not refresh logs frequently. Recheck near expected first training loss or on
+user request; record only material state changes such as crash, finite loss,
+short diagnostic validation pass/fail, or a next-action-changing blocker.
