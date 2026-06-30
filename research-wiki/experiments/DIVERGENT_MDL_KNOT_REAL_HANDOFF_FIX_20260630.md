@@ -206,3 +206,49 @@ RUN_SHORTDIAG_TRAIN=1 TRAIN_LOG=logs/mdl_knot_shortdiag_train_rehandfix_$(date +
 ```
 
 Bounded rerun remains `SHORT_DIAGNOSTIC_ONLY`: one epoch, no evaluation, no checkpoint claim, no `tools/test.py`, no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim. If non-finite gradients recur after the handoff fix, record them as stability diagnostics and inspect loss/gradient health before any formal/full candidate decision.
+
+## 2026-06-30 N16R4 Post-Fix Shortdiag Launch Evidence
+
+Remote GitHub synchronization was performed on N16R4 with the platform academic
+proxy. The existing remote clone
+`/data/home/sczc063/run/yuzibo/OpenTAD_MDLKnot_RealDiag_20260630_fd2977f`
+fast-forwarded to branch `codex/divergent-mdl-knot-realdiag-20260630`, commit
+`797d05c`.
+
+Static gates were rerun remotely:
+
+- `validate_mdl_knot_launch_gate.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py`
+  returned `PRECHECK_ONLY_REQUEST_ALLOWED`, with `formal_train_unlocked=false`.
+- `validate_mdl_knot_shortdiag.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py`
+  returned `SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED`, with
+  `validated=false` because execution evidence is still required.
+
+After confirming GPU0 was free and GPU1 was not used by divergent routes, the
+post-fix one-epoch short diagnostic was launched inside the protected parent
+hold as child `1118197.499 mdl_shortfix3_g0`, with explicit
+`CUDA_VISIBLE_DEVICES=0`.
+
+Run directory:
+
+`/data/home/sczc063/run/yuzibo/OpenTAD_MDLKnot_RealDiag_20260630_fd2977f/logs/mdl_knot_shortdiag_gpu0_postfix_797d05c_20260630_200355_+0800_r3`
+
+Early finite-loss evidence:
+
+```text
+2026-06-30 20:08:25 [000][00001/00199] Loss=2.4086 cls_loss=0.5088 reg_loss=0.5807 boundary_loss=1.3191
+2026-06-30 20:10:20 [000][00002/00199] Loss=2.1510 cls_loss=0.3920 reg_loss=0.4437 boundary_loss=1.3153
+2026-06-30 20:10:53 [000][00003/00199] Loss=2.4525 cls_loss=0.5212 reg_loss=0.5954 boundary_loss=1.3359
+```
+
+Hard-marker scan was empty for Traceback, RuntimeError, CUDA OOM, killed/no
+space, `ValueError`, `Loss=nan`, `cost=nan`, and the previous
+`selected_inputs must be a real sparse gather, not dense passthrough` failure.
+
+Interpretation:
+
+- The post-fix branch has entered actual training and passed the immediate
+  dense-passthrough validator failure point seen in old child `1118197.488`.
+- This is still `SHORT_DIAGNOSTIC_ONLY`, not a route-success result.
+- MDL formal/full training, `tools/test.py`, official evaluation, mAP,
+  runtime/FLOPs, deployment, paper, and sparse-compute claims remain locked
+  until the one-epoch shortdiag completes and its validator passes.
