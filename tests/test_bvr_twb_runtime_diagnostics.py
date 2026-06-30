@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -127,12 +128,15 @@ def test_postprocess_proposal_audit_explains_365940_without_metric_claim():
     detector_text = (ROOT / "opentad/models/detectors/irregular_actionformer.py").read_text(encoding="utf-8")
     assert "BVR_TWB_POSTPROCESS_AUDIT" in detector_text
     assert "flattened_candidate_count" in detector_text
+    assert "bvr_twb_postprocess_guard" in detector_text
+    assert "bvr_twb_guarded_raw_cap_per_class" in detector_text
 
     summary = run_postprocess_audit()
 
     assert summary["no_training"] is True
     assert summary["no_checkpoint"] is True
     assert summary["no_metric_claim"] is True
+    assert summary["full_training_unlocked"] is False
     assert summary["runtime_contract"] in {"passed", "skipped"}
     if summary["runtime_contract"] == "passed":
         assert summary["raw_proposal_count"] == 19260
@@ -141,3 +145,51 @@ def test_postprocess_proposal_audit_explains_365940_without_metric_claim():
         assert summary["expected_explosion_formula"] == "raw_proposal_count * num_classes"
         assert summary["explains_365940_predictions"] is True
         assert summary["pre_nms_selected_count"] == 2000
+        assert summary["guard_runtime_contract"] == "passed"
+        assert summary["guard_active"] is True
+        assert summary["guard_candidate_generation_mode"] == "bvr_twb_guarded_raw_cap_per_class"
+        assert summary["guard_raw_input_count"] == 19260
+        assert summary["guard_raw_selected_count"] == 1024
+        assert summary["guard_class_candidate_count_before_global_topk"] <= 32 * 19
+        assert summary["guard_pre_nms_selected_count"] <= 512
+        assert summary["guard_final_result_count"] <= 512
+        assert summary["guard_no_metric_claim"] is True
+        assert summary["guard_full_training_unlocked"] is False
+
+
+def test_bvr_postprocess_guard_fails_closed_without_bvr_meta():
+    _require_torch()
+    import torch
+
+    from opentad.models.detectors.irregular_actionformer import IrregularActionFormer
+
+    detector = object.__new__(IrregularActionFormer)
+    proposals = torch.tensor([[0.0, 1.0], [2.0, 3.0]], dtype=torch.float32)
+    scores = torch.full((2, 3), 0.1, dtype=torch.float32)
+    metas = [
+        {
+            "video_name": "non_bvr_guard_should_fail",
+            "fps": 30.0,
+            "duration": 2.0,
+            "snippet_stride": 1,
+            "offset_frames": 0,
+            "window_start_frame": 0,
+        }
+    ]
+    post_cfg = SimpleNamespace(
+        pre_nms_thresh=0.001,
+        pre_nms_topk=512,
+        sliding_window=True,
+        nms=None,
+        bvr_twb_postprocess_guard=dict(
+            enabled=True,
+            require_bvr_meta=True,
+            raw_proposal_cap=1024,
+            per_class_topk=32,
+            total_candidate_cap=512,
+            min_score=0.001,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="no BVR-TWB metadata"):
+        detector.post_processing(([proposals], [scores]), metas, post_cfg, ["a", "b", "c"])

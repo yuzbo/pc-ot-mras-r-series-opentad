@@ -52,7 +52,6 @@ def run_postprocess_audit(out_dir=None, overwrite=False, require_runtime=False):
 
         from opentad.models.detectors.irregular_actionformer import IrregularActionFormer
 
-        detector = object.__new__(IrregularActionFormer)
         proposal_count = 19260
         num_classes = 19
         starts = torch.linspace(0.0, 382.0, proposal_count)
@@ -72,16 +71,45 @@ def run_postprocess_audit(out_dir=None, overwrite=False, require_runtime=False):
                 "bvr_twb_detector_feature_valid_len": 384.0,
             }
         ]
-        post_cfg = SimpleNamespace(pre_nms_thresh=0.001, pre_nms_topk=2000, sliding_window=True, nms=None)
         ext_cls = [f"class_{idx}" for idx in range(num_classes)]
-        results = detector.post_processing(([proposals], [scores]), metas, post_cfg, ext_cls)
-        audit_rows = getattr(detector, "_last_bvr_twb_postprocess_audit", [])
+
+        legacy_detector = object.__new__(IrregularActionFormer)
+        legacy_post_cfg = SimpleNamespace(pre_nms_thresh=0.001, pre_nms_topk=2000, sliding_window=True, nms=None)
+        legacy_results = legacy_detector.post_processing(([proposals], [scores]), metas, legacy_post_cfg, ext_cls)
+        audit_rows = getattr(legacy_detector, "_last_bvr_twb_postprocess_audit", [])
         if not audit_rows:
             raise ValueError("BVR-TWB postprocess audit env hook did not record a row")
-        row = audit_rows[0]
+        row = audit_rows[-1]
         expected_flat = proposal_count * num_classes
         if int(row["flattened_candidate_count"]) != expected_flat:
             raise ValueError("postprocess flattened candidate count mismatch")
+
+        guarded_detector = object.__new__(IrregularActionFormer)
+        guarded_post_cfg = SimpleNamespace(
+            pre_nms_thresh=0.001,
+            pre_nms_topk=512,
+            sliding_window=True,
+            nms=None,
+            bvr_twb_postprocess_guard=dict(
+                enabled=True,
+                require_bvr_meta=True,
+                raw_proposal_cap=1024,
+                per_class_topk=32,
+                total_candidate_cap=512,
+                min_score=0.001,
+            ),
+        )
+        guarded_results = guarded_detector.post_processing(([proposals], [scores]), metas, guarded_post_cfg, ext_cls)
+        guarded_rows = getattr(guarded_detector, "_last_bvr_twb_postprocess_audit", [])
+        if not guarded_rows:
+            raise ValueError("BVR-TWB guarded postprocess audit env hook did not record a row")
+        guarded_row = guarded_rows[-1]
+        if not bool(guarded_row.get("guard_active", False)):
+            raise ValueError("BVR-TWB postprocess guard did not activate")
+        if int(guarded_row["pre_nms_selected_count"]) > 512:
+            raise ValueError("BVR-TWB guarded pre-NMS candidate count exceeded cap")
+        if int(guarded_row["above_threshold_count"]) > 32 * num_classes:
+            raise ValueError("BVR-TWB guarded per-class candidate count exceeded cap")
         summary.update(
             {
                 "runtime_contract": "passed",
@@ -94,7 +122,27 @@ def run_postprocess_audit(out_dir=None, overwrite=False, require_runtime=False):
                 "pre_nms_selected_count": int(row["pre_nms_selected_count"]),
                 "post_nms_count": int(row["post_nms_count"]),
                 "final_result_count": int(row["final_result_count"]),
-                "result_video_count": len(results),
+                "result_video_count": len(legacy_results),
+                "guard_runtime_contract": "passed",
+                "guard_active": bool(guarded_row["guard_active"]),
+                "guard_candidate_generation_mode": guarded_row["candidate_generation_mode"],
+                "guard_raw_proposal_cap": int(guarded_row["guard_raw_proposal_cap"]),
+                "guard_raw_input_count": int(guarded_row["guard_raw_input_count"]),
+                "guard_raw_selected_count": int(guarded_row["guard_raw_selected_count"]),
+                "guard_per_class_topk": int(guarded_row["guard_per_class_topk"]),
+                "guard_total_candidate_cap": int(guarded_row["guard_total_candidate_cap"]),
+                "guard_above_threshold_before_per_class_cap": int(
+                    guarded_row["guard_above_threshold_before_per_class_cap"]
+                ),
+                "guard_class_candidate_count_before_global_topk": int(
+                    guarded_row["guard_class_candidate_count_before_global_topk"]
+                ),
+                "guard_pre_nms_selected_count": int(guarded_row["pre_nms_selected_count"]),
+                "guard_post_nms_count": int(guarded_row["post_nms_count"]),
+                "guard_final_result_count": int(guarded_row["final_result_count"]),
+                "guard_result_video_count": len(guarded_results),
+                "guard_no_metric_claim": True,
+                "guard_full_training_unlocked": False,
                 "audit_path": str(audit_path.resolve()) if audit_path is not None else None,
             }
         )
@@ -117,6 +165,10 @@ def run_postprocess_audit(out_dir=None, overwrite=False, require_runtime=False):
         summary.get("runtime_contract") == "passed"
         and summary.get("explains_365940_predictions")
         and summary.get("pre_nms_selected_count") == 2000
+        and summary.get("guard_runtime_contract") == "passed"
+        and summary.get("guard_active") is True
+        and summary.get("guard_pre_nms_selected_count", 10**9) <= 512
+        and summary.get("guard_class_candidate_count_before_global_topk", 10**9) <= 32 * 19
     )
     if require_runtime and not summary["all_required_postprocess_audit_passed"]:
         summary["blocked"] = True
@@ -136,7 +188,8 @@ def main():
         "BVR-TWB postprocess proposal audit: "
         f"runtime={summary.get('runtime_contract')} "
         f"flattened={summary.get('flattened_candidate_count')} "
-        f"explains_365940={summary.get('explains_365940_predictions', False)}"
+        f"explains_365940={summary.get('explains_365940_predictions', False)} "
+        f"guarded_pre_nms={summary.get('guard_pre_nms_selected_count')}"
     )
 
 

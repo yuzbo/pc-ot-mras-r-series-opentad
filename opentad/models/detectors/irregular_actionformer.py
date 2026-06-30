@@ -141,6 +141,124 @@ class IrregularActionFormer(BaseDetector):
             return True
         return any(str(key).startswith("bvr_twb_") for key in meta.keys())
 
+    def _cfg_get(self, cfg, key, default=None):
+        if cfg is None:
+            return default
+        if isinstance(cfg, dict):
+            return cfg.get(key, default)
+        return getattr(cfg, key, default)
+
+    def _resolve_bvr_twb_postprocess_guard(self, post_cfg, meta, pre_nms_thresh, pre_nms_topk):
+        guard_cfg = self._cfg_get(post_cfg, "bvr_twb_postprocess_guard", None)
+        if guard_cfg is None or not bool(self._cfg_get(guard_cfg, "enabled", False)):
+            return None
+
+        require_bvr_meta = bool(self._cfg_get(guard_cfg, "require_bvr_meta", True))
+        if require_bvr_meta and not self._is_bvr_twb_meta(meta):
+            raise ValueError("BVR-TWB postprocess guard is enabled but the sample has no BVR-TWB metadata")
+
+        raw_proposal_cap = int(self._cfg_get(guard_cfg, "raw_proposal_cap", 1024))
+        per_class_topk = int(self._cfg_get(guard_cfg, "per_class_topk", 32))
+        total_candidate_cap = int(self._cfg_get(guard_cfg, "total_candidate_cap", pre_nms_topk))
+        min_score = float(self._cfg_get(guard_cfg, "min_score", pre_nms_thresh))
+
+        invalid = []
+        if raw_proposal_cap <= 0:
+            invalid.append("raw_proposal_cap")
+        if per_class_topk <= 0:
+            invalid.append("per_class_topk")
+        if total_candidate_cap <= 0:
+            invalid.append("total_candidate_cap")
+        if min_score < 0:
+            invalid.append("min_score")
+        if invalid:
+            raise ValueError(f"Invalid BVR-TWB postprocess guard fields: {invalid}")
+
+        return {
+            "raw_proposal_cap": raw_proposal_cap,
+            "per_class_topk": per_class_topk,
+            "total_candidate_cap": min(total_candidate_cap, int(pre_nms_topk)),
+            "score_thresh": max(float(pre_nms_thresh), min_score),
+            "require_bvr_meta": require_bvr_meta,
+        }
+
+    def _select_bvr_twb_guarded_candidates(
+        self,
+        segments,
+        scores,
+        num_classes,
+        guard,
+    ):
+        raw_input_count = int(segments.shape[0])
+        audit = {
+            "guard_active": True,
+            "candidate_generation_mode": "bvr_twb_guarded_raw_cap_per_class",
+            "guard_raw_proposal_cap": int(guard["raw_proposal_cap"]),
+            "guard_per_class_topk": int(guard["per_class_topk"]),
+            "guard_total_candidate_cap": int(guard["total_candidate_cap"]),
+            "guard_score_thresh": float(guard["score_thresh"]),
+            "guard_raw_input_count": raw_input_count,
+        }
+
+        if raw_input_count == 0:
+            empty_scores = scores.new_zeros((0,))
+            empty_labels = torch.zeros(0, dtype=torch.long, device=scores.device)
+            audit.update(
+                {
+                    "guard_raw_selected_count": 0,
+                    "guard_above_threshold_before_per_class_cap": 0,
+                    "guard_class_candidate_count_before_global_topk": 0,
+                }
+            )
+            return segments, empty_scores, empty_labels, audit
+
+        raw_cap = min(int(guard["raw_proposal_cap"]), raw_input_count)
+        if raw_cap < raw_input_count:
+            raw_rank = scores.max(dim=1).values
+            raw_keep = raw_rank.topk(raw_cap, largest=True, sorted=False).indices
+            segments = segments[raw_keep]
+            scores = scores[raw_keep]
+        audit["guard_raw_selected_count"] = int(segments.shape[0])
+
+        pred_chunks = []
+        point_chunks = []
+        class_chunks = []
+        above_threshold_count = 0
+        for class_idx in range(num_classes):
+            class_scores = scores[:, class_idx]
+            keep = class_scores > float(guard["score_thresh"])
+            keep_idxs = keep.nonzero(as_tuple=True)[0]
+            above_threshold_count += int(keep_idxs.numel())
+            if keep_idxs.numel() == 0:
+                continue
+            kept_scores = class_scores[keep_idxs]
+            class_topk = min(int(guard["per_class_topk"]), int(kept_scores.numel()))
+            kept_scores, order = kept_scores.sort(descending=True)
+            selected_points = keep_idxs[order[:class_topk]]
+            pred_chunks.append(kept_scores[:class_topk])
+            point_chunks.append(selected_points)
+            class_chunks.append(torch.full_like(selected_points, class_idx))
+
+        audit["guard_above_threshold_before_per_class_cap"] = above_threshold_count
+        if not pred_chunks:
+            empty_segments = segments[:0]
+            empty_scores = scores.new_zeros((0,))
+            empty_labels = torch.zeros(0, dtype=torch.long, device=scores.device)
+            audit["guard_class_candidate_count_before_global_topk"] = 0
+            return empty_segments, empty_scores, empty_labels, audit
+
+        pred_prob = torch.cat(pred_chunks, dim=0)
+        pt_idxs = torch.cat(point_chunks, dim=0)
+        cls_idxs = torch.cat(class_chunks, dim=0)
+        audit["guard_class_candidate_count_before_global_topk"] = int(pred_prob.numel())
+
+        num_topk = min(int(guard["total_candidate_cap"]), int(pred_prob.numel()))
+        pred_prob, idxs = pred_prob.sort(descending=True)
+        pred_prob = pred_prob[:num_topk].clone()
+        pt_idxs = pt_idxs[idxs[:num_topk]].clone()
+        cls_idxs = cls_idxs[idxs[:num_topk]].clone()
+        return segments[pt_idxs], pred_prob, cls_idxs, audit
+
     def _append_env_jsonl_audit(self, env_key, row):
         path = os.environ.get(env_key)
         if not path:
@@ -356,6 +474,7 @@ class IrregularActionFormer(BaseDetector):
             scores = rpn_scores[i].detach().cpu()
             raw_proposal_count = int(segments.shape[0])
             raw_score_count = int(scores.numel())
+            guard = self._resolve_bvr_twb_postprocess_guard(post_cfg, metas[i], pre_nms_thresh, pre_nms_topk)
             audit_row = None
             if self._is_bvr_twb_meta(metas[i]) and os.environ.get("BVR_TWB_POSTPROCESS_AUDIT", "").lower() in {
                 "1",
@@ -374,6 +493,8 @@ class IrregularActionFormer(BaseDetector):
                     "pre_nms_topk": int(pre_nms_topk),
                     "nms_enabled": bool(post_cfg.sliding_window is False and post_cfg.nms is not None),
                     "native_axis": bool(metas[i].get("irregular_native_axis", False)),
+                    "guard_active": bool(guard is not None),
+                    "candidate_generation_mode": "legacy_flatten_all_classes",
                 }
 
             if num_classes == 1:
@@ -383,23 +504,37 @@ class IrregularActionFormer(BaseDetector):
                     audit_row["above_threshold_count"] = int(scores.shape[0])
                     audit_row["pre_nms_selected_count"] = int(scores.shape[0])
             else:
-                pred_prob = scores.flatten()
-                keep_idxs1 = pred_prob > pre_nms_thresh
-                if audit_row is not None:
-                    audit_row["above_threshold_count"] = int(keep_idxs1.sum().item())
-                pred_prob = pred_prob[keep_idxs1]
-                topk_idxs = keep_idxs1.nonzero(as_tuple=True)[0]
-                num_topk = min(pre_nms_topk, topk_idxs.size(0))
-                pred_prob, idxs = pred_prob.sort(descending=True)
-                pred_prob = pred_prob[:num_topk].clone()
-                topk_idxs = topk_idxs[idxs[:num_topk]].clone()
-                pt_idxs = torch.div(topk_idxs, num_classes, rounding_mode="floor")
-                cls_idxs = torch.fmod(topk_idxs, num_classes)
-                segments = segments[pt_idxs]
-                scores = pred_prob
-                labels = cls_idxs
-                if audit_row is not None:
-                    audit_row["pre_nms_selected_count"] = int(num_topk)
+                if guard is not None:
+                    segments, scores, labels, guard_audit = self._select_bvr_twb_guarded_candidates(
+                        segments,
+                        scores,
+                        num_classes,
+                        guard,
+                    )
+                    if audit_row is not None:
+                        audit_row.update(guard_audit)
+                        audit_row["above_threshold_count"] = int(
+                            guard_audit["guard_class_candidate_count_before_global_topk"]
+                        )
+                        audit_row["pre_nms_selected_count"] = int(scores.shape[0])
+                else:
+                    pred_prob = scores.flatten()
+                    keep_idxs1 = pred_prob > pre_nms_thresh
+                    if audit_row is not None:
+                        audit_row["above_threshold_count"] = int(keep_idxs1.sum().item())
+                    pred_prob = pred_prob[keep_idxs1]
+                    topk_idxs = keep_idxs1.nonzero(as_tuple=True)[0]
+                    num_topk = min(pre_nms_topk, topk_idxs.size(0))
+                    pred_prob, idxs = pred_prob.sort(descending=True)
+                    pred_prob = pred_prob[:num_topk].clone()
+                    topk_idxs = topk_idxs[idxs[:num_topk]].clone()
+                    pt_idxs = torch.div(topk_idxs, num_classes, rounding_mode="floor")
+                    cls_idxs = torch.fmod(topk_idxs, num_classes)
+                    segments = segments[pt_idxs]
+                    scores = pred_prob
+                    labels = cls_idxs
+                    if audit_row is not None:
+                        audit_row["pre_nms_selected_count"] = int(num_topk)
 
             if post_cfg.sliding_window is False and post_cfg.nms is not None:
                 segments, scores, labels = batched_nms(segments, scores, labels, **post_cfg.nms)

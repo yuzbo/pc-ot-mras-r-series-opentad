@@ -265,6 +265,11 @@ def test_bvr_config_uses_dynamic_method_and_excludes_unapproved_route_tokens():
     assert "bvr_twb_require_deploy_visible_scout=True" in text
     assert "bvr_twb_allow_diagnostic_preview_fallback=False" in text
     assert 'bvr_twb_value_mode="deploy_heuristic_voi"' in text
+    assert "bvr_twb_postprocess_guard=dict(" in text
+    assert "require_bvr_meta=True" in text
+    assert "raw_proposal_cap=1024" in text
+    assert "per_class_topk=32" in text
+    assert "total_candidate_cap=512" in text
     assert "diagnostic_deterministic_preview" not in text
     normalized = text.replace(ROUTE_LABEL, "").replace("checkpoint_interval", "checkpoint_period")
     for token in FORBIDDEN_ROUTE_TOKENS:

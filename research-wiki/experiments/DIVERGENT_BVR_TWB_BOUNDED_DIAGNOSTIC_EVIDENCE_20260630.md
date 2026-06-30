@@ -616,3 +616,227 @@ Interpretation:
   failure mode rather than route rejection.
 - BVR formal/full training remains locked. The next BVR work should focus on
   proposal/postprocess control or a reviewed repair before any new long run.
+
+## 2026-06-30 20:34:40 +08:00 BVR-TWB Postprocess Candidate-Control Repair
+
+Route label: `DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3`
+
+Owned worktree:
+`E:\DeskTop\TAD\temrefuse-tad\OpenTAD_BVR_TWB_PostprocessRepair_Worktree_20260630`
+
+Owned branch: `codex/divergent-bvr-twb-postprocess-repair-20260630`
+
+Writable owner exception: the divergent-route skill is delegation-first, but
+the user explicitly assigned this stage to the current agent as the only
+writable BVR-TWB code owner. No subagent, Pro, Oracle, Rosetta, Gemini, Claude,
+remote sync, Slurm, training, `tools/test.py`, official evaluation, staging,
+commit, or push was used in this repair stage.
+
+Severe-result root cause being repaired:
+
+- The prior bounded Linux audit proved the severe-run prediction explosion was
+  explained by post-processing candidate generation:
+  `19260 raw proposals * 19 classes = 365940 flattened candidates`.
+- Pro classified this as implementation/protocol/postprocess failure, not BVR
+  idea rejection.
+- The repaired surface is candidate generation before NMS/result formatting,
+  not evaluator behavior, GT access, teacher access, raw-prediction shortcut,
+  C3 route mixing, or a metric claim.
+
+Changed files:
+
+- `opentad/models/detectors/irregular_actionformer.py`
+- `tools/bvr_twb/audit_postprocess_proposals.py`
+- `tests/test_bvr_twb_runtime_diagnostics.py`
+- `tests/test_bvr_twb_opentad_pipeline.py`
+- `configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py`
+- `research-wiki/experiments/DIVERGENT_BVR_TWB_BOUNDED_DIAGNOSTIC_EVIDENCE_20260630.md`
+
+Repair mechanism:
+
+- Added an explicit `bvr_twb_postprocess_guard` config gate in
+  `IrregularActionFormer.post_processing`.
+- The guard is inactive by default when the config field is absent, preserving
+  non-BVR route behavior.
+- When enabled with `require_bvr_meta=True`, the guard fails closed if a sample
+  does not carry BVR-TWB metadata.
+- The guarded path uses deploy-visible model outputs only:
+  current proposals, current class scores, and BVR-visible metadata. It does
+  not read GT, teacher outputs, prediction caches, raw-prediction shortcuts, or
+  external evaluator artifacts.
+- Candidate generation changes from legacy all-class flattening to
+  `bvr_twb_guarded_raw_cap_per_class`: first cap raw proposals by max current
+  class score, then apply score threshold and per-class top-k, then apply a
+  global pre-NMS cap.
+- The BVR config explicitly sets:
+  `pre_nms_topk=512`, `raw_proposal_cap=1024`,
+  `per_class_topk=32`, `total_candidate_cap=512`,
+  `min_score=0.001`, and `nms.max_seg_num=512`.
+- This is a bounded candidate-control repair. It is not a sparse-compute,
+  runtime/FLOPs, deployment, paper, or mAP claim.
+
+Audit/test update:
+
+- `audit_postprocess_proposals.py` now runs both paths in the synthetic
+  no-training/no-video/no-checkpoint audit:
+  legacy path still reproduces and explains the `365940` flattened candidate
+  count;
+  guarded path must activate the guard and prove `guard_pre_nms_selected_count
+  <= 512` plus `guard_class_candidate_count_before_global_topk <= 32 * 19`.
+- Runtime diagnostic tests assert the legacy explanation remains visible and
+  the guarded path records `guard_no_metric_claim=True` and
+  `guard_full_training_unlocked=False`.
+- A fail-closed unit test verifies that enabling the BVR guard on a non-BVR
+  sample raises `ValueError` instead of silently applying a route-specific
+  postprocess change.
+- The BVR pipeline source test asserts the config carries the explicit
+  postprocess guard and still excludes forbidden route/combo tokens.
+
+Local verification:
+
+```powershell
+python -m py_compile opentad\models\detectors\irregular_actionformer.py tools\bvr_twb\audit_postprocess_proposals.py tests\test_bvr_twb_runtime_diagnostics.py tests\test_bvr_twb_opentad_pipeline.py configs\adatad\thumos\input_bvr_twb_dynamic_adapter_irregular_headv3.py
+```
+
+Result: passed.
+
+```powershell
+$env:PYTHONPATH=(Get-Location).Path; pytest -q tests\test_bvr_twb_runtime_diagnostics.py
+```
+
+Result: `3 passed, 3 skipped in 3.43s`.
+
+```powershell
+$env:PYTHONPATH=(Get-Location).Path; pytest -q tests\test_bvr_twb_bounded_diagnostics.py tests\test_bvr_twb_geometry_contracts.py tests\test_bvr_twb_opentad_pipeline.py tests\test_bvr_twb_sparse_forward_audit.py tests\test_bvr_twb_validators.py tests\test_bvr_twb_runtime_diagnostics.py
+```
+
+Result: `39 passed, 15 skipped, 1 warning in 8.44s`.
+
+Windows-local limitation:
+
+- Torch runtime checks that depend on this environment remain skipped locally.
+  The repair therefore still requires a Linux bounded diagnostic rerun with
+  `--require-runtime` before any remote precheck/full-train decision.
+
+Still locked:
+
+- BVR formal/full training.
+- Slurm or remote sync for training.
+- GPU allocations.
+- `tools/test.py` and official evaluation.
+- mAP, runtime/FLOPs, sparse compute, deploy, or paper claims.
+- Any C3/BVR/ABR/MDL combo or merge.
+
+Next allowed action:
+
+- A read-only review and/or Linux CPU bounded precheck only, using
+  `audit_postprocess_proposals.py --require-runtime` and the focused BVR
+  pytest suite. Formal/full training remains locked until the project-required
+  review gates explicitly unlock it.
+
+## 2026-06-30 21:39:06 +08:00 BVR-TWB Postprocess Repair Owner Check
+
+Route label: `DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3`
+
+Owned worktree:
+`E:\DeskTop\TAD\temrefuse-tad\OpenTAD_BVR_TWB_PostprocessRepair_Worktree_20260630`
+
+Owned branch: `codex/divergent-bvr-twb-postprocess-repair-20260630`
+
+Scope:
+
+- Current diff was inspected in the route-owned worktree only.
+- No shared-repo write, branch switch, stage, commit, push, remote sync, Slurm,
+  GPU, training, `tools/train.py`, `tools/test.py`, official evaluation, mAP,
+  runtime/FLOPs, deploy, paper, C3, ABR, MDL, or combo action was used.
+- No implementation fix was made in this owner check because the focused local
+  evidence did not expose a guard logic defect.
+
+Guard alignment observed from diff/source:
+
+- The BVR config enables a route-specific `bvr_twb_postprocess_guard` with
+  `require_bvr_meta=True`, `raw_proposal_cap=1024`, `per_class_topk=32`,
+  `total_candidate_cap=512`, `min_score=0.001`, and `nms.max_seg_num=512`.
+- The detector guard is inactive when the config field is absent, so non-BVR
+  routes stay on the legacy postprocess path.
+- When enabled, the guard fails closed on samples without BVR-TWB metadata.
+- Candidate control uses only current proposals, current class scores, and
+  BVR-visible metadata; no GT, teacher, cache, raw-prediction shortcut, C3
+  route, or evaluator shortcut was found in the changed postprocess path.
+
+Local command evidence:
+
+```powershell
+$env:PYTHONPATH=(Get-Location).Path; python -m py_compile configs\adatad\thumos\input_bvr_twb_dynamic_adapter_irregular_headv3.py opentad\models\detectors\irregular_actionformer.py tools\bvr_twb\audit_postprocess_proposals.py tools\bvr_twb\validate_bvr_twb_launch_gate.py tests\test_bvr_twb_runtime_diagnostics.py tests\test_bvr_twb_opentad_pipeline.py
+```
+
+Result: passed, exit code `0`.
+
+```powershell
+$env:PYTHONPATH=(Get-Location).Path; pytest -q tests\test_bvr_twb_runtime_diagnostics.py
+```
+
+Result: `3 passed, 3 skipped in 3.96s`.
+
+```powershell
+$env:PYTHONPATH=(Get-Location).Path; pytest -q tests\test_bvr_twb_opentad_pipeline.py
+```
+
+Result: `9 passed, 7 skipped in 1.48s`.
+
+```powershell
+$env:PYTHONPATH=(Get-Location).Path; python tools\bvr_twb\audit_postprocess_proposals.py --out-dir tools\bvr_twb\.tmp_bvr_twb_postprocess_cli_current --overwrite --require-runtime
+```
+
+Result: failed before runtime audit could execute because local Windows torch
+import failed:
+
+```text
+RuntimeError: torch import probe failed: OSError: [WinError 1114] DLL initialization failed while loading torch c10.dll or one of its dependencies.
+```
+
+Interpretation: `--require-runtime` was actually run locally, but this Windows
+environment cannot supply the required torch/OpenTAD runtime evidence.
+
+```powershell
+$env:PYTHONPATH=(Get-Location).Path; python tools\bvr_twb\audit_postprocess_proposals.py --out-dir tools\bvr_twb\.tmp_bvr_twb_postprocess_cli_current --overwrite
+```
+
+Result: `runtime=skipped flattened=None explains_365940=False guarded_pre_nms=None`.
+
+```powershell
+$env:PYTHONPATH=(Get-Location).Path; pytest -q tests\test_bvr_twb_bounded_diagnostics.py tests\test_bvr_twb_geometry_contracts.py tests\test_bvr_twb_opentad_pipeline.py tests\test_bvr_twb_sparse_forward_audit.py tests\test_bvr_twb_validators.py tests\test_bvr_twb_runtime_diagnostics.py
+```
+
+Result: `39 passed, 15 skipped, 1 warning in 10.18s`.
+
+```powershell
+git diff --check -- configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py opentad/models/detectors/irregular_actionformer.py tools/bvr_twb/audit_postprocess_proposals.py tools/bvr_twb/validate_bvr_twb_launch_gate.py tests/test_bvr_twb_opentad_pipeline.py tests/test_bvr_twb_runtime_diagnostics.py research-wiki/experiments/DIVERGENT_BVR_TWB_BOUNDED_DIAGNOSTIC_EVIDENCE_20260630.md
+```
+
+Result: exit code `0`; only Windows LF-to-CRLF working-copy warnings.
+
+Linux `--require-runtime` status:
+
+- Not completed in this owner check.
+- Reason: the current repair is local and uncommitted/unpushed in the owned
+  worktree, while remote execution would require syncing or otherwise writing
+  this uncommitted local repair into a Linux tree. This owner prompt forbids
+  stage/commit/push and shared/route-external writes. Running an old remote
+  checkout would not test the current guarded repair.
+- Safe command to run later in a Linux CPU OpenTAD environment that contains
+  this exact worktree state:
+
+```bash
+PYTHONPATH="$PWD" python tools/bvr_twb/audit_postprocess_proposals.py --out-dir logs/bvr_twb_postprocess_repair_runtime_20260630 --overwrite --require-runtime
+PYTHONPATH="$PWD" pytest -q tests/test_bvr_twb_runtime_diagnostics.py tests/test_bvr_twb_opentad_pipeline.py
+```
+
+Still locked:
+
+- Linux runtime postprocess proof with `--require-runtime`.
+- Required read-only review gates.
+- BVR formal/full training.
+- Remote sync for training, Slurm, GPU allocations, `tools/test.py`, official
+  evaluation, mAP, runtime/FLOPs, sparse compute, deploy, and paper claims.
+- Any C3/BVR/ABR/MDL combo or merge.
