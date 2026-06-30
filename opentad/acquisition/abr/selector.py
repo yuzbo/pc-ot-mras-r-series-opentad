@@ -310,6 +310,7 @@ def _first_round_bracket_diagnostics(
             "full_curve_transition_brackets",
             "gradient_spike_brackets",
             "percentile_adaptive_low_amplitude_activity_brackets",
+            "robust_local_change_extrema_brackets",
             "bounded_event_train_risk_envelopes",
             "risk_gap_micro_bridges",
             "silent_gap_sentinels",

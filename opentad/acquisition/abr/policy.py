@@ -209,6 +209,24 @@ def _multiscale_curve_brackets(curve: Sequence[float], config: ABRConfig, start_
         brackets.append(bracket)
         next_id += 1
 
+    for left, right, source, score in _robust_change_extrema_windows(values, composite, gradients, config):
+        bracket = _make_curve_bracket(
+            next_id,
+            "robust_change",
+            left,
+            right,
+            values,
+            composite,
+            gradients,
+            config,
+            source,
+        )
+        bracket.score_components["robust_change_extrema_score"] = float(score)
+        bracket.confidence = max(bracket.confidence, min(1.0, 0.28 + 0.62 * float(score)))
+        bracket.priority = score_bracket_priority(bracket, config) + 0.35 + 0.30 * float(score)
+        brackets.append(bracket)
+        next_id += 1
+
     for left, right, score, anchor_count in _event_train_risk_windows(values, composite, gradients, config):
         bracket = _make_curve_bracket(
             next_id,
@@ -379,6 +397,161 @@ def _adaptive_low_amplitude_activity_segments(
     scored.sort(key=lambda item: (-item[2], item[0], item[1]))
     max_segments = max(4, min(64, len(values) // max(max(int(config.max_gap), 1) // 2 + 4, 4)))
     return sorted(scored[:max_segments], key=lambda item: (item[0], item[1]))
+
+
+def _robust_change_extrema_windows(
+    values: Sequence[float],
+    composite: Sequence[float],
+    gradients: Sequence[float],
+    config: ABRConfig,
+) -> List[Tuple[int, int, str, float]]:
+    if len(values) < 5:
+        return []
+
+    dense_t = len(values)
+    smooth = _moving_average(values, 3)
+    sorted_values = sorted(float(value) for value in smooth)
+    value_low = _percentile(sorted_values, 0.10)
+    value_median = _percentile(sorted_values, 0.50)
+    value_high = _percentile(sorted_values, 0.90)
+    value_range = max(value_high - value_low, max(sorted_values) - min(sorted_values), 0.0)
+    if value_range < 0.018:
+        return []
+
+    salience: List[float] = []
+    radii = sorted({2, 4, max(2, min(8, dense_t // 32))})
+    for idx in range(dense_t):
+        local_change = 0.0
+        for radius in radii:
+            left_values = smooth[max(0, idx - radius) : idx]
+            right_values = smooth[idx + 1 : min(dense_t, idx + radius + 1)]
+            shoulder_values = left_values + right_values
+            if left_values and right_values:
+                left_mean = sum(left_values) / float(len(left_values))
+                right_mean = sum(right_values) / float(len(right_values))
+                local_change = max(local_change, abs(right_mean - left_mean))
+            if shoulder_values:
+                shoulder_low = min(shoulder_values)
+                shoulder_high = max(shoulder_values)
+                local_change = max(
+                    local_change,
+                    abs(float(smooth[idx]) - shoulder_low),
+                    abs(shoulder_high - float(smooth[idx])),
+                )
+        curvature = 0.0
+        if 0 < idx < dense_t - 1:
+            curvature = abs(float(smooth[idx - 1]) - 2.0 * float(smooth[idx]) + float(smooth[idx + 1]))
+        robust_offset = abs(float(smooth[idx]) - value_median)
+        salience.append(max(local_change, float(gradients[idx]), curvature, 0.35 * robust_offset))
+
+    sorted_salience = sorted(salience)
+    salience_peak = max(sorted_salience, default=0.0)
+    if salience_peak < 0.025:
+        return []
+    salience_median = _percentile(sorted_salience, 0.50)
+    salience_mad = _median_abs_deviation(salience, salience_median)
+    salience_p90 = _percentile(sorted_salience, 0.90)
+    salience_p97 = _percentile(sorted_salience, 0.97)
+    floor = max(
+        salience_median + max(2.5 * salience_mad, 0.014),
+        min(salience_p90 + 0.25 * max(salience_p97 - salience_p90, 0.0), 0.70 * salience_peak),
+        min(0.030, 0.35 * salience_peak),
+    )
+    floor = min(floor, max(0.025, 0.72 * salience_peak))
+
+    bridge_gap = max(2, min(6, dense_t // 48 + max(int(config.max_gap), 0) // 8))
+    context = max(2, min(8, int(round(dense_t * 0.025)), max(int(config.max_gap), 1) // 4))
+    windows: List[Tuple[int, int, str, float]] = []
+    for left, right in _segments_above(salience, floor, max_gap=bridge_gap):
+        local_peak = max(salience[left : right + 1], default=0.0)
+        if local_peak < floor:
+            continue
+        score = min(1.0, local_peak / max(salience_peak, floor, 1e-6))
+        segment_context = max(0, context - 2)
+        windows.append(
+            (
+                clamp_position(left - segment_context, dense_t),
+                clamp_position(right + segment_context, dense_t),
+                "robust_local_change_extrema",
+                float(score),
+            )
+        )
+
+    prominence_floor = max(0.025, min(0.10, 0.22 * value_range))
+    extrema_radius = max(3, min(8, dense_t // 40 + 2))
+    for idx in range(1, dense_t - 1):
+        is_peak = smooth[idx] >= smooth[idx - 1] and smooth[idx] >= smooth[idx + 1]
+        is_valley = smooth[idx] <= smooth[idx - 1] and smooth[idx] <= smooth[idx + 1]
+        if not (is_peak or is_valley):
+            continue
+        left = max(0, idx - extrema_radius)
+        right = min(dense_t, idx + extrema_radius + 1)
+        local = smooth[left:right]
+        if not local:
+            continue
+        if is_peak:
+            prominence = float(smooth[idx]) - min(local)
+        else:
+            prominence = max(local) - float(smooth[idx])
+        if prominence < prominence_floor or salience[idx] < 0.75 * floor:
+            continue
+        score = min(1.0, 0.55 * prominence / max(value_range, 1e-6) + 0.45 * salience[idx] / max(salience_peak, 1e-6))
+        windows.append(
+            (
+                clamp_position(idx - context, dense_t),
+                clamp_position(idx + context, dense_t),
+                "robust_local_extrema_prominence",
+                float(score),
+            )
+        )
+
+    merged = _merge_scored_windows(windows, dense_t, config)
+    max_windows = max(4, min(32, dense_t // max(max(int(config.max_gap), 1), 16) + 4))
+    merged.sort(key=lambda item: (-item[3], item[0], item[1]))
+    return sorted(merged[:max_windows], key=lambda item: (item[0], item[1], item[2]))
+
+
+def _median_abs_deviation(values: Sequence[float], center: float) -> float:
+    deviations = sorted(abs(float(value) - float(center)) for value in values)
+    return _percentile(deviations, 0.50)
+
+
+def _merge_scored_windows(
+    windows: Sequence[Tuple[int, int, str, float]],
+    dense_t: int,
+    config: ABRConfig,
+) -> List[Tuple[int, int, str, float]]:
+    if not windows:
+        return []
+    ordered = sorted(
+        (
+            clamp_position(left, dense_t),
+            clamp_position(max(int(right), int(left)), dense_t),
+            str(source),
+            float(score),
+        )
+        for left, right, source, score in windows
+    )
+    merged: List[Tuple[int, int, str, float]] = []
+    merge_gap = max(1, min(4, dense_t // 96 + max(int(config.max_gap), 0) // 12))
+    max_merge_width = max(4, min(int(math.floor(dense_t * 0.12)), max(int(config.max_gap), 1) + 10))
+    for left, right, source, score in ordered:
+        if not merged:
+            merged.append((left, right, source, score))
+            continue
+        prev_left, prev_right, prev_source, prev_score = merged[-1]
+        merged_width = max(prev_right, right) - min(prev_left, left)
+        if left <= prev_right + merge_gap and merged_width <= max_merge_width:
+            merged_source = prev_source if prev_score >= score else source
+            merged[-1] = (prev_left, max(prev_right, right), merged_source, max(prev_score, score))
+            continue
+        merged.append((left, right, source, score))
+
+    bounded: List[Tuple[int, int, str, float]] = []
+    for left, right, source, score in merged:
+        bounded_left, bounded_right = _clamp_window_width(left, right, dense_t, config)
+        bounded.append((bounded_left, bounded_right, source, score))
+    return bounded
 
 
 def _event_train_risk_windows(
@@ -695,7 +868,13 @@ def _round0_guard_rank(bracket: BracketState) -> Tuple[float, float, int, int]:
     width = max(int(bracket.width) + 1, 1)
     risk_density = float(bracket.priority) / math.sqrt(float(width))
     source_bonus = 0.0
-    if bracket.evidence_source in {"adaptive_low_amplitude_activity", "multiscale_gradient", "multiscale_transition"}:
+    if bracket.evidence_source in {
+        "adaptive_low_amplitude_activity",
+        "multiscale_gradient",
+        "multiscale_transition",
+        "robust_local_change_extrema",
+        "robust_local_extrema_prominence",
+    }:
         source_bonus += 0.15
     if bracket.evidence_source in {"risk_gap_micro_bridge", "silent_gap_sentinel", "temporal_edge_risk_guard"}:
         source_bonus += 0.25

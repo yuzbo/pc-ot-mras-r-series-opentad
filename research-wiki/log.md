@@ -60,3 +60,12 @@
 - The audit still failed closed with `status=LOCKED`, `missed_transition_count=29`, and `allowed_next_action=LOCKED_REAL_SCOUT_RECALL_BELOW_FORMAL_GATE_REVISE_BRACKET_POLICY_OR_SCOUT`.
 - Verification passed: `34 passed` for ABR pytest, py_compile passed, and formal config validator returned `formal_config_ok=true`, `full_train_unlocked=false`.
 - No remote sync, Slurm, training, evaluation, `tools/test.py`, or mAP/runtime/deploy/paper claim was performed. ABR formal/full train remains locked; only further local precheck/short diagnostic policy work is justified.
+
+## 2026-06-30T23:13:46+08:00 - ABR recall repair 3 robust local-change brackets
+
+- Worktree `OpenTAD_ABR_RecallRepair3_Worktree_20260630`, branch `codex/divergent-abr-recall-repair3-20260630`, route `DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3`.
+- Added deploy-visible-only robust local-change/extrema round-0 bracket proposals in `opentad/acquisition/abr/policy.py`, using scout-curve smoothing, local contrast, median/MAD salience thresholds, curvature, and extrema prominence; no GT/teacher/detector-cache/dense-backbone input was introduced.
+- Updated first-round diagnostics to list `robust_local_change_extrema_brackets`.
+- Added TDD coverage for a subthreshold short raw-video graydiff event between sparse scaffold points; the test failed before the fix with `first_round_bracket_recall=0.0` and now passes with full boundary/action coverage under bounded width/density checks.
+- Verification passed: focused new test `1 passed`; ABR suite `50 passed, 1 skipped`; formal config validator stayed `full_train_unlocked=false`; launch gate stayed `allowed_next_action=LOCAL_PRECHECK_ONLY_VALIDATION`.
+- No remote sync, Slurm, GPU training/evaluation, `tools/test.py`, stage, commit, push, mAP/runtime/sparse-compute/deploy/paper claim, or formal unlock was performed. Real full raw-video diagnostic evidence remains for the main process to harvest.

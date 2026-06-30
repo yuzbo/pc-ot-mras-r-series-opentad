@@ -173,3 +173,48 @@ The one-epoch short diagnostic scope is stability and direction only. Low short 
 
 - `python -m pytest tests\test_abr_shortdiag.py tests\test_abr_pipeline_and_gate.py tests\test_abr_core.py -q`
   - Result: `37 passed, 1 skipped in 2.22s`
+
+## 2026-06-30 Recall Repair 3 - Robust Local Change Brackets
+
+Timestamp: `2026-06-30T23:13:46+08:00`
+
+Owned worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_ABR_RecallRepair3_Worktree_20260630`
+Owned branch: `codex/divergent-abr-recall-repair3-20260630`
+Route label: `DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3`
+
+### Repair Summary
+
+This local-only repair targets the first-round deploy-visible scout/bracket recall failure where short subthreshold raw-video graydiff events between sparse scaffold points produced no round-0 bracket. It preserves ABR's intended route: round 0 finds cheap scout-derived candidate brackets, later rounds may actively probe uncertain boundaries, and no GT/teacher/detector-cache/dense-backbone shortcut is introduced.
+
+Changed files:
+
+- `opentad/acquisition/abr/policy.py`
+- `opentad/acquisition/abr/selector.py`
+- `tests/test_abr_first_round_bracket_recall.py`
+
+Mechanism added:
+
+- New robust local-change/extrema candidate generator inside the existing `deploy_visible_multiscale_graydiff_bracket_v2` first-round policy.
+- The generator uses only the deploy-visible scout curve, smoothed local contrast, robust median/MAD salience thresholds, multi-radius left/right window changes, curvature, and local extrema prominence.
+- Candidate windows are merged only while still short; otherwise candidates compete through the existing priority/dedupe and first-round coverage guard.
+- Diagnostic ledger now lists `robust_local_change_extrema_brackets`.
+
+TDD evidence:
+
+- Added synthetic subthreshold short-action-between-scaffold test. Before the fix it failed with `first_round_bracket_recall=0.0`; after the fix it passes with full first-round boundary/action coverage under tight width/density bounds.
+
+### Verification
+
+- `python -m pytest tests\test_abr_first_round_bracket_recall.py::test_robust_change_policy_brackets_subthreshold_short_action_between_sparse_scaffold_points -q`
+  - Result: `1 passed`
+- `python -m pytest tests\test_abr_core.py tests\test_abr_pipeline_and_gate.py tests\test_abr_first_round_bracket_recall.py tests\test_abr_deploy_visible_scout_export.py tests\test_abr_formal_gate.py -q`
+  - Result: `50 passed, 1 skipped in 2.04s`
+- `python tools\abr\validate_abr_formal_gate.py --config configs\adatad\thumos\input_abr_active_bracket_refinement_adapter_irregular_headv3_formal.py`
+  - Result: `formal_config_ok=true`, `full_train_unlocked=false`, `allowed_next_action=FORMAL_REVIEW_PACKET_ONLY`
+- `python tools\abr\validate_abr_launch_gate.py --config configs\adatad\thumos\input_abr_active_bracket_refinement_adapter_irregular_headv3.py`
+  - Result: `allowed_next_action=LOCAL_PRECHECK_ONLY_VALIDATION`, `still_locked=REMOTE_SYNC_FULL_TRAIN_MAPPAPER_CLAIM`
+
+### Still Locked
+
+- No remote sync, Slurm, GPU training/evaluation, `tools/test.py`, staging, commit, push, mAP/runtime/sparse-compute/deploy/paper claim, or formal train unlock was performed.
+- This repair has synthetic recall evidence only in this code-owner pass. The remote/main process must harvest the pending full real raw-video diagnostic before any route-level conclusion.

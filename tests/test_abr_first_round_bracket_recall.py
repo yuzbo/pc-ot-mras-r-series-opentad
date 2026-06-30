@@ -527,6 +527,59 @@ def test_low_amplitude_repeated_short_actions_get_first_round_brackets_without_b
     assert payload["formal_gate_passed"] is True
 
 
+def test_robust_change_policy_brackets_subthreshold_short_action_between_sparse_scaffold_points(tmp_path):
+    ann = _write_json(
+        tmp_path / "ann.json",
+        {
+            "database": {
+                "video_0001": {
+                    "subset": "validation",
+                    "duration": 96.0,
+                    "frame": 96,
+                    "annotations": [{"segment": [44.0, 50.0], "label": "GolfSwing"}],
+                }
+            }
+        },
+    )
+    curve = [0.10] * 96
+    for offset, value in enumerate([0.11, 0.13, 0.22, 0.24, 0.22, 0.13, 0.11]):
+        curve[44 + offset] = value
+    scout = _write_json(
+        tmp_path / "scout.json",
+        _scout_payload(curve, scout_source="unit_deploy_visible_raw_graydiff_subthreshold_change"),
+    )
+
+    weak_payload = run_audit(
+        ann,
+        scout,
+        abr_config=ABRConfig(
+            k0=6,
+            k1_cap=0,
+            k2_cap=0,
+            max_total_k=6,
+            max_gap=0,
+            round2_enabled=False,
+            bracket_policy="legacy_scaffold_pair",
+        ),
+    )
+    payload = run_audit(
+        ann,
+        scout,
+        abr_config=ABRConfig(k0=6, k1_cap=0, k2_cap=0, max_total_k=6, max_gap=0, round2_enabled=False),
+    )
+
+    assert payload["real_deploy_visible_recall_evidence"] is True
+    assert payload["diagnostic_fallback_used"] is False
+    assert payload["selector_gt_visible"] is False
+    assert payload["first_round_bracket_recall"] > weak_payload["first_round_bracket_recall"]
+    assert payload["first_round_transition_coverage"] > weak_payload["first_round_transition_coverage"]
+    assert payload["first_round_bracket_recall"] == pytest.approx(1.0)
+    assert payload["first_round_transition_coverage"] == pytest.approx(1.0)
+    assert payload["temporal_coverage_fraction"] <= 0.20
+    assert payload["max_bracket_width_fraction"] <= 0.12
+    assert payload["false_positive_bracket_density"] <= 0.05
+
+
 def test_event_train_risk_envelope_covers_dense_short_action_train_without_overwide_shortcut(tmp_path):
     ann_segments = []
     curve = [0.12] * 160
