@@ -17,6 +17,11 @@ if [[ ! -f "${CADF_LOSS_SELECT_V2_UNLOCK_EVIDENCE:-}" ]]; then
 fi
 
 echo "GPU1 C3 CADF loss-select V2 formal candidate"
+export LOCAL_RANK="${LOCAL_RANK:-0}"
+export RANK="${RANK:-0}"
+export WORLD_SIZE="${WORLD_SIZE:-1}"
+export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
+export MASTER_PORT="${MASTER_PORT:-${CADF_LOSS_SELECT_V2_MASTER_PORT:-30023}}"
 python tools/train.py \
   configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_32px_loss_select_v2_formal_candidate_locked.py \
   --id "${CADF_LOSS_SELECT_V2_RUN_ID:-0}"
