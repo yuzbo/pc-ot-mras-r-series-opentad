@@ -58,6 +58,18 @@ The 075553b final read-only review blockers were fixed in this owned worktree on
 - Short diagnostic validation without `--train-log` is now a static config check only: it exits successfully for local inspection but emits `validated=false`, `log_evidence=null`, and `evidence_scope=static_config_only`, so it cannot satisfy formal readiness.
 - Short-action and boundary guard uncovered counts are now readiness blockers. Any uncovered short-island or transition band keeps formal readiness locked.
 
+## 2026-06-30 GlobalRank Shortdiag Drift Blocker Fix
+
+The commit `1f50abf` final read-only review found one remaining blocker: the short diagnostic train-log route-drift check did not reject GlobalRank spellings, so a log containing `GlobalRank diagnostic drift marker` could be accepted as `validated=true` and later trusted as shortdiag execution evidence.
+
+This stage fixes that blocker in the owned worktree only:
+
+- `tools/mdl_knot/validate_mdl_knot_shortdiag.py` now reuses the launch-gate `FORBIDDEN_ROUTE_DRIFT` tuple instead of maintaining a shorter local token list.
+- Shortdiag config text and train logs now reject `GLOBALRANK`, `GLOBAL_RANK`, `GLOBAL-RANK`, and `GLOBAL RANK`, along with the existing C3/BVR/ABR/combo drift tokens.
+- Regression tests confirm a GlobalRank drift log exits `LOCKED`, emits no `SHORTDIAG_EVIDENCE`, and therefore cannot be assembled into a formal-readiness summary as validated shortdiag evidence.
+
+State after this fix remains locked: `full_train_unlocked=false`. No remote sync, GPU, Slurm, `tools/test.py`, training, evaluation, mAP, runtime/FLOPs, deployment, paper, or sparse-compute claim is made or unlocked.
+
 ## Fixed-Pad Compute Boundary
 
 MDL-Knot currently uses `fixed_pad` to preserve the inherited Adapter input length. Dynamic `valid_k` is measured and padding is masked, but the detector still receives the fixed target tensor length.
@@ -103,5 +115,13 @@ Commands rerun locally in the owned worktree on branch `codex/divergent-mdl-knot
 - `python tools\mdl_knot\validate_mdl_knot_shortdiag.py --config configs\adatad\thumos\input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py` passed as `SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED` with `validated=false`.
 - `python tools\mdl_knot\validate_mdl_knot_shortdiag.py --config configs\adatad\thumos\input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py --train-log <temporary finite-loss one-epoch log>` passed as `SHORT_DIAGNOSTIC_ONLY_REQUEST_ALLOWED` with `validated=true`.
 - `python tools\mdl_knot\validate_mdl_knot_launch_gate.py --config configs\adatad\thumos\input_mdl_knot_dynamic_adapter_irregular_headv3.py --formal-readiness-summary __missing_formal_readiness_summary__.json` locked as expected.
+
+Additional blocker-fix verification for the commit `1f50abf` GlobalRank review finding:
+
+- `python -m py_compile tools\mdl_knot\validate_mdl_knot_shortdiag.py tools\mdl_knot\validate_mdl_knot_launch_gate.py tests\test_mdl_knot_shortdiag.py tests\test_mdl_knot_tools_and_integration.py` passed.
+- `python -m pytest tests\test_mdl_knot_shortdiag.py tests\test_mdl_knot_tools_and_integration.py -q` passed: `30 passed, 1 skipped`.
+- `python tools\mdl_knot\validate_mdl_knot_shortdiag.py --config configs\adatad\thumos\input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py` passed as `SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED`, with `validated=false`, `log_evidence=null`, and all full-train/metric/sparse-compute locks preserved.
+- `python tools\mdl_knot\validate_mdl_knot_launch_gate.py --config configs\adatad\thumos\input_mdl_knot_dynamic_adapter_irregular_headv3.py` passed as `PRECHECK_ONLY_REQUEST_ALLOWED`, while preserving remote sync, Slurm, training, evaluation, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper locks.
+- `python tools\mdl_knot\validate_mdl_knot_launch_gate.py --config configs\adatad\thumos\input_mdl_knot_dynamic_adapter_irregular_headv3.py --formal-readiness-summary __missing_formal_readiness_summary__.json` returned `LOCKED` as expected.
 
 No training, evaluation, GPU, Slurm, remote sync, `tools/test.py`, Pro/Oracle/Rosetta, mAP claim, runtime/FLOPs claim, deploy claim, paper claim, or sparse-compute claim was run or unlocked.

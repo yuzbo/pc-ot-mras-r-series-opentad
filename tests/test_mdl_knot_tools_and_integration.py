@@ -23,6 +23,8 @@ from opentad.acquisition.mdl_knot.diagnostics import FormalReadinessLocked
 ROOT = Path(__file__).resolve().parents[1]
 ROUTE_LABEL = "DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3"
 CONFIG_PATH = ROOT / "configs" / "adatad" / "thumos" / "input_mdl_knot_dynamic_adapter_irregular_headv3.py"
+SHORTDIAG_CONFIG_PATH = ROOT / "configs" / "adatad" / "thumos" / "input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py"
+SHORTDIAG_VALIDATOR_PATH = ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_shortdiag.py"
 PSEUDO_BOUNDARY_PATH = ROOT / "opentad" / "datasets" / "transforms" / "pseudo_boundary.py"
 
 
@@ -595,6 +597,53 @@ def test_formal_readiness_launch_gate_requires_shortdiag_execution_evidence(tmp_
     summary["shortdiag_evidence"]["log_evidence"] = None
     summary["shortdiag_evidence"]["evidence_scope"] = "static_config_only"
     summary_path = tmp_path / "config_only_shortdiag_formal.json"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
+            "--config",
+            str(CONFIG_PATH),
+            "--formal-readiness-summary",
+            str(summary_path),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert proc.returncode != 0
+    assert "formal training remains locked" in proc.stdout
+    assert "shortdiag execution" in proc.stdout
+
+
+def test_formal_readiness_launch_gate_cannot_use_globalrank_drift_log_evidence(tmp_path):
+    log_path = tmp_path / "globalrank_drift.log"
+    log_path.write_text(
+        "Epoch [1] Loss 1.25 GlobalRank diagnostic drift marker",
+        encoding="utf-8",
+    )
+    shortdiag_proc = subprocess.run(
+        [
+            sys.executable,
+            str(SHORTDIAG_VALIDATOR_PATH),
+            "--config",
+            str(SHORTDIAG_CONFIG_PATH),
+            "--train-log",
+            str(log_path),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert shortdiag_proc.returncode != 0
+    assert "route drift" in shortdiag_proc.stdout
+    assert "SHORTDIAG_EVIDENCE=" not in shortdiag_proc.stdout
+
+    summary = _formal_readiness_summary()
+    summary["shortdiag_evidence"] = None
+    summary_path = tmp_path / "globalrank_drift_formal_summary.json"
     summary_path.write_text(json.dumps(summary), encoding="utf-8")
 
     proc = subprocess.run(

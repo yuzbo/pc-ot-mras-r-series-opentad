@@ -4,6 +4,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from tools.mdl_knot.validate_mdl_knot_shortdiag import _load_config_with_base, _validate_shortdiag_config
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ROUTE_LABEL = "DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3"
@@ -118,3 +122,32 @@ def test_shortdiag_validator_rejects_route_drift_in_log(tmp_path):
 
     assert proc.returncode != 0
     assert "route drift" in proc.stdout
+
+
+@pytest.mark.parametrize("token", ["GlobalRank", "GLOBAL_RANK", "GLOBAL-RANK", "GLOBAL RANK"])
+def test_shortdiag_validator_rejects_globalrank_drift_in_log(tmp_path, token):
+    log_path = tmp_path / f"{token.replace(' ', '_')}.log"
+    log_path.write_text(f"Epoch [1] Loss 1.25 {token} diagnostic drift marker", encoding="utf-8")
+
+    proc = _run_validator("--train-log", str(log_path))
+
+    assert proc.returncode != 0
+    assert "LOCKED" in proc.stdout
+    assert "route drift" in proc.stdout
+    assert "SHORTDIAG_EVIDENCE=" not in proc.stdout
+    assert "validated" not in proc.stdout
+
+
+@pytest.mark.parametrize("token", ["GlobalRank", "GLOBAL_RANK", "GLOBAL-RANK", "GLOBAL RANK"])
+def test_shortdiag_config_text_rejects_globalrank_drift(tmp_path, token):
+    cfg, raw_cfg = _load_config_with_base(CONFIG_PATH)
+    drift_config = tmp_path / "input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py"
+    drift_config.write_text(
+        CONFIG_PATH.read_text(encoding="utf-8") + f"\n# forbidden drift marker: {token}\n",
+        encoding="utf-8",
+    )
+
+    status, evidence = _validate_shortdiag_config(drift_config, cfg, raw_cfg)
+
+    assert status != 0
+    assert evidence is None

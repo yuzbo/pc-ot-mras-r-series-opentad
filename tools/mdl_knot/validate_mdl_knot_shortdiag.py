@@ -14,16 +14,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from opentad.acquisition.mdl_knot import MDL_KNOT_ROUTE_LABEL  # noqa: E402
-from tools.mdl_knot.validate_mdl_knot_launch_gate import _validate_config as _validate_precheck_config  # noqa: E402
-
-
-FORBIDDEN_ROUTE_DRIFT = (
-    "C3",
-    "BVR",
-    "ABR",
-    "EVENT-SURPRISE",
-    "EVENT_SURPRISE",
-    "COMBO",
+from tools.mdl_knot.validate_mdl_knot_launch_gate import (  # noqa: E402
+    FORBIDDEN_ROUTE_DRIFT,
+    _validate_config as _validate_precheck_config,
 )
 
 FATAL_LOG_PATTERNS = (
