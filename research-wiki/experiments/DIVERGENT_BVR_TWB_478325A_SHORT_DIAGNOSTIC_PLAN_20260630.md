@@ -14,7 +14,7 @@ Status: diagnostic-only setup implemented for the BVR-TWB route. This is not a l
   - `python -m pytest tests/test_bvr_twb_shortdiag.py -q` -> `5 passed`
   - `python tools/bvr_twb/validate_bvr_twb_shortdiag.py --config configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3_shortdiag.py --allow-missing-pretrain` -> `gate_pass=true`, `full_train_unlocked=false`, `metric_claim=false`, `sparse_compute_claim=false`
   - pseudo good-log validator check -> `gate_pass=true`, `train_log_valid=true`, finite loss counted
-  - `python -m pytest tests/test_bvr_twb_shortdiag.py tests/test_bvr_twb_validators.py tests/test_bvr_twb_opentad_pipeline.py tests/test_bvr_twb_geometry_contracts.py -q` -> `31 passed, 12 skipped`
+  - `python -m pytest tests/test_bvr_twb_shortdiag.py tests/test_bvr_twb_validators.py tests/test_bvr_twb_opentad_pipeline.py tests/test_bvr_twb_geometry_contracts.py -q` -> superseded by the 2026-06-30 evidence-freeze rerun below: `35 passed, 12 skipped`
   - `git diff --check` -> clean
   - `bash -n logs/run_bvr_twb_478325a_shortdiag_n16r4.sh` -> pass
 - Contamination handling: one writable worker accidentally created the six short-diagnostic files in the shared root. The coordinator copied the exact files into this route-owned worktree, verified matching content, removed only those exact shared-root copies, and did not stage/commit/push from the shared root.
@@ -24,7 +24,7 @@ Status: diagnostic-only setup implemented for the BVR-TWB route. This is not a l
 
 - Fix branch: `codex/divergent-bvr-twb-shortdiag-execfix-20260630`.
 - Fix worktree: `OpenTAD_BVR_TWB_ShortDiagExecFix_Worktree_20260630`.
-- Audit-triggered ambiguity: the package HEAD is `2b4d48be7b6b44c8e4f20946005b508bb9e62587`, while the expected code base remains `478325af8da10646f747f955a54378d53fffd3ef`. A strict `HEAD == 478325a` check is ambiguous for a committed shortdiag package branch and should only be used for pure overlay mode.
+- Audit-triggered ambiguity: committed shortdiag package branches advance HEAD beyond the expected code base `478325af8da10646f747f955a54378d53fffd3ef`. A strict `HEAD == 478325a` check is ambiguous for a committed shortdiag package branch and should only be used for pure overlay mode.
 - Approved execution modes:
   - `exact_base_overlay`: run the shortdiag files as an overlay on a clean tree whose current HEAD is exactly `478325af8da10646f747f955a54378d53fffd3ef`.
   - `descendant_shortdiag_package`: run a committed package branch whose current package HEAD descends from `478325af8da10646f747f955a54378d53fffd3ef`.
@@ -32,6 +32,27 @@ Status: diagnostic-only setup implemented for the BVR-TWB route. This is not a l
 - Wrapper behavior: records both `expected_base_commit` and `package_head` in the train log before torchrun. It requires exact HEAD only when `BVR_TWB_SHORTDIAG_PURE_478325A_OVERLAY=1`; otherwise it accepts exact-base overlay or descendant shortdiag package mode.
 - Validator behavior: reports `expected_base_commit`, `package_head`, `package_descends_from_expected_base`, and `shortdiag_execution_mode`. The backward-compatible `--expected-commit` argument is treated as an expected base commit, not an impossible package HEAD equality requirement.
 - Claim state after this fix: still diagnostic-only; formal full training, validation/test evaluation, sparse-compute claims, deployment claims, paper claims, and metric claims remain locked.
+
+## 2026-06-30 Evidence Freeze Rerun
+
+Timestamp: `2026-06-30 09:22:41 +08:00`.
+
+Scope: evidence/documentation-only rerun in owned worktree `OpenTAD_BVR_TWB_ShortDiagExecFix_Worktree_20260630` on branch `codex/divergent-bvr-twb-shortdiag-execfix-20260630`. No training, no `tools/test.py`, no evaluation, no remote sync, no Slurm, no Pro, and no shared-repository write was performed.
+
+Frozen local non-GPU evidence:
+
+- `python -m py_compile configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3_shortdiag.py tools/bvr_twb/validate_bvr_twb_shortdiag.py tests/test_bvr_twb_shortdiag.py` -> pass.
+- `python -m pytest tests/test_bvr_twb_shortdiag.py tests/test_bvr_twb_validators.py tests/test_bvr_twb_opentad_pipeline.py tests/test_bvr_twb_geometry_contracts.py -q` -> `35 passed, 12 skipped in 5.82s`.
+- `python tools/bvr_twb/validate_bvr_twb_shortdiag.py --config configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3_shortdiag.py --allow-missing-pretrain` -> `gate_pass=true`, `config_valid=true`, `checkpoint_disabled=true`, `eval_disabled=true`, `workflow_end_epoch=1`, `allowed_next_action=SHORT_DIAGNOSTIC_ONLY_REVIEW_EVIDENCE`, `full_train_unlocked=false`, `metric_claim=false`, `sparse_compute_claim=false`.
+- Validator package/base evidence from that rerun: `expected_base_commit=478325af8da10646f747f955a54378d53fffd3ef`, `package_head=0314c0c73b30a55a600269498d27cc294b8032f3`, `package_descends_from_expected_base=true`, `shortdiag_execution_mode=descendant_shortdiag_package`.
+- Local pretrain evidence from the same `--allow-missing-pretrain` validator run: `resolved_pretrain=pretrained/vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth`, `pretrain_exists=false`. This is allowed only for local no-GPU verification and does not prove remote runtime pretrain availability or load.
+- `bash --version` -> GNU bash `5.0.17(1)-release`; `bash -n logs/run_bvr_twb_478325a_shortdiag_n16r4.sh` -> pass.
+- `git diff --check` -> clean.
+- `git merge-base --is-ancestor 478325af8da10646f747f955a54378d53fffd3ef HEAD` -> pass (`BASE_IS_ANCESTOR=true`).
+
+This rerun freezes the focused pytest target count as `35 passed, 12 skipped`. The previous `31 passed, 12 skipped` count is superseded by this rerun. Any later documentation-only commit may advance `package_head`; the execution boundary remains descendant shortdiag package mode unless pure overlay mode is explicitly requested.
+
+Claim state remains unchanged: no mAP, no runtime/FLOPs/latency, no deploy, no paper, no sparse-compute, and no formal-train claim is unlocked. Formal train remains locked.
 
 ## Decision Context
 
