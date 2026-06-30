@@ -169,6 +169,20 @@ def _validate_cadf_densitymesh_route(cfg, cfg_text):
             raise AssertionError("CADF ST+actionness combo gate must enable ST soft path")
         if float(selector.get("actionness_loss_weight", 0.0)) <= 0.0:
             raise AssertionError("CADF ST+actionness combo gate must enable actionness aux loss")
+    if cfg.get("c3_speed_profile", None) == "train_iter_only_no_eval_no_checkpoint":
+        if claim_status != "diagnostic_only":
+            raise AssertionError("CADF train-iter speed profile must remain diagnostic_only")
+        if int(cfg.workflow.get("max_train_iters", 0)) <= 0:
+            raise AssertionError("CADF train-iter speed profile must bound max_train_iters")
+        if int(cfg.workflow.get("val_eval_interval", 0)) != -1:
+            raise AssertionError("CADF train-iter speed profile must disable eval")
+        if int(cfg.workflow.get("val_loss_interval", 0)) != -1:
+            raise AssertionError("CADF train-iter speed profile must disable val loss")
+        if bool(cfg.workflow.get("disable_checkpoint", False)) is not True:
+            raise AssertionError("CADF train-iter speed profile must disable checkpoints")
+        profile_timing = cfg.workflow.get("profile_train_iter_timing", {})
+        if not bool(profile_timing.get("enabled", False)):
+            raise AssertionError("CADF train-iter speed profile must enable timing logs")
     if claim_status == "formal_selector_candidate_locked" and bool(cfg.get("c3_loss_select_v2_formal_candidate", False)):
         if cfg.get("launch_locked_until_user_unlock", None) is not True:
             raise AssertionError("CADF loss-select V2 formal candidate must remain locked until user unlock")
@@ -205,6 +219,13 @@ def _validate_cadf_densitymesh_route(cfg, cfg_text):
             raise AssertionError("CADF fast-safe formal candidate scheduler.max_epoch must match workflow.end_epoch")
         if int(cfg.scheduler.get("max_epoch", 0)) <= int(cfg.scheduler.get("warmup_epoch", 0)):
             raise AssertionError("CADF fast-safe formal candidate scheduler.max_epoch must exceed warmup_epoch")
+        if int(cfg.workflow.get("val_eval_interval", -1)) != 5:
+            raise AssertionError("CADF fast-safe formal candidate must avoid every-epoch eval; expected val_eval_interval=5")
+        val_eval_epochs = [int(epoch) for epoch in cfg.workflow.get("val_eval_epochs", [])]
+        if 2 not in val_eval_epochs:
+            raise AssertionError("CADF fast-safe formal candidate must preserve the epoch2 first scheduled eval")
+        if int(cfg.workflow.get("val_eval_interval_anchor_epoch", -1)) != 2:
+            raise AssertionError("CADF fast-safe formal candidate must anchor later evals to epoch2")
         backbone_cfg = cfg.model.get("backbone", {})
         backbone_inner_cfg = backbone_cfg.get("backbone", {}) if hasattr(backbone_cfg, "get") else {}
         if backbone_inner_cfg.get("with_cp", None) is not False:

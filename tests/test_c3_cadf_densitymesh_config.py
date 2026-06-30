@@ -6,6 +6,7 @@ import pytest
 
 from opentad.models.builder import build_selector
 from tools.validate_c3_indirect_clean_config import validate_config
+from tools.train import _should_run_epoch_event
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,10 +46,19 @@ LOSS_SELECT_V2_SHORTDIAG32 = (
 LOSS_SELECT_V2_FORMAL32 = (
     ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_32px_loss_select_v2_formal_candidate_locked.py"
 )
+LOSS_SELECT_V2_FAST_SAFE_FORMAL32 = (
+    ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_32px_loss_select_v2_fast_safe_formal.py"
+)
+LOSS_SELECT_V2_FAST_SAFE_PROFILE32 = (
+    ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_32px_loss_select_v2_fast_safe_train_iter_profile.py"
+)
 FORMAL_LAUNCHER = ROOT / "logs/run_c3_cadf_formal_selector_candidate_locked_n16r4.sh"
 LOSS_SELECT_V2_PRECHECK_LAUNCHER = ROOT / "scripts/run_c3_cadf_loss_select_v2_precheck_gpu1.sh"
 LOSS_SELECT_V2_SHORTDIAG_LAUNCHER = ROOT / "scripts/run_c3_cadf_loss_select_v2_shortdiag_gpu1.sh"
 LOSS_SELECT_V2_FORMAL_LAUNCHER = ROOT / "scripts/run_c3_cadf_loss_select_v2_formal_candidate_locked_gpu1.sh"
+LOSS_SELECT_V2_FAST_SAFE_PROFILE_LAUNCHER = (
+    ROOT / "scripts/run_c3_cadf_loss_select_v2_fast_safe_train_iter_profile_gpu1.sh"
+)
 SMOKE64 = ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_64px_short_smoke.py"
 FULL64 = ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_64px_full_train.py"
 
@@ -86,6 +96,7 @@ def _assert_cadf_config(cfg, scout_size):
         "diagnostic_only",
         "backend_control",
         "formal_selector_candidate_locked",
+        "formal_selector_candidate_fast_safe",
     )
     assert cfg.c3_full_train_claim_unlocked is False
     assert cfg.c3_physical_time_postprocess_enabled is False
@@ -404,11 +415,60 @@ def test_cadf_loss_select_v2_formal_candidate_is_fail_closed_and_keeps_fastfix()
     validate_config(LOSS_SELECT_V2_FORMAL32)
 
 
+def test_cadf_fast_safe_formal_keeps_epoch2_eval_but_avoids_every_epoch_eval():
+    cfg = Config.fromfile(LOSS_SELECT_V2_FAST_SAFE_FORMAL32)
+
+    _assert_cadf_config(cfg, 32)
+    assert cfg.c3_claim_status == "formal_selector_candidate_fast_safe"
+    assert cfg.c3_speed_fix == "loss_select_v2_fast_safe_amp_fp16_withcp_off_diag_off"
+    assert cfg.workflow.val_start_epoch == 2
+    assert cfg.workflow.val_eval_epochs == [2]
+    assert cfg.workflow.val_eval_interval == 5
+    assert cfg.workflow.val_eval_interval_anchor_epoch == 2
+    expected_eval_epochs = [2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57]
+    actual_eval_epochs = [
+        epoch
+        for epoch in range(cfg.workflow.end_epoch)
+        if _should_run_epoch_event(
+            epoch,
+            cfg.workflow.val_eval_interval,
+            start_epoch=cfg.workflow.val_start_epoch,
+            explicit_epochs=cfg.workflow.val_eval_epochs,
+            anchor_epoch=cfg.workflow.val_eval_interval_anchor_epoch,
+        )
+    ]
+    assert actual_eval_epochs == expected_eval_epochs
+    assert 3 not in actual_eval_epochs
+    assert cfg.solver.amp is True
+    assert cfg.solver.fp16_compress is True
+    assert cfg.model.frame_selector.emit_selection_diagnostics is False
+    validate_config(LOSS_SELECT_V2_FAST_SAFE_FORMAL32)
+
+
+def test_cadf_fast_safe_train_iter_profile_is_bounded_and_eval_free():
+    cfg = Config.fromfile(LOSS_SELECT_V2_FAST_SAFE_PROFILE32)
+
+    _assert_cadf_config(cfg, 32)
+    assert cfg.c3_claim_status == "diagnostic_only"
+    assert cfg.c3_speed_profile == "train_iter_only_no_eval_no_checkpoint"
+    assert cfg.workflow.end_epoch == 1
+    assert cfg.workflow.max_train_iters == 50
+    assert cfg.workflow.disable_checkpoint is True
+    assert cfg.workflow.val_eval_interval == -1
+    assert cfg.workflow.val_loss_interval == -1
+    assert cfg.workflow.profile_train_iter_timing.enabled is True
+    assert cfg.workflow.profile_train_iter_timing.log_interval == 5
+    assert cfg.solver.amp is True
+    assert cfg.solver.fp16_compress is True
+    validate_config(LOSS_SELECT_V2_FAST_SAFE_PROFILE32)
+
+
 def test_cadf_loss_select_v2_launcher_scripts_require_gpu1_and_fail_closed():
     for launcher in [
         LOSS_SELECT_V2_PRECHECK_LAUNCHER,
         LOSS_SELECT_V2_SHORTDIAG_LAUNCHER,
         LOSS_SELECT_V2_FORMAL_LAUNCHER,
+        LOSS_SELECT_V2_FAST_SAFE_PROFILE_LAUNCHER,
     ]:
         text = launcher.read_text(encoding="utf-8")
         assert "CUDA_VISIBLE_DEVICES=1" in text
@@ -420,6 +480,9 @@ def test_cadf_loss_select_v2_launcher_scripts_require_gpu1_and_fail_closed():
     assert "CADF_LOSS_SELECT_V2_FORMAL_UNLOCK" in formal
     assert "CONFIRMED" in formal
     assert "exit 2" in formal
+    profile = LOSS_SELECT_V2_FAST_SAFE_PROFILE_LAUNCHER.read_text(encoding="utf-8")
+    assert "fast_safe_train_iter_profile.py" in profile
+    assert "no eval" in profile.lower()
 
 
 def test_shared_precheck_validator_rejects_formal_selector_candidate_with_density_loss_v2(tmp_path):
@@ -477,6 +540,8 @@ def test_cadf_densitymesh_64px_configs_only_change_scout_resolution():
         LOSS_SELECT_V2_PRECHECK32,
         LOSS_SELECT_V2_SHORTDIAG32,
         LOSS_SELECT_V2_FORMAL32,
+        LOSS_SELECT_V2_FAST_SAFE_FORMAL32,
+        LOSS_SELECT_V2_FAST_SAFE_PROFILE32,
         SMOKE64,
         FULL64,
     ],

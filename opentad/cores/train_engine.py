@@ -1,7 +1,23 @@
 import copy
+import time
 import torch
 import tqdm
 from opentad.utils.misc import AverageMeter, reduce_loss
+
+
+def _parse_profile_timing(profile_timing):
+    if profile_timing is None or profile_timing is False:
+        return dict(enabled=False, warmup_iters=0, log_interval=10, sync_cuda=True)
+    if profile_timing is True:
+        return dict(enabled=True, warmup_iters=1, log_interval=10, sync_cuda=True)
+    if not hasattr(profile_timing, "get"):
+        raise ValueError("profile_timing must be None, bool, or dict-like")
+    return dict(
+        enabled=bool(profile_timing.get("enabled", False)),
+        warmup_iters=max(int(profile_timing.get("warmup_iters", 1)), 0),
+        log_interval=max(int(profile_timing.get("log_interval", 10)), 1),
+        sync_cuda=bool(profile_timing.get("sync_cuda", True)),
+    )
 
 
 def _parse_nonfinite_loss_guard(nonfinite_loss_guard):
@@ -41,6 +57,7 @@ def train_one_epoch(
     scaler=None,
     max_train_iters=None,
     nonfinite_loss_guard=None,
+    profile_timing=None,
 ):
     """Training the model for one epoch"""
 
@@ -49,11 +66,18 @@ def train_one_epoch(
     num_iters = len(train_loader)
     use_amp = False if scaler is None else True
     guard = _parse_nonfinite_loss_guard(nonfinite_loss_guard)
+    profile = _parse_profile_timing(profile_timing)
+    profile_data_times = []
+    profile_step_times = []
     nonfinite_skip_count = 0
     consecutive_nonfinite_skip_count = 0
 
     model.train()
+    data_timer = time.perf_counter()
     for iter_idx, data_dict in enumerate(train_loader):
+        data_ready_time = time.perf_counter()
+        data_elapsed = data_ready_time - data_timer
+        iter_start_time = data_ready_time
         if max_train_iters is not None and iter_idx >= max_train_iters:
             logger.info(f"[Train]: max_train_iters={max_train_iters} reached, stop epoch early")
             break
@@ -95,6 +119,14 @@ def train_one_epoch(
                     f"consecutive_skips={consecutive_nonfinite_skip_count}, "
                     f"names={nonfinite_names}"
                 )
+            if profile["enabled"]:
+                if profile["sync_cuda"] and torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                step_elapsed = time.perf_counter() - iter_start_time
+                if iter_idx >= profile["warmup_iters"]:
+                    profile_data_times.append(data_elapsed)
+                    profile_step_times.append(step_elapsed)
+            data_timer = time.perf_counter()
             continue
         consecutive_nonfinite_skip_count = 0
 
@@ -142,6 +174,35 @@ def train_one_epoch(
                 block4 = "lr_backbone={:.1e}".format(curr_backbone_lr) + "  " + block4
             block5 = "mem={:.0f}MB".format(torch.cuda.max_memory_allocated() / 1024.0 / 1024.0)
             logger.info("  ".join([block1, block2, "  ".join(block3), block4, block5]))
+
+        if profile["enabled"]:
+            if profile["sync_cuda"] and torch.cuda.is_available():
+                torch.cuda.synchronize()
+            step_elapsed = time.perf_counter() - iter_start_time
+            if iter_idx >= profile["warmup_iters"]:
+                profile_data_times.append(data_elapsed)
+                profile_step_times.append(step_elapsed)
+            if profile_step_times and (
+                ((iter_idx + 1) % profile["log_interval"] == 0) or ((iter_idx + 1) == num_iters)
+            ):
+                recent = min(len(profile_step_times), profile["log_interval"])
+                avg_step = sum(profile_step_times[-recent:]) / float(recent)
+                avg_data = sum(profile_data_times[-recent:]) / float(recent)
+                logger.info(
+                    "[TrainProfile]: [{:03d}][{:05d}/{:05d}] data_time={:.4f}s step_time={:.4f}s "
+                    "avg_data_last{}={:.4f}s avg_step_last{}={:.4f}s".format(
+                        curr_epoch,
+                        iter_idx,
+                        num_iters - 1,
+                        data_elapsed,
+                        step_elapsed,
+                        recent,
+                        avg_data,
+                        recent,
+                        avg_step,
+                    )
+                )
+        data_timer = time.perf_counter()
 
 
 def val_one_epoch(

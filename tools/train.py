@@ -28,6 +28,29 @@ from opentad.utils import (
 )
 
 
+def _as_epoch_set(value):
+    if value is None:
+        return set()
+    if isinstance(value, int):
+        return {int(value)}
+    return {int(item) for item in value}
+
+
+def _should_run_epoch_event(epoch, interval, start_epoch=0, explicit_epochs=None, anchor_epoch=None):
+    if epoch in _as_epoch_set(explicit_epochs):
+        return True
+    if interval is None or int(interval) <= 0:
+        return False
+    if epoch < int(start_epoch):
+        return False
+    if anchor_epoch is not None:
+        anchor_epoch = int(anchor_epoch)
+        if epoch < anchor_epoch:
+            return False
+        return ((epoch - anchor_epoch) % int(interval)) == 0
+    return ((epoch + 1) % int(interval)) == 0
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a Temporal Action Detector")
     parser.add_argument("config", metavar="FILE", type=str, help="path to config file")
@@ -183,6 +206,7 @@ def main():
             scaler=scaler,
             max_train_iters=cfg.workflow.get("max_train_iters", None),
             nonfinite_loss_guard=cfg.solver.get("nonfinite_loss_guard", None),
+            profile_timing=cfg.workflow.get("profile_train_iter_timing", None),
         )
 
         # save checkpoint
@@ -195,7 +219,13 @@ def main():
 
         # val for one epoch
         if epoch >= val_start_epoch:
-            if (cfg.workflow.val_loss_interval > 0) and ((epoch + 1) % cfg.workflow.val_loss_interval == 0):
+            if _should_run_epoch_event(
+                epoch,
+                cfg.workflow.val_loss_interval,
+                start_epoch=val_start_epoch,
+                explicit_epochs=cfg.workflow.get("val_loss_epochs", None),
+                anchor_epoch=cfg.workflow.get("val_loss_interval_anchor_epoch", None),
+            ):
                 val_loss = val_one_epoch(
                     val_loader,
                     model,
@@ -215,7 +245,13 @@ def main():
 
         # eval for one epoch
         if epoch >= val_start_epoch:
-            if (cfg.workflow.val_eval_interval > 0) and ((epoch + 1) % cfg.workflow.val_eval_interval == 0):
+            if _should_run_epoch_event(
+                epoch,
+                cfg.workflow.val_eval_interval,
+                start_epoch=val_start_epoch,
+                explicit_epochs=cfg.workflow.get("val_eval_epochs", None),
+                anchor_epoch=cfg.workflow.get("val_eval_interval_anchor_epoch", None),
+            ):
                 eval_one_epoch(
                     test_loader,
                     model,
