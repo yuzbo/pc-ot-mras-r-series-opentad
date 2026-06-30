@@ -1,0 +1,207 @@
+# DIVERGENT RBA-RBR Local Implementation - 2026-07-01
+
+## Scope
+
+- Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`
+- Owned worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_RBA_RBR_Worktree_20260701`
+- Owned branch: `codex/divergent-rba-rbr-20260701`
+- Stage: `LOCAL_IMPLEMENTATION`
+- Claim state: no mAP claim, no runtime/FLOPs claim, no deploy claim, no paper claim, no full-train approval.
+- Exception note: the divergent-route skill is delegation-first, but the user explicitly assigned this agent as the only writable code owner for this route. No subagent, Pro, remote sync, SSH, Slurm, training, staging, commit, or push was run.
+
+## Changed Surface
+
+- New module: `opentad/acquisition/rba_rbr/`
+  - Types and route constants.
+  - Deploy-visible risk map builder.
+  - Soft bracket builder.
+  - In-bracket refine and out-of-bracket rescue probe builder.
+  - Train-only regret label builder.
+  - Dynamic budget controller with stop reasons.
+  - RBA-RBR adapter bridge and OpenTAD selection bridge.
+  - Validators for route identity, no leakage, sorted unique selected positions, ledger and dynamicity.
+- Existing dispatch file:
+  - `opentad/datasets/transforms/end_to_end.py`
+  - Added only `method="rba_rbr_recoverable_bracketing"` dispatch and constructor parameters.
+- New config:
+  - `configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py`
+  - Fail-closed local/precheck candidate; `full_train_unlocked=False`.
+- New tools:
+  - `tools/rba_rbr/build_synthetic_ledgers.py`
+  - `tools/rba_rbr/validate_rba_rbr_launch_gate.py`
+- New tests:
+  - `tests/test_rba_rbr_core.py`
+  - `tests/test_rba_rbr_integration.py`
+
+## Protocol Checks
+
+- RBA-RBR does not claim BVR-TWB or old irreversible bracket results.
+- Bracket is represented as a prior, not a hard mask.
+- Candidate probes include both in-bracket refine probes and out-of-bracket rescue probes.
+- Rescue probes are driven by deploy-visible uncertainty, transition, staleness, conflict, and gap-risk signals.
+- Validation/test/deploy selection allows ordinary `gt_segments` / `gt_labels` payloads for downstream evaluator or target plumbing, but does not use them for selection.
+- Validation/test/deploy selection rejects selector-facing teacher, cache, raw detector prediction, oracle fields, and provenance flags such as `selection_uses_gt=True`.
+- Train-only regret labels require `split="train"` and GT; they raise on val/test/deploy.
+- Selected positions are sorted unique original dense indices.
+- Dynamic budget records `valid_k`, `dynamic_target_k`, and `budget_stop_reason`.
+- Synthetic recovery diagnostic proves a rescue probe covers a boundary missed by a hard bracket.
+
+## Verification
+
+- `python -m py_compile ...`
+  - Result: pass.
+- `python -m pytest tests/test_rba_rbr*.py -q`
+  - PowerShell expanded command result: `10 passed, 1 skipped`.
+  - Skipped item: runtime LoadFrames dispatch when local torch import is unavailable.
+- `python tools/rba_rbr/build_synthetic_ledgers.py --out-dir tools/rba_rbr/.tmp_rba_rbr_verify --overwrite`
+  - Result: pass.
+  - Summary: `cases=4 k=[9, 9, 10, 6] stops={'risk_satisfied': 3, 'regret_saturation': 1} recovery=True`.
+- `python tools/rba_rbr/validate_rba_rbr_launch_gate.py --config configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py --precheck-summary tools/rba_rbr/.tmp_rba_rbr_verify/summary.json`
+  - Result: pass.
+  - Gate output: `gate_pass=true`, `full_train_unlocked=false`, `remote_sync_unlocked_by_local_gate=false`, `sparse_compute_claim=false`.
+- `git diff --check`
+  - Result: pass.
+  - Note: Git emitted the existing Windows line-ending warning for `opentad/datasets/transforms/end_to_end.py`; no whitespace errors.
+
+## Remaining Locks
+
+- No final read-only review has been run.
+- No GPT-5.5 Pro review has been run; not required for this local implementation tier.
+- No remote sync, SSH, Slurm, training, evaluation, or `tools/test.py` has been run.
+- No tracker update outside route-owned allowed write scope was made.
+- Full training, metric claims, runtime claims, deployment claims, and paper claims remain locked.
+
+## Blocker Fix - 2026-07-01 01:33:16 +08:00
+
+Coordinator blocker:
+
+- Previous `build_rba_rbr_open_tad_selection()` validated the full `results` dict for val/test/deploy leakage.
+- That incorrectly rejected normal OpenTAD validation/test payloads that legitimately contain `gt_segments` / `gt_labels` for downstream evaluation or target plumbing.
+
+Fix:
+
+- Moved deploy leakage validation to selector-facing metadata built inside `open_tad_bridge.py`.
+- Ordinary `gt_segments` / `gt_labels` are now accepted in val/test/deploy payloads when `train_value_labels=False`.
+- Selector-facing shortcuts still fail closed: `teacher_logits`, `proposal_cache`, `oracle_boundary`, `raw_detector_predictions`, and `rba_rbr_selector_provenance={"selection_uses_gt": True}` are rejected.
+- `train_value_labels=True` outside `split="train"` is rejected before leakage scanning, so val/test cannot create regret labels.
+
+Focused tests added/updated:
+
+- Val/test selection runs with ordinary GT payload and produces no regret labels.
+- Val/test rejects selector-facing teacher/cache/oracle/raw-prediction/provenance leakage.
+- Train-only regret labels still require train split and GT, and remain absent at val/test.
+
+Verification after fix:
+
+- `python -m py_compile ...`
+  - Result: pass.
+- `python -m pytest tests/test_rba_rbr*.py -q`
+  - PowerShell expanded command result: `12 passed, 1 skipped`.
+  - Skipped item: runtime LoadFrames dispatch when local torch import is unavailable.
+- `python tools/rba_rbr/build_synthetic_ledgers.py --out-dir tools/rba_rbr/.tmp_rba_rbr_verify --overwrite`
+  - Result: pass.
+  - Summary: `cases=4 k=[9, 9, 10, 6] stops={'risk_satisfied': 3, 'regret_saturation': 1} recovery=True`.
+- `python tools/rba_rbr/validate_rba_rbr_launch_gate.py --config configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py --precheck-summary tools/rba_rbr/.tmp_rba_rbr_verify/summary.json`
+  - Result: pass.
+  - Gate output: `gate_pass=true`, `full_train_unlocked=false`, `remote_sync_unlocked_by_local_gate=false`, `sparse_compute_claim=false`.
+- `git diff --check`
+  - Result: pass.
+  - Note: Git emitted the Windows line-ending warning for `opentad/datasets/transforms/end_to_end.py`; no whitespace errors.
+
+Locks after fix:
+
+- No remote sync, SSH, Slurm, training, evaluation, `tools/test.py`, Pro, stage, commit, or push was run.
+- No mAP, runtime/FLOPs, deploy, paper, or full-train claim is unlocked.
+
+## Final Review Blocker Fix - 2026-07-01 01:50:39 +08:00
+
+Final review blockers:
+
+- RBA-RBR metadata was written by `LoadFrames`, but the RBA config `Collect` transforms did not explicitly preserve route metadata in `metas`.
+- `BackboneWrapper` only special-cased BVR raw selected positions. RBA-RBR generic `irregular_selected_positions` contains detector feature centers, so backbone irregular time embedding could receive detector centers instead of raw frame positions when `rba_rbr_feature_stride=2`.
+- Local tests/tools had left `tools/rba_rbr/.tmp_*` generated artifacts in the worktree.
+
+Fix:
+
+- Added explicit `_rba_meta_keys` to all three RBA config `Collect` transforms, preserving generic detector/head metadata and RBA-specific raw/detector/ledger fields.
+- Added `opentad/acquisition/rba_rbr/metadata.py` with `resolve_backbone_time_axis_meta()` and `has_backbone_time_axis_meta()`.
+- Patched `opentad/models/backbones/backbone_wrapper.py` to prefer `rba_rbr_raw_selected_positions` / `rba_rbr_raw_selected_valid_len` for backbone time embeddings, then BVR raw positions, then generic irregular metadata.
+- Kept detector/head geometry on generic `irregular_selected_positions`, which RBA `LoadFrames` sets to detector feature centers.
+- Updated tests to use pytest/system temp output and cleaned all `tools/rba_rbr/.tmp_*` artifacts from the worktree.
+- Changed the launch-gate tool default audit output to system temp to avoid generating worktree `.tmp` artifacts by default.
+
+Focused tests added/updated:
+
+- RBA config resolution now asserts train/val/test `Collect.meta_keys` include `rba_rbr_raw_selected_positions`, `rba_rbr_detector_feature_positions`, `rba_rbr_ledger`, and related fields.
+- Pure helper test proves backbone time-axis resolution prefers RBA raw positions over detector centers.
+- Source contract test verifies `BackboneWrapper` uses the helper and `LoadFrames` keeps generic irregular metadata as detector feature centers while storing raw positions in RBA-specific fields.
+- Test-generated ledgers now use `tmp_path` rather than `tools/rba_rbr/.tmp_*`.
+
+Verification after final-review fix:
+
+- `python -m py_compile ...`
+  - Result: pass.
+- `python -m pytest tests/test_rba_rbr*.py -q`
+  - PowerShell expanded command result: `14 passed, 1 skipped`.
+  - Skipped item: runtime LoadFrames dispatch when local torch import is unavailable.
+- `python tools/rba_rbr/build_synthetic_ledgers.py --out-dir C:\Users\skywalker\AppData\Local\Temp\rba_rbr_verify_codex_final_review --overwrite`
+  - Result: pass.
+  - Summary: `cases=4 k=[9, 9, 10, 6] stops={'risk_satisfied': 3, 'regret_saturation': 1} recovery=True`.
+- `python tools/rba_rbr/validate_rba_rbr_launch_gate.py --config configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py --precheck-summary C:\Users\skywalker\AppData\Local\Temp\rba_rbr_verify_codex_final_review\summary.json`
+  - Result: pass.
+  - Gate output: `gate_pass=true`, `full_train_unlocked=false`, `remote_sync_unlocked_by_local_gate=false`, `sparse_compute_claim=false`.
+- `git diff --check`
+  - Result: pass.
+  - Note: Git emitted Windows line-ending warnings for `opentad/datasets/transforms/end_to_end.py` and `opentad/models/backbones/backbone_wrapper.py`; no whitespace errors.
+- `git status --short --branch --untracked-files=all`
+  - Result: only source/config/test/doc/tool files are untracked/modified; no `tools/rba_rbr/.tmp_*` generated artifacts remain.
+
+Locks after final-review fix:
+
+- No remote sync, SSH, Slurm, training, evaluation, `tools/test.py`, Pro, stage, commit, or push was run.
+- No mAP, runtime/FLOPs, deploy, paper, or full-train claim is unlocked.
+
+## Final Review Third-Round Claim-Lock Fix - 2026-07-01 02:02:55 +08:00
+
+Third-round final review blocker:
+
+- The local config and launch gate explicitly locked full training, metric claims, runtime/FLOPs claims, and deploy claims, but the config did not explicitly expose `no_paper_claim=True`.
+- The launch gate and synthetic summary did not yet validate both deploy and paper claim locks as first-class fields.
+- Generated `__pycache__` directories needed an owned-worktree-only hygiene pass before final report.
+
+Fix:
+
+- Added `no_paper_claim=True` to the RBA-RBR config beside the existing full-train, metric, runtime, and deploy locks.
+- Added `no_deploy_claim=True` and `no_paper_claim=True` to deploy ledgers and synthetic summaries.
+- Updated `validate_rba_rbr_launch_gate.py` so the config text must contain `no_deploy_claim=True` and `no_paper_claim=True`, and the summary must keep both fields true.
+- Updated the ledger validator so every RBA-RBR deploy ledger must include and keep both deploy and paper claim locks.
+- Updated the local precheck `claim_status` string to `rba_rbr_local_precheck_only_no_metric_runtime_deploy_or_paper_claim`.
+- Added integration tests that assert config locks, summary locks, gate return locks, and fail-closed rejection when either deploy or paper claim lock is flipped off.
+
+Verification after third-round fix:
+
+- `python -m py_compile ...`
+  - Result: pass.
+- `python -m pytest tests/test_rba_rbr*.py -q`
+  - PowerShell expanded command result: `14 passed, 1 skipped`.
+  - Skipped item: runtime LoadFrames dispatch when local torch import is unavailable.
+- `python tools/rba_rbr/build_synthetic_ledgers.py --out-dir C:\Users\skywalker\AppData\Local\Temp\rba_rbr_verify_codex_claim_lock --overwrite`
+  - Result: pass.
+  - Summary: `cases=4 k=[9, 9, 10, 6] stops={'risk_satisfied': 3, 'regret_saturation': 1} recovery=True`.
+- `python tools/rba_rbr/validate_rba_rbr_launch_gate.py --config configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py --precheck-summary C:\Users\skywalker\AppData\Local\Temp\rba_rbr_verify_codex_claim_lock\summary.json`
+  - Result: pass.
+  - Gate output: `gate_pass=true`, `full_train_unlocked=false`, `deploy_claim_unlocked=false`, `paper_claim_unlocked=false`, `remote_sync_unlocked_by_local_gate=false`, `sparse_compute_claim=false`.
+- `git diff --check`
+  - Result: pass.
+  - Note: Git emitted Windows line-ending warnings for `opentad/datasets/transforms/end_to_end.py` and `opentad/models/backbones/backbone_wrapper.py`; no whitespace errors.
+- Owned-worktree `__pycache__` cleanup
+  - Result: pass.
+  - Verified every resolved deletion path stayed under `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_RBA_RBR_Worktree_20260701`.
+  - Deleted `7` generated `__pycache__` directories.
+- `git status --short --branch --untracked-files=all`
+  - Result: branch `codex/divergent-rba-rbr-20260701`; source/config/test/doc/tool files are modified or untracked as expected before commit; `PYCACHE_DIR_COUNT=0`; no `tools/rba_rbr/.tmp_*` generated artifacts.
+
+Locks after third-round fix:
+
+- No remote sync, SSH, Slurm, training, evaluation, `tools/test.py`, Pro, stage, commit, or push was run.
+- No mAP, runtime/FLOPs, deploy, paper, or full-train claim is unlocked.

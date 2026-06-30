@@ -236,6 +236,14 @@ class LoadFrames:
         bvr_twb_allow_diagnostic_preview_fallback=False,
         bvr_twb_scout_sample_count=32,
         bvr_twb_value_mode="deploy_heuristic_voi",
+        rba_rbr_split=None,
+        rba_rbr_min_keep=None,
+        rba_rbr_max_keep=None,
+        rba_rbr_scaffold_k=4,
+        rba_rbr_train_value_labels=False,
+        rba_rbr_feature_stride=1,
+        rba_rbr_adapter_bridge_mode="adapter_fixed_length_padded_bridge",
+        rba_rbr_allow_diagnostic_preview_fallback=False,
     ):
         self.num_clips = num_clips
         self.scale_factor = scale_factor  # multiply by the frame number, if backbone has downsampling
@@ -278,6 +286,14 @@ class LoadFrames:
         self.bvr_twb_allow_diagnostic_preview_fallback = bool(bvr_twb_allow_diagnostic_preview_fallback)
         self.bvr_twb_scout_sample_count = int(max(bvr_twb_scout_sample_count, 2))
         self.bvr_twb_value_mode = bvr_twb_value_mode
+        self.rba_rbr_split = rba_rbr_split
+        self.rba_rbr_min_keep = rba_rbr_min_keep
+        self.rba_rbr_max_keep = rba_rbr_max_keep
+        self.rba_rbr_scaffold_k = int(max(rba_rbr_scaffold_k, 1))
+        self.rba_rbr_train_value_labels = bool(rba_rbr_train_value_labels)
+        self.rba_rbr_feature_stride = int(max(rba_rbr_feature_stride, 1))
+        self.rba_rbr_adapter_bridge_mode = rba_rbr_adapter_bridge_mode
+        self.rba_rbr_allow_diagnostic_preview_fallback = bool(rba_rbr_allow_diagnostic_preview_fallback)
 
     def _apply_trunc_window(self, feats, st, ed, gt_segments, gt_labels, offset=0):
         feats = feats[st:ed]
@@ -1214,6 +1230,181 @@ class LoadFrames:
             results["bvr_twb_adapter_bridge_mode"] = self.bvr_twb_adapter_bridge_mode
             results["bvr_twb_train_value_labels"] = bridge["regret_labels"]
             results["bvr_twb_candidate_count"] = int(len(bridge["candidate_packets"]))
+
+            if gt_segments is not None and gt_labels is not None:
+                if self.remap_gt_to_selected_axis:
+                    gt_segments, gt_labels = self._remap_gt_to_selected_axis(
+                        gt_segments=gt_segments,
+                        gt_labels=gt_labels,
+                        kept_positions=keep_positions,
+                        valid_len=valid_len,
+                    )
+                results["gt_segments"] = gt_segments / self.scale_factor
+                results["gt_labels"] = gt_labels
+
+        elif self.method == "rba_rbr_recoverable_bracketing":
+            from opentad.acquisition.rba_rbr.adapter_bridge import (
+                ADAPTER_FIXED_LENGTH_PADDED_BRIDGE,
+                build_adapter_fixed_length_padded_bridge,
+                build_detector_feature_centers_from_raw,
+            )
+            from opentad.acquisition.rba_rbr.open_tad_bridge import build_rba_rbr_open_tad_selection
+
+            assert results["snippet_stride"] >= self.scale_factor
+            assert results["snippet_stride"] % self.scale_factor == 0
+
+            frame_stride = results["snippet_stride"] // self.scale_factor
+            dense_frame_idxs = np.arange(0, total_frames, frame_stride)
+            gt_segments = results["gt_segments"] * self.scale_factor if "gt_segments" in results else None
+            gt_labels = results["gt_labels"] if "gt_labels" in results else None
+
+            if self.target_len is None:
+                if self.method_base == "sliding_window" and "window_size" in results:
+                    target_len = int(round(float(results["window_size"]) * float(self.keep_ratio)))
+                elif self.trunc_len is not None:
+                    target_len = int(round(float(self.trunc_len) * float(self.keep_ratio)))
+                else:
+                    raise ValueError(
+                        "rba_rbr_recoverable_bracketing requires target_len, trunc_len, or window_size"
+                    )
+            else:
+                target_len = int(self.target_len)
+            target_frame_num = max(1, int(target_len * self.scale_factor))
+
+            if self.method_base == "random_trunc":
+                if gt_segments is None or gt_labels is None:
+                    raise ValueError("rba_rbr_recoverable_bracketing random_trunc requires train gt_segments and gt_labels")
+                source_len = int(self.source_len) if self.source_len is not None else int(round(target_len / max(self.keep_ratio, 1e-6)))
+                dense_window, gt_segments, gt_labels = self.random_trunc(
+                    dense_frame_idxs,
+                    trunc_len=int(source_len * self.scale_factor),
+                    gt_segments=gt_segments,
+                    gt_labels=gt_labels,
+                )
+            elif self.method_base == "sliding_window":
+                if "window_size" not in results:
+                    raise ValueError("rba_rbr_recoverable_bracketing sliding_window requires window_size in results")
+                start_idx = min(results["feature_start_idx"] * self.scale_factor, len(dense_frame_idxs))
+                end_idx = min((results["feature_end_idx"] + 1) * self.scale_factor, len(dense_frame_idxs))
+                dense_window = dense_frame_idxs[start_idx:end_idx]
+            else:
+                raise ValueError(
+                    "rba_rbr_recoverable_bracketing requires method_base='random_trunc' or 'sliding_window'"
+                )
+
+            valid_len = int(len(dense_window))
+            if valid_len <= 0:
+                raise RuntimeError("rba_rbr_recoverable_bracketing received an empty dense window")
+
+            split = self.rba_rbr_split
+            if split is None:
+                split = results.get("split", "train" if self.rba_rbr_train_value_labels else "deploy")
+            window_id = int(results.get("feature_start_idx", results.get("window_id", 0)))
+            bridge = build_rba_rbr_open_tad_selection(
+                results,
+                dense_window=dense_window,
+                target_frame_num=target_frame_num,
+                split=split,
+                gt_segments=gt_segments,
+                gt_labels=gt_labels,
+                min_keep=self.rba_rbr_min_keep,
+                max_keep=self.rba_rbr_max_keep if self.rba_rbr_max_keep is not None else target_frame_num,
+                scaffold_k=self.rba_rbr_scaffold_k,
+                fps=fps,
+                window_id=window_id,
+                train_value_labels=self.rba_rbr_train_value_labels,
+                allow_diagnostic_preview_fallback=self.rba_rbr_allow_diagnostic_preview_fallback,
+            )
+            keep_positions = bridge["keep_positions"].astype(np.int64)
+            fresh_frame_idxs = bridge["selected_frame_inds"].astype(np.int64)
+            feature_stride = int(max(self.rba_rbr_feature_stride, 1))
+            adapter_bridge = None
+            if self.rba_rbr_adapter_bridge_mode == ADAPTER_FIXED_LENGTH_PADDED_BRIDGE:
+                adapter_bridge = build_adapter_fixed_length_padded_bridge(
+                    selected_positions=keep_positions,
+                    selected_frame_inds=fresh_frame_idxs,
+                    target_frame_num=target_frame_num,
+                    dense_T=valid_len,
+                    feature_stride=feature_stride,
+                )
+                frame_idxs = adapter_bridge["adapter_padded_frame_inds"]
+                masks = torch.as_tensor(adapter_bridge["detector_valid_mask"], dtype=torch.bool)
+                feature_valid_k = int(adapter_bridge["detector_feature_valid_k"])
+                feature_mask_len = int(adapter_bridge["detector_mask_len"])
+                detector_feature_positions = adapter_bridge["detector_feature_positions"].astype(np.float32)
+            elif self.rba_rbr_adapter_bridge_mode in {None, "none", "variable_sparse"}:
+                frame_idxs = fresh_frame_idxs
+                if feature_stride > 1 and frame_idxs.shape[0] >= feature_stride:
+                    usable_len = int(frame_idxs.shape[0] // feature_stride * feature_stride)
+                    frame_idxs = frame_idxs[:usable_len]
+                    keep_positions = keep_positions[:usable_len]
+                    fresh_frame_idxs = fresh_frame_idxs[:usable_len]
+                feature_valid_k = int(np.ceil(float(len(keep_positions)) / float(feature_stride)))
+                feature_mask_len = feature_valid_k
+                masks = torch.ones(int(feature_valid_k)).bool()
+                detector_feature_positions = build_detector_feature_centers_from_raw(keep_positions, feature_stride=feature_stride)
+            else:
+                raise ValueError(f"unsupported rba_rbr_adapter_bridge_mode: {self.rba_rbr_adapter_bridge_mode}")
+
+            frame_num = int(frame_idxs.shape[0])
+            if frame_num <= 0:
+                raise RuntimeError("rba_rbr_recoverable_bracketing produced no selected frames")
+
+            scale = float(max(self.scale_factor, 1))
+            results["irregular_selected_positions"] = detector_feature_positions / scale
+            results["irregular_selected_valid_len"] = float(valid_len) / scale
+            results["irregular_native_axis"] = bool(not self.remap_gt_to_selected_axis)
+            results["rba_rbr_raw_selected_positions"] = keep_positions.astype(np.float32) / scale
+            results["rba_rbr_raw_selected_valid_len"] = float(valid_len) / scale
+            results["rba_rbr_detector_feature_positions"] = detector_feature_positions.astype(np.float32) / scale
+            results["rba_rbr_detector_feature_valid_len"] = float(valid_len) / scale
+
+            results["rba_rbr_ledger"] = bridge["ledger"]
+            results["rba_rbr_ledger"]["selected_positions"] = [int(pos) for pos in keep_positions]
+            results["rba_rbr_ledger"]["selected_frame_inds"] = [int(pos) for pos in fresh_frame_idxs]
+            results["rba_rbr_ledger"]["valid_k"] = int(len(keep_positions))
+            results["rba_rbr_ledger"]["detector_feature_valid_k"] = int(feature_valid_k)
+            results["rba_rbr_ledger"]["detector_feature_positions"] = [
+                float(pos) for pos in detector_feature_positions.tolist()
+            ]
+            results["rba_rbr_ledger"]["detector_mask_len"] = int(feature_mask_len)
+            results["rba_rbr_ledger"]["detector_mask_true_count"] = int(feature_valid_k)
+            results["rba_rbr_ledger"]["rba_rbr_feature_stride"] = int(feature_stride)
+            results["rba_rbr_ledger"]["adapter_bridge_mode"] = self.rba_rbr_adapter_bridge_mode
+            if adapter_bridge is not None:
+                results["rba_rbr_ledger"]["adapter_target_frame_num"] = int(adapter_bridge["adapter_target_frame_num"])
+                results["rba_rbr_ledger"]["adapter_input_frame_count"] = int(adapter_bridge["adapter_input_frame_count"])
+                results["rba_rbr_ledger"]["adapter_padded_frame_inds"] = [
+                    int(pos) for pos in adapter_bridge["adapter_padded_frame_inds"]
+                ]
+                results["rba_rbr_ledger"]["adapter_padded_positions"] = [
+                    int(pos) for pos in adapter_bridge["adapter_padded_positions"]
+                ]
+                results["rba_rbr_ledger"]["adapter_valid_raw_mask"] = [
+                    bool(value) for value in adapter_bridge["adapter_valid_raw_mask"].tolist()
+                ]
+                results["rba_rbr_ledger"]["adapter_padding_duplicate_count"] = int(
+                    adapter_bridge["adapter_padding_duplicate_count"]
+                )
+                results["rba_rbr_ledger"]["adapter_padding_counts_as_valid"] = bool(
+                    adapter_bridge["adapter_padding_counts_as_valid"]
+                )
+                results["rba_rbr_ledger"]["adapter_fixed_length_padded_bridge"] = True
+                results["rba_rbr_ledger"]["padding_duplicate_count"] = int(
+                    adapter_bridge["adapter_padding_duplicate_count"]
+                )
+            else:
+                results["rba_rbr_ledger"]["adapter_fixed_length_padded_bridge"] = False
+                results["rba_rbr_ledger"]["adapter_padding_duplicate_count"] = 0
+                results["rba_rbr_ledger"]["adapter_padding_counts_as_valid"] = False
+                results["rba_rbr_ledger"]["padding_duplicate_count"] = 0
+            results["rba_rbr_selected_positions"] = keep_positions.astype(np.float32)
+            results["rba_rbr_selected_valid_len"] = float(len(keep_positions))
+            results["rba_rbr_dense_valid_len"] = float(valid_len)
+            results["rba_rbr_adapter_input_frame_count"] = int(frame_num)
+            results["rba_rbr_adapter_bridge_mode"] = self.rba_rbr_adapter_bridge_mode
+            results["rba_rbr_train_value_labels"] = bridge["regret_labels"]
+            results["rba_rbr_candidate_count"] = int(len(bridge["candidate_probes"]))
 
             if gt_segments is not None and gt_labels is not None:
                 if self.remap_gt_to_selected_axis:

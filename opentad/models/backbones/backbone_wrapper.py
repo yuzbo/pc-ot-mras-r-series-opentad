@@ -8,6 +8,8 @@ from mmengine.dataset import Compose
 from mmengine.registry import MODELS as MM_BACKBONES
 from mmengine.runner import load_checkpoint
 
+from opentad.acquisition.rba_rbr.metadata import has_backbone_time_axis_meta, resolve_backbone_time_axis_meta
+
 from ..utils import build_temporal_grid
 
 BACKBONES = MM_BACKBONES
@@ -101,13 +103,7 @@ class BackboneWrapper(nn.Module):
             return None
         if metas is None or len(metas) == 0:
             return None
-        if not all(
-            (
-                ("irregular_selected_positions" in meta and "irregular_selected_valid_len" in meta)
-                or ("bvr_twb_raw_selected_positions" in meta and "bvr_twb_raw_selected_valid_len" in meta)
-            )
-            for meta in metas
-        ):
+        if not all(has_backbone_time_axis_meta(meta) for meta in metas):
             return None
 
         processed_batches, num_segs = frames.shape[:2]
@@ -128,12 +124,7 @@ class BackboneWrapper(nn.Module):
         per_sample_features = []
         feat_dtype = torch.float32
         for meta in metas:
-            if "bvr_twb_raw_selected_positions" in meta:
-                positions_source = meta.get("bvr_twb_raw_selected_positions", [])
-                valid_len_source = meta.get("bvr_twb_raw_selected_valid_len", None)
-            else:
-                positions_source = meta.get("irregular_selected_positions", [])
-                valid_len_source = meta.get("irregular_selected_valid_len", None)
+            positions_source, valid_len_source, _ = resolve_backbone_time_axis_meta(meta)
             positions = torch.as_tensor(positions_source, device=frames.device, dtype=feat_dtype).flatten()
             true_valid_len = int(positions.numel())
             dense_valid_len = int(round(float(valid_len_source if valid_len_source is not None else max(true_valid_len, 1))))
