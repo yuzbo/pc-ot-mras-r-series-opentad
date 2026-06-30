@@ -40,6 +40,11 @@ EOF
   echo "run_dir=$RUN_DIR"
   echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 
+  if [[ "${CUDA_VISIBLE_DEVICES:-}" != "1" ]]; then
+    echo "PQR_GPU_GUARD_FAIL expected CUDA_VISIBLE_DEVICES=1 for C3 mainline GPU1 isolation, got ${CUDA_VISIBLE_DEVICES:-unset}"
+    exit 42
+  fi
+
   module load cuda/11.8
   module load miniforge3/24.11
   source activate /data/home/sczc063/run/yuzibo/conda_envs/opentad
@@ -54,6 +59,7 @@ EOF
 
   python -m py_compile tools/analyze_c3_pqr_rankcal_proposals.py tools/validate_c3_pqr_rankcal_v1_config.py
   python tools/validate_c3_pqr_rankcal_v1_config.py "$CONFIG"
+  python tools/validate_c3_pqr_rankcal_v1_config.py "$TMP_CONFIG"
   python tools/train.py "$TMP_CONFIG" --id 0 --cfg-options \
     annotation_path=/data/home/sczc063/run/yuzibo/thumos14/annotations/thumos_14_anno.json \
     class_map=/data/home/sczc063/run/yuzibo/thumos14/annotations/category_idx.txt \
