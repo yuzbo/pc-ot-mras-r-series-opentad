@@ -1,6 +1,14 @@
 _base_ = ["./input_random_fixed_50pct_adapter_irregular_headv3_x.py"]
 
 route_label = "DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3"
+formal_readiness_stage = "formal_readiness_gate_only"
+full_train_unlocked = False
+metric_claim = False
+sparse_compute_claim = False
+formal_readiness_requires_linux_torch_precheck = True
+formal_readiness_requires_finite_gradient_evidence = True
+formal_readiness_requires_no_skipped_reg_head = True
+required_pretrain_path = "pretrained/vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth"
 
 window_size = 192
 dense_window_size = 384

@@ -79,6 +79,17 @@ def _config_text_is_clean(config_path):
         raise ValueError("BVR-TWB train config must enable train-only value labels for train split")
     if "bvr_twb_train_value_labels=False" not in text:
         raise ValueError("BVR-TWB val/test config must explicitly disable train value labels")
+    required_gate_tokens = {
+        "full_train_unlocked = False": "formal train lock",
+        "metric_claim = False": "metric claim lock",
+        "sparse_compute_claim = False": "sparse compute claim lock",
+        "formal_readiness_requires_linux_torch_precheck = True": "Linux torch precheck requirement",
+        "formal_readiness_requires_finite_gradient_evidence = True": "finite-gradient evidence requirement",
+        "formal_readiness_requires_no_skipped_reg_head = True": "no skipped regression-head evidence requirement",
+    }
+    for token, description in required_gate_tokens.items():
+        if token not in text:
+            raise ValueError(f"BVR-TWB launch gate requires {description}: {token}")
     required_formal_tokens = {
         'bvr_twb_scout_source="deploy_visible_raw_or_metadata_scout"': "formal scout source",
         "bvr_twb_require_deploy_visible_scout=True": "deploy-visible scout requirement",
@@ -114,6 +125,14 @@ def validate_launch_gate(config_path, precheck_summary_path):
         raise ValueError("BVR-TWB launch gate requires adapter_fixed_length_padded_bridge precheck evidence")
     if summary.get("adapter_padding_counts_as_valid") is not False:
         raise ValueError("BVR-TWB launch gate requires adapter padding duplicates to be invalid")
+    if summary.get("raw_frame_handoff_stages") != ["pre_decode_selected_raw_frames"]:
+        raise ValueError("BVR-TWB launch gate requires selected raw frames before decode/backbone evidence")
+    if summary.get("selected_raw_frames_before_decode") is not True:
+        raise ValueError("BVR-TWB launch gate requires selected raw frame handoff before decode")
+    if summary.get("fixed_padded_bridge_sparse_compute_claim") is not False:
+        raise ValueError("BVR-TWB launch gate rejects fixed padded bridge sparse-compute claims")
+    if summary.get("adapter_padding_invalid_for_detector") is not True:
+        raise ValueError("BVR-TWB launch gate requires adapter padding to be invalid for detector/head")
     preview_sources = _required_string_set(summary, "preview_sources")
     if not preview_sources.issubset(FORMAL_PREVIEW_SOURCES):
         raise ValueError(f"BVR-TWB launch gate rejects non-formal preview sources: {sorted(preview_sources)}")

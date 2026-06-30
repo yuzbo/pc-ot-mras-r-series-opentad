@@ -115,6 +115,11 @@ def test_bvr_loadframes_dynamic_subsample_outputs_sparse_sorted_metadata_and_lab
     assert ledger["valid_k"] < ledger["dense_T"]
     assert ledger["selected_positions"] == sorted(set(ledger["selected_positions"]))
     assert np.array_equal(transformed["frame_inds"], np.asarray(ledger["adapter_padded_frame_inds"]))
+    assert ledger["raw_frame_handoff_stage"] == "pre_decode_selected_raw_frames"
+    assert ledger["selected_raw_frames_before_decode"] is True
+    assert ledger["decode_input_frame_inds"][: ledger["valid_k"]] == ledger["selected_frame_inds"]
+    assert ledger["fixed_padded_bridge_sparse_compute_claim"] is False
+    assert ledger["adapter_padding_invalid_for_detector"] is True
     assert int(transformed["masks"].sum().item()) == ledger["detector_feature_valid_k"]
     assert len(transformed["irregular_selected_positions"]) == ledger["detector_feature_valid_k"]
     assert np.allclose(transformed["irregular_selected_positions"], np.asarray(ledger["detector_feature_positions"]))
@@ -265,6 +270,12 @@ def test_bvr_config_uses_dynamic_method_and_excludes_unapproved_route_tokens():
     assert "bvr_twb_require_deploy_visible_scout=True" in text
     assert "bvr_twb_allow_diagnostic_preview_fallback=False" in text
     assert 'bvr_twb_value_mode="deploy_heuristic_voi"' in text
+    assert "full_train_unlocked = False" in text
+    assert "metric_claim = False" in text
+    assert "sparse_compute_claim = False" in text
+    assert "formal_readiness_requires_linux_torch_precheck = True" in text
+    assert "formal_readiness_requires_finite_gradient_evidence = True" in text
+    assert "formal_readiness_requires_no_skipped_reg_head = True" in text
     assert f'pretrain="{REQUIRED_PRETRAIN_PATH}"' in text
     assert "diagnostic_deterministic_preview" not in text
     normalized = text.replace(ROUTE_LABEL, "").replace("checkpoint_interval", "checkpoint_period")
@@ -278,6 +289,10 @@ def test_bvr_formal_config_resolves_videomae_s_pretrain_with_mmengine():
         "configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py"
     )
     assert cfg.model.backbone.custom.pretrain == REQUIRED_PRETRAIN_PATH
+    assert cfg.full_train_unlocked is False
+    assert cfg.metric_claim is False
+    assert cfg.sparse_compute_claim is False
+    assert cfg.formal_readiness_requires_linux_torch_precheck is True
 
 
 def test_opentad_pipeline_audit_cli_function_writes_valid_summary(tmp_path):
@@ -292,6 +307,10 @@ def test_opentad_pipeline_audit_cli_function_writes_valid_summary(tmp_path):
         assert summary["deterministic_preview_fallback_used"] is False
         assert summary["value_modes"] == ["deploy_heuristic_voi"]
         assert summary["value_labels_used_at_test"] is False
+        assert summary["raw_frame_handoff_stages"] == ["pre_decode_selected_raw_frames"]
+        assert summary["selected_raw_frames_before_decode"] is True
+        assert summary["fixed_padded_bridge_sparse_compute_claim"] is False
+        assert summary["adapter_padding_invalid_for_detector"] is True
         rows = [
             json.loads(line)
             for line in (out / "bvr_twb_opentad_pipeline_ledgers.jsonl").read_text(encoding="utf-8").splitlines()
@@ -322,6 +341,10 @@ def _write_launch_gate_summary(path, overrides=None, omit=()):
         "adapter_bridge_mode": ADAPTER_FIXED_LENGTH_PADDED_BRIDGE,
         "adapter_bridge_modes": [ADAPTER_FIXED_LENGTH_PADDED_BRIDGE],
         "adapter_padding_counts_as_valid": False,
+        "raw_frame_handoff_stages": ["pre_decode_selected_raw_frames"],
+        "selected_raw_frames_before_decode": True,
+        "fixed_padded_bridge_sparse_compute_claim": False,
+        "adapter_padding_invalid_for_detector": True,
         "preview_sources": ["deploy_visible_metadata_actionness"],
         "scout_sources": ["deploy_visible_raw_or_metadata_scout"],
         "deterministic_preview_fallback_used": False,
@@ -436,6 +459,10 @@ def test_pipeline_ledger_accepts_adapter_bridge_padding_but_not_valid_padding():
         "selected_frame_inds": [10, 13, 17],
         "raw_selected_positions": [0, 3, 7],
         "valid_k": 3,
+        "raw_frame_handoff_stage": "pre_decode_selected_raw_frames",
+        "selected_raw_frames_before_decode": True,
+        "decode_input_frame_inds": bridge["adapter_padded_frame_inds"].tolist(),
+        "fixed_padded_bridge_sparse_compute_claim": False,
         "budget_stop_reason": "candidate_exhausted",
         "selection_gap_diagnostics": build_selection_gap_diagnostics([0, 3, 7], 16, 8),
         "original_time_metadata": build_original_time_metadata(16, [0, 3, 7], fps=4.0),
@@ -462,6 +489,8 @@ def test_pipeline_ledger_accepts_adapter_bridge_padding_but_not_valid_padding():
         "adapter_valid_raw_mask": bridge["adapter_valid_raw_mask"].tolist(),
         "adapter_padding_duplicate_count": bridge["adapter_padding_duplicate_count"],
         "adapter_padding_counts_as_valid": bridge["adapter_padding_counts_as_valid"],
+        "adapter_padding_role": "fixed_length_decode_backbone_compatibility_invalid_observation",
+        "adapter_padding_invalid_for_detector": True,
         "adapter_fixed_length_padded_bridge": True,
         "detector_feature_valid_k": bridge["detector_feature_valid_k"],
         "detector_feature_positions": bridge["detector_feature_positions"].tolist(),
@@ -481,6 +510,12 @@ def test_pipeline_ledger_accepts_adapter_bridge_padding_but_not_valid_padding():
     bad = dict(ledger, adapter_padding_counts_as_valid=True)
     with pytest.raises(ValueError, match="padding duplicates"):
         validate_bvr_twb_pipeline_ledger(bad)
+    bad_handoff = dict(ledger, selected_raw_frames_before_decode=False)
+    with pytest.raises(ValueError, match="before decode"):
+        validate_bvr_twb_pipeline_ledger(bad_handoff)
+    bad_claim = dict(ledger, fixed_padded_bridge_sparse_compute_claim=True)
+    with pytest.raises(ValueError, match="sparse-compute claim"):
+        validate_bvr_twb_pipeline_ledger(bad_claim)
     bad_positions = dict(ledger, detector_feature_positions=[0.0, 7.0])
     with pytest.raises(ValueError, match="feature.*center"):
         validate_bvr_twb_pipeline_ledger(bad_positions)

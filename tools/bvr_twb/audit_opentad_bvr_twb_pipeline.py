@@ -35,6 +35,10 @@ def _attach_adapter_precheck_fields(bridge, feature_stride=2, target_frame_num=4
     ledger["selected_frame_inds"] = [int(pos) for pos in selected_frame_inds.tolist()]
     ledger["valid_k"] = int(len(keep_positions))
     ledger["raw_selected_positions"] = [int(pos) for pos in keep_positions.tolist()]
+    ledger["raw_frame_handoff_stage"] = "pre_decode_selected_raw_frames"
+    ledger["selected_raw_frames_before_decode"] = True
+    ledger["decode_input_frame_inds"] = [int(pos) for pos in adapter["adapter_padded_frame_inds"].tolist()]
+    ledger["fixed_padded_bridge_sparse_compute_claim"] = False
     ledger["selection_gap_diagnostics"] = build_selection_gap_diagnostics(
         keep_positions,
         int(ledger["dense_T"]),
@@ -48,6 +52,8 @@ def _attach_adapter_precheck_fields(bridge, feature_stride=2, target_frame_num=4
     ledger["adapter_valid_raw_mask"] = [bool(value) for value in adapter["adapter_valid_raw_mask"].tolist()]
     ledger["adapter_padding_duplicate_count"] = int(adapter["adapter_padding_duplicate_count"])
     ledger["adapter_padding_counts_as_valid"] = bool(adapter["adapter_padding_counts_as_valid"])
+    ledger["adapter_padding_role"] = "fixed_length_decode_backbone_compatibility_invalid_observation"
+    ledger["adapter_padding_invalid_for_detector"] = True
     ledger["adapter_fixed_length_padded_bridge"] = True
     ledger["padding_duplicate_count"] = int(adapter["adapter_padding_duplicate_count"])
     ledger["detector_feature_valid_k"] = int(adapter["detector_feature_valid_k"])
@@ -103,6 +109,12 @@ def _run_numpy_bridge_audit(out, import_error):
                 "adapter_input_frame_count": int(ledger.get("adapter_input_frame_count", 0)),
                 "adapter_padding_duplicate_count": int(ledger.get("adapter_padding_duplicate_count", 0)),
                 "adapter_padding_counts_as_valid": bool(ledger.get("adapter_padding_counts_as_valid", True)),
+                "raw_frame_handoff_stage": ledger.get("raw_frame_handoff_stage"),
+                "selected_raw_frames_before_decode": bool(ledger.get("selected_raw_frames_before_decode", False)),
+                "fixed_padded_bridge_sparse_compute_claim": bool(
+                    ledger.get("fixed_padded_bridge_sparse_compute_claim", True)
+                ),
+                "adapter_padding_invalid_for_detector": bool(ledger.get("adapter_padding_invalid_for_detector", False)),
                 "preview_source": ledger.get("preview_source"),
                 "scout_source": ledger.get("scout_source"),
                 "deterministic_preview_fallback_used": bool(ledger.get("deterministic_preview_fallback_used", True)),
@@ -139,6 +151,10 @@ def _summary_from_rows(out, ledgers, rows, extra=None):
         "adapter_bridge_mode": "adapter_fixed_length_padded_bridge",
         "adapter_bridge_modes": sorted({row["adapter_bridge_mode"] for row in rows}),
         "adapter_padding_counts_as_valid": any(row["adapter_padding_counts_as_valid"] for row in rows),
+        "raw_frame_handoff_stages": sorted({row["raw_frame_handoff_stage"] for row in rows}),
+        "selected_raw_frames_before_decode": all(row["selected_raw_frames_before_decode"] for row in rows),
+        "fixed_padded_bridge_sparse_compute_claim": any(row["fixed_padded_bridge_sparse_compute_claim"] for row in rows),
+        "adapter_padding_invalid_for_detector": all(row["adapter_padding_invalid_for_detector"] for row in rows),
         "preview_sources": sorted({row["preview_source"] for row in rows}),
         "scout_sources": sorted({row["scout_source"] for row in rows}),
         "deterministic_preview_fallback_used": any(row["deterministic_preview_fallback_used"] for row in rows),
@@ -237,6 +253,12 @@ def run_pipeline_audit(out_dir, overwrite=False):
                 "adapter_input_frame_count": int(ledger.get("adapter_input_frame_count", 0)),
                 "adapter_padding_duplicate_count": int(ledger.get("adapter_padding_duplicate_count", 0)),
                 "adapter_padding_counts_as_valid": bool(ledger.get("adapter_padding_counts_as_valid", True)),
+                "raw_frame_handoff_stage": ledger.get("raw_frame_handoff_stage"),
+                "selected_raw_frames_before_decode": bool(ledger.get("selected_raw_frames_before_decode", False)),
+                "fixed_padded_bridge_sparse_compute_claim": bool(
+                    ledger.get("fixed_padded_bridge_sparse_compute_claim", True)
+                ),
+                "adapter_padding_invalid_for_detector": bool(ledger.get("adapter_padding_invalid_for_detector", False)),
                 "preview_source": ledger.get("preview_source"),
                 "scout_source": ledger.get("scout_source"),
                 "deterministic_preview_fallback_used": bool(ledger.get("deterministic_preview_fallback_used", True)),

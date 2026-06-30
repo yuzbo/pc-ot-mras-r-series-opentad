@@ -1,5 +1,6 @@
 import argparse
 import json
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -175,6 +176,7 @@ def _validate_torch_runtime_contract():
 def run_geometry_contracts(require_torch=False):
     summary = {
         "validator": "bvr_twb_geometry_contracts",
+        "platform_system": platform.system(),
         "no_training": True,
         "no_video_decode": True,
         "no_metric_claim": True,

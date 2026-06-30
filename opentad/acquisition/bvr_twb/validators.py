@@ -370,6 +370,10 @@ def validate_bvr_twb_pipeline_ledger(ledger):
         "selected_frame_inds",
         "raw_selected_positions",
         "valid_k",
+        "raw_frame_handoff_stage",
+        "selected_raw_frames_before_decode",
+        "decode_input_frame_inds",
+        "fixed_padded_bridge_sparse_compute_claim",
         "budget_stop_reason",
         "selection_gap_diagnostics",
         "original_time_metadata",
@@ -405,6 +409,18 @@ def validate_bvr_twb_pipeline_ledger(ledger):
     validate_selected_positions(ledger["selected_positions"], dense_T, valid_k=valid_k)
     if len(ledger["selected_frame_inds"]) != valid_k:
         raise ValueError("BVR-TWB selected_frame_inds length must equal valid_k")
+    if ledger.get("raw_frame_handoff_stage") != "pre_decode_selected_raw_frames":
+        raise ValueError("BVR-TWB raw frame handoff must be explicitly before decode/backbone")
+    if bool(ledger.get("selected_raw_frames_before_decode")) is not True:
+        raise ValueError("BVR-TWB ledger must prove selected raw frames are handed off before decode")
+    if bool(ledger.get("fixed_padded_bridge_sparse_compute_claim", True)):
+        raise ValueError("BVR-TWB fixed padded bridge cannot be used as a sparse-compute claim")
+    decode_input_frame_inds = [int(pos) for pos in ledger.get("decode_input_frame_inds", [])]
+    selected_frame_inds = [int(pos) for pos in ledger.get("selected_frame_inds", [])]
+    if len(decode_input_frame_inds) < valid_k:
+        raise ValueError("BVR-TWB decode input frame list cannot be shorter than valid_k")
+    if decode_input_frame_inds[:valid_k] != selected_frame_inds:
+        raise ValueError("BVR-TWB decode inputs must begin with the selected raw frame indices")
     if valid_k >= dense_T:
         raise ValueError("BVR-TWB dynamic pipeline must keep valid_k < dense_T")
     if bool(ledger["dense_raw_backbone_handoff"]):
@@ -482,6 +498,8 @@ def _validate_adapter_fixed_length_bridge_ledger(ledger, valid_k):
         "adapter_padding_duplicate_count",
         "adapter_padding_counts_as_valid",
         "adapter_fixed_length_padded_bridge",
+        "adapter_padding_role",
+        "adapter_padding_invalid_for_detector",
     }
     missing = sorted(required.difference(ledger.keys()))
     if missing:
@@ -506,6 +524,17 @@ def _validate_adapter_fixed_length_bridge_ledger(ledger, valid_k):
         raise ValueError("padding_duplicate_count must mirror adapter padding duplicate count")
     if bool(ledger["adapter_padding_counts_as_valid"]):
         raise ValueError("adapter padding duplicates must not count as valid")
+    if ledger.get("adapter_padding_role") != "fixed_length_decode_backbone_compatibility_invalid_observation":
+        raise ValueError("adapter padding role must state compatibility-only invalid observation")
+    if bool(ledger.get("adapter_padding_invalid_for_detector")) is not True:
+        raise ValueError("adapter padding must be invalid for detector/head evidence")
+    if input_count > int(valid_k):
+        selected = [int(pos) for pos in ledger.get("selected_frame_inds", [])]
+        padded = [int(pos) for pos in ledger.get("adapter_padded_frame_inds", [])]
+        if padded[: int(valid_k)] != selected:
+            raise ValueError("adapter padded frame inputs must preserve selected raw frames as prefix")
+        if len(set(padded[int(valid_k) :])) > 1 or (padded[int(valid_k) :] and padded[-1] != selected[-1]):
+            raise ValueError("adapter padding must be hold-last duplicate compatibility input")
     if bool(ledger.get("adapter_fixed_length_padded_bridge")) is not True:
         raise ValueError("adapter_fixed_length_padded_bridge must be true for adapter bridge mode")
     detector_mask_len = int(ledger["detector_mask_len"])

@@ -1164,6 +1164,10 @@ class LoadFrames:
             results["bvr_twb_ledger"]["selected_positions"] = [int(pos) for pos in keep_positions]
             results["bvr_twb_ledger"]["selected_frame_inds"] = [int(pos) for pos in fresh_frame_idxs]
             results["bvr_twb_ledger"]["valid_k"] = int(len(keep_positions))
+            results["bvr_twb_ledger"]["raw_frame_handoff_stage"] = "pre_decode_selected_raw_frames"
+            results["bvr_twb_ledger"]["selected_raw_frames_before_decode"] = True
+            results["bvr_twb_ledger"]["decode_input_frame_inds"] = [int(pos) for pos in frame_idxs]
+            results["bvr_twb_ledger"]["fixed_padded_bridge_sparse_compute_claim"] = False
             results["bvr_twb_ledger"]["detector_feature_valid_k"] = int(feature_valid_k)
             results["bvr_twb_ledger"]["detector_feature_positions"] = [
                 float(pos) for pos in detector_feature_positions.tolist()
@@ -1199,6 +1203,10 @@ class LoadFrames:
                 results["bvr_twb_ledger"]["adapter_padding_counts_as_valid"] = bool(
                     adapter_bridge["adapter_padding_counts_as_valid"]
                 )
+                results["bvr_twb_ledger"][
+                    "adapter_padding_role"
+                ] = "fixed_length_decode_backbone_compatibility_invalid_observation"
+                results["bvr_twb_ledger"]["adapter_padding_invalid_for_detector"] = True
                 results["bvr_twb_ledger"]["adapter_fixed_length_padded_bridge"] = True
                 results["bvr_twb_ledger"]["padding_duplicate_count"] = int(
                     adapter_bridge["adapter_padding_duplicate_count"]
@@ -1207,6 +1215,8 @@ class LoadFrames:
                 results["bvr_twb_ledger"]["adapter_fixed_length_padded_bridge"] = False
                 results["bvr_twb_ledger"]["adapter_padding_duplicate_count"] = 0
                 results["bvr_twb_ledger"]["adapter_padding_counts_as_valid"] = False
+                results["bvr_twb_ledger"]["adapter_padding_role"] = "none"
+                results["bvr_twb_ledger"]["adapter_padding_invalid_for_detector"] = True
             results["bvr_twb_selected_positions"] = keep_positions.astype(np.float32)
             results["bvr_twb_selected_valid_len"] = float(len(keep_positions))
             results["bvr_twb_dense_valid_len"] = float(valid_len)

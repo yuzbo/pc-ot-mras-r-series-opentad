@@ -74,7 +74,7 @@ assert cfg.sparse_compute_claim is False
 print("[shortdiag] resolved config pretrain/workflow assertions passed")
 PY
 
-python -m py_compile "${CONFIG}" tools/bvr_twb/validate_bvr_twb_shortdiag.py tests/test_bvr_twb_shortdiag.py
+python -m py_compile "${CONFIG}" tools/bvr_twb/validate_bvr_twb_shortdiag.py tools/bvr_twb/validate_bvr_twb_formal_readiness.py tests/test_bvr_twb_shortdiag.py
 python -m pytest -q tests/test_bvr_twb_shortdiag.py
 python tools/bvr_twb/validate_bvr_twb_geometry_contracts.py --require-torch
 python tools/bvr_twb/validate_bvr_twb_launch_gate.py --config configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py --audit-out-dir "${LOG_DIR}/launch_gate_precheck"
@@ -91,6 +91,15 @@ if grep -Eiq 'no pretrain path is provided|(^|[^A-Za-z])NaN([^A-Za-z]|$)|cost[=:
   echo "[shortdiag][fatal] Pro stop condition marker found in ${TRAIN_LOG}" >&2
   exit 5
 fi
+if ! grep -Eq '\[Train\].*Loss=.*reg_loss=[+-]?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?' "${TRAIN_LOG}"; then
+  echo "[shortdiag][fatal] missing finite reg_loss evidence in ${TRAIN_LOG}" >&2
+  exit 5
+fi
+if ! grep -Eq '\[Train\]\[RuntimeDebug\].*head_v3_regression_head_fp32_enabled=True.*head_v3_regression_loss_fp32_enabled=True.*head_v3_regression_samples_kept_after_filter=[1-9][0-9]*.*head_v2_reg_points_total=[1-9][0-9]*' "${TRAIN_LOG}"; then
+  echo "[shortdiag][fatal] missing HeadV3 non-skipped regression runtime debug evidence in ${TRAIN_LOG}" >&2
+  exit 5
+fi
+log_shortdiag "[bvr_twb_formal_precheck] finite_gradients=true no_skipped_optimizer_step=true no_skipped_reg_head=true linux_torch_precheck=true pretrain_loaded=true full_train_unlocked=false sparse_compute_claim=false"
 
 python tools/bvr_twb/validate_bvr_twb_shortdiag.py --config "${CONFIG}" --train-log "${TRAIN_LOG}" --expected-base-commit "${EXPECTED_BASE_COMMIT}"
 
