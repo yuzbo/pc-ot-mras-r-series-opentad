@@ -1,0 +1,6 @@
+configs/adatad/thumos/input_abr_active_bracket_refinement_adapter_irregular_headv3_shortdiag.py
+tools/abr/validate_abr_shortdiag.py
+tests/test_abr_shortdiag.py
+logs/run_abr_shortdiag_n16r4.sh
+logs/abr_shortdiag_filelist_20260630.txt
+research-wiki/experiments/DIVERGENT_ABR_SHORT_DIAGNOSTIC_GATE_20260630.md
