@@ -899,3 +899,50 @@ Interpretation:
   BVR worktree, run a Linux precheck/config-resolution check, then resume or
   restart from the existing `epoch_39.pth` only after the active GPU0 queue
   boundary is clear.
+
+## BVR-TWB GPU0 Path-Fix Restart - 2026-07-01 07:02:05 +08:00
+
+Reason for restart:
+
+- Previous BVR long run `1118197.519 bvr_long_g0` trained healthily through epoch 41 but failed at validation/evaluator construction with `PermissionError: [Errno 13] Permission denied: '/root/autodl-tmp/annotations/thumos_14_anno.json'`.
+- Current path-fix branch resolves the BVR config to the N16R4 local annotation path: `/data/home/sczc063/run/yuzibo/thumos14/annotations/thumos_14_anno.json`.
+- The old failure was a deployment/evaluator path bug, not a detector loss/NaN/OOM failure.
+
+Local and remote evidence before restart:
+
+- Local route-owned worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_BVR_TWB_PostprocessRepair_Worktree_20260630`.
+- Local commit for duration-clamp test correction: `1eb64d24`.
+- Remote route-owned worktree: `/data/run01/sczc063/yuzibo/OpenTAD_BVR_TWB_Final_20260630_92ec024`.
+- Remote commit for the same test correction: `5d11ffd`.
+- Remote BVR config check:
+  - `workflow.end_epoch=60`.
+  - `workflow.val_start_epoch=40`.
+  - `workflow.val_eval_interval=2`.
+  - `workflow.checkpoint_interval=10`.
+  - `workflow.disable_checkpoint=False`.
+  - `evaluation.ground_truth_filename=/data/home/sczc063/run/yuzibo/thumos14/annotations/thumos_14_anno.json`.
+  - `model.backbone.custom.pretrain=pretrained/vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth`.
+- Remote geometry validator passed with `torch_runtime_contract=passed`.
+- Remote focused tests passed: `36 passed in 35.45s`.
+
+Launch evidence:
+
+- Protected parent hold: `1118197 pcot_dbg2g`; not released, cancelled, or replaced.
+- GPU boundary: GPU0 only via `CUDA_VISIBLE_DEVICES=0`; GPU1 remains reserved/occupied by C3.
+- First restart attempt:
+  - Child `1118197.541 bvr_twb_fix_g0`.
+  - Result: `FAILED|1:0` after `00:00:16`.
+  - Cause: launch environment missing `LOCAL_RANK`; no model/data/protocol failure.
+- Second restart:
+  - Child `1118197.542 bvr_twb_fix2_g0`.
+  - Logdir: `/data/run01/sczc063/yuzibo/OpenTAD_BVR_TWB_Final_20260630_92ec024/logs/bvr_twb_pathfix_restart2_gpu0_5d11ffd_20260701_070013_+0800`.
+  - State at startup check: `RUNNING|0:0`, elapsed `00:01:44`.
+  - Pretraining loaded from `pretrained/vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth`.
+  - First observed training line: `[000][00050/00199] Loss=2.5199 cls_loss=0.5256 reg_loss=0.4425 boundary_loss=1.5518 lr_det=5.0e-06 mem=1454MB`.
+  - Bad-pattern grep at startup for Traceback, RuntimeError, OOM, killed, NaN, non-finite, ValueError, PermissionError, FileNotFoundError, CUDA error, and KeyError: empty.
+
+Decision:
+
+- BVR-TWB / VOI-BBC is now running on GPU0 as a path-fix restart toward metric-producing training.
+- This is still not a final result. The first meaningful performance evidence is expected at the first validation around epoch 40.
+- If a severe-result pattern appears again, trigger the severe-result Pro diagnosis path before further long-run interpretation or route-level conclusion.
