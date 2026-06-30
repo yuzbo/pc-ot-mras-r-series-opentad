@@ -49,3 +49,11 @@
 - No valid GPT-5.5 Pro answer was harvested: Rosetta inline failed with stuck send pipeline; Rosetta attachment failed with focus timeout; Oracle attach/copy-profile/persistent/cookie attempts all failed before submission or model selection.
 - Pro state is `INCOMPLETE_PRO_DECISION`: no GitHub inspection, no code-grounded Pro blocker, and no Pro approval exists.
 - This is transport failure only, not a technical rejection of RBA-RBR. Remote sync and non-GPU precheck remain valid; full training and all mAP/runtime/deploy/paper claims remain locked.
+
+## 2026-07-01 03:05:00 +08:00 - RBA-RBR GitHub API sync and shortdiag gate fix
+
+- Advanced GitHub branch `codex/divergent-rba-rbr-20260701` by API because ordinary HTTPS `git push` kept failing locally; remote branch moved from `87eae60369bacf4f58cbe870170a6eecd1fa57c3` to `52ce1ef71142dc5c08c91755451d10deb0b24494` with 25 synced Pro transport evidence files.
+- Fixed RBA-RBR inherited evaluation path risk after BVR failed at epoch-41 evaluation on legacy `/root/autodl-tmp/annotations/thumos_14_anno.json`: RBA config now explicitly sets `evaluation.ground_truth_filename=annotation_path`, and launch gate rejects legacy evaluation paths.
+- Added `input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_shortdiag.py` as a two-epoch, no-eval, no-checkpoint, claim-locked short diagnostic config.
+- Verification passed: `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` -> `15 passed, 1 skipped`; PowerShell-expanded py_compile -> pass; RBA launch gate -> `gate_pass=true`, `full_train_unlocked=false`, `deploy_claim_unlocked=false`, `paper_claim_unlocked=false`.
+- Resource state: protected hold `1118197` unchanged; BVR child disappeared after evaluator failure and MDL child `1118197.535 mdl_formal_g0` started on GPU0; C3 child `1118197.528` remains on GPU1. RBA-RBR short diagnostic is staged but not running.
