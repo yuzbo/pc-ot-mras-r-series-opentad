@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import tools.analyze_c3_pqr_rankcal_proposals as analyzer
 from tools.analyze_c3_pqr_rankcal_proposals import analyze, main
 
 
@@ -294,6 +295,66 @@ def test_pqr_proposal_diagnostic_sweep_caps_and_nms_can_change_retained_counts(t
     assert per_video_one["retained_fraction"] == 0.25
     assert "top1_same_label_recall@0.5" in per_video_one["rank_recall"]
     assert "top_score_decile_mean_iou_same_label" in per_video_one
+
+
+def test_pqr_proposal_diagnostic_reports_explicit_cap_hit_counts(tmp_path, monkeypatch):
+    monkeypatch.setattr(analyzer, "DEFAULT_PROPOSAL_CAP", 2, raising=False)
+    annotation = tmp_path / "thumos_14_anno.json"
+    prediction = tmp_path / "result_detection.json"
+    _write_json(
+        annotation,
+        {
+            "database": {
+                "video_below": {"subset": "validation", "annotations": []},
+                "video_at": {"subset": "validation", "annotations": []},
+                "video_over": {"subset": "validation", "annotations": []},
+            }
+        },
+    )
+
+    def proposals(count):
+        return [
+            {"segment": [float(idx), float(idx + 1)], "label": "Diving", "score": 1.0 / (idx + 1)}
+            for idx in range(count)
+        ]
+
+    _write_json(
+        prediction,
+        {
+            "results": {
+                "video_below": proposals(1),
+                "video_at": proposals(2),
+                "video_over": proposals(3),
+            }
+        },
+    )
+
+    summary, _records, sweep = analyze(prediction, annotation, subset="validation", include_sweep=True)
+
+    cap = summary["proposal_cap_diagnostic"]
+    assert cap["cap_value"] == 2
+    assert cap["videos_considered"] == 3
+    assert cap["videos_at_cap"] == 1
+    assert cap["videos_over_cap"] == 1
+    assert cap["videos_at_or_over_cap"] == 2
+    assert cap["cap_hit_ratio"] == 2 / 3
+
+    per_video_two = next(item for item in sweep["sweeps"]["max_per_video_sweep"] if item["parameters"]["max_per_video"] == 2)
+    retained_cap = per_video_two["proposal_cap_diagnostic"]
+    source_cap = per_video_two["source_proposal_cap_diagnostic"]
+    assert retained_cap["cap_value"] == 2
+    assert retained_cap["videos_considered"] == 3
+    assert retained_cap["videos_below_cap"] == 1
+    assert retained_cap["videos_at_cap"] == 2
+    assert retained_cap["videos_over_cap"] == 0
+    assert retained_cap["videos_at_or_over_cap"] == 2
+    assert retained_cap["cap_hit_ratio"] == 2 / 3
+    assert source_cap["cap_value"] == 2
+    assert source_cap["videos_below_cap"] == 1
+    assert source_cap["videos_at_cap"] == 1
+    assert source_cap["videos_over_cap"] == 1
+    assert source_cap["videos_at_or_over_cap"] == 2
+    assert source_cap["cap_hit_ratio"] == 2 / 3
 
 
 def test_pqr_proposal_diagnostic_quality_fusion_reports_missing_fields_without_faking(tmp_path):

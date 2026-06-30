@@ -8,6 +8,7 @@ from pathlib import Path
 
 DEFAULT_TIOU_THRESHOLDS = (0.3, 0.5, 0.7)
 DEFAULT_TOPK = (1, 5, 10, 50, 100)
+DEFAULT_PROPOSAL_CAP = 2000
 SWEEP_TIOU_THRESHOLDS = (0.5, 0.7)
 SWEEP_MAX_PER_VIDEO = (1, 2, 5, 10, 50, 100, 200, 500)
 SWEEP_PER_CLASS_CAP = (1, 2, 5, 10, 20, 50, 100)
@@ -120,6 +121,23 @@ def _count_summary(counts):
         "p90": _quantile(counts, 0.90),
         "p99": _quantile(counts, 0.99),
         "max": None if not counts else max(counts),
+    }
+
+
+def _proposal_cap_diagnostic(counts, cap_value):
+    counts = list(counts)
+    videos_considered = len(counts)
+    videos_at_cap = sum(1 for count in counts if count == cap_value)
+    videos_over_cap = sum(1 for count in counts if count > cap_value)
+    videos_at_or_over_cap = videos_at_cap + videos_over_cap
+    return {
+        "cap_value": cap_value,
+        "videos_considered": videos_considered,
+        "videos_below_cap": sum(1 for count in counts if count < cap_value),
+        "videos_at_cap": videos_at_cap,
+        "videos_over_cap": videos_over_cap,
+        "videos_at_or_over_cap": videos_at_or_over_cap,
+        "cap_hit_ratio": None if videos_considered == 0 else videos_at_or_over_cap / videos_considered,
     }
 
 
@@ -303,6 +321,7 @@ def _analysis_summary_from_records(
     per_video_label_counts,
     topk_values,
     thresholds,
+    proposal_cap_value=None,
 ):
     same_label_ious = [record["max_iou_same_label"] for record in records]
     any_label_ious = [record["max_iou_any_label"] for record in records]
@@ -310,7 +329,7 @@ def _analysis_summary_from_records(
     counts = list(per_video_counts.values())
     class_counts = [count for label_counts in per_video_label_counts.values() for count in label_counts.values()]
 
-    return {
+    summary = {
         "videos_with_predictions": len(per_video_counts),
         "videos_with_ground_truth": len(gt_by_video),
         "total_predictions": len(records),
@@ -325,6 +344,9 @@ def _analysis_summary_from_records(
         "score_rank_bins": _score_bins(records),
         "qc_v2_diagnostic_state": _qc_v2_diagnostic_state(records),
     }
+    if proposal_cap_value is not None:
+        summary["proposal_cap_diagnostic"] = _proposal_cap_diagnostic(counts, proposal_cap_value)
+    return summary
 
 
 def _availability(records, predicate):
@@ -455,6 +477,7 @@ def _apply_offline_filters(
 
 def _candidate_diagnostic(records, gt_by_video, total_input_predictions, source_per_video_counts, parameters):
     per_video_counts, per_video_label_counts = _count_records(records)
+    max_per_video = parameters.get("max_per_video")
     summary = _analysis_summary_from_records(
         records,
         gt_by_video,
@@ -462,6 +485,7 @@ def _candidate_diagnostic(records, gt_by_video, total_input_predictions, source_
         per_video_label_counts,
         DEFAULT_TOPK,
         SWEEP_TIOU_THRESHOLDS,
+        proposal_cap_value=max_per_video,
     )
     videos_seen = len(source_per_video_counts)
     reduced_videos = sum(
@@ -469,7 +493,7 @@ def _candidate_diagnostic(records, gt_by_video, total_input_predictions, source_
         for video_id, input_count in source_per_video_counts.items()
         if per_video_counts.get(video_id, 0) < input_count
     )
-    return {
+    candidate = {
         "status": "PASS_CANDIDATE_DIAGNOSTIC",
         "diagnostic_only": True,
         "official_map_claim": False,
@@ -487,6 +511,13 @@ def _candidate_diagnostic(records, gt_by_video, total_input_predictions, source_
         "top_score_decile_mean_iou_same_label": _top_score_decile_mean_iou(records, "max_iou_same_label"),
         "top_score_decile_mean_iou_any_label": _top_score_decile_mean_iou(records, "max_iou_any_label"),
     }
+    if max_per_video is not None:
+        candidate["proposal_cap_diagnostic"] = summary["proposal_cap_diagnostic"]
+        candidate["source_proposal_cap_diagnostic"] = _proposal_cap_diagnostic(
+            source_per_video_counts.values(),
+            max_per_video,
+        )
+    return candidate
 
 
 def _build_filter_candidate(records, gt_by_video, total_input_predictions, source_per_video_counts, parameters):
@@ -690,6 +721,7 @@ def analyze(
             per_video_label_counts,
             topk_values,
             thresholds,
+            proposal_cap_value=DEFAULT_PROPOSAL_CAP,
         )
     )
     if include_sweep:
