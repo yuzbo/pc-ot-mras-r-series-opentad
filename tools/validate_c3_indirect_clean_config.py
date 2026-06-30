@@ -201,6 +201,10 @@ def _validate_cadf_densitymesh_route(cfg, cfg_text):
             raise AssertionError("CADF fast-safe formal candidate must enable AMP/fp16_compress for speed")
         if bool(cfg.solver.get("ema", False)):
             raise AssertionError("CADF fast-safe formal candidate must keep EMA disabled")
+        if int(cfg.scheduler.get("max_epoch", -1)) != int(cfg.workflow.get("end_epoch", -2)):
+            raise AssertionError("CADF fast-safe formal candidate scheduler.max_epoch must match workflow.end_epoch")
+        if int(cfg.scheduler.get("max_epoch", 0)) <= int(cfg.scheduler.get("warmup_epoch", 0)):
+            raise AssertionError("CADF fast-safe formal candidate scheduler.max_epoch must exceed warmup_epoch")
         backbone_cfg = cfg.model.get("backbone", {})
         backbone_inner_cfg = backbone_cfg.get("backbone", {}) if hasattr(backbone_cfg, "get") else {}
         if backbone_inner_cfg.get("with_cp", None) is not False:

@@ -20,6 +20,8 @@ workflow = dict(
     disable_checkpoint=False,
 )
 
+scheduler = dict(type="LinearWarmupCosineAnnealingLR", warmup_epoch=1, max_epoch=60)
+
 solver = dict(
     train=dict(batch_size=2, num_workers=4),
     val=dict(batch_size=2, num_workers=4),
