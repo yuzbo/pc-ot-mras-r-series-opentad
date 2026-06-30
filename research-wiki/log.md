@@ -1,12 +1,14 @@
 # Research Wiki Log - Compact Index
 
-Last updated: 2026-06-30T18:00:30+08:00
+Last updated: 2026-06-30T18:31:00+08:00
 
 The pre-dedup full chronological log was archived at `archives/record_dedup_20260604/log_pre_dedup_20260604.md`.
 
 This file is now a concise chronological index only. Detailed evidence belongs in one route-specific report under `research-wiki/experiments/`; raw artifacts belong in `logs/` or remote run directories; current state belongs in the relevant tracker. Do not paste long stdout, JSON, Pro/Gemini/external-review answers, or duplicate tracker rows here.
 
 ## 2026-06-30 - BVR-TWB Formal Relaunch And C3 PQR RankCal V1 Remote Precheck
+
+- `2026-06-30T18:31:00+08:00` - Completed two divergent-route gate updates without starting any new GPU job. BVR-TWB / VOI-BBC branch `codex/divergent-bvr-twb-final-20260630` repaired the final-config VideoMAE-S pretrain blocker: local static audit passed, read-only reviewer Turing returned `PASS_SUBAGENT_FINAL_REVIEW_ONLY`, and N16R4 CPU `audit_pretrain_load.py --check-file` on clone `/data/home/sczc063/run/yuzibo/OpenTAD_BVR_TWB_Final_20260630_92ec024` returned `PASS_PRETRAIN_RESOLVED_AND_READABLE_NO_TRAINING` after restoring the clone-local `pretrained -> ../pretrained` resource symlink. BVR evidence commit is `e418739`; formal/full train remains locked. ABR scout-policy repair branch `codex/divergent-abr-scout-policy-repair-20260630` commit `0d192cd` improved real 5-video deploy-visible first-round bracket recall from `0.1613` to `0.766129` (`95/124` transitions bracketed), with temporal coverage `0.65677` and max bracket width `0.296875`, but still failed the `0.95` formal gate; ABR formal/full train remains locked. No Slurm child, `tools/train.py`, `tools/test.py`, official eval, mAP/runtime/FLOPs/deploy/paper/sparse-compute claim, GPU1 use, C3 combo, or parent-hold action occurred.
 
 - `2026-06-30T18:00:30+08:00` - Reloaded divergent-route and run-experiment rules for the user's request to deploy or queue any other ready divergent model. Current decision: no additional long-train-ready model exists. MDL-Knot child `1118197.488 mdl_shortdiag_g0` is still running as the only active divergent GPU0 short diagnostic with finite loss progress and no recorded hard-error marker; wait for completion before validator. BVR-TWB / VOI-BBC remains formal/full-train locked after the severe-result Pro diagnosis, so a single bounded-diagnostic owner was assigned to collect no-GPU pretrain/ledger/bridge/geometry evidence in `OpenTAD_BVR_TWB_Final_Worktree_20260630`. ABR remains formal/full-train locked by low real first-round bracket recall, so a single repair owner was assigned in `OpenTAD_ABR_ScoutPolicyRepair_Worktree_20260630`. No new Slurm child, `tools/train.py`, `tools/test.py`, official eval, mAP/runtime/FLOPs/deploy/paper/sparse-compute claim, GPU1 use, C3 combo, or parent-hold action occurred.
 
