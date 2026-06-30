@@ -52,3 +52,13 @@ The validator rejects route drift into BH-SDC/DIVERGENT labels and rejects unloc
 ## Next Action
 
 Allowed next step: remote PRECHECK_ONLY and a bounded 2-iteration smoke, respecting the GPU1-only C3/PQR/CADF mainline training rule. If PRECHECK/smoke pass, a later decision can consider whether QC V2 should move to a diagnostic training run; it still does not unlock PQR formal full training by itself.
+
+## Remote PRECHECK R1
+
+R1 remote PRECHECK at commit `9081d9a2202a` used a fresh clone under `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQR_QCV2_Precheck_9081d9a_20260630_20260630_135857_+0800`. It did not run Slurm, `srun`, `tools/train.py`, `tools/test.py`, or any GPU job. `py_compile`, the QC V2 validator, and `git diff --check` passed, but focused Linux pytest failed one test:
+
+`tests/test_c3_pqr_rankcal_v1_quality_head.py::test_sparse_irregular_qc_v2_returns_optional_deploy_visible_diagnostics`.
+
+Root cause: the test fixture used `reg_pred` as if the last dimension were `[left, right]` per point, but `AnchorFreeHead.get_refined_proposals` consumes regression as `[B, 2, T]` and then permutes it to `[B, T, 2]`. The fixture therefore produced real selected lengths `[1.0, 1.0]` while the test expected `[0.0, 2.0]`. This is a test-fixture bug, not a QC V2 model-logic bug.
+
+Local fix: encode the intended offsets as left `[0, 1]`, right `[0, 1]`, and add a direct `selected_segments == [[0, 0], [0, 2]]` assertion.

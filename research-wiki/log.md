@@ -1,6 +1,6 @@
 # Research Log
 
-## 2026-06-30 14:20:00 +08:00
+## 2026-06-30 14:00:00 +08:00
 
 C3 PQR Sparse/Irregular-Aware QC V2 local gate passed implementation and
 read-only review in the route-owned worktree
@@ -29,6 +29,32 @@ read-only review in the route-owned worktree
   next action is remote PRECHECK_ONLY / bounded smoke on the C3 mainline GPU1
   rule; no `tools/test.py` official eval or long training is unlocked by this
   local gate alone.
+
+## 2026-06-30 14:03:22 +08:00
+
+C3 PQR Sparse/Irregular-Aware QC V2 remote PRECHECK R1 failed on one focused
+Linux pytest assertion, and the root cause was identified as a test-fixture
+layout bug rather than model logic.
+
+- Remote fresh clone:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQR_QCV2_Precheck_9081d9a_20260630_20260630_135857_+0800`.
+- Commit tested: `9081d9a2202a`.
+- Boundary: no Slurm, `srun`, `tools/train.py`, `tools/test.py`, GPU use,
+  parent-hold action, BH-SDC action, or DIVERGENT route action occurred.
+- Passing parts: clone/checkout/resource symlinks, Python `3.10.20`,
+  py_compile, QC V2 validator, and `git diff --check`.
+- Failing part: focused pytest retried with `/tmp` tempdir returned
+  `44 passed, 1 failed`, no skipped tests. The failed test expected selected
+  lengths `[0.0, 2.0]` but the fixture produced `[1.0, 1.0]`.
+- Root cause: `AnchorFreeHead.get_refined_proposals` consumes `reg_pred` as
+  `[B, 2, T]`, but the test fixture encoded offsets as if the last dimension
+  were per-point `[left, right]`. The model decode was correct.
+- Local fix: update the fixture to encode intended left `[0, 1]`, right
+  `[0, 1]`, and add a direct selected-segment assertion. Local verification
+  after the fix: `torch_1` focused pytest `37 passed, 8 skipped`; py_compile
+  PASS; QC V2 validator PASS; `git diff --check` PASS.
+- Next action: commit/push the test-fixture fix and rerun remote PRECHECK_ONLY
+  in a fresh clone. Fulltrain and metric claims remain locked.
 
 ## 2026-06-30 04:28:44 +08:00
 

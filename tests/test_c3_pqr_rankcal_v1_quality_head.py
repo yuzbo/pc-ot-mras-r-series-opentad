@@ -54,7 +54,7 @@ def test_default_off_quality_path_keeps_prediction_shapes_and_scores():
     torch, _ = _torch_and_head()
     head = _make_head()
     points = [torch.tensor([[0.0, 0.0, 10000.0, 1.0], [1.0, 0.0, 10000.0, 1.0]])]
-    reg_pred = [torch.tensor([[[0.0, 0.0], [1.0, 1.0]]])]
+    reg_pred = [torch.tensor([[[0.0, 1.0], [0.0, 1.0]]])]
     cls_pred = [torch.tensor([[[0.0, 1.0], [2.0, -2.0]]])]
     masks = [torch.tensor([[True, False]])]
 
@@ -172,6 +172,7 @@ def test_sparse_irregular_qc_v2_returns_optional_deploy_visible_diagnostics():
     assert diagnostics[0]["quality_scores"].shape == (2,)
     assert diagnostics[0]["selected_segments"].shape == (2, 2)
     assert diagnostics[0]["physical_segments"].shape == (2, 2)
+    assert torch.allclose(diagnostics[0]["selected_segments"], torch.tensor([[0.0, 0.0], [0.0, 2.0]]))
     assert diagnostics[0]["selected_lengths"].tolist() == [0.0, 2.0]
     assert diagnostics[0]["physical_lengths"][1].item() > diagnostics[0]["selected_lengths"][1].item()
     assert "visibility_support" in diagnostics[0]
