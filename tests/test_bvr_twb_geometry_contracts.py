@@ -188,6 +188,7 @@ def test_bvr_native_axis_postprocessing_seconds_uses_dense_coordinates_directly(
     seconds = convert_to_seconds(segments.clone(), meta)
 
     expected = (segments * 2.0 + 30.0 + 4.0) / 30.0
+    expected = expected.clamp(min=0.0, max=meta["duration"])
     assert torch.allclose(seconds, expected)
 
 
