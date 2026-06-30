@@ -216,6 +216,38 @@ def test_structural_and_sampled_handoff_audits_have_distinct_raw_requirements():
     )
 
 
+def test_sampled_and_full_raw_handoff_allow_full_observation_without_sparse_compute_claim():
+    curve = build_synthetic_scout_curve("stable_background", dense_t=4)
+    ledger = greedy_mdl_knot_select(curve, MDLKnotConfig(route_label=ROUTE_LABEL, min_k=4, max_k=384))
+    dense_window = list(range(10, 14))
+    selected_frame_inds = [dense_window[pos] for pos in ledger.selected_positions]
+    meta = ledger.to_sparse_meta().to_dict()
+    dense_raw = [np.full((4, 5, 3), fill_value=idx, dtype=np.uint8) for idx in range(ledger.dense_t)]
+    selected_raw = [dense_raw[pos] for pos in ledger.selected_positions]
+
+    assert ledger.valid_k == ledger.dense_t
+    sampled_flags = validate_sampled_sparse_handoff(
+        batch={
+            "selected_inputs": selected_raw,
+            "selected_frame_inds": selected_frame_inds,
+            "expected_selected_frame_inds": selected_frame_inds,
+            "meta": meta,
+        },
+        ledger=ledger,
+    )
+    full_flags = validate_real_sparse_handoff(
+        batch={"selected_inputs": list(selected_raw), "dense_inputs": dense_raw, "meta": meta},
+        ledger=ledger,
+    )
+
+    for flags in (sampled_flags, full_flags):
+        assert flags["full_observation_no_compression"] is True
+        assert flags["sampled_raw_sparse_compute_evidence"] is False
+        assert flags["raw_sparse_compute_evidence"] is False
+        assert flags["sparse_compute_claim"] is False
+        assert flags["no_sparse_compute_claim"] is True
+
+
 def test_deploy_scout_builder_uses_only_deploy_visible_inputs():
     p_action = [0.1, 0.2, 0.8, 0.7, 0.2]
     curve = build_deploy_scout_curve(p_action=p_action, uncertainty=[0.0] * 5)
