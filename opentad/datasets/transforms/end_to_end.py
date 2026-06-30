@@ -701,14 +701,14 @@ class LoadFrames:
         if extra:
             stage_data.update(extra)
 
-    def _profile_mdl_knot_call(self, results, stage, fn, *args, **kwargs):
+    def _profile_mdl_knot_call(self, profile_results, stage, fn, *args, **kwargs):
         if not self._mdl_knot_profile_enabled():
             return fn(*args, **kwargs)
         start = time.perf_counter()
         try:
             return fn(*args, **kwargs)
         finally:
-            self._record_mdl_knot_profile(results, stage, time.perf_counter() - start)
+            self._record_mdl_knot_profile(profile_results, stage, time.perf_counter() - start)
 
     def _emit_mdl_knot_profile(self, results):
         if not self._mdl_knot_profile_enabled():
