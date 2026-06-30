@@ -13,6 +13,7 @@ This route worktree did not contain the shared tracker file. The shared/main wor
 | 2026-07-01 06:45:00 | GitHub API sync | Evidence/code synchronization for external diagnosis | Completed sync | Ordinary push failed; GitHub API sync succeeded | Branch `codex/divergent-rba-rbr-20260701` updated to `88e498cdbba62e981d042a6e3fee22b7edb70f50` with 35 files | Use GitHub URL for Pro/Oracle severe-result diagnosis |
 | 2026-07-01 07:23:37 | RBA-RBR sparse-forward precheck audit | Detector temporal-grid audit only | Local implementation complete | Self-check passed; Pro transport remains `INCOMPLETE`; formal full train locked | Added env-gated `RBA_RBR_GRID_AUDIT_PATH` JSONL audit and fail-closed tests; local commit/GitHub evidence sync only after tests; no training, remote sync, Slurm, or Pro | Use audit in next sparse-forward precheck; do not treat as performance evidence |
 | 2026-07-01 07:39:58 | RBA-RBR grid-audit GitHub API branch | Evidence/code synchronization for Pro/Oracle diagnosis | Completed sync | Ordinary git push blocked by remote divergence/network; GitHub Contents API sync succeeded without force push | New branch `codex/divergent-rba-rbr-grid-audit-aadf9708-20260701` created from remote `1b26de8` and updated to `0a4bf5747de24f822ae23183e89f5cce234e69a8` with 5 grid-audit files | Use branch URL for Pro severe-result diagnosis and remote sparse-forward precheck; no train unlock |
+| 2026-07-01 07:48:48 | RBA-RBR grid-audit remote PRECHECK_ONLY | Linux/OpenTAD no-GPU sparse-forward audit precheck | Passed | Pro remains `INCOMPLETE`; full train locked | Remote route-owned copy `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GridAuditPrecheck_20260701_600fc8f2`; py_compile passed; focused pytest `23 passed in 50.13s`; no GPU/Slurm/train/test.py/mAP | Use as audit launchability evidence only; wait for Pro or run bounded sparse-forward diagnostics when GPU0 frees |
 
 ## Timeline
 
@@ -61,3 +62,17 @@ This route worktree did not contain the shared tracker file. The shared/main wor
 - Confirmed branch ref after sync: `0a4bf5747de24f822ae23183e89f5cce234e69a8`.
 - GitHub URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-grid-audit-aadf9708-20260701`.
 - This is evidence synchronization only. No Pro verdict, remote precheck, Slurm job, training, `tools/test.py`, metric/runtime/deploy/paper claim, or full-train unlock was produced by this sync.
+
+### 2026-07-01 07:48:48 +08:00 - RBA-RBR grid-audit remote PRECHECK_ONLY passed
+
+- Created route-owned remote precheck copy: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GridAuditPrecheck_20260701_600fc8f2`.
+- Source: existing RBA route-owned N16R4 tree `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49` plus the five grid-audit files from the GitHub evidence branch.
+- Uploaded package: `/data/run01/sczc063/yuzibo/rba_rbr_grid_audit_600fc8f2.tar`.
+- Verification:
+  - `python -m py_compile opentad/models/detectors/irregular_actionformer.py tests/test_rba_rbr_integration.py` passed.
+  - `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` -> `23 passed in 50.13s`.
+- Logs:
+  - `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GridAuditPrecheck_20260701_600fc8f2/logs/rba_rbr_grid_audit_precheck_600fc8f2/py_compile.log`.
+  - `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GridAuditPrecheck_20260701_600fc8f2/logs/rba_rbr_grid_audit_precheck_600fc8f2/pytest.log`.
+- Non-actions: no GPU, no Slurm child, no `tools/train.py`, no `tools/test.py`, no official evaluation, no mAP/runtime/FLOPs/deploy/paper claim, and no protected-hold release/cancel/replacement.
+- Decision: this proves the sparse-forward detector-grid audit is runnable in the Linux/OpenTAD environment only. It does not resolve the RBA-RBR severe-low result, and formal full training remains locked pending Pro/diagnostic decision.
