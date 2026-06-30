@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -134,7 +136,7 @@ def main() -> int:
         curve = build_synthetic_scout_curve(pattern, dense_t=128)
         ledger = greedy_mdl_knot_select(curve, cfg, video_id=pattern)
         validate_knot_ledger(ledger)
-        dense = list(range(curve.dense_t))
+        dense = [np.full((4, 5, 3), fill_value=idx, dtype=np.uint8) for idx in range(curve.dense_t)]
         selected = [dense[pos] for pos in ledger.selected_positions]
         validate_real_sparse_handoff(
             batch={"selected_inputs": selected, "dense_inputs": dense, "meta": ledger.to_sparse_meta().to_dict()},

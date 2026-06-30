@@ -95,6 +95,12 @@ class EquivalentMDLKnotLoadFrames:
             return [batch[idx] for idx in range(batch.shape[0])]
         return [self._to_numpy_frame(reader[int(index)]) for index in frame_indices]
 
+    def _read_dense_handoff_inputs(self, results: Mapping[str, object], dense_window: list[int]) -> list[np.ndarray]:
+        reader = results.get("video_reader") or results.get("decord_reader")
+        if reader is None:
+            raise ValueError("MDL-Knot real diagnostic collector requires a reader for true sparse handoff")
+        return self._read_probe_frames(reader, [int(index) for index in dense_window])
+
     def _dense_window(self, results: Mapping[str, object]) -> list[int]:
         start = int(results.get("feature_start_idx", 0))
         end = int(results.get("feature_end_idx", start + int(results.get("window_size", 128)) - 1))
@@ -162,12 +168,14 @@ class EquivalentMDLKnotLoadFrames:
     def __call__(self, results: dict) -> dict:
         dense_window = self._dense_window(results)
         scout_curve = self._scout_curve(results, dense_window)
+        dense_handoff_inputs = self._read_dense_handoff_inputs(results, dense_window)
         apply_mdl_knot_to_dense_window(
             results=results,
             dense_window=dense_window,
             scout_curve=scout_curve,
             config=self.config,
             adapter_target_len=self.target_len,
+            dense_inputs=dense_handoff_inputs,
         )
         results["mdl_knot_selector_used_gt"] = False
         results["mdl_knot_route_label"] = MDL_KNOT_ROUTE_LABEL
@@ -276,7 +284,6 @@ def _fixture_windows(window_count: int) -> Iterator[dict]:
     sizes = [96, 128, 160, 192, 112, 144]
     for idx in range(count):
         size = sizes[idx % len(sizes)]
-        use_reader = idx % 3 != 2
         results = {
             "video_name": f"mdl_knot_realdiag_fixture_{idx:03d}",
             "total_frames": size,
@@ -287,9 +294,9 @@ def _fixture_windows(window_count: int) -> Iterator[dict]:
             "feature_start_idx": 0,
             "feature_end_idx": size - 1,
             "window_id": idx,
+            "video_reader": FixtureVideoReader(size, pattern_id=idx + 1),
+            "fixture_reader": True,
         }
-        if use_reader:
-            results["video_reader"] = FixtureVideoReader(size, pattern_id=idx + 1)
         yield results
 
 
@@ -361,6 +368,9 @@ def _annotation_windows(args: argparse.Namespace) -> Iterator[dict]:
             }
             if reader is not None:
                 results["video_reader"] = reader
+            elif bool(getattr(args, "dry_run_fixture", False)):
+                results["video_reader"] = FixtureVideoReader(total_frames, pattern_id=emitted + 1)
+                results["fixture_reader"] = True
             yield results
             emitted += 1
             if emitted >= int(args.window_count):

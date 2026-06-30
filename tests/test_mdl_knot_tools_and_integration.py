@@ -28,16 +28,40 @@ SHORTDIAG_VALIDATOR_PATH = ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_shor
 PSEUDO_BOUNDARY_PATH = ROOT / "opentad" / "datasets" / "transforms" / "pseudo_boundary.py"
 
 
+def _dense_raw_frames(length: int) -> list[np.ndarray]:
+    frames = []
+    for idx in range(int(length)):
+        frame = np.zeros((8, 10, 3), dtype=np.uint8)
+        frame[:, :, 0] = idx % 255
+        frame[:, :, 1] = (idx * 3) % 255
+        frame[:, :, 2] = np.arange(10, dtype=np.uint8)[None, :]
+        frames.append(frame)
+    return frames
+
+
+class _InMemoryVideoReader:
+    def __init__(self, frame_count: int) -> None:
+        self.frames = _dense_raw_frames(frame_count)
+
+    def __getitem__(self, index: int) -> np.ndarray:
+        return self.frames[int(index)]
+
+    def get_batch(self, indices) -> np.ndarray:
+        return np.stack([self.frames[int(index)] for index in indices], axis=0)
+
+
 def test_pipeline_mock_sets_frame_inds_before_decode_and_records_valid_k():
     dense_window = list(range(1000, 1128))
     curve = build_synthetic_scout_curve("short_islands", dense_t=len(dense_window))
     results = {"video_name": "video_test_0001", "total_frames": 2000}
+    dense_inputs = _dense_raw_frames(len(dense_window))
 
     updated = apply_mdl_knot_to_dense_window(
         results=results,
         dense_window=dense_window,
         scout_curve=curve,
         config=MDLKnotConfig(route_label=ROUTE_LABEL, max_k=40),
+        dense_inputs=dense_inputs,
     )
 
     assert updated["frame_inds"] == sorted(updated["frame_inds"])
@@ -45,6 +69,9 @@ def test_pipeline_mock_sets_frame_inds_before_decode_and_records_valid_k():
     assert updated["mdl_knot_valid_k"] == len(updated["mdl_knot_selected_positions"])
     assert len(updated["masks"]) == updated["mdl_knot_valid_k"]
     assert updated["mdl_knot_sparse_meta"]["position_unit"] == "original_dense_time_index"
+    assert updated["mdl_knot_real_sparse_handoff_validated"] is True
+    assert updated["mdl_knot_handoff_audit"]["selected_inputs_is_gathered"] is True
+    assert updated["mdl_knot_handoff_audit"]["raw_inputs_retained"] is False
 
 
 def test_clean_clone_pseudo_boundary_dependency_exists_without_torch_import():
@@ -65,6 +92,7 @@ def test_fixed_adapter_bridge_pads_frame_inds_without_counting_padding_as_valid(
     dense_window = list(range(1000, 1128))
     curve = build_synthetic_scout_curve("short_islands", dense_t=len(dense_window))
     results = {"video_name": "video_test_bridge", "total_frames": 2000}
+    dense_inputs = _dense_raw_frames(len(dense_window))
 
     updated = apply_mdl_knot_to_dense_window(
         results=results,
@@ -72,6 +100,7 @@ def test_fixed_adapter_bridge_pads_frame_inds_without_counting_padding_as_valid(
         scout_curve=curve,
         config=MDLKnotConfig(route_label=ROUTE_LABEL, max_k=40),
         adapter_target_len=64,
+        dense_inputs=dense_inputs,
     )
 
     valid_k = updated["mdl_knot_valid_k"]
@@ -155,6 +184,7 @@ def test_real_loadframes_mdl_knot_branch_sets_sparse_frame_inds_before_decode():
         "window_size": 128,
         "feature_start_idx": 0,
         "feature_end_idx": 127,
+        "video_reader": _InMemoryVideoReader(128),
     }
 
     out = loader(results)
@@ -175,6 +205,8 @@ def test_real_loadframes_mdl_knot_branch_sets_sparse_frame_inds_before_decode():
     assert diagnostic["metadata_fallback_used"] is False
     assert diagnostic["mask_metadata_alignment"]["all_aligned"] is True
     assert diagnostic["fixed_pad_bridge_compute_boundary"]["sparse_compute_claim"] is False
+    assert out["mdl_knot_real_sparse_handoff_validated"] is True
+    assert out["mdl_knot_handoff_audit"]["selected_inputs_is_gathered"] is True
 
 
 def test_raw_frame_motion_scout_builder_is_deploy_visible_and_non_synthetic():

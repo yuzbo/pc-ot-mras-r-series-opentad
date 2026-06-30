@@ -133,7 +133,7 @@ def test_same_k_controls_share_budget_and_validator_path():
 def test_real_sparse_handoff_requires_gathered_inputs_and_valid_mask():
     curve = build_synthetic_scout_curve("two_islands", dense_t=32)
     ledger = greedy_mdl_knot_select(curve, MDLKnotConfig(route_label=ROUTE_LABEL, max_k=16))
-    dense = list(range(ledger.dense_t))
+    dense = [np.full((4, 5, 3), fill_value=idx, dtype=np.uint8) for idx in range(ledger.dense_t)]
     selected = [dense[pos] for pos in ledger.selected_positions]
     meta = ledger.to_sparse_meta()
 
@@ -142,12 +142,35 @@ def test_real_sparse_handoff_requires_gathered_inputs_and_valid_mask():
         ledger=ledger,
     )
 
+    with pytest.raises(ValueError, match="dense passthrough"):
+        validate_real_sparse_handoff(
+            batch={"selected_inputs": list(dense), "dense_inputs": dense, "meta": meta.to_dict()},
+            ledger=ledger,
+        )
+
     with pytest.raises(ValueError, match="dense_raw_backbone_handoff"):
         bad = ledger.to_dict()
         bad["provenance"]["dense_raw_backbone_handoff"] = True
         validate_real_sparse_handoff(
             batch={"selected_inputs": dense, "dense_inputs": dense, "meta": meta.to_dict()},
             ledger=bad,
+        )
+
+    with pytest.raises(ValueError, match="raw frame/tensor samples"):
+        validate_real_sparse_handoff(
+            batch={
+                "selected_inputs": ledger.selected_positions,
+                "dense_inputs": dense,
+                "meta": meta.to_dict(),
+            },
+            ledger=ledger,
+        )
+
+    forged = [dense[pos + 1 if pos + 1 < ledger.dense_t else pos - 1] for pos in ledger.selected_positions]
+    with pytest.raises(ValueError, match="gathered at ledger selected_positions"):
+        validate_real_sparse_handoff(
+            batch={"selected_inputs": forged, "dense_inputs": dense, "meta": meta.to_dict()},
+            ledger=ledger,
         )
 
 

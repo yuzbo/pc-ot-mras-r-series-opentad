@@ -676,6 +676,18 @@ class LoadFrames:
             frames.append(self._to_numpy_frame(reader[frame_idx]))
         return frames
 
+    def _get_mdl_knot_reader(self, results):
+        reader = results.get("video_reader")
+        if reader is None:
+            reader = results.get("decord_reader")
+        return reader
+
+    def _read_mdl_knot_dense_handoff_inputs(self, results, dense_window):
+        reader = self._get_mdl_knot_reader(results)
+        if reader is None:
+            raise ValueError("MDL-Knot true sparse handoff requires a video reader before DecordDecode")
+        return self._read_mdl_knot_probe_frames(reader, np.asarray(dense_window, dtype=np.int64).tolist())
+
     def _build_mdl_knot_metadata_scout_curve(self, results, dense_window):
         valid_len = int(len(dense_window))
         return build_frame_metadata_scout_curve(
@@ -692,9 +704,7 @@ class LoadFrames:
         )
 
     def _build_mdl_knot_raw_frame_scout_curve(self, results, dense_window):
-        reader = results.get("video_reader")
-        if reader is None:
-            reader = results.get("decord_reader")
+        reader = self._get_mdl_knot_reader(results)
         if reader is None:
             return None
         valid_len = int(len(dense_window))
@@ -1018,12 +1028,14 @@ class LoadFrames:
                 ):
                     raise ValueError("MDL-Knot selector safety flags must all be enabled")
                 scout_curve = self._build_mdl_knot_scout_curve(results, dense_window)
+                dense_handoff_inputs = self._read_mdl_knot_dense_handoff_inputs(results, dense_window)
                 apply_mdl_knot_to_dense_window(
                     results=results,
                     dense_window=dense_window.astype(np.int64).tolist(),
                     scout_curve=scout_curve,
                     config=self.mdl_knot_config,
                     adapter_target_len=frame_num,
+                    dense_inputs=dense_handoff_inputs,
                 )
                 keep_positions = np.asarray(results["mdl_knot_selected_positions"], dtype=np.int64)
                 frame_idxs = np.asarray(results["frame_inds"], dtype=np.int64)

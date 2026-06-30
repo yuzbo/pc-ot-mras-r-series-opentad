@@ -65,6 +65,61 @@ def _sequence_len(value) -> int:
     return len(value)
 
 
+def _to_numpy_for_compare(value):
+    if hasattr(value, "asnumpy"):
+        return value.asnumpy()
+    if hasattr(value, "detach"):
+        return value.detach().cpu().numpy()
+    try:
+        import numpy as np
+
+        return np.asarray(value)
+    except Exception:
+        return value
+
+
+def _first_axis_item(value, index: int):
+    return value[int(index)]
+
+
+def _first_axis_gather(value, positions: Sequence[int]):
+    if hasattr(value, "shape") and not isinstance(value, (list, tuple)):
+        return value[[int(pos) for pos in positions]]
+    return [_first_axis_item(value, int(pos)) for pos in positions]
+
+
+def _is_raw_sample_like(value) -> bool:
+    arr = _to_numpy_for_compare(value)
+    shape = getattr(arr, "shape", None)
+    if shape is not None:
+        return len(shape) >= 2
+    return False
+
+
+def _contains_raw_samples(selected_inputs) -> bool:
+    if hasattr(selected_inputs, "shape") and not isinstance(selected_inputs, (list, tuple)):
+        shape = getattr(selected_inputs, "shape")
+        return len(shape) >= 3
+    if len(selected_inputs) == 0:
+        return False
+    return _is_raw_sample_like(selected_inputs[0])
+
+
+def _same_raw_values(left, right) -> bool:
+    import numpy as np
+
+    left_is_array = hasattr(left, "shape") and not isinstance(left, (list, tuple))
+    right_is_array = hasattr(right, "shape") and not isinstance(right, (list, tuple))
+    if left_is_array or right_is_array:
+        return np.array_equal(_to_numpy_for_compare(left), _to_numpy_for_compare(right))
+    if len(left) != len(right):
+        return False
+    for left_item, right_item in zip(left, right):
+        if not np.array_equal(_to_numpy_for_compare(left_item), _to_numpy_for_compare(right_item)):
+            return False
+    return True
+
+
 def validate_real_sparse_handoff(batch: Mapping[str, object], ledger) -> None:
     data = _ledger_dict(ledger)
     validate_knot_ledger(data)
@@ -79,16 +134,22 @@ def validate_real_sparse_handoff(batch: Mapping[str, object], ledger) -> None:
     dense_len = _sequence_len(dense_inputs)
     valid_k = int(data.get("valid_k", data.get("actual_k")))
     dense_t = int(data.get("dense_T"))
+    if selected_inputs is dense_inputs:
+        raise ValueError("selected_inputs and dense_inputs must not be the same object")
+    if selected_len >= dense_len:
+        raise ValueError("selected_inputs must be a real sparse gather, not dense passthrough")
     if selected_len != valid_k:
         raise ValueError(f"selected_inputs length {selected_len} must equal valid_k {valid_k}")
     if dense_len != dense_t:
         raise ValueError(f"dense_inputs audit length {dense_len} must equal dense_T {dense_t}")
-    if selected_len >= dense_len:
-        raise ValueError("selected_inputs must be a real sparse gather, not dense passthrough")
-    if selected_inputs is dense_inputs:
-        raise ValueError("selected_inputs and dense_inputs must not be the same object")
+    if not _contains_raw_samples(selected_inputs):
+        raise ValueError("selected_inputs must contain gathered raw frame/tensor samples, not frame indices")
+    positions = [int(v) for v in data["selected_positions"]]
+    gathered_inputs = _first_axis_gather(dense_inputs, positions)
+    if not _same_raw_values(selected_inputs, gathered_inputs):
+        raise ValueError("selected_inputs must equal dense_inputs gathered at ledger selected_positions")
     meta_positions = [int(v) for v in meta.get("selected_positions", [])]
-    if meta_positions != [int(v) for v in data["selected_positions"]]:
+    if meta_positions != positions:
         raise ValueError("meta selected_positions must match ledger selected_positions")
     if int(meta.get("valid_k", valid_k)) != valid_k:
         raise ValueError("meta valid_k must match ledger valid_k")

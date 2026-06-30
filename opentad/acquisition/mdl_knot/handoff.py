@@ -7,15 +7,22 @@ from .types import MDLKnotConfig, ScoutCurve
 from .validators import validate_real_sparse_handoff
 
 
+def _gather_selected_inputs(dense_inputs: Sequence[object], selected_positions: Sequence[int]) -> list[object]:
+    return [dense_inputs[int(pos)] for pos in selected_positions]
+
+
 def apply_mdl_knot_to_dense_window(
     results: MutableMapping[str, object],
     dense_window: Sequence[int],
     scout_curve: ScoutCurve,
     config: MDLKnotConfig,
     adapter_target_len: int | None = None,
+    dense_inputs: Sequence[object] | None = None,
 ) -> MutableMapping[str, object]:
     if len(dense_window) != scout_curve.dense_t:
         raise ValueError(f"dense_window length {len(dense_window)} must match scout dense_t {scout_curve.dense_t}")
+    if dense_inputs is not None and len(dense_inputs) != len(dense_window):
+        raise ValueError(f"dense_inputs audit length {len(dense_inputs)} must match dense_window {len(dense_window)}")
     ledger = greedy_mdl_knot_select(
         scout_curve,
         config,
@@ -54,12 +61,24 @@ def apply_mdl_knot_to_dense_window(
     results["irregular_selected_valid_len"] = float(ledger.dense_t)
     results["irregular_native_axis"] = False
 
+    if dense_inputs is None:
+        raise ValueError("MDL-Knot true sparse handoff requires dense raw inputs for gather validation")
+    selected_inputs = _gather_selected_inputs(dense_inputs, selected_positions)
     validate_real_sparse_handoff(
         batch={
-            "selected_inputs": frame_inds[:valid_k],
-            "dense_inputs": list(dense_window),
+            "selected_inputs": selected_inputs,
+            "dense_inputs": dense_inputs,
             "meta": sparse_meta.to_dict(),
         },
         ledger=ledger,
     )
+    first_shape = getattr(selected_inputs[0], "shape", None) if selected_inputs else None
+    results["mdl_knot_real_sparse_handoff_validated"] = True
+    results["mdl_knot_handoff_audit"] = {
+        "selected_inputs_is_gathered": True,
+        "selected_len": valid_k,
+        "dense_len": len(dense_inputs),
+        "raw_sample_shape": None if first_shape is None else [int(v) for v in first_shape],
+        "raw_inputs_retained": False,
+    }
     return results
