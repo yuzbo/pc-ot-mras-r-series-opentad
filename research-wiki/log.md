@@ -105,3 +105,10 @@
 - Logdir: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_evaldiag_564a6f3_gpu0_20260701_043542_+0800`.
 - Startup sanity passed: child state `RUNNING|0:0`, no bad pattern for Traceback/OOM/NaN/non-finite/ValueError, and first loss lines reached `[000][00020/00199] Loss=2.0044 ... mem=9344MB` and `[000][00040/00199] Loss=2.4596 ... mem=9344MB`.
 - This remains diagnostic-only detector-health evidence, not a formal full train or final mAP/runtime/deploy/paper claim. Parent hold remains protected and untouched.
+
+## 2026-07-01 05:34:45 +08:00 - RBA-RBR eval diagnostic first validation severe-low signal
+
+- RBA-RBR child `1118197.539 rba_rbr_eval_g0` remained `RUNNING|0:0` on GPU0; protected parent hold `1118197 pcot_dbg2g` was not modified, released, cancelled, or replaced.
+- First validation completed `1645/1645` windows with bad-pattern count `0`, then entered evaluator aggregation successfully.
+- First diagnostic validation metric after epoch 1: `Average-mAP=0.12%`, `mAP@0.30=0.34%`, `mAP@0.40=0.18%`, `mAP@0.50=0.06%`, `mAP@0.60=0.02%`, `mAP@0.70=0.01%`.
+- Interpretation: validation/evaluator chain is alive, but the early detector-health signal is severe-low. This is not a final route result and not a metric claim; formal full training, runtime/FLOPs, deploy, and paper claims remain locked. Because no hard failure occurred, the child was allowed to continue into epoch 2 for the scheduled bounded diagnostic follow-up.

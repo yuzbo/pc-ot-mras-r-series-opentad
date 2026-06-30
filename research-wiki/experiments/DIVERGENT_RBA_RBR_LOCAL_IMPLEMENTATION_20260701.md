@@ -552,3 +552,34 @@ Current state:
 - RBA-RBR bounded eval diagnostic is running on GPU0.
 - This is not a formal full train. Any validation mAP is diagnostic-only detector-health evidence and must not be reported as a final route result.
 - Formal full training, runtime/FLOPs, deploy, and paper claims remain locked.
+
+## Remote Eval Diagnostic First Validation - 2026-07-01 05:34:45 +08:00
+
+Status:
+
+- Child step: `1118197.539`, job name `rba_rbr_eval_g0`.
+- Slurm state at check time: `RUNNING|0:0`, elapsed `00:59:02`.
+- Log directory: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_evaldiag_564a6f3_gpu0_20260701_043542_+0800`.
+- Bad-pattern count for Traceback, RuntimeError, OOM, killed, NaN, non-finite, ValueError, PermissionError, and FileNotFoundError: `0`.
+- The first validation pass completed all `1645/1645` windows and entered evaluator aggregation.
+
+First validation diagnostic metric:
+
+- `Average-mAP: 0.12 (%)`.
+- `mAP@0.30: 0.34%`.
+- `mAP@0.40: 0.18%`.
+- `mAP@0.50: 0.06%`.
+- `mAP@0.60: 0.02%`.
+- `mAP@0.70: 0.01%`.
+
+Interpretation:
+
+- The eval path, N16R4 ground-truth path, validation dataloader, raw-scout handoff, and evaluator entry all ran through the first validation without a hard crash.
+- The metric is an early diagnostic-only detector-health signal after epoch 1, not a final route result and not a paper/metric claim.
+- The value is severe-low and must be treated as a warning signal before any full-training claim. Because this is a bounded short diagnostic and no hard failure occurred, the current child was allowed to continue into epoch 2 to observe whether the scheduled epoch-3/final validation recovers.
+
+Still locked:
+
+- Formal full training remains locked.
+- Runtime/FLOPs, deploy, paper, and final mAP claims remain locked.
+- No C3/C3-Pro result or attribution is mixed into this route.
