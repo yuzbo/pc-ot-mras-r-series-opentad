@@ -748,7 +748,7 @@ class LoadFrames:
             selected_frame_inds,
         )
         sparse_meta = results["mdl_knot_sparse_meta"]
-        validate_sampled_sparse_handoff(
+        evidence_flags = validate_sampled_sparse_handoff(
             batch={
                 "selected_inputs": selected_inputs,
                 "selected_frame_inds": selected_frame_inds,
@@ -759,29 +759,38 @@ class LoadFrames:
         )
         first_shape = getattr(selected_inputs[0], "shape", None) if selected_inputs else None
         audit = results.get("mdl_knot_handoff_audit", {})
+        full_observation = bool(evidence_flags.get("full_observation_no_compression", False))
+        sparse_evidence = bool(evidence_flags.get("sampled_raw_sparse_compute_evidence", False))
         audit.update(
             {
-                "audit_mode": "sampled_raw",
-                "selected_inputs_is_gathered": True,
-                "selected_only_raw_frame_audit": True,
-                "sampled_raw_frame_audit": True,
+                "audit_mode": "sampled_raw_full_observation" if full_observation else "sampled_raw",
+                "selected_inputs_is_gathered": sparse_evidence,
+                "selected_only_raw_frame_audit": sparse_evidence,
+                "sampled_raw_frame_audit": sparse_evidence,
                 "validation_mode": "sampled_raw",
-                "raw_frame_values_compared": True,
+                "raw_frame_values_compared": sparse_evidence,
                 "full_raw_dense_comparison": False,
-                "bounded_raw_sample_comparison": True,
+                "bounded_raw_sample_comparison": sparse_evidence,
                 "formal_raw_handoff_evidence": False,
+                "full_observation_no_compression": full_observation,
+                "no_compression_edge_case": full_observation,
+                "sampled_raw_sparse_compute_evidence": sparse_evidence,
+                "raw_sparse_compute_evidence": sparse_evidence,
+                "structural_only_handoff_evidence": full_observation,
+                "sparse_compute_claim": False,
+                "no_sparse_compute_claim": True,
                 "selected_len": int(len(selected_inputs)),
                 "dense_len": int(len(dense_arr)),
                 "dense_raw_inputs_read": int(len(selected_inputs)),
                 "raw_audit_frame_count": int(len(selected_inputs)),
-                "dense_window_materialized_for_audit": False,
+                "dense_window_materialized_for_audit": full_observation,
                 "raw_sample_shape": None if first_shape is None else [int(v) for v in first_shape],
                 "selected_frame_inds_prefix": [int(v) for v in selected_frame_inds],
             }
         )
         results["mdl_knot_handoff_audit"] = audit
         results["mdl_knot_sparse_meta"]["handoff_audit"] = audit
-        results["mdl_knot_real_sparse_handoff_validated"] = True
+        results["mdl_knot_real_sparse_handoff_validated"] = sparse_evidence
 
     def _build_mdl_knot_metadata_scout_curve(self, results, dense_window):
         valid_len = int(len(dense_window))
@@ -1158,6 +1167,9 @@ class LoadFrames:
                     dense_inputs=dense_handoff_inputs,
                     defer_handoff_validation=self.mdl_knot_handoff_audit_mode == "sampled_raw",
                     handoff_audit_mode=self.mdl_knot_handoff_audit_mode,
+                    profile_callback=lambda stage, seconds, extra=None: self._record_mdl_knot_profile(
+                        results, stage, seconds, extra
+                    ),
                 )
                 if self.mdl_knot_handoff_audit_mode == "sampled_raw":
                     self._profile_mdl_knot_call(
