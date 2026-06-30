@@ -1,4 +1,5 @@
 import argparse
+import ast
 import json
 import sys
 from pathlib import Path
@@ -12,6 +13,89 @@ if str(ROOT) not in sys.path:
 from opentad.acquisition.bvr_twb.types import ROUTE_LABEL
 from opentad.acquisition.bvr_twb.validators import validate_bvr_twb_pipeline_ledger
 from tools.bvr_twb.audit_sparse_forward_precheck import safe_prepare_output_dir, write_jsonl
+
+
+def _is_bvr_method_compare(test):
+    if not isinstance(test, ast.Compare) or len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
+        return False
+    values = [test.left, *test.comparators]
+    has_method_attr = any(
+        isinstance(value, ast.Attribute)
+        and value.attr == "method"
+        and isinstance(value.value, ast.Name)
+        and value.value.id == "self"
+        for value in values
+    )
+    has_bvr_method = any(
+        isinstance(value, ast.Constant) and value.value == "bvr_twb_dynamic_subsample"
+        for value in values
+    )
+    return has_method_attr and has_bvr_method
+
+
+def _find_loadframes_call(tree):
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "LoadFrames":
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == "__call__":
+                    return item
+    return None
+
+
+def _find_bvr_dispatch_branch(call_node):
+    for node in ast.walk(call_node):
+        if isinstance(node, ast.If) and _is_bvr_method_compare(node.test):
+            return node
+    return None
+
+
+def validate_loadframes_bvr_twb_dispatch_source(source_path=None):
+    source_path = Path(source_path) if source_path is not None else ROOT / "opentad/datasets/transforms/end_to_end.py"
+    text = source_path.read_text(encoding="utf-8")
+    tree = ast.parse(text, filename=str(source_path))
+    call_node = _find_loadframes_call(tree)
+    if call_node is None:
+        raise ValueError("BVR-TWB source dispatch proof requires LoadFrames.__call__")
+    branch = _find_bvr_dispatch_branch(call_node)
+    if branch is None:
+        raise ValueError("BVR-TWB source dispatch proof requires method == 'bvr_twb_dynamic_subsample' branch")
+
+    imports_bridge = False
+    calls_bridge = False
+    assigns_bridge_from_call = False
+    for node in ast.walk(branch):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "opentad.acquisition.bvr_twb.open_tad_bridge"
+            and any(alias.name == "build_bvr_twb_open_tad_selection" for alias in node.names)
+        ):
+            imports_bridge = True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "build_bvr_twb_open_tad_selection":
+                calls_bridge = True
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            if isinstance(node.value.func, ast.Name) and node.value.func.id == "build_bvr_twb_open_tad_selection":
+                if any(isinstance(target, ast.Name) and target.id == "bridge" for target in node.targets):
+                    assigns_bridge_from_call = True
+
+    if not imports_bridge:
+        raise ValueError("BVR-TWB source dispatch branch must import build_bvr_twb_open_tad_selection")
+    if not calls_bridge:
+        raise ValueError("BVR-TWB source dispatch branch must call build_bvr_twb_open_tad_selection")
+    if not assigns_bridge_from_call:
+        raise ValueError("BVR-TWB source dispatch branch must assign bridge from build_bvr_twb_open_tad_selection")
+    try:
+        source_display = str(source_path.relative_to(ROOT))
+    except ValueError:
+        source_display = str(source_path)
+    return {
+        "loadframes_source_dispatch_contract": "passed",
+        "loadframes_dispatch_method": "bvr_twb_dynamic_subsample",
+        "loadframes_dispatch_calls_bvr_bridge": True,
+        "loadframes_dispatch_assigns_bridge": True,
+        "loadframes_dispatch_source": source_display,
+        "loadframes_dispatch_branch_lineno": int(branch.lineno),
+    }
 
 
 def _attach_adapter_precheck_fields(bridge, feature_stride=2, target_frame_num=48):
@@ -137,6 +221,7 @@ def _run_numpy_bridge_audit(out, import_error):
 
 
 def _summary_from_rows(out, ledgers, rows, extra=None):
+    source_dispatch = validate_loadframes_bvr_twb_dispatch_source()
     summary = {
         "route_label": ROUTE_LABEL,
         "num_ledgers": len(ledgers),
@@ -161,6 +246,7 @@ def _summary_from_rows(out, ledgers, rows, extra=None):
         "value_modes": sorted({row["value_mode"] for row in rows}),
         "value_labels_used_at_test": any(row["value_labels_used_at_test"] for row in rows),
         "ledger_path": str((out / "bvr_twb_opentad_pipeline_ledgers.jsonl").resolve()),
+        **source_dispatch,
     }
     if extra:
         summary.update(extra)

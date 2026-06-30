@@ -22,7 +22,15 @@ GRADIENT_EVIDENCE_TOKENS = (
     "no_skipped_optimizer_step=true",
     "no_skipped_reg_head=true",
 )
+WRAPPER_SUCCESS_TOKENS = (
+    "wrapper_success=true",
+    "train_rc=0",
+)
 FORMAL_STOP_PATTERNS = (
+    (re.compile(r"\[shortdiag\]\[fatal\]|\bfatal\b", re.IGNORECASE), "fatal_marker"),
+    (re.compile(r"torchrun exited with (?:train_rc=)?[1-9][0-9]*", re.IGNORECASE), "nonzero_torchrun_exit"),
+    (re.compile(r"\btrain_rc=(?!0(?:\b|$))[0-9]+", re.IGNORECASE), "nonzero_train_rc"),
+    (re.compile(r"wrapper_success=false", re.IGNORECASE), "wrapper_failure_marker"),
     (re.compile(r"non[- ]finite gradients detected", re.IGNORECASE), "non_finite_gradient_marker"),
     (re.compile(r"skip optimizer step", re.IGNORECASE), "skipped_optimizer_step_marker"),
     (re.compile(r"reg(?:ression)?[_ -]?head.*skipp?ed|skipp?ed.*reg(?:ression)?[_ -]?head", re.IGNORECASE), "skipped_reg_head_marker"),
@@ -115,15 +123,19 @@ def validate_formal_train_log(train_log):
     if accepted_runtime_row is None:
         raise FormalReadinessError("formal readiness requires HeadV3 runtime evidence with nonzero kept regression samples")
 
-    gradient_evidence_line = None
+    wrapper_success_line = None
     for line in text.splitlines():
         normalized = line.lower()
-        if "[bvr_twb_formal_precheck]" in normalized and all(token in normalized for token in GRADIENT_EVIDENCE_TOKENS):
-            gradient_evidence_line = line
+        if (
+            "[bvr_twb_formal_precheck]" in normalized
+            and all(token in normalized for token in WRAPPER_SUCCESS_TOKENS)
+            and all(token in normalized for token in GRADIENT_EVIDENCE_TOKENS)
+        ):
+            wrapper_success_line = line
             break
-    if gradient_evidence_line is None:
+    if wrapper_success_line is None:
         raise FormalReadinessError(
-            "formal readiness requires explicit finite-gradient/no-skipped-reg-head evidence line"
+            "formal readiness requires explicit wrapper_success=true train_rc=0 finite-gradient/no-skipped-reg-head evidence line"
         )
 
     return {
@@ -133,6 +145,8 @@ def validate_formal_train_log(train_log):
         "runtime_debug_rows": len(runtime_rows),
         "pretrain_load_marker_found": REQUIRED_PRETRAIN_PATH in text,
         "gradient_evidence_line_found": True,
+        "wrapper_success_line_found": True,
+        "train_rc": 0,
     }
 
 

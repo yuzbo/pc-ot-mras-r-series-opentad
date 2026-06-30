@@ -14,6 +14,10 @@ log_shortdiag() {
   echo "$*" | tee -a "${TRAIN_LOG}"
 }
 
+log_fatal() {
+  echo "$*" | tee -a "${TRAIN_LOG}" >&2
+}
+
 log_shortdiag "[shortdiag] route=${ROUTE_LABEL}"
 log_shortdiag "[shortdiag] cwd=$(pwd)"
 log_shortdiag "[shortdiag] config=${CONFIG}"
@@ -22,7 +26,7 @@ log_shortdiag "[shortdiag] diagnostic_only=true full_train_unlocked=false metric
 PACKAGE_HEAD="$(git rev-parse HEAD)"
 if [[ "${BVR_TWB_SHORTDIAG_PURE_478325A_OVERLAY:-0}" == "1" ]]; then
   if [[ "${PACKAGE_HEAD}" != "${EXPECTED_BASE_COMMIT}" ]]; then
-    echo "[shortdiag][fatal] pure overlay mode requires exact HEAD: package_head=${PACKAGE_HEAD}, expected_base_commit=${EXPECTED_BASE_COMMIT}" | tee -a "${TRAIN_LOG}" >&2
+    log_fatal "[shortdiag][fatal] pure overlay mode requires exact HEAD: package_head=${PACKAGE_HEAD}, expected_base_commit=${EXPECTED_BASE_COMMIT}"
     exit 2
   fi
   EXECUTION_MODE="exact_base_overlay"
@@ -31,7 +35,7 @@ elif [[ "${PACKAGE_HEAD}" == "${EXPECTED_BASE_COMMIT}" ]]; then
 elif git merge-base --is-ancestor "${EXPECTED_BASE_COMMIT}" "${PACKAGE_HEAD}"; then
   EXECUTION_MODE="descendant_shortdiag_package"
 else
-  echo "[shortdiag][fatal] package HEAD does not descend from expected base: package_head=${PACKAGE_HEAD}, expected_base_commit=${EXPECTED_BASE_COMMIT}" | tee -a "${TRAIN_LOG}" >&2
+  log_fatal "[shortdiag][fatal] package HEAD does not descend from expected base: package_head=${PACKAGE_HEAD}, expected_base_commit=${EXPECTED_BASE_COMMIT}"
   exit 2
 fi
 log_shortdiag "[shortdiag] expected_base_commit=${EXPECTED_BASE_COMMIT}"
@@ -39,19 +43,19 @@ log_shortdiag "[shortdiag] package_head=${PACKAGE_HEAD}"
 log_shortdiag "[shortdiag] execution_mode=${EXECUTION_MODE}"
 
 if [[ ! -e data ]]; then
-  echo "[shortdiag][fatal] data link/directory is missing" >&2
+  log_fatal "[shortdiag][fatal] data link/directory is missing"
   exit 3
 fi
 if [[ ! -e pretrained ]]; then
-  echo "[shortdiag][fatal] pretrained link/directory is missing" >&2
+  log_fatal "[shortdiag][fatal] pretrained link/directory is missing"
   exit 3
 fi
 if [[ ! -f "${PRETRAIN}" ]]; then
-  echo "[shortdiag][fatal] required VideoMAE-S pretrain is missing: ${PRETRAIN}" >&2
+  log_fatal "[shortdiag][fatal] required VideoMAE-S pretrain is missing: ${PRETRAIN}"
   exit 3
 fi
 if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
-  echo "[shortdiag][fatal] CUDA_VISIBLE_DEVICES is empty; run inside an already allocated child GPU context" >&2
+  log_fatal "[shortdiag][fatal] CUDA_VISIBLE_DEVICES is empty; run inside an already allocated child GPU context"
   exit 4
 fi
 
@@ -87,26 +91,26 @@ torchrun --nnodes=1 --nproc_per_node=1 --rdzv_backend=c10d --rdzv_endpoint=local
 TRAIN_RC=${PIPESTATUS[0]}
 set -e
 
+if [[ "${TRAIN_RC}" -ne 0 ]]; then
+  log_fatal "[shortdiag][fatal] torchrun exited with train_rc=${TRAIN_RC}"
+  exit "${TRAIN_RC}"
+fi
+
 if grep -Eiq 'no pretrain path is provided|(^|[^A-Za-z])NaN([^A-Za-z]|$)|cost[=: ]+nan|(^|[^A-Za-z])Inf(inity)?([^A-Za-z]|$)|non[- ]finite|Traceback \(most recent call last\)|RuntimeError|CUDA out of memory|CUDA OOM|\bKilled\b|No space left on device|no GPU|No CUDA GPUs|mAP|Avg[-_ ]?mAP|result_detection\.json|tools/test\.py|full_train_unlocked[=: ]+true|formal full train|paper claim|deploy claim|sparse[-_ ]?compute claim|FLOPs claim' "${TRAIN_LOG}"; then
-  echo "[shortdiag][fatal] Pro stop condition marker found in ${TRAIN_LOG}" >&2
+  log_fatal "[shortdiag][fatal] Pro stop condition marker found in ${TRAIN_LOG}"
   exit 5
 fi
 if ! grep -Eq '\[Train\].*Loss=.*reg_loss=[+-]?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?' "${TRAIN_LOG}"; then
-  echo "[shortdiag][fatal] missing finite reg_loss evidence in ${TRAIN_LOG}" >&2
+  log_fatal "[shortdiag][fatal] missing finite reg_loss evidence in ${TRAIN_LOG}"
   exit 5
 fi
 if ! grep -Eq '\[Train\]\[RuntimeDebug\].*head_v3_regression_head_fp32_enabled=True.*head_v3_regression_loss_fp32_enabled=True.*head_v3_regression_samples_kept_after_filter=[1-9][0-9]*.*head_v2_reg_points_total=[1-9][0-9]*' "${TRAIN_LOG}"; then
-  echo "[shortdiag][fatal] missing HeadV3 non-skipped regression runtime debug evidence in ${TRAIN_LOG}" >&2
+  log_fatal "[shortdiag][fatal] missing HeadV3 non-skipped regression runtime debug evidence in ${TRAIN_LOG}"
   exit 5
 fi
-log_shortdiag "[bvr_twb_formal_precheck] finite_gradients=true no_skipped_optimizer_step=true no_skipped_reg_head=true linux_torch_precheck=true pretrain_loaded=true full_train_unlocked=false sparse_compute_claim=false"
+log_shortdiag "[bvr_twb_formal_precheck] wrapper_success=true train_rc=0 finite_gradients=true no_skipped_optimizer_step=true no_skipped_reg_head=true linux_torch_precheck=true pretrain_loaded=true full_train_unlocked=false sparse_compute_claim=false"
 
 python tools/bvr_twb/validate_bvr_twb_shortdiag.py --config "${CONFIG}" --train-log "${TRAIN_LOG}" --expected-base-commit "${EXPECTED_BASE_COMMIT}"
-
-if [[ "${TRAIN_RC}" -ne 0 ]]; then
-  echo "[shortdiag][fatal] torchrun exited with ${TRAIN_RC}" >&2
-  exit "${TRAIN_RC}"
-fi
 
 echo "[shortdiag] completed diagnostic-only smoke. full_train_unlocked=false metric_claim=false sparse_compute_claim=false"
 echo "[shortdiag] log=${TRAIN_LOG}"

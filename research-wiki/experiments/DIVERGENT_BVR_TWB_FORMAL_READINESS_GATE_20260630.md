@@ -2,6 +2,8 @@
 
 Timestamp: 2026-06-30 11:19:56 +08:00
 
+Update: 2026-06-30 18:20:00 +08:00
+
 Route label: `DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3`
 
 Owned worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_BVR_TWB_FormalGate_Worktree_20260630`
@@ -14,7 +16,7 @@ Scope: formal-readiness gate hardening only. No training, no `tools/test.py`, no
 
 Formal full training remains locked.
 
-Short diagnostic remains the only script-level run category prepared by this route. The short diagnostic wrapper now emits formal-readiness evidence only after it observes all required stop-condition checks, finite `reg_loss`, HeadV3 runtime debug evidence with nonzero regression samples, and no skipped optimizer/regression-head marker. That wrapper evidence still does not unlock formal full training.
+Short diagnostic remains the only script-level run category prepared by this route. The short diagnostic wrapper now emits formal-readiness evidence only after `torchrun` returns `TRAIN_RC=0`, the wrapper observes all required stop-condition checks, finite `reg_loss`, HeadV3 runtime debug evidence with nonzero regression samples, and no skipped optimizer/regression-head marker. Nonzero `torchrun` exits and wrapper fatal paths are written into `TRAIN_LOG` and cannot be hidden from the formal-readiness validator. That wrapper evidence still does not unlock formal full training.
 
 The formal config still preserves:
 
@@ -45,7 +47,8 @@ Hard requirements:
 - train log must show the required VideoMAE-S pretrain path and a real checkpoint load marker;
 - train log must contain finite `Loss=...` and finite `reg_loss=...`;
 - train log must contain `[Train][RuntimeDebug]` with HeadV3 fp32 regression flags and nonzero kept regression samples;
-- train log must contain explicit `[bvr_twb_formal_precheck] finite_gradients=true no_skipped_optimizer_step=true no_skipped_reg_head=true`;
+- train log must contain explicit `[bvr_twb_formal_precheck] wrapper_success=true train_rc=0 finite_gradients=true no_skipped_optimizer_step=true no_skipped_reg_head=true`;
+- old-style formal evidence without `wrapper_success=true train_rc=0` is rejected, even if it contains `finite_gradients=true`;
 - log must reject historical `non-finite gradients detected ... skip optimizer step`, NaN/Inf, missing pretrain, eval/mAP/result markers, formal-train unlock markers, deploy/paper claims, and sparse-compute/FLOPs claims.
 
 Even when all evidence is present, validator output is:
@@ -77,34 +80,52 @@ Validator behavior:
 
 This proves only the current handoff and geometry contract. It does not prove runtime/FLOPs reduction and must not be used as a sparse-compute claim.
 
+## Source Dispatch Proof
+
+`tools/bvr_twb/audit_opentad_bvr_twb_pipeline.py` now performs an AST-level source check against `opentad/datasets/transforms/end_to_end.py`:
+
+- finds `LoadFrames.__call__`;
+- requires the `self.method == "bvr_twb_dynamic_subsample"` branch;
+- requires that branch to import `build_bvr_twb_open_tad_selection` from `opentad.acquisition.bvr_twb.open_tad_bridge`;
+- requires `bridge = build_bvr_twb_open_tad_selection(...)`.
+
+The pipeline audit summary now carries:
+
+- `loadframes_source_dispatch_contract=passed`;
+- `loadframes_dispatch_method=bvr_twb_dynamic_subsample`;
+- `loadframes_dispatch_calls_bvr_bridge=true`;
+- `loadframes_dispatch_assigns_bridge=true`.
+
+`tools/bvr_twb/validate_bvr_twb_launch_gate.py` requires those fields and also resolves the formal config with `mmengine` to confirm train/val/test `LoadFrames.method == "bvr_twb_dynamic_subsample"`. If the dispatch branch is removed, renamed, or stops calling the BVR bridge, focused tests and the launch gate fail closed.
+
 ## Local Evidence
 
 Commands run in the owned worktree:
 
 ```powershell
-python -m pytest tests/test_bvr_twb_formal_readiness.py tests/test_bvr_twb_opentad_pipeline.py tests/test_bvr_twb_geometry_contracts.py tests/test_bvr_twb_shortdiag.py tests/test_bvr_twb_sparse_forward_audit.py -q
+python -m pytest -q tests/test_bvr_twb_formal_readiness.py tests/test_bvr_twb_opentad_pipeline.py tests/test_bvr_twb_shortdiag.py
 ```
 
 Result:
 
 ```text
-38 passed, 12 skipped in 5.85s
+30 passed, 7 skipped in 6.00s
 ```
 
 ```powershell
-python -m py_compile tools/bvr_twb/validate_bvr_twb_formal_readiness.py tools/bvr_twb/validate_bvr_twb_launch_gate.py tools/bvr_twb/audit_opentad_bvr_twb_pipeline.py tools/bvr_twb/validate_bvr_twb_geometry_contracts.py tests/test_bvr_twb_formal_readiness.py
+python -m py_compile tools/bvr_twb/validate_bvr_twb_formal_readiness.py tools/bvr_twb/validate_bvr_twb_launch_gate.py tools/bvr_twb/audit_opentad_bvr_twb_pipeline.py tools/bvr_twb/validate_bvr_twb_geometry_contracts.py tests/test_bvr_twb_formal_readiness.py tests/test_bvr_twb_opentad_pipeline.py tests/test_bvr_twb_shortdiag.py
 ```
 
 Result: pass.
 
 ```powershell
-python tools/bvr_twb/validate_bvr_twb_geometry_contracts.py
+bash -n logs/run_bvr_twb_478325a_shortdiag_n16r4.sh
 ```
 
-Result summary: source and numpy bridge contracts passed; local Windows torch runtime skipped due `c10.dll` load failure; `full_training_unlocked=false`, `no_training=true`, `no_metric_claim=true`. This is not Linux torch evidence and does not unlock formal readiness.
+Result: pass.
 
 ```powershell
-python tools/bvr_twb/validate_bvr_twb_launch_gate.py --config configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py --audit-out-dir .tmp_bvr_twb_launch_gate_formalreadiness
+python tools/bvr_twb/validate_bvr_twb_launch_gate.py --config configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py --audit-out-dir .tmp_bvr_twb_launch_gate_formalfix
 ```
 
 Result:
@@ -114,6 +135,18 @@ Result:
 ```
 
 The temporary audit directory was removed after this check.
+
+```powershell
+python tools/bvr_twb/validate_bvr_twb_formal_readiness.py --config configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py --pipeline-summary <synthetic_pipeline.json> --geometry-summary <synthetic_linux_geometry.json> --train-log <synthetic_train.log>
+```
+
+Result summary:
+
+```json
+{"allowed_next_action": "FORMAL_REVIEW_ONLY_FULL_TRAIN_STILL_LOCKED", "formal_readiness_evidence_complete": true, "formal_train_unlocked": false, "full_train_unlocked": false, "gate_pass": true, "sparse_compute_claim": false, "train_rc": 0, "wrapper_success_line_found": true}
+```
+
+This command used temporary synthetic no-BOM UTF-8 evidence files only to verify validator logic; the temporary directory was removed. It is not real Linux/GPU/pretrain evidence and does not unlock full training.
 
 ## Still Locked
 
@@ -132,6 +165,6 @@ Before any formal full train can be discussed, the route still needs:
 
 - Linux `--require-torch` geometry precheck artifact with `torch_runtime_skipped=false`;
 - real pretrain file and checkpoint-load evidence in the train/precheck log;
-- finite-gradient and no skipped optimizer/regression-head evidence line from the wrapper;
+- `wrapper_success=true train_rc=0` plus finite-gradient and no skipped optimizer/regression-head evidence line from the wrapper;
 - final read-only review or project-required review gate;
 - explicit human/coordinator launch decision after the fail-closed formal-readiness validator passes.

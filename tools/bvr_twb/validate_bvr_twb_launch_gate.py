@@ -46,6 +46,31 @@ def _require_formal_pretrain(config_path, text):
     return True
 
 
+def _require_resolved_bvr_dynamic_method(config_path):
+    try:
+        from mmengine.config import Config
+    except Exception as exc:
+        raise ValueError(f"BVR-TWB launch gate cannot verify resolved LoadFrames method without mmengine: {exc}") from exc
+
+    cfg = Config.fromfile(str(config_path))
+    bad_splits = []
+    for split in ("train", "val", "test"):
+        dataset = getattr(cfg.dataset, split)
+        load_steps = [step for step in dataset.pipeline if step.get("type") == "LoadFrames"]
+        if not load_steps:
+            bad_splits.append(f"{split}:missing LoadFrames")
+            continue
+        methods = [step.get("method") for step in load_steps]
+        if "bvr_twb_dynamic_subsample" not in methods:
+            bad_splits.append(f"{split}:{methods}")
+    if bad_splits:
+        raise ValueError(
+            "BVR-TWB launch gate requires resolved train/val/test LoadFrames "
+            f"method='bvr_twb_dynamic_subsample'; bad_splits={bad_splits}"
+        )
+    return True
+
+
 def _required_string_set(summary, key):
     if key not in summary:
         raise ValueError(f"BVR-TWB launch gate requires {key} evidence in precheck summary")
@@ -71,6 +96,7 @@ def _config_text_is_clean(config_path):
         if token.lower() in normalized.lower():
             raise ValueError(f"BVR-TWB launch gate rejects forbidden route token in config: {token}")
     _require_formal_pretrain(config_path, text)
+    _require_resolved_bvr_dynamic_method(config_path)
     if f'bvr_twb_adapter_bridge_mode="{ADAPTER_FIXED_LENGTH_PADDED_BRIDGE}"' not in text and (
         f"bvr_twb_adapter_bridge_mode='{ADAPTER_FIXED_LENGTH_PADDED_BRIDGE}'" not in text
     ):
@@ -146,6 +172,14 @@ def validate_launch_gate(config_path, precheck_summary_path):
         raise ValueError(f"BVR-TWB launch gate rejects unexpected value_modes: {sorted(value_modes)}")
     if bool(summary.get("value_labels_used_at_test", False)):
         raise ValueError("BVR-TWB launch gate rejects value labels used at test/deploy")
+    if summary.get("loadframes_source_dispatch_contract") != "passed":
+        raise ValueError("BVR-TWB launch gate requires LoadFrames source dispatch proof")
+    if summary.get("loadframes_dispatch_method") != "bvr_twb_dynamic_subsample":
+        raise ValueError("BVR-TWB launch gate requires BVR-TWB dynamic LoadFrames dispatch method proof")
+    if summary.get("loadframes_dispatch_calls_bvr_bridge") is not True:
+        raise ValueError("BVR-TWB launch gate requires LoadFrames dispatch to call BVR bridge")
+    if summary.get("loadframes_dispatch_assigns_bridge") is not True:
+        raise ValueError("BVR-TWB launch gate requires LoadFrames dispatch to assign bridge from BVR bridge")
     if bool(summary.get("sparse_compute_claim", False)):
         raise ValueError("BVR-TWB precheck summary must not claim sparse compute")
     if summary.get("no_training") is not True or summary.get("no_metric_claim") is not True:

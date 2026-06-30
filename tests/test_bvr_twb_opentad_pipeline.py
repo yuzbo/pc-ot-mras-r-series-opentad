@@ -23,6 +23,7 @@ from opentad.acquisition.bvr_twb.trainable_value import (
 )
 from opentad.acquisition.bvr_twb.types import FORBIDDEN_ROUTE_TOKENS, ROUTE_LABEL
 from opentad.acquisition.bvr_twb.validators import validate_bvr_twb_pipeline_ledger
+from tools.bvr_twb.audit_opentad_bvr_twb_pipeline import validate_loadframes_bvr_twb_dispatch_source
 from tools.bvr_twb.audit_sparse_forward_precheck import safe_prepare_output_dir
 from tools.bvr_twb.validate_bvr_twb_launch_gate import REQUIRED_PRETRAIN_PATH, validate_launch_gate
 
@@ -311,6 +312,10 @@ def test_opentad_pipeline_audit_cli_function_writes_valid_summary(tmp_path):
         assert summary["selected_raw_frames_before_decode"] is True
         assert summary["fixed_padded_bridge_sparse_compute_claim"] is False
         assert summary["adapter_padding_invalid_for_detector"] is True
+        assert summary["loadframes_source_dispatch_contract"] == "passed"
+        assert summary["loadframes_dispatch_method"] == "bvr_twb_dynamic_subsample"
+        assert summary["loadframes_dispatch_calls_bvr_bridge"] is True
+        assert summary["loadframes_dispatch_assigns_bridge"] is True
         rows = [
             json.loads(line)
             for line in (out / "bvr_twb_opentad_pipeline_ledgers.jsonl").read_text(encoding="utf-8").splitlines()
@@ -350,6 +355,10 @@ def _write_launch_gate_summary(path, overrides=None, omit=()):
         "deterministic_preview_fallback_used": False,
         "value_modes": ["deploy_heuristic_voi"],
         "value_labels_used_at_test": False,
+        "loadframes_source_dispatch_contract": "passed",
+        "loadframes_dispatch_method": "bvr_twb_dynamic_subsample",
+        "loadframes_dispatch_calls_bvr_bridge": True,
+        "loadframes_dispatch_assigns_bridge": True,
     }
     if overrides:
         summary.update(overrides)
@@ -420,6 +429,45 @@ def test_bvr_launch_gate_fail_closed_on_missing_or_bad_scout_and_value_summary(t
         path = _write_launch_gate_summary(tmp_path / f"{name}.json", overrides=overrides, omit=omit)
         with pytest.raises(ValueError, match=pattern):
             validate_launch_gate(config, path)
+
+
+def test_bvr_loadframes_source_dispatch_calls_open_tad_bridge():
+    result = validate_loadframes_bvr_twb_dispatch_source()
+    assert result["loadframes_source_dispatch_contract"] == "passed"
+    assert result["loadframes_dispatch_method"] == "bvr_twb_dynamic_subsample"
+    assert result["loadframes_dispatch_calls_bvr_bridge"] is True
+    assert result["loadframes_dispatch_assigns_bridge"] is True
+
+
+def test_bvr_loadframes_source_dispatch_fails_closed_when_bridge_call_removed(tmp_path):
+    bad_source = tmp_path / "end_to_end.py"
+    bad_source.write_text(
+        """
+class LoadFrames:
+    def __call__(self, results):
+        if self.method == "bvr_twb_dynamic_subsample":
+            bridge = {"ledger": {}}
+        return results
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="import build_bvr_twb_open_tad_selection|call build_bvr_twb_open_tad_selection"):
+        validate_loadframes_bvr_twb_dispatch_source(bad_source)
+
+    renamed_source = tmp_path / "end_to_end_renamed.py"
+    renamed_source.write_text(
+        """
+class LoadFrames:
+    def __call__(self, results):
+        if self.method == "bvr_twb_disabled_subsample":
+            from opentad.acquisition.bvr_twb.open_tad_bridge import build_bvr_twb_open_tad_selection
+            bridge = build_bvr_twb_open_tad_selection(results, dense_window=[], target_frame_num=1, split="test")
+        return results
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="bvr_twb_dynamic_subsample"):
+        validate_loadframes_bvr_twb_dispatch_source(renamed_source)
 
 
 def test_adapter_fixed_length_padded_bridge_keeps_valid_k_sparse_and_padding_invalid():

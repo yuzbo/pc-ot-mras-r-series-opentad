@@ -43,6 +43,10 @@ def _pipeline_summary(path, overrides=None):
         "deterministic_preview_fallback_used": False,
         "value_modes": ["deploy_heuristic_voi"],
         "value_labels_used_at_test": False,
+        "loadframes_source_dispatch_contract": "passed",
+        "loadframes_dispatch_method": "bvr_twb_dynamic_subsample",
+        "loadframes_dispatch_calls_bvr_bridge": True,
+        "loadframes_dispatch_assigns_bridge": True,
     }
     if overrides:
         payload.update(overrides)
@@ -66,7 +70,7 @@ def _linux_geometry_summary(path, overrides=None):
     return _write_json(path, payload)
 
 
-def _formal_log(path, extra_lines=(), omit_pretrain=False, omit_gradient_evidence=False):
+def _formal_log(path, extra_lines=(), omit_pretrain=False, omit_gradient_evidence=False, wrapper_success=True):
     lines = [
         ROUTE_LABEL,
         "bvr_twb_dynamic_subsample",
@@ -90,10 +94,13 @@ def _formal_log(path, extra_lines=(), omit_pretrain=False, omit_gradient_evidenc
         ]
     )
     if not omit_gradient_evidence:
+        prefix = "wrapper_success=true train_rc=0 " if wrapper_success else ""
         lines.append(
-            "[bvr_twb_formal_precheck] finite_gradients=true no_skipped_optimizer_step=true "
-            "no_skipped_reg_head=true linux_torch_precheck=true pretrain_loaded=true "
-            "full_train_unlocked=false sparse_compute_claim=false"
+            "[bvr_twb_formal_precheck] "
+            f"{prefix}"
+            "finite_gradients=true no_skipped_optimizer_step=true no_skipped_reg_head=true "
+            "linux_torch_precheck=true pretrain_loaded=true full_train_unlocked=false "
+            "sparse_compute_claim=false"
         )
     lines.extend(extra_lines)
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -152,6 +159,33 @@ def test_formal_readiness_rejects_missing_gradient_and_reg_head_evidence(tmp_pat
     )
     with pytest.raises(FormalReadinessError, match="zero_regression_samples_kept"):
         validate_formal_train_log(zero_reg)
+
+
+def test_formal_readiness_rejects_formal_evidence_without_wrapper_success(tmp_path):
+    old_style = _formal_log(tmp_path / "old_style.log", wrapper_success=False)
+    with pytest.raises(FormalReadinessError, match="wrapper_success=true train_rc=0"):
+        validate_formal_train_log(old_style)
+
+    nonzero = _formal_log(
+        tmp_path / "nonzero.log",
+        omit_gradient_evidence=True,
+        extra_lines=[
+            "[bvr_twb_formal_precheck] wrapper_success=false train_rc=1 "
+            "finite_gradients=true no_skipped_optimizer_step=true no_skipped_reg_head=true "
+            "linux_torch_precheck=true pretrain_loaded=true full_train_unlocked=false sparse_compute_claim=false"
+        ],
+    )
+    with pytest.raises(FormalReadinessError, match="wrapper_failure_marker|nonzero_train_rc|wrapper_success"):
+        validate_formal_train_log(nonzero)
+
+
+def test_formal_readiness_rejects_torchrun_fatal_even_with_formal_evidence(tmp_path):
+    fatal = _formal_log(
+        tmp_path / "fatal.log",
+        extra_lines=["[shortdiag][fatal] torchrun exited with train_rc=1"],
+    )
+    with pytest.raises(FormalReadinessError, match="fatal_marker|nonzero_torchrun_exit"):
+        validate_formal_train_log(fatal)
 
 
 def test_launch_gate_rejects_padded_bridge_as_sparse_compute_claim(tmp_path):
