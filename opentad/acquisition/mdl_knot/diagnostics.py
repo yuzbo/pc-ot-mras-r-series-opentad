@@ -253,6 +253,11 @@ def build_pipeline_diagnostic(
     meta_selected = [int(v) for v in meta.get("selected_positions", [])]
     meta_frame_prefix = [int(v) for v in meta.get("selected_frame_inds_prefix", [])]
     handoff_audit = dict(meta.get("handoff_audit", {}))
+    audit_mode = str(handoff_audit.get("audit_mode", handoff_audit.get("validation_mode", "structural")))
+    if audit_mode == "full_dense":
+        audit_mode = "full_raw"
+    if audit_mode == "selected_only":
+        audit_mode = "sampled_raw"
     visible_count = sum(mask_values[:valid_k]) if mask_values else 0
     source = str(scout_source)
     provenance = dict(scout_provenance or {})
@@ -269,7 +274,17 @@ def build_pipeline_diagnostic(
     mask_metadata_alignment["all_aligned"] = all(mask_metadata_alignment.values())
     frame_handoff_alignment = {
         "checked": True,
+        "audit_mode": audit_mode,
+        "structural_sparse_handoff_validated": bool(
+            handoff_audit.get("structural_sparse_handoff_validated", False)
+        ),
         "real_sparse_handoff_validated": bool(handoff_audit.get("selected_inputs_is_gathered", False)),
+        "raw_frame_values_compared": bool(handoff_audit.get("raw_frame_values_compared", False)),
+        "full_raw_dense_comparison": bool(handoff_audit.get("full_raw_dense_comparison", False)),
+        "bounded_raw_sample_comparison": bool(handoff_audit.get("bounded_raw_sample_comparison", False)),
+        "formal_raw_handoff_evidence": bool(handoff_audit.get("formal_raw_handoff_evidence", False)),
+        "dense_window_materialized_for_audit": bool(handoff_audit.get("dense_window_materialized_for_audit", False)),
+        "raw_audit_frame_count": int(handoff_audit.get("raw_audit_frame_count", 0)),
         "selected_len_matches_valid_k": int(handoff_audit.get("selected_len", -1)) == valid_k,
         "dense_len_matches_dense_T": int(handoff_audit.get("dense_len", -1)) == int(ledger_data["dense_T"]),
         "raw_inputs_not_retained": handoff_audit.get("raw_inputs_retained") is False,
@@ -287,7 +302,19 @@ def build_pipeline_diagnostic(
         "detector_frame_prefix_is_sparse": handoff_audit.get("detector_frame_inds_prefix_is_sparse") is True,
         "detector_padding_repeats_last_selected": handoff_audit.get("detector_padding_repeats_last_selected") is True,
     }
-    frame_handoff_alignment["all_aligned"] = all(frame_handoff_alignment.values())
+    common_alignment_keys = (
+        "structural_sparse_handoff_validated",
+        "selected_len_matches_valid_k",
+        "dense_len_matches_dense_T",
+        "raw_inputs_not_retained",
+        "selected_frame_inds_prefix_present",
+        "selected_positions_prefix_match",
+        "selected_frame_inds_prefix_match",
+        "detector_frame_inds_len_matches_adapter_target",
+        "detector_frame_prefix_is_sparse",
+        "detector_padding_repeats_last_selected",
+    )
+    frame_handoff_alignment["all_aligned"] = all(bool(frame_handoff_alignment[key]) for key in common_alignment_keys)
 
     synthetic_used = _is_synthetic(source, provenance)
     guard = _guard_coverage(ledger_data)
@@ -327,6 +354,13 @@ def summarize_pipeline_diagnostics(diagnostics: Sequence[Mapping[str, object]]) 
     raw = sum(1 for item in items if item.get("raw_frame_scout_used") is True)
     metadata = sum(1 for item in items if item.get("metadata_fallback_used") is True)
     synthetic = sum(1 for item in items if item.get("synthetic_fallback_used") is True)
+    audit_modes = {}
+    raw_audit_frame_counts = []
+    for item in items:
+        handoff = dict(item.get("frame_handoff_alignment", {}))
+        mode = str(handoff.get("audit_mode", "unknown"))
+        audit_modes[mode] = int(audit_modes.get(mode, 0)) + 1
+        raw_audit_frame_counts.append(float(handoff.get("raw_audit_frame_count", 0)))
     align_failures = [
         item.get("video_id", "unknown")
         for item in items
@@ -394,6 +428,11 @@ def summarize_pipeline_diagnostics(diagnostics: Sequence[Mapping[str, object]]) 
             "all_aligned": count > 0 and not handoff_failures,
         },
         "frame_handoff_alignment_status": "aligned" if count > 0 and not handoff_failures else "failed",
+        "handoff_audit_modes": audit_modes,
+        "full_raw_handoff_evidence_windows": int(audit_modes.get("full_raw", 0)),
+        "sampled_raw_handoff_evidence_windows": int(audit_modes.get("sampled_raw", 0)),
+        "structural_handoff_evidence_windows": int(audit_modes.get("structural", 0)),
+        "raw_audit_frame_count_distribution": _stats(raw_audit_frame_counts),
         "short_boundary_risk_monitoring": {
             "short_island_total": short_total,
             "short_island_uncovered_count": short_uncovered,
@@ -502,6 +541,10 @@ def validate_formal_readiness_evidence(
         raise FormalReadinessLocked("raw-frame sparse handoff alignment diagnostics did not pass")
     if diag.get("frame_handoff_alignment_status", "aligned") != "aligned":
         raise FormalReadinessLocked("raw-frame sparse handoff alignment status is not aligned")
+    if int(diag.get("full_raw_handoff_evidence_windows", 0)) <= 0:
+        raise FormalReadinessLocked("formal readiness requires at least one full_raw handoff audit window")
+    if int(diag.get("structural_handoff_evidence_windows", 0)) >= int(diag.get("window_count", 0)):
+        raise FormalReadinessLocked("structural-only handoff diagnostics cannot unlock formal readiness")
     if "max_gap_distribution" not in diag or "gap_p95_distribution" not in diag:
         raise FormalReadinessLocked("missing max_gap or gap_p95 diagnostic distributions")
     if "selected_gap_stats" in diag:

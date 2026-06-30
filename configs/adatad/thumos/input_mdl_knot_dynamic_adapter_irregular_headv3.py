@@ -27,6 +27,7 @@ mdl_knot_acquisition = dict(
     deploy_scout_source="raw_frame_motion_scout_with_metadata_fallback",
     real_scout_unavailable=False,
     synthetic_fallback_allowed=False,
+    handoff_audit_mode="sampled_raw",
     scout_stride=8,
     scout_max_frames=96,
     changed_surface=dict(
@@ -48,6 +49,11 @@ mdl_knot_acquisition = dict(
     no_teacher=True,
     no_prediction_cache=True,
     no_dense_raw_backbone_handoff=True,
+    handoff_audit_modes=dict(
+        training_default="sampled_raw",
+        realdiag_required_for_formal_readiness="full_raw",
+        structural_only_does_not_unlock_formal_readiness=True,
+    ),
     no_metric_claims=True,
     no_runtime_claims=True,
     no_deploy_claims=True,
@@ -81,6 +87,7 @@ _mdl_load_train = dict(
     mdl_knot_no_teacher=True,
     mdl_knot_no_prediction_cache=True,
     mdl_knot_no_dense_raw_backbone_handoff=True,
+    mdl_knot_handoff_audit_mode=mdl_knot_acquisition["handoff_audit_mode"],
 )
 
 _mdl_load_eval = dict(
@@ -105,6 +112,7 @@ _mdl_load_eval = dict(
     mdl_knot_no_teacher=True,
     mdl_knot_no_prediction_cache=True,
     mdl_knot_no_dense_raw_backbone_handoff=True,
+    mdl_knot_handoff_audit_mode=mdl_knot_acquisition["handoff_audit_mode"],
 )
 
 dataset = dict(

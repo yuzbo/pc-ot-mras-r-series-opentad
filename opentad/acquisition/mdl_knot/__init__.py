@@ -23,9 +23,13 @@ from .types import (
     SparseTemporalMeta,
 )
 from .validators import (
+    normalize_handoff_audit_mode,
     validate_knot_ledger,
     validate_no_forbidden_sources,
     validate_real_sparse_handoff,
+    validate_sampled_sparse_handoff,
+    validate_selected_sparse_handoff,
+    validate_structural_sparse_handoff,
 )
 
 __all__ = [
@@ -48,8 +52,12 @@ __all__ = [
     "piecewise_linear_reconstruct",
     "same_k_uniform_positions",
     "summarize_pipeline_diagnostics",
+    "normalize_handoff_audit_mode",
     "validate_formal_readiness_evidence",
     "validate_knot_ledger",
     "validate_no_forbidden_sources",
     "validate_real_sparse_handoff",
+    "validate_sampled_sparse_handoff",
+    "validate_selected_sparse_handoff",
+    "validate_structural_sparse_handoff",
 ]

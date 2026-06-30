@@ -42,11 +42,14 @@ def _dense_raw_frames(length: int) -> list[np.ndarray]:
 class _InMemoryVideoReader:
     def __init__(self, frame_count: int) -> None:
         self.frames = _dense_raw_frames(frame_count)
+        self.requested_indices = []
 
     def __getitem__(self, index: int) -> np.ndarray:
+        self.requested_indices.append(int(index))
         return self.frames[int(index)]
 
     def get_batch(self, indices) -> np.ndarray:
+        self.requested_indices.extend([int(index) for index in indices])
         return np.stack([self.frames[int(index)] for index in indices], axis=0)
 
 
@@ -71,6 +74,7 @@ def test_pipeline_mock_sets_frame_inds_before_decode_and_records_valid_k():
     assert updated["mdl_knot_sparse_meta"]["position_unit"] == "original_dense_time_index"
     assert updated["mdl_knot_sparse_meta"]["selected_frame_inds_prefix"] == updated["frame_inds"][: updated["mdl_knot_valid_k"]]
     assert updated["mdl_knot_sparse_meta"]["handoff_audit"]["selected_inputs_is_gathered"] is True
+    assert updated["mdl_knot_sparse_meta"]["handoff_audit"]["audit_mode"] == "full_raw"
     assert updated["mdl_knot_sparse_meta"]["handoff_audit"]["raw_inputs_retained"] is False
     assert updated["mdl_knot_real_sparse_handoff_validated"] is True
     assert updated["mdl_knot_handoff_audit"]["selected_inputs_is_gathered"] is True
@@ -181,6 +185,7 @@ def test_real_loadframes_mdl_knot_branch_sets_sparse_frame_inds_before_decode():
         mdl_knot_deploy_scout_source="frame_metadata_scout",
         mdl_knot_allow_synthetic_fallback=False,
     )
+    reader = _InMemoryVideoReader(128)
     results = {
         "video_name": "video_test_0002",
         "total_frames": 128,
@@ -189,7 +194,7 @@ def test_real_loadframes_mdl_knot_branch_sets_sparse_frame_inds_before_decode():
         "window_size": 128,
         "feature_start_idx": 0,
         "feature_end_idx": 127,
-        "video_reader": _InMemoryVideoReader(128),
+        "video_reader": reader,
     }
 
     out = loader(results)
@@ -213,6 +218,9 @@ def test_real_loadframes_mdl_knot_branch_sets_sparse_frame_inds_before_decode():
     assert diagnostic["fixed_pad_bridge_compute_boundary"]["sparse_compute_claim"] is False
     assert out["mdl_knot_real_sparse_handoff_validated"] is True
     assert out["mdl_knot_handoff_audit"]["selected_inputs_is_gathered"] is True
+    assert out["mdl_knot_handoff_audit"]["audit_mode"] == "sampled_raw"
+    assert out["mdl_knot_handoff_audit"]["dense_window_materialized_for_audit"] is False
+    assert len(reader.requested_indices) < 128
 
     from opentad.datasets.transforms.formatting import Collect
 
@@ -223,6 +231,53 @@ def test_real_loadframes_mdl_knot_branch_sets_sparse_frame_inds_before_decode():
     assert meta["mdl_knot_sparse_meta"]["selected_frame_inds_prefix"] == out["frame_inds"][:valid_k].tolist()
     assert meta["mdl_knot_sparse_meta"]["handoff_audit"]["selected_inputs_is_gathered"] is True
     assert meta["mdl_knot_pipeline_diagnostic"]["frame_handoff_alignment"]["all_aligned"] is True
+
+
+def test_real_loadframes_structural_audit_does_not_read_dense_raw_inputs():
+    torch_probe = subprocess.run(
+        [sys.executable, "-c", "import torch"],
+        text=True,
+        capture_output=True,
+    )
+    if torch_probe.returncode != 0:
+        pytest.skip(f"real OpenTAD LoadFrames smoke skipped because torch import fails: {torch_probe.stderr[-240:]}")
+
+    from opentad.datasets.transforms.end_to_end import LoadFrames
+
+    reader = _InMemoryVideoReader(128)
+    loader = LoadFrames(
+        method="mdl_knot_dynamic_subsample",
+        method_base="sliding_window",
+        scale_factor=1,
+        target_len=64,
+        mdl_knot_max_k=40,
+        mdl_knot_target_weighted_error=0.01,
+        mdl_knot_deploy_scout_source="frame_metadata_scout",
+        mdl_knot_allow_synthetic_fallback=False,
+        mdl_knot_handoff_audit_mode="structural",
+    )
+    out = loader(
+        {
+            "video_name": "video_test_structural",
+            "total_frames": 128,
+            "avg_fps": 30.0,
+            "snippet_stride": 1,
+            "window_size": 128,
+            "feature_start_idx": 0,
+            "feature_end_idx": 127,
+            "video_reader": reader,
+        }
+    )
+
+    assert reader.requested_indices == []
+    assert out["mdl_knot_handoff_audit"]["audit_mode"] == "structural"
+    assert out["mdl_knot_handoff_audit"]["selected_inputs_is_gathered"] is False
+    assert out["mdl_knot_handoff_audit"]["structural_sparse_handoff_validated"] is True
+    assert out["mdl_knot_real_sparse_handoff_validated"] is False
+    diagnostic = out["mdl_knot_pipeline_diagnostic"]
+    assert diagnostic["frame_handoff_alignment"]["audit_mode"] == "structural"
+    assert diagnostic["frame_handoff_alignment"]["all_aligned"] is True
+    assert diagnostic["frame_handoff_alignment"]["formal_raw_handoff_evidence"] is False
 
 
 def test_raw_frame_motion_scout_builder_is_deploy_visible_and_non_synthetic():
@@ -589,6 +644,10 @@ def _formal_readiness_summary(train_log: str = "logs/mdl_knot_shortdiag_one_epoc
             "mask_meta_alignment_status": "aligned",
             "frame_handoff_alignment": {"all_aligned": True},
             "frame_handoff_alignment_status": "aligned",
+            "handoff_audit_modes": {"full_raw": 3},
+            "full_raw_handoff_evidence_windows": 3,
+            "sampled_raw_handoff_evidence_windows": 0,
+            "structural_handoff_evidence_windows": 0,
             "short_boundary_risk_monitoring": {
                 "short_island_total": 2,
                 "short_island_uncovered_count": 0,

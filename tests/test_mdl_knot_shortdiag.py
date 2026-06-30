@@ -43,6 +43,12 @@ def test_shortdiag_config_extends_mdl_route_and_keeps_all_locks():
     acq = cfg["mdl_knot_acquisition"]
     assert acq["deploy_scout_source"] == "raw_frame_motion_scout_with_metadata_fallback"
     assert acq["synthetic_fallback_allowed"] is False
+    assert acq["scout_stride"] == 8
+    assert acq["scout_max_frames"] == 96
+    assert acq["dense_window_size"] == 768
+    assert acq["window_size"] == 384
+    assert acq["max_k"] == 384
+    assert acq["handoff_audit_mode"] == "sampled_raw"
     assert acq["diagnostic_only"] is True
     assert acq["full_train_unlocked"] is False
     assert acq["metric_claim"] is False
@@ -55,6 +61,13 @@ def test_shortdiag_config_extends_mdl_route_and_keeps_all_locks():
     assert cfg["workflow"]["val_loss_interval"] == -1
     assert cfg["workflow"]["val_eval_interval"] == -1
     assert cfg["workflow"]["val_start_epoch"] > 1
+    load = cfg["dataset"]["train"]["pipeline"][2]
+    assert load["source_len"] == 768
+    assert load["target_len"] == 384
+    assert load["mdl_knot_max_k"] == 384
+    assert load["mdl_knot_scout_stride"] == 8
+    assert load["mdl_knot_scout_max_frames"] == 96
+    assert load["mdl_knot_handoff_audit_mode"] == "sampled_raw"
     assert cfg["work_dir"].endswith("input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag")
 
 
@@ -74,6 +87,11 @@ def test_shortdiag_validator_config_only_is_static_check_not_execution_evidence(
     assert evidence["log_evidence"] is None
     assert evidence["execution_evidence_required_for_formal_readiness"] is True
     assert evidence["evidence_scope"] == "static_config_only"
+    assert evidence["scout_stride"] == 8
+    assert evidence["scout_max_frames"] == 96
+    assert evidence["dense_window_size"] == 768
+    assert evidence["max_k"] == 384
+    assert evidence["handoff_audit_mode"] == "sampled_raw"
 
 
 def test_shortdiag_validator_accepts_finite_loss_log_but_keeps_claim_locked(tmp_path):

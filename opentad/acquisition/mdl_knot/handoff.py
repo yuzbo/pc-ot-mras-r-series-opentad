@@ -4,7 +4,11 @@ from typing import MutableMapping, Sequence
 
 from .selector import greedy_mdl_knot_select
 from .types import MDLKnotConfig, ScoutCurve
-from .validators import validate_real_sparse_handoff
+from .validators import (
+    normalize_handoff_audit_mode,
+    validate_real_sparse_handoff,
+    validate_structural_sparse_handoff,
+)
 
 
 def _gather_selected_inputs(dense_inputs: Sequence[object], selected_positions: Sequence[int]) -> list[object]:
@@ -18,7 +22,12 @@ def apply_mdl_knot_to_dense_window(
     config: MDLKnotConfig,
     adapter_target_len: int | None = None,
     dense_inputs: Sequence[object] | None = None,
+    defer_handoff_validation: bool = False,
+    handoff_audit_mode: str = "full_raw",
 ) -> MutableMapping[str, object]:
+    audit_mode = normalize_handoff_audit_mode(handoff_audit_mode)
+    if defer_handoff_validation and audit_mode == "full_raw" and dense_inputs is None:
+        audit_mode = "sampled_raw"
     if len(dense_window) != scout_curve.dense_t:
         raise ValueError(f"dense_window length {len(dense_window)} must match scout dense_t {scout_curve.dense_t}")
     if dense_inputs is not None and len(dense_inputs) != len(dense_window):
@@ -62,22 +71,47 @@ def apply_mdl_knot_to_dense_window(
     results["irregular_selected_valid_len"] = float(ledger.dense_t)
     results["irregular_native_axis"] = False
 
-    if dense_inputs is None:
+    expected_selected_frame_inds = [int(dense_window[pos]) for pos in selected_positions]
+    if audit_mode == "full_raw" and dense_inputs is None:
         raise ValueError("MDL-Knot true sparse handoff requires dense raw inputs for gather validation")
-    selected_inputs = _gather_selected_inputs(dense_inputs, selected_positions)
-    validate_real_sparse_handoff(
-        batch={
-            "selected_inputs": selected_inputs,
-            "dense_inputs": dense_inputs,
-            "meta": sparse_meta_dict,
-        },
-        ledger=ledger,
-    )
+    selected_inputs = _gather_selected_inputs(dense_inputs, selected_positions) if dense_inputs is not None else []
+    if audit_mode == "full_raw":
+        validate_real_sparse_handoff(
+            batch={
+                "selected_inputs": selected_inputs,
+                "dense_inputs": dense_inputs,
+                "meta": sparse_meta_dict,
+            },
+            ledger=ledger,
+        )
+    else:
+        validate_structural_sparse_handoff(
+            batch={
+                "selected_frame_inds": expected_selected_frame_inds,
+                "expected_selected_frame_inds": expected_selected_frame_inds,
+                "detector_frame_inds": frame_inds,
+                "masks": masks,
+                "meta": sparse_meta_dict,
+            },
+            ledger=ledger,
+        )
     first_shape = getattr(selected_inputs[0], "shape", None) if selected_inputs else None
+    raw_values_compared = audit_mode == "full_raw"
     handoff_audit = {
-        "selected_inputs_is_gathered": True,
+        "audit_mode": audit_mode,
+        "validation_mode": audit_mode,
+        "validation_mode_alias": "full_dense" if audit_mode == "full_raw" else audit_mode,
+        "selected_inputs_is_gathered": bool(raw_values_compared),
+        "structural_sparse_handoff_validated": True,
+        "raw_frame_values_compared": bool(raw_values_compared),
+        "full_raw_dense_comparison": bool(raw_values_compared),
+        "bounded_raw_sample_comparison": False,
+        "formal_raw_handoff_evidence": bool(raw_values_compared),
         "selected_len": valid_k,
-        "dense_len": len(dense_inputs),
+        "dense_len": len(dense_inputs) if dense_inputs is not None else len(dense_window),
+        "dense_raw_inputs_read": len(dense_inputs) if dense_inputs is not None else 0,
+        "raw_audit_frame_count": len(dense_inputs) if dense_inputs is not None else 0,
+        "dense_window_materialized_for_audit": bool(dense_inputs is not None),
         "raw_sample_shape": None if first_shape is None else [int(v) for v in first_shape],
         "raw_inputs_retained": False,
         "selected_frame_inds_prefix": [int(v) for v in frame_inds[:valid_k]],
@@ -93,6 +127,7 @@ def apply_mdl_knot_to_dense_window(
     results["mdl_knot_sparse_meta"]["selected_frame_inds_prefix"] = [int(v) for v in frame_inds[:valid_k]]
     results["mdl_knot_sparse_meta"]["detector_frame_inds_len"] = len(frame_inds)
     results["mdl_knot_sparse_meta"]["handoff_audit"] = handoff_audit
-    results["mdl_knot_real_sparse_handoff_validated"] = True
+    results["mdl_knot_real_sparse_handoff_validated"] = bool(raw_values_compared)
+    results["mdl_knot_handoff_audit_mode"] = audit_mode
     results["mdl_knot_handoff_audit"] = handoff_audit
     return results

@@ -3,6 +3,7 @@ import hashlib
 import os
 import pickle
 import random
+import time
 import torch
 import random
 import pandas as pd
@@ -25,7 +26,9 @@ from opentad.acquisition.mdl_knot import (
     build_frame_metadata_scout_curve,
     build_raw_frame_motion_scout_curve,
     build_synthetic_scout_curve,
+    normalize_handoff_audit_mode,
 )
+from opentad.acquisition.mdl_knot.validators import validate_sampled_sparse_handoff
 
 
 def _stable_string_seed(value):
@@ -249,6 +252,7 @@ class LoadFrames:
         mdl_knot_no_teacher=True,
         mdl_knot_no_prediction_cache=True,
         mdl_knot_no_dense_raw_backbone_handoff=True,
+        mdl_knot_handoff_audit_mode="sampled_raw",
         fixed_trunc_start=None,
         fixed_trunc_gt_index=None,
     ):
@@ -288,6 +292,7 @@ class LoadFrames:
         self.mdl_knot_no_teacher = bool(mdl_knot_no_teacher)
         self.mdl_knot_no_prediction_cache = bool(mdl_knot_no_prediction_cache)
         self.mdl_knot_no_dense_raw_backbone_handoff = bool(mdl_knot_no_dense_raw_backbone_handoff)
+        self.mdl_knot_handoff_audit_mode = normalize_handoff_audit_mode(mdl_knot_handoff_audit_mode)
         self.mdl_knot_config = MDLKnotConfig(
             route_label=MDL_KNOT_ROUTE_LABEL,
             min_k=int(mdl_knot_min_k),
@@ -682,11 +687,101 @@ class LoadFrames:
             reader = results.get("decord_reader")
         return reader
 
+    def _mdl_knot_profile_enabled(self):
+        return str(os.environ.get("MDL_KNOT_PROFILE", "")).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _record_mdl_knot_profile(self, results, stage, seconds, extra=None):
+        if not self._mdl_knot_profile_enabled():
+            return
+        profile = results.setdefault("mdl_knot_profile", {})
+        stage_data = profile.setdefault(stage, {"count": 0, "total_ms": 0.0})
+        stage_data["count"] = int(stage_data.get("count", 0)) + 1
+        stage_data["total_ms"] = float(stage_data.get("total_ms", 0.0)) + float(seconds) * 1000.0
+        stage_data["last_ms"] = float(seconds) * 1000.0
+        if extra:
+            stage_data.update(extra)
+
+    def _profile_mdl_knot_call(self, results, stage, fn, *args, **kwargs):
+        if not self._mdl_knot_profile_enabled():
+            return fn(*args, **kwargs)
+        start = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            self._record_mdl_knot_profile(results, stage, time.perf_counter() - start)
+
+    def _emit_mdl_knot_profile(self, results):
+        if not self._mdl_knot_profile_enabled():
+            return
+        profile = dict(results.get("mdl_knot_profile", {}))
+        if not profile:
+            return
+        parts = []
+        for stage in sorted(profile):
+            data = dict(profile[stage])
+            parts.append(f"{stage}={float(data.get('last_ms', 0.0)):.2f}ms")
+        print(
+            "MDL_KNOT_PROFILE "
+            f"video={results.get('video_name', 'unknown')} "
+            f"audit={results.get('mdl_knot_handoff_audit_mode', 'unknown')} "
+            + " ".join(parts)
+        )
+
     def _read_mdl_knot_dense_handoff_inputs(self, results, dense_window):
         reader = self._get_mdl_knot_reader(results)
         if reader is None:
             raise ValueError("MDL-Knot true sparse handoff requires a video reader before DecordDecode")
         return self._read_mdl_knot_probe_frames(reader, np.asarray(dense_window, dtype=np.int64).tolist())
+
+    def _validate_mdl_knot_sampled_handoff_inputs(self, results, dense_window):
+        reader = self._get_mdl_knot_reader(results)
+        if reader is None:
+            raise ValueError("MDL-Knot sampled_raw handoff audit requires a video reader before DecordDecode")
+        selected_positions = [int(v) for v in results["mdl_knot_selected_positions"]]
+        dense_arr = np.asarray(dense_window, dtype=np.int64)
+        selected_frame_inds = dense_arr[selected_positions].astype(np.int64).tolist()
+        selected_inputs = self._profile_mdl_knot_call(
+            results,
+            "handoff_audit_sampled_raw_decode",
+            self._read_mdl_knot_probe_frames,
+            reader,
+            selected_frame_inds,
+        )
+        sparse_meta = results["mdl_knot_sparse_meta"]
+        validate_sampled_sparse_handoff(
+            batch={
+                "selected_inputs": selected_inputs,
+                "selected_frame_inds": selected_frame_inds,
+                "expected_selected_frame_inds": selected_frame_inds,
+                "meta": sparse_meta,
+            },
+            ledger=results["mdl_knot_ledger"],
+        )
+        first_shape = getattr(selected_inputs[0], "shape", None) if selected_inputs else None
+        audit = results.get("mdl_knot_handoff_audit", {})
+        audit.update(
+            {
+                "audit_mode": "sampled_raw",
+                "selected_inputs_is_gathered": True,
+                "selected_only_raw_frame_audit": True,
+                "sampled_raw_frame_audit": True,
+                "validation_mode": "sampled_raw",
+                "raw_frame_values_compared": True,
+                "full_raw_dense_comparison": False,
+                "bounded_raw_sample_comparison": True,
+                "formal_raw_handoff_evidence": False,
+                "selected_len": int(len(selected_inputs)),
+                "dense_len": int(len(dense_arr)),
+                "dense_raw_inputs_read": int(len(selected_inputs)),
+                "raw_audit_frame_count": int(len(selected_inputs)),
+                "dense_window_materialized_for_audit": False,
+                "raw_sample_shape": None if first_shape is None else [int(v) for v in first_shape],
+                "selected_frame_inds_prefix": [int(v) for v in selected_frame_inds],
+            }
+        )
+        results["mdl_knot_handoff_audit"] = audit
+        results["mdl_knot_sparse_meta"]["handoff_audit"] = audit
+        results["mdl_knot_real_sparse_handoff_validated"] = True
 
     def _build_mdl_knot_metadata_scout_curve(self, results, dense_window):
         valid_len = int(len(dense_window))
@@ -719,7 +814,13 @@ class LoadFrames:
             probe_positions = np.unique(np.rint(np.linspace(0, valid_len - 1, num=max_frames)).astype(np.int64))
         frame_indices = np.asarray(dense_window, dtype=np.int64)[probe_positions]
         try:
-            probe_frames = self._read_mdl_knot_probe_frames(reader, frame_indices.tolist())
+            probe_frames = self._profile_mdl_knot_call(
+                results,
+                "scout_raw_probe_decode",
+                self._read_mdl_knot_probe_frames,
+                reader,
+                frame_indices.tolist(),
+            )
         except Exception as exc:
             results["mdl_knot_raw_frame_scout_error"] = str(exc)
             return None
@@ -1027,16 +1128,45 @@ class LoadFrames:
                     and self.mdl_knot_no_dense_raw_backbone_handoff
                 ):
                     raise ValueError("MDL-Knot selector safety flags must all be enabled")
-                scout_curve = self._build_mdl_knot_scout_curve(results, dense_window)
-                dense_handoff_inputs = self._read_mdl_knot_dense_handoff_inputs(results, dense_window)
-                apply_mdl_knot_to_dense_window(
+                scout_curve = self._profile_mdl_knot_call(
+                    results,
+                    "scout_build",
+                    self._build_mdl_knot_scout_curve,
+                    results,
+                    dense_window,
+                )
+                dense_handoff_inputs = (
+                    self._profile_mdl_knot_call(
+                        results,
+                        "handoff_audit_full_raw_decode",
+                        self._read_mdl_knot_dense_handoff_inputs,
+                        results,
+                        dense_window,
+                    )
+                    if self.mdl_knot_handoff_audit_mode == "full_raw"
+                    else None
+                )
+                self._profile_mdl_knot_call(
+                    results,
+                    "selector_and_structural_handoff",
+                    apply_mdl_knot_to_dense_window,
                     results=results,
                     dense_window=dense_window.astype(np.int64).tolist(),
                     scout_curve=scout_curve,
                     config=self.mdl_knot_config,
                     adapter_target_len=frame_num,
                     dense_inputs=dense_handoff_inputs,
+                    defer_handoff_validation=self.mdl_knot_handoff_audit_mode == "sampled_raw",
+                    handoff_audit_mode=self.mdl_knot_handoff_audit_mode,
                 )
+                if self.mdl_knot_handoff_audit_mode == "sampled_raw":
+                    self._profile_mdl_knot_call(
+                        results,
+                        "handoff_audit_sampled_raw",
+                        self._validate_mdl_knot_sampled_handoff_inputs,
+                        results,
+                        dense_window,
+                    )
                 keep_positions = np.asarray(results["mdl_knot_selected_positions"], dtype=np.int64)
                 frame_idxs = np.asarray(results["frame_inds"], dtype=np.int64)
                 masks = torch.as_tensor(results["masks"], dtype=torch.bool)
@@ -1054,6 +1184,7 @@ class LoadFrames:
                     bridge=self.mdl_knot_bridge,
                     adapter_target_len=frame_num,
                 )
+                self._emit_mdl_knot_profile(results)
             elif self.method == "stratified_random_fixed_subsample":
                 keep_positions = self._select_stratified_random_fixed_positions(valid_len, frame_num, sample_key)
             elif self.method == "pseudo_boundary_hybrid_subsample":

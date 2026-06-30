@@ -44,6 +44,12 @@ mdl_knot_acquisition = dict(
     method="mdl_knot_dynamic_subsample",
     bridge="fixed_pad",
     deploy_scout_source="raw_frame_motion_scout_with_metadata_fallback",
+    scout_stride=8,
+    scout_max_frames=96,
+    dense_window_size=768,
+    window_size=384,
+    max_k=384,
+    handoff_audit_mode="sampled_raw",
     real_scout_unavailable=False,
     synthetic_fallback_allowed=False,
     diagnostic_only=True,
@@ -69,20 +75,63 @@ workflow = dict(
     end_epoch=1,
     disable_checkpoint=True,
 )
+
+_shortdiag_window_size = 384
+_shortdiag_dense_window_size = 768
+_shortdiag_scale_factor = 1
+_shortdiag_load_train = dict(
+    type="LoadFrames",
+    num_clips=1,
+    method="mdl_knot_dynamic_subsample",
+    method_base="random_trunc",
+    keep_ratio=0.5,
+    remap_gt_to_selected_axis=False,
+    target_len=_shortdiag_window_size,
+    source_len=_shortdiag_dense_window_size,
+    trunc_thresh=0.75,
+    crop_ratio=[0.9, 1.0],
+    scale_factor=_shortdiag_scale_factor,
+    mdl_knot_bridge=mdl_knot_acquisition["bridge"],
+    mdl_knot_min_k=4,
+    mdl_knot_max_k=mdl_knot_acquisition["max_k"],
+    mdl_knot_target_weighted_error=0.02,
+    mdl_knot_max_gap=32,
+    mdl_knot_deploy_scout_source=mdl_knot_acquisition["deploy_scout_source"],
+    mdl_knot_scout_stride=mdl_knot_acquisition["scout_stride"],
+    mdl_knot_scout_max_frames=mdl_knot_acquisition["scout_max_frames"],
+    mdl_knot_allow_synthetic_fallback=mdl_knot_acquisition["synthetic_fallback_allowed"],
+    mdl_knot_no_gt_selector=True,
+    mdl_knot_no_teacher=True,
+    mdl_knot_no_prediction_cache=True,
+    mdl_knot_no_dense_raw_backbone_handoff=True,
+    mdl_knot_handoff_audit_mode=mdl_knot_acquisition["handoff_audit_mode"],
+)
 total_epochs = 1
 max_epochs = 1
 evaluation = dict(shortdiag_disabled=True)
 checkpoint = dict(shortdiag_disabled=True, save_last=False, max_keep_ckpts=0)
 solver = dict(
-    train=dict(batch_size=1, num_workers=0),
-    val=dict(batch_size=1, num_workers=0),
-    test=dict(batch_size=1, num_workers=0),
+    train=dict(batch_size=1, num_workers=2),
+    val=dict(batch_size=1, num_workers=1),
+    test=dict(batch_size=1, num_workers=1),
 )
 dataset = dict(
     train=dict(
         ann_file=annotation_path,
         class_map=class_map,
         data_path=train_data_path,
+        sample_stride=1,
+        pipeline=[
+            dict(type="PrepareVideoInfo", format="mp4"),
+            dict(type="mmaction.DecordInit", num_threads=4),
+            _shortdiag_load_train,
+            dict(type="mmaction.DecordDecode"),
+            dict(type="mmaction.Resize", scale=(-1, 160)),
+            dict(type="mmaction.CenterCrop", crop_size=160),
+            dict(type="mmaction.FormatShape", input_format="NCTHW"),
+            dict(type="ConvertToTensor", keys=["imgs", "gt_segments", "gt_labels"]),
+            dict(type="Collect", inputs="imgs", keys=["masks", "gt_segments", "gt_labels"]),
+        ],
     ),
     val=dict(
         ann_file=annotation_path,

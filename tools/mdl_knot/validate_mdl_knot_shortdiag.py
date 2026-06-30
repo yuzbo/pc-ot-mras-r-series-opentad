@@ -168,6 +168,18 @@ def _validate_shortdiag_config(config_path: Path, cfg: dict[str, Any], raw_cfg: 
     acq = cfg.get("mdl_knot_acquisition", {})
     if acq.get("deploy_scout_source") != "raw_frame_motion_scout_with_metadata_fallback":
         return _locked("shortdiag must use raw_frame_motion_scout_with_metadata_fallback"), None
+    if int(acq.get("scout_stride", -1)) != 8:
+        return _locked("shortdiag must preserve scout_stride=8"), None
+    if int(acq.get("scout_max_frames", -1)) != 96:
+        return _locked("shortdiag must preserve scout_max_frames=96"), None
+    if int(acq.get("dense_window_size", -1)) != 768:
+        return _locked("shortdiag must preserve dense_window_size=768"), None
+    if int(acq.get("window_size", -1)) != 384:
+        return _locked("shortdiag must preserve window_size=384"), None
+    if int(acq.get("max_k", -1)) != 384:
+        return _locked("shortdiag must preserve max_k=384"), None
+    if acq.get("handoff_audit_mode") not in ("structural", "sampled_raw"):
+        return _locked("shortdiag hot path must use structural or sampled_raw handoff audit"), None
     if acq.get("synthetic_fallback_allowed") is not False:
         return _locked("synthetic formal fallback must be disabled"), None
     for key in ("diagnostic_only",):
@@ -183,6 +195,21 @@ def _validate_shortdiag_config(config_path: Path, cfg: dict[str, Any], raw_cfg: 
         return _locked("evaluation must be shortdiag-disabled")
     if checkpoint.get("shortdiag_disabled") is not True or checkpoint.get("save_last") is not False:
         return _locked("checkpoint saving must be disabled")
+    train_load = cfg.get("dataset", {}).get("train", {}).get("pipeline", [])[2]
+    if train_load.get("type") != "LoadFrames":
+        return _locked("shortdiag train pipeline must keep LoadFrames before decode"), None
+    if int(train_load.get("mdl_knot_scout_stride", -1)) != 8:
+        return _locked("shortdiag LoadFrames must preserve mdl_knot_scout_stride=8"), None
+    if int(train_load.get("mdl_knot_scout_max_frames", -1)) != 96:
+        return _locked("shortdiag LoadFrames must preserve mdl_knot_scout_max_frames=96"), None
+    if int(train_load.get("source_len", -1)) != 768:
+        return _locked("shortdiag LoadFrames must preserve source_len=768"), None
+    if int(train_load.get("target_len", -1)) != 384:
+        return _locked("shortdiag LoadFrames must preserve target_len=384"), None
+    if int(train_load.get("mdl_knot_max_k", -1)) != 384:
+        return _locked("shortdiag LoadFrames must preserve mdl_knot_max_k=384"), None
+    if train_load.get("mdl_knot_handoff_audit_mode") not in ("structural", "sampled_raw"):
+        return _locked("shortdiag LoadFrames must avoid full raw handoff audit in the hot path"), None
 
     evidence = {
         "config_path": str(config_path),
@@ -197,6 +224,12 @@ def _validate_shortdiag_config(config_path: Path, cfg: dict[str, Any], raw_cfg: 
         "shortdiag_gate_workflow": gate.get("workflow"),
         "deploy_scout_source": acq.get("deploy_scout_source"),
         "synthetic_fallback_allowed": acq.get("synthetic_fallback_allowed"),
+        "handoff_audit_mode": acq.get("handoff_audit_mode"),
+        "scout_stride": acq.get("scout_stride"),
+        "scout_max_frames": acq.get("scout_max_frames"),
+        "dense_window_size": acq.get("dense_window_size"),
+        "window_size": acq.get("window_size"),
+        "max_k": acq.get("max_k"),
         "base_precheck_evidence": precheck_evidence,
     }
     return 0, evidence

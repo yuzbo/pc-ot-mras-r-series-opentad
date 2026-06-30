@@ -126,6 +126,7 @@ def _validate_config(config_path: Path, cfg: dict) -> tuple[int, dict | None]:
     load_methods = {}
     bridges = {}
     scout_sources = {}
+    handoff_audit_modes = {}
     safety = {}
     for split in ("train", "val", "test"):
         try:
@@ -140,6 +141,7 @@ def _validate_config(config_path: Path, cfg: dict) -> tuple[int, dict | None]:
         load_methods[split] = load.get("method")
         bridges[split] = load.get("mdl_knot_bridge")
         scout_sources[split] = load.get("mdl_knot_deploy_scout_source")
+        handoff_audit_modes[split] = load.get("mdl_knot_handoff_audit_mode", "sampled_raw")
         if load.get("method") != "mdl_knot_dynamic_subsample":
             return _locked(f"{split} LoadFrames method is not mdl_knot_dynamic_subsample"), None
         if load.get("mdl_knot_bridge") != "fixed_pad":
@@ -169,6 +171,8 @@ def _validate_config(config_path: Path, cfg: dict) -> tuple[int, dict | None]:
         "load_methods": load_methods,
         "bridges": bridges,
         "scout_sources": scout_sources,
+        "handoff_audit_modes": handoff_audit_modes,
+        "formal_readiness_raw_handoff_requirement": "full_raw realdiag evidence required; structural-only logs stay locked",
         "safety": safety,
         "changed_surface": acq.get("changed_surface", {}),
         "formal_train_unlocked": False,

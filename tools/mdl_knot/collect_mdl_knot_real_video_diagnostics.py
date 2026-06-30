@@ -21,6 +21,7 @@ from opentad.acquisition.mdl_knot import (  # noqa: E402
     build_pipeline_diagnostic,
     build_raw_frame_motion_scout_curve,
     summarize_pipeline_diagnostics,
+    normalize_handoff_audit_mode,
 )
 from opentad.acquisition.mdl_knot.diagnostics import validate_shortdiag_train_log_content  # noqa: E402
 
@@ -69,6 +70,9 @@ class EquivalentMDLKnotLoadFrames:
         self.mdl_knot_scout_stride = int(kwargs.get("mdl_knot_scout_stride", 8))
         self.mdl_knot_scout_max_frames = int(kwargs.get("mdl_knot_scout_max_frames", 96))
         self.mdl_knot_allow_synthetic_fallback = bool(kwargs.get("mdl_knot_allow_synthetic_fallback", False))
+        self.mdl_knot_handoff_audit_mode = normalize_handoff_audit_mode(
+            kwargs.get("mdl_knot_handoff_audit_mode", "full_raw")
+        )
         if self.mdl_knot_bridge != "fixed_pad":
             raise ValueError("MDL-Knot real diagnostic collector requires fixed_pad bridge")
         if self.mdl_knot_allow_synthetic_fallback:
@@ -168,7 +172,11 @@ class EquivalentMDLKnotLoadFrames:
     def __call__(self, results: dict) -> dict:
         dense_window = self._dense_window(results)
         scout_curve = self._scout_curve(results, dense_window)
-        dense_handoff_inputs = self._read_dense_handoff_inputs(results, dense_window)
+        dense_handoff_inputs = (
+            self._read_dense_handoff_inputs(results, dense_window)
+            if self.mdl_knot_handoff_audit_mode == "full_raw"
+            else None
+        )
         apply_mdl_knot_to_dense_window(
             results=results,
             dense_window=dense_window,
@@ -176,6 +184,8 @@ class EquivalentMDLKnotLoadFrames:
             config=self.config,
             adapter_target_len=self.target_len,
             dense_inputs=dense_handoff_inputs,
+            defer_handoff_validation=self.mdl_knot_handoff_audit_mode != "full_raw",
+            handoff_audit_mode=self.mdl_knot_handoff_audit_mode,
         )
         results["mdl_knot_selector_used_gt"] = False
         results["mdl_knot_route_label"] = MDL_KNOT_ROUTE_LABEL
@@ -211,6 +221,12 @@ def parse_args() -> argparse.Namespace:
             "Loader implementation for diagnostics. Default uses the no-GT torch-free equivalent branch; "
             "opentad_if_available is a debug-only path and may exercise train crop semantics."
         ),
+    )
+    parser.add_argument(
+        "--handoff-audit-mode",
+        choices=("full_raw", "sampled_raw", "structural", "full_dense", "selected_only"),
+        default="full_raw",
+        help="Raw handoff evidence mode for the diagnostic collector. full_raw is the formal-readiness default.",
     )
     parser.add_argument(
         "--dry-run-fixture",
@@ -249,6 +265,7 @@ def _decord_available() -> bool:
 
 def _build_loader(cfg: Mapping[str, object], diagnostic_loader: str = "equivalent"):
     kwargs = _loadframes_kwargs(cfg)
+    kwargs["mdl_knot_handoff_audit_mode"] = "full_raw"
     if diagnostic_loader == "equivalent":
         return EquivalentMDLKnotLoadFrames(**kwargs), {
             "loader": "EquivalentMDLKnotLoadFrames",
@@ -484,6 +501,13 @@ def main() -> int:
         print(f"LOCKED: route label mismatch in config: {cfg.get('route_label')}")
         return 2
     loader, reader_backend = _build_loader(cfg, args.diagnostic_loader)
+    if hasattr(loader, "mdl_knot_handoff_audit_mode"):
+        loader.mdl_knot_handoff_audit_mode = normalize_handoff_audit_mode(args.handoff_audit_mode)
+    reader_backend = {
+        **dict(reader_backend),
+        "handoff_audit_mode": normalize_handoff_audit_mode(args.handoff_audit_mode),
+        "formal_readiness_requires_full_raw": True,
+    }
     windows = _fixture_windows(args.window_count) if args.dry_run_fixture else _annotation_windows(args)
     diagnostics = _collect_diagnostics(loader, windows)
     if not diagnostics:

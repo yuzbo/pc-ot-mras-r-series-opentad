@@ -252,3 +252,68 @@ Interpretation:
 - MDL formal/full training, `tools/test.py`, official evaluation, mAP,
   runtime/FLOPs, deployment, paper, and sparse-compute claims remain locked
   until the one-epoch shortdiag completes and its validator passes.
+
+## 2026-06-30 Pro-Guided Speed Root-Cause Patch
+
+Timestamp: `2026-06-30 21:41:02 +08:00`.
+
+The old post-fix short diagnostic child later failed in the handoff validator
+path, and GPT-5.5 Pro identified the dominant speed risk as full dense raw
+handoff audit in the training hot path. This patch keeps the original scout
+coverage and MDL budget semantics while separating audit depth:
+
+- `structural`: index/mask/metadata contract audit only.
+- `sampled_raw`: reads and validates only selected raw frames; this is the
+  short diagnostic and training hot path.
+- `full_raw`: reads the full dense raw window for bounded realdiag/formal
+  readiness evidence only.
+
+The short diagnostic parameters were explicitly restored and gate-checked:
+
+- `scout_stride=8`
+- `scout_max_frames=96`
+- `dense_window_size=768`
+- `window_size=384`
+- `max_k=384`
+
+`MDL_KNOT_PROFILE=1` now enables timing output for scout construction, raw
+probe decode, selector/structural handoff, and sampled/full raw audit decode.
+It is a diagnostic flag only and does not change selection or detector
+semantics.
+
+Local verification in the route-owned worktree:
+
+```text
+python tools/mdl_knot/validate_mdl_knot_shortdiag.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py
+SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED
+
+python tools/mdl_knot/validate_mdl_knot_launch_gate.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py
+PRECHECK_ONLY_REQUEST_ALLOWED
+
+python -m pytest tests/test_mdl_knot_core.py tests/test_mdl_knot_tools_and_integration.py tests/test_mdl_knot_realdiag.py tests/test_mdl_knot_shortdiag.py -q
+54 passed, 2 skipped in 96.93s
+
+git diff --check
+exit code 0; LF/CRLF warnings only
+```
+
+Final read-only subagent review returned
+`PASS_SUBAGENT_FINAL_REVIEW_ONLY`: no blockers. The reviewer confirmed that
+the training/shortdiag default no longer materializes full dense raw windows,
+`full_raw` remains reserved for realdiag/formal evidence, no scout/window/K
+parameters were reduced, and gates remain fail-closed.
+
+Non-blocking reviewer note: the equivalent real-video collector exposes
+`--handoff-audit-mode sampled_raw`, but its fallback path is structural-like
+and does not itself read selected raw frames. This does not affect the real
+`LoadFrames` training/shortdiag path, which does validate selected raw samples.
+Do not use the fallback collector's sampled mode as formal raw-handoff
+evidence unless it is later hardened.
+
+Current unlock state:
+
+- Local final-code candidate for `SHORT_DIAGNOSTIC_ONLY`: yes.
+- Remote sync / GPU0 short diagnostic: allowed only after route-owned commit
+  and coordinator deployment check.
+- Formal/full train, `tools/test.py`, official evaluation, mAP, runtime/FLOPs,
+  deploy, paper, and sparse-compute claims: still locked.

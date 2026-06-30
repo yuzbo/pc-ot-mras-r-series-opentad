@@ -18,6 +18,8 @@ from opentad.acquisition.mdl_knot import (
     validate_knot_ledger,
     validate_no_forbidden_sources,
     validate_real_sparse_handoff,
+    validate_sampled_sparse_handoff,
+    validate_structural_sparse_handoff,
 )
 
 
@@ -172,6 +174,46 @@ def test_real_sparse_handoff_requires_gathered_inputs_and_valid_mask():
             batch={"selected_inputs": forged, "dense_inputs": dense, "meta": meta.to_dict()},
             ledger=ledger,
         )
+
+
+def test_structural_and_sampled_handoff_audits_have_distinct_raw_requirements():
+    curve = build_synthetic_scout_curve("two_islands", dense_t=32)
+    ledger = greedy_mdl_knot_select(curve, MDLKnotConfig(route_label=ROUTE_LABEL, max_k=16))
+    dense_window = list(range(100, 132))
+    selected_frame_inds = [dense_window[pos] for pos in ledger.selected_positions]
+    meta = ledger.to_sparse_meta().to_dict()
+
+    validate_structural_sparse_handoff(
+        batch={
+            "selected_frame_inds": selected_frame_inds,
+            "expected_selected_frame_inds": selected_frame_inds,
+            "detector_frame_inds": selected_frame_inds,
+            "meta": meta,
+        },
+        ledger=ledger,
+    )
+
+    with pytest.raises(ValueError, match="raw frame/tensor"):
+        validate_sampled_sparse_handoff(
+            batch={
+                "selected_inputs": selected_frame_inds,
+                "selected_frame_inds": selected_frame_inds,
+                "expected_selected_frame_inds": selected_frame_inds,
+                "meta": meta,
+            },
+            ledger=ledger,
+        )
+
+    selected_raw = [np.full((4, 5, 3), fill_value=idx, dtype=np.uint8) for idx in range(ledger.valid_k)]
+    validate_sampled_sparse_handoff(
+        batch={
+            "selected_inputs": selected_raw,
+            "selected_frame_inds": selected_frame_inds,
+            "expected_selected_frame_inds": selected_frame_inds,
+            "meta": meta,
+        },
+        ledger=ledger,
+    )
 
 
 def test_deploy_scout_builder_uses_only_deploy_visible_inputs():
