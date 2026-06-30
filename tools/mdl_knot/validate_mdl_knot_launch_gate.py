@@ -90,6 +90,20 @@ def _load_steps(dataset: dict, split: str) -> tuple[list, dict]:
 def _validate_config(config_path: Path, cfg: dict) -> tuple[int, dict | None]:
     if cfg.get("route_label") != MDL_KNOT_ROUTE_LABEL:
         return _locked(f"config route_label mismatch: {cfg.get('route_label')}"), None
+    annotation_path = str(cfg.get("annotation_path", ""))
+    evaluation = cfg.get("evaluation", {})
+    eval_gt = str(evaluation.get("ground_truth_filename", "")) if isinstance(evaluation, dict) else ""
+    if not annotation_path:
+        return _locked("config annotation_path is missing"), None
+    if eval_gt != annotation_path:
+        return _locked(f"evaluation.ground_truth_filename must equal annotation_path, got {eval_gt!r}"), None
+    for split in ("train", "val", "test"):
+        split_ann = str(cfg.get("dataset", {}).get(split, {}).get("ann_file", ""))
+        if split_ann != annotation_path:
+            return _locked(f"{split} ann_file must equal annotation_path, got {split_ann!r}"), None
+    forbidden_path_text = " ".join([annotation_path, eval_gt]).lower()
+    if "/root/autodl-tmp" in forbidden_path_text:
+        return _locked("config still contains legacy /root/autodl-tmp evaluator or annotation path"), None
     route_status = str(cfg.get("route_status", ""))
     if "LOCAL_FINAL_CODE_CANDIDATE" not in route_status:
         return _locked(f"route_status is not a local final-code candidate: {route_status}"), None

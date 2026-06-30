@@ -28,6 +28,13 @@ from opentad.acquisition.mdl_knot import (  # noqa: E402
 
 
 CONFIG_PATH = ROOT / "configs" / "adatad" / "thumos" / "input_mdl_knot_dynamic_adapter_irregular_headv3.py"
+_ALLOWED_WORKFLOW_FIELD_TOKENS = (
+    "LOGGING_INTERVAL",
+    "CHECKPOINT_INTERVAL",
+    "VAL_LOSS_INTERVAL",
+    "VAL_EVAL_INTERVAL",
+    "RUNTIME_DEBUG_INTERVAL",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -84,10 +91,11 @@ def _collect_config_evidence() -> dict:
     acq = cfg.get("mdl_knot_acquisition", {})
     forbidden_hits = []
     forbidden_tokens = ("C3_MAINLINE", "C3_ORIGINAL", "GLOBALRANK", "INTERVAL", "BVR", "ABR", "ORACLE", "COMBO")
-    text = CONFIG_PATH.read_text(encoding="utf-8")
-    text = text.replace(MDL_KNOT_ROUTE_LABEL, "")
+    text = CONFIG_PATH.read_text(encoding="utf-8").replace(MDL_KNOT_ROUTE_LABEL, "").upper()
+    for allowed_token in _ALLOWED_WORKFLOW_FIELD_TOKENS:
+        text = text.replace(allowed_token, "")
     for token in forbidden_tokens:
-        if token in text.upper():
+        if token in text:
             forbidden_hits.append(token)
     active_pipeline_text = json.dumps(dataset, sort_keys=True).upper()
     drift_tokens = []

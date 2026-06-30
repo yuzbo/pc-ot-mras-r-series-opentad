@@ -160,7 +160,13 @@ def test_mdl_knot_config_overrides_real_dataset_pipelines_without_dead_standalon
     assert cfg["mdl_knot_acquisition"]["no_val_test_gt_selector"] is True
     assert cfg["mdl_knot_acquisition"]["deploy_scout_source"] == "raw_frame_motion_scout_with_metadata_fallback"
     assert cfg["mdl_knot_acquisition"]["synthetic_fallback_allowed"] is False
-    assert cfg["formal_train_unlocked"] is False
+    assert cfg["evaluation"]["ground_truth_filename"] == cfg["annotation_path"]
+    assert cfg["dataset"]["train"]["ann_file"] == cfg["annotation_path"]
+    assert cfg["dataset"]["val"]["ann_file"] == cfg["annotation_path"]
+    assert cfg["dataset"]["test"]["ann_file"] == cfg["annotation_path"]
+    assert "/root/autodl-tmp" not in cfg["evaluation"]["ground_truth_filename"]
+    assert cfg["formal_train_unlocked"] is True
+    assert cfg["solver"]["amp"] is True
     assert cfg["sparse_compute_claim"] is False
     assert cfg["mdl_knot_acquisition"]["fixed_pad_bridge_compute_boundary"]["sparse_compute_claim"] is False
 
