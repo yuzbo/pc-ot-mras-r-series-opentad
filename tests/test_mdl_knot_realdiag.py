@@ -121,6 +121,8 @@ def test_realdiag_collector_emits_fixture_schema_but_formal_gate_rejects_it(tmp_
     assert diag["valid_k_distribution"]["nonconstant"] is True
     assert diag["selected_gap_stats"]["count"] > 0
     assert diag["mask_meta_alignment_status"] == "aligned"
+    assert diag["frame_handoff_alignment_status"] == "aligned"
+    assert diag["frame_handoff_alignment"]["all_aligned"] is True
     assert diag["short_transition_guard_coverage"]["placeholder_or_measured"] in {"measured", "placeholder"}
     assert diag["fixed_pad_sparse_compute_claim_locked"] is True
     assert diag["route_drift_claim_lock"]["locked"] is True
@@ -277,3 +279,21 @@ def test_realdiag_formal_validator_rejects_claim_marker(tmp_path):
 
     assert proc.returncode != 0
     assert "claim" in proc.stdout.lower()
+
+
+def test_realdiag_formal_validator_rejects_missing_raw_frame_handoff_alignment(tmp_path):
+    summary, summary_path = _summary_from_collector(tmp_path)
+    _mark_summary_as_real_video_for_validator(summary)
+    summary["real_video_pipeline_diagnostics"]["frame_handoff_alignment"] = {
+        "checked_windows": 4,
+        "failure_count": 1,
+        "failed_video_ids": ["video_bad_handoff"],
+        "all_aligned": False,
+    }
+    summary["real_video_pipeline_diagnostics"]["frame_handoff_alignment_status"] = "failed"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    proc = _run_formal_validator(summary_path)
+
+    assert proc.returncode != 0
+    assert "handoff" in proc.stdout.lower()

@@ -132,3 +132,41 @@ Additional blocker-fix verification for the commit `1f50abf` GlobalRank review f
 - `python tools\mdl_knot\validate_mdl_knot_launch_gate.py --config configs\adatad\thumos\input_mdl_knot_dynamic_adapter_irregular_headv3.py --formal-readiness-summary __missing_formal_readiness_summary__.json` returned `LOCKED` as expected.
 
 No training, evaluation, GPU, Slurm, remote sync, `tools/test.py`, Pro/Oracle/Rosetta, mAP claim, runtime/FLOPs claim, deploy claim, paper claim, or sparse-compute claim was run or unlocked.
+
+## 2026-06-30 Raw-Frame Handoff Alignment Hardening
+
+Follow-up after the `5ef35d2` handoff fix added an explicit metadata proof chain for formal-readiness diagnostics.
+
+New diagnostic fields:
+
+- `mdl_knot_sparse_meta.selected_frame_inds_prefix`
+- `mdl_knot_sparse_meta.detector_frame_inds_len`
+- `mdl_knot_sparse_meta.handoff_audit`
+- `mdl_knot_pipeline_diagnostic.frame_handoff_alignment`
+- aggregated `real_video_pipeline_diagnostics.frame_handoff_alignment`
+- aggregated `real_video_pipeline_diagnostics.frame_handoff_alignment_status`
+
+The formal gate now requires raw-frame sparse handoff alignment to pass. A real-video readiness summary is locked if it cannot prove:
+
+- selected raw samples were gathered from dense raw frames;
+- selected length equals `valid_k`;
+- dense audit length equals original dense window length;
+- raw dense inputs were not retained for detector/backbone input;
+- selected frame-index prefix is present in sparse metadata;
+- selected positions and selected frame-index prefix match handoff audit;
+- detector `frame_inds` length matches the fixed adapter target length;
+- detector frame prefix is sparse;
+- fixed-pad tail repeats the last selected frame and remains masked.
+
+This hardening addresses the gap where selected sparse frame indices could be correct in `LoadFrames`, but the final metadata evidence did not explicitly prove that the sparse raw-frame handoff survived into detector metadata.
+
+Additional local verification in the current owned worktree:
+
+- `python -m py_compile opentad/acquisition/mdl_knot/handoff.py opentad/acquisition/mdl_knot/diagnostics.py tools/mdl_knot/collect_mdl_knot_real_video_diagnostics.py tools/mdl_knot/validate_mdl_knot_launch_gate.py tools/mdl_knot/validate_mdl_knot_shortdiag.py tests/test_mdl_knot_core.py tests/test_mdl_knot_tools_and_integration.py tests/test_mdl_knot_realdiag.py` passed.
+- `python -m pytest tests/test_mdl_knot_core.py tests/test_mdl_knot_tools_and_integration.py tests/test_mdl_knot_realdiag.py tests/test_mdl_knot_shortdiag.py -q` passed: `52 passed, 1 skipped`.
+- `python tools/mdl_knot/validate_mdl_knot_launch_gate.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py` passed as `PRECHECK_ONLY_REQUEST_ALLOWED`.
+- `python tools/mdl_knot/validate_mdl_knot_shortdiag.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py` passed as `SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED` with `validated=false`.
+- Fixture realdiag collector output was intentionally rejected by formal readiness because `source_mode=fixture_schema_only`, confirming that local fixture diagnostics do not unlock formal training.
+- Synthetic precheck plus launch gate passed from a temporary directory as `PRECHECK_ONLY_REQUEST_ALLOWED`.
+
+State remains locked: no valid post-fix shortdiag train log exists yet, no real-video formal-readiness summary exists yet, and no formal/full training, evaluation, mAP, runtime/FLOPs, deployment, paper, or sparse-compute claim is unlocked.

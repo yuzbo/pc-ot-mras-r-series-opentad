@@ -69,6 +69,9 @@ def test_pipeline_mock_sets_frame_inds_before_decode_and_records_valid_k():
     assert updated["mdl_knot_valid_k"] == len(updated["mdl_knot_selected_positions"])
     assert len(updated["masks"]) == updated["mdl_knot_valid_k"]
     assert updated["mdl_knot_sparse_meta"]["position_unit"] == "original_dense_time_index"
+    assert updated["mdl_knot_sparse_meta"]["selected_frame_inds_prefix"] == updated["frame_inds"][: updated["mdl_knot_valid_k"]]
+    assert updated["mdl_knot_sparse_meta"]["handoff_audit"]["selected_inputs_is_gathered"] is True
+    assert updated["mdl_knot_sparse_meta"]["handoff_audit"]["raw_inputs_retained"] is False
     assert updated["mdl_knot_real_sparse_handoff_validated"] is True
     assert updated["mdl_knot_handoff_audit"]["selected_inputs_is_gathered"] is True
     assert updated["mdl_knot_handoff_audit"]["raw_inputs_retained"] is False
@@ -111,6 +114,8 @@ def test_fixed_adapter_bridge_pads_frame_inds_without_counting_padding_as_valid(
     assert updated["mdl_knot_padding_counts_as_valid"] is False
     assert updated["frame_inds"][:valid_k] == [dense_window[pos] for pos in updated["mdl_knot_selected_positions"]]
     assert updated["frame_inds"][valid_k:] == [updated["frame_inds"][valid_k - 1]] * (64 - valid_k)
+    assert updated["mdl_knot_sparse_meta"]["detector_frame_inds_len"] == 64
+    assert updated["mdl_knot_sparse_meta"]["handoff_audit"]["detector_padding_repeats_last_selected"] is True
 
 
 def test_mdl_knot_config_overrides_real_dataset_pipelines_without_dead_standalone_pipelines():
@@ -204,9 +209,20 @@ def test_real_loadframes_mdl_knot_branch_sets_sparse_frame_inds_before_decode():
     diagnostic = out["mdl_knot_pipeline_diagnostic"]
     assert diagnostic["metadata_fallback_used"] is False
     assert diagnostic["mask_metadata_alignment"]["all_aligned"] is True
+    assert diagnostic["frame_handoff_alignment"]["all_aligned"] is True
     assert diagnostic["fixed_pad_bridge_compute_boundary"]["sparse_compute_claim"] is False
     assert out["mdl_knot_real_sparse_handoff_validated"] is True
     assert out["mdl_knot_handoff_audit"]["selected_inputs_is_gathered"] is True
+
+    from opentad.datasets.transforms.formatting import Collect
+
+    out["imgs"] = np.zeros((3, 64, 1, 1), dtype=np.float32)
+    batch_item = Collect(inputs="imgs", keys=["masks"])(out)
+    meta = batch_item["metas"]
+    assert meta["irregular_selected_positions"].tolist() == out["irregular_selected_positions"].tolist()
+    assert meta["mdl_knot_sparse_meta"]["selected_frame_inds_prefix"] == out["frame_inds"][:valid_k].tolist()
+    assert meta["mdl_knot_sparse_meta"]["handoff_audit"]["selected_inputs_is_gathered"] is True
+    assert meta["mdl_knot_pipeline_diagnostic"]["frame_handoff_alignment"]["all_aligned"] is True
 
 
 def test_raw_frame_motion_scout_builder_is_deploy_visible_and_non_synthetic():
@@ -570,6 +586,9 @@ def _formal_readiness_summary(train_log: str = "logs/mdl_knot_shortdiag_one_epoc
             "max_gap_distribution": {"count": 3},
             "gap_p95_distribution": {"count": 3},
             "mask_metadata_alignment": {"all_aligned": True},
+            "mask_meta_alignment_status": "aligned",
+            "frame_handoff_alignment": {"all_aligned": True},
+            "frame_handoff_alignment_status": "aligned",
             "short_boundary_risk_monitoring": {
                 "short_island_total": 2,
                 "short_island_uncovered_count": 0,

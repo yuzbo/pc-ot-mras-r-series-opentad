@@ -251,6 +251,8 @@ def build_pipeline_diagnostic(
     selected = [int(v) for v in ledger_data["selected_positions"]]
     selected_gaps = [float(right - left) for left, right in zip(selected, selected[1:])]
     meta_selected = [int(v) for v in meta.get("selected_positions", [])]
+    meta_frame_prefix = [int(v) for v in meta.get("selected_frame_inds_prefix", [])]
+    handoff_audit = dict(meta.get("handoff_audit", {}))
     visible_count = sum(mask_values[:valid_k]) if mask_values else 0
     source = str(scout_source)
     provenance = dict(scout_provenance or {})
@@ -265,6 +267,27 @@ def build_pipeline_diagnostic(
         "position_unit_match": meta.get("position_unit") == ledger_data.get("position_unit"),
     }
     mask_metadata_alignment["all_aligned"] = all(mask_metadata_alignment.values())
+    frame_handoff_alignment = {
+        "checked": True,
+        "real_sparse_handoff_validated": bool(handoff_audit.get("selected_inputs_is_gathered", False)),
+        "selected_len_matches_valid_k": int(handoff_audit.get("selected_len", -1)) == valid_k,
+        "dense_len_matches_dense_T": int(handoff_audit.get("dense_len", -1)) == int(ledger_data["dense_T"]),
+        "raw_inputs_not_retained": handoff_audit.get("raw_inputs_retained") is False,
+        "selected_frame_inds_prefix_present": len(meta_frame_prefix) == valid_k,
+        "selected_positions_prefix_match": [
+            int(v) for v in handoff_audit.get("selected_positions_prefix", [])
+        ] == selected,
+        "selected_frame_inds_prefix_match": [
+            int(v) for v in handoff_audit.get("selected_frame_inds_prefix", [])
+        ] == meta_frame_prefix,
+        "detector_frame_inds_len_matches_adapter_target": int(
+            handoff_audit.get("detector_frame_inds_len", adapter_target_len)
+        )
+        == int(adapter_target_len),
+        "detector_frame_prefix_is_sparse": handoff_audit.get("detector_frame_inds_prefix_is_sparse") is True,
+        "detector_padding_repeats_last_selected": handoff_audit.get("detector_padding_repeats_last_selected") is True,
+    }
+    frame_handoff_alignment["all_aligned"] = all(frame_handoff_alignment.values())
 
     synthetic_used = _is_synthetic(source, provenance)
     guard = _guard_coverage(ledger_data)
@@ -286,6 +309,7 @@ def build_pipeline_diagnostic(
         "selected_gaps": selected_gaps,
         "selected_gap_stats": _stats(selected_gaps),
         "mask_metadata_alignment": mask_metadata_alignment,
+        "frame_handoff_alignment": frame_handoff_alignment,
         "short_boundary_risk": guard,
         "fixed_pad_bridge_compute_boundary": {
             "bridge": str(bridge),
@@ -307,6 +331,11 @@ def summarize_pipeline_diagnostics(diagnostics: Sequence[Mapping[str, object]]) 
         item.get("video_id", "unknown")
         for item in items
         if not dict(item.get("mask_metadata_alignment", {})).get("all_aligned", False)
+    ]
+    handoff_failures = [
+        item.get("video_id", "unknown")
+        for item in items
+        if not dict(item.get("frame_handoff_alignment", {})).get("all_aligned", False)
     ]
     valid_ks = [int(item.get("valid_k", 0)) for item in items]
     short_total = sum(int(dict(item.get("short_boundary_risk", {})).get("short_island_total", 0)) for item in items)
@@ -358,6 +387,13 @@ def summarize_pipeline_diagnostics(diagnostics: Sequence[Mapping[str, object]]) 
             "all_aligned": count > 0 and not align_failures,
         },
         "mask_meta_alignment_status": "aligned" if count > 0 and not align_failures else "failed",
+        "frame_handoff_alignment": {
+            "checked_windows": count,
+            "failure_count": len(handoff_failures),
+            "failed_video_ids": handoff_failures[:20],
+            "all_aligned": count > 0 and not handoff_failures,
+        },
+        "frame_handoff_alignment_status": "aligned" if count > 0 and not handoff_failures else "failed",
         "short_boundary_risk_monitoring": {
             "short_island_total": short_total,
             "short_island_uncovered_count": short_uncovered,
@@ -462,6 +498,10 @@ def validate_formal_readiness_evidence(
         raise FormalReadinessLocked("mask/metadata alignment diagnostics did not pass")
     if diag.get("mask_meta_alignment_status", "aligned") != "aligned":
         raise FormalReadinessLocked("mask/meta alignment status is not aligned")
+    if dict(diag.get("frame_handoff_alignment", {})).get("all_aligned") is not True:
+        raise FormalReadinessLocked("raw-frame sparse handoff alignment diagnostics did not pass")
+    if diag.get("frame_handoff_alignment_status", "aligned") != "aligned":
+        raise FormalReadinessLocked("raw-frame sparse handoff alignment status is not aligned")
     if "max_gap_distribution" not in diag or "gap_p95_distribution" not in diag:
         raise FormalReadinessLocked("missing max_gap or gap_p95 diagnostic distributions")
     if "selected_gap_stats" in diag:

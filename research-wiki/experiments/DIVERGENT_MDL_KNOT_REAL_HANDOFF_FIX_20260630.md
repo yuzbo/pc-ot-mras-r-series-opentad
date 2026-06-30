@@ -126,3 +126,83 @@ One extra collector command was attempted with `--shortdiag-log logs/mdl_knot_sh
 After commit/push and required review acceptance, the technical blocker for true sparse raw-frame handoff is fixed for local `PRECHECK_ONLY` and bounded `SHORT_DIAGNOSTIC_ONLY` rerun consideration.
 
 No remote sync, Slurm, GPU rerun, training, evaluation, `tools/test.py`, mAP claim, runtime/FLOPs claim, deployment claim, paper claim, or parent-hold action was performed by this fix.
+
+## 2026-06-30 Follow-up Confirmation After Remote Failure Evidence
+
+Additional user-provided N16R4 evidence:
+
+- Remote clone: `/data/home/sczc063/run/yuzibo/OpenTAD_MDLKnot_RealDiag_20260630_fd2977f`
+- Remote HEAD: `5ef35d2698742db9a90f670b3f7e2926214a8e2c`
+- Old shortdiag run directory: `logs/mdl_knot_shortdiag_gpu0_r7_20260630_172858_+0800`
+- Old child run: `1118197.488 mdl_shortdiag_g0`
+- Runtime before failure: `58m51`
+- Failure: `ValueError: selected_inputs must be a real sparse gather, not dense passthrough`
+- Stability warning before the fatal handoff failure: non-finite gradients were reported and optimizer steps skipped at epoch 0 iterations 20 and 36 on `module.rpn_head.reg_head.weight`.
+- Rehandfix launch directory `logs/mdl_knot_shortdiag_gpu0_rehandfix_launch_20260630_185712_+0800` contains only `launcher_srun.log`; no `srun_stdout_stderr.log` or train log exists, so it is not valid post-fix shortdiag execution evidence.
+
+Interpretation:
+
+- The old failed run is accepted as evidence that the pre-`5ef35d2` handoff audit was correctly fail-closed against dense passthrough.
+- It is not evidence for final MDL-Knot route quality, mAP, runtime, sparse compute, or deployability.
+- The non-finite gradient skip events are a stability diagnostic risk for the next bounded shortdiag rerun. They are not route-level success/failure evidence unless repeated after the handoff fix or escalated to NaN/OOM/protocol failure.
+
+Current local code inspection confirms that `5ef35d2` fixed the dense-passthrough bug:
+
+- `apply_mdl_knot_to_dense_window` now raises if `dense_inputs` is missing.
+- It gathers `selected_inputs` from true dense raw samples at `ledger.selected_positions`.
+- `validate_real_sparse_handoff` still rejects dense passthrough, frame-index inputs, and forged raw values.
+- `mdl_knot_sparse_meta` now also records the selected detector-frame prefix and handoff audit, so the later `Collect` metadata can prove sparse `frame_inds` and raw gather audit reached detector metadata.
+
+Additional local verification in the owned worktree after the metadata/audit hardening:
+
+```powershell
+python -m py_compile opentad/acquisition/mdl_knot/handoff.py opentad/acquisition/mdl_knot/diagnostics.py tools/mdl_knot/collect_mdl_knot_real_video_diagnostics.py tools/mdl_knot/validate_mdl_knot_launch_gate.py tools/mdl_knot/validate_mdl_knot_shortdiag.py tests/test_mdl_knot_core.py tests/test_mdl_knot_tools_and_integration.py tests/test_mdl_knot_realdiag.py
+```
+
+Result: exit code `0`.
+
+```powershell
+python -m pytest tests/test_mdl_knot_core.py tests/test_mdl_knot_tools_and_integration.py tests/test_mdl_knot_realdiag.py tests/test_mdl_knot_shortdiag.py -q
+```
+
+Result: `52 passed, 1 skipped in 100.78s`.
+
+```powershell
+python tools/mdl_knot/validate_mdl_knot_launch_gate.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py
+```
+
+Result: exit code `0`, `PRECHECK_ONLY_REQUEST_ALLOWED`; all remote sync, Slurm, training, evaluation, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper locks preserved.
+
+```powershell
+python tools/mdl_knot/validate_mdl_knot_shortdiag.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py
+```
+
+Result: exit code `0`, `SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED`; `validated=false`, no train-log evidence yet.
+
+```powershell
+$out = Join-Path $env:TEMP 'mdl_knot_realdiag_fixture_summary_20260630.json'
+python tools/mdl_knot/collect_mdl_knot_real_video_diagnostics.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py --out $out --dry-run-fixture --window-count 4
+python tools/mdl_knot/validate_mdl_knot_launch_gate.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py --formal-readiness-summary $out
+```
+
+Result: collector succeeded; formal gate correctly returned `LOCKED` because fixture-only schema evidence is not real-video formal readiness evidence.
+
+```powershell
+$out = Join-Path $env:TEMP 'mdl_knot_real_handoff_precheck_20260630'
+python tools/mdl_knot/audit_mdl_knot_pipeline_precheck.py --out-dir $out --overwrite
+python tools/mdl_knot/validate_mdl_knot_launch_gate.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py --precheck-summary (Join-Path $out 'mdl_knot_precheck_summary.json')
+```
+
+Result: exit code `0`, `PRECHECK_ONLY_REQUEST_ALLOWED`.
+
+Bounded shortdiag rerun commands prepared for an already allocated child GPU context only:
+
+```bash
+cd /data/home/sczc063/run/yuzibo/OpenTAD_MDLKnot_RealDiag_20260630_fd2977f
+git rev-parse HEAD
+python tools/mdl_knot/validate_mdl_knot_launch_gate.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py
+python tools/mdl_knot/validate_mdl_knot_shortdiag.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py
+RUN_SHORTDIAG_TRAIN=1 TRAIN_LOG=logs/mdl_knot_shortdiag_train_rehandfix_$(date +%Y%m%d_%H%M%S_%z).log bash logs/run_mdl_knot_shortdiag_n16r4.sh
+```
+
+Bounded rerun remains `SHORT_DIAGNOSTIC_ONLY`: one epoch, no evaluation, no checkpoint claim, no `tools/test.py`, no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim. If non-finite gradients recur after the handoff fix, record them as stability diagnostics and inspect loss/gradient health before any formal/full candidate decision.

@@ -44,6 +44,7 @@ def apply_mdl_knot_to_dense_window(
     else:
         masks = [True] * valid_k
     sparse_meta = ledger.to_sparse_meta()
+    sparse_meta_dict = sparse_meta.to_dict()
 
     results["frame_inds"] = frame_inds
     results["num_clips"] = 1
@@ -56,7 +57,7 @@ def apply_mdl_knot_to_dense_window(
     results["mdl_knot_bridge"] = "fixed_pad" if adapter_target_len is not None else "variable_sparse"
     results["mdl_knot_padding_counts_as_valid"] = False
     results["mdl_knot_ledger"] = ledger.to_dict()
-    results["mdl_knot_sparse_meta"] = sparse_meta.to_dict()
+    results["mdl_knot_sparse_meta"] = sparse_meta_dict
     results["irregular_selected_positions"] = [float(v) for v in selected_positions]
     results["irregular_selected_valid_len"] = float(ledger.dense_t)
     results["irregular_native_axis"] = False
@@ -68,17 +69,30 @@ def apply_mdl_knot_to_dense_window(
         batch={
             "selected_inputs": selected_inputs,
             "dense_inputs": dense_inputs,
-            "meta": sparse_meta.to_dict(),
+            "meta": sparse_meta_dict,
         },
         ledger=ledger,
     )
     first_shape = getattr(selected_inputs[0], "shape", None) if selected_inputs else None
-    results["mdl_knot_real_sparse_handoff_validated"] = True
-    results["mdl_knot_handoff_audit"] = {
+    handoff_audit = {
         "selected_inputs_is_gathered": True,
         "selected_len": valid_k,
         "dense_len": len(dense_inputs),
         "raw_sample_shape": None if first_shape is None else [int(v) for v in first_shape],
         "raw_inputs_retained": False,
+        "selected_frame_inds_prefix": [int(v) for v in frame_inds[:valid_k]],
+        "selected_positions_prefix": [int(v) for v in selected_positions],
+        "detector_frame_inds_len": len(frame_inds),
+        "detector_frame_inds_prefix_is_sparse": len(set(frame_inds[:valid_k])) == valid_k,
+        "detector_padding_repeats_last_selected": (
+            frame_inds[valid_k:] == [frame_inds[valid_k - 1]] * (len(frame_inds) - valid_k)
+            if len(frame_inds) > valid_k
+            else True
+        ),
     }
+    results["mdl_knot_sparse_meta"]["selected_frame_inds_prefix"] = [int(v) for v in frame_inds[:valid_k]]
+    results["mdl_knot_sparse_meta"]["detector_frame_inds_len"] = len(frame_inds)
+    results["mdl_knot_sparse_meta"]["handoff_audit"] = handoff_audit
+    results["mdl_knot_real_sparse_handoff_validated"] = True
+    results["mdl_knot_handoff_audit"] = handoff_audit
     return results
