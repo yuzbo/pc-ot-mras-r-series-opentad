@@ -122,6 +122,11 @@ class SingleStageDetector(BaseDetector):
                     torch.arange(segments.shape[0]),
                     labels,
                 )
+                self._mark_qc_v2_pre_nms_state(
+                    diagnostic_records,
+                    scores,
+                    rank_semantics="traversal_proposal_order_single_class_no_topk",
+                )
             else:
                 pred_prob = scores.flatten()  # [N*class]
 
@@ -145,8 +150,15 @@ class SingleStageDetector(BaseDetector):
                 scores = pred_prob
                 labels = cls_idxs
                 diagnostic_records = self._build_qc_v2_diagnostic_records(diagnostics, pt_idxs, cls_idxs)
+                self._mark_qc_v2_pre_nms_state(
+                    diagnostic_records,
+                    scores,
+                    rank_semantics="score_sorted_after_threshold_topk",
+                )
 
             # if not sliding window, do nms
+            pre_nms_segments_for_diagnostic = segments.clone()
+            pre_nms_candidate_records = diagnostic_records
             if post_cfg.sliding_window == False and post_cfg.nms is not None:
                 pre_nms_segments = segments.clone()
                 pre_nms_labels = labels.clone()
@@ -158,9 +170,21 @@ class SingleStageDetector(BaseDetector):
                     pre_nms_diagnostic_records,
                     segments,
                     labels,
+                    scores,
                 )
+            else:
+                self._mark_qc_v2_post_nms_state_without_nms(diagnostic_records, scores)
 
             video_id = metas[i]["video_name"]
+            pre_nms_physical_segments_for_diagnostic = convert_to_seconds(
+                pre_nms_segments_for_diagnostic.clone(),
+                metas[i],
+            )
+            pre_nms_candidates = self._serialize_qc_v2_pre_nms_candidates(
+                pre_nms_candidate_records,
+                pre_nms_physical_segments_for_diagnostic,
+                ext_cls,
+            )
 
             # convert segments to seconds
             segments = convert_to_seconds(segments, metas[i])
@@ -182,6 +206,8 @@ class SingleStageDetector(BaseDetector):
                 if diagnostic_records is not None and det_idx < len(diagnostic_records):
                     self._attach_qc_v2_diagnostic_record(record, diagnostic_records[det_idx], segment)
                 results_per_video.append(record)
+            if pre_nms_candidates and results_per_video:
+                results_per_video[0]["qc_v2_pre_nms_candidates"] = pre_nms_candidates
 
             if video_id in results.keys():
                 results[video_id].extend(results_per_video)
@@ -217,6 +243,7 @@ class SingleStageDetector(BaseDetector):
             cls_scores = diagnostics["cls_scores"][point_idx]
             record = {
                 "coverage_available": bool(diagnostics.get("coverage_available", False)),
+                "class_index": class_idx,
                 "cls_score": cls_scores[class_idx],
                 "fused_score": None if fused_scores is None else fused_scores[point_idx][class_idx],
                 "quality_score": None if quality_scores is None else quality_scores[point_idx],
@@ -235,22 +262,99 @@ class SingleStageDetector(BaseDetector):
         return records
 
     @staticmethod
-    def _match_qc_v2_diagnostics_after_nms(old_segments, old_labels, old_records, new_segments, new_labels):
+    def _mark_qc_v2_pre_nms_state(records, scores, rank_semantics):
+        if records is None:
+            return
+        for rank, (record, score) in enumerate(zip(records, scores), start=1):
+            record["pre_nms_rank"] = rank
+            record["pre_nms_score"] = score
+            record["rank_semantics"] = rank_semantics
+            record["survived_after_topk"] = True
+            record["post_topk_rank"] = rank
+            record["post_topk_score"] = score
+            record["survived_after_nms"] = False
+            record["post_nms_rank"] = None
+            record["post_nms_score"] = None
+
+    @staticmethod
+    def _mark_qc_v2_post_nms_state_without_nms(records, scores):
+        if records is None:
+            return
+        for rank, (record, score) in enumerate(zip(records, scores), start=1):
+            record["survived_after_nms"] = True
+            record["post_nms_rank"] = rank
+            record["post_nms_score"] = score
+
+    @staticmethod
+    def _match_qc_v2_diagnostics_after_nms(old_segments, old_labels, old_records, new_segments, new_labels, new_scores=None):
         if old_records is None:
             return None
         matched = []
         used = set()
-        for segment, label in zip(new_segments, new_labels):
+        for post_rank, (segment, label) in enumerate(zip(new_segments, new_labels), start=1):
             found = None
             for idx, (old_segment, old_label) in enumerate(zip(old_segments, old_labels)):
                 if idx in used or int(old_label.item()) != int(label.item()):
                     continue
                 if torch.allclose(old_segment, segment, atol=1e-4, rtol=0.0):
                     found = old_records[idx]
+                    found["survived_after_nms"] = True
+                    found["post_nms_rank"] = post_rank
+                    found["post_nms_score"] = None if new_scores is None else new_scores[post_rank - 1]
                     used.add(idx)
                     break
             matched.append(found or {"coverage_available": False})
         return matched
+
+    def _serialize_qc_v2_pre_nms_candidates(self, diagnostic_records, physical_segments, ext_cls):
+        if diagnostic_records is None:
+            return []
+
+        candidates = []
+        for diagnostic_record, physical_segment in zip(diagnostic_records, physical_segments):
+            if not diagnostic_record:
+                continue
+            class_index = diagnostic_record.get("class_index")
+            if isinstance(ext_cls, list) and class_index is not None:
+                label = ext_cls[int(class_index)]
+            else:
+                label = None if class_index is None else int(class_index)
+            candidates.append(
+                {
+                    "label": label,
+                    "class_index": None if class_index is None else int(class_index),
+                    "cls_score": self._tensor_scalar_or_none(diagnostic_record.get("cls_score")),
+                    "fused_score": self._tensor_scalar_or_none(diagnostic_record.get("fused_score")),
+                    "quality_score": self._tensor_scalar_or_none(diagnostic_record.get("quality_score")),
+                    "score": self._tensor_scalar_or_none(diagnostic_record.get("pre_nms_score")),
+                    "pre_nms_score": self._tensor_scalar_or_none(diagnostic_record.get("pre_nms_score")),
+                    "pre_nms_rank": diagnostic_record.get("pre_nms_rank"),
+                    "rank_semantics": diagnostic_record.get("rank_semantics"),
+                    "survived_after_topk": bool(diagnostic_record.get("survived_after_topk", False)),
+                    "post_topk_rank": diagnostic_record.get("post_topk_rank"),
+                    "post_topk_score": self._tensor_scalar_or_none(diagnostic_record.get("post_topk_score")),
+                    "survived_after_nms": bool(diagnostic_record.get("survived_after_nms", False)),
+                    "post_nms_rank": diagnostic_record.get("post_nms_rank"),
+                    "post_nms_score": self._tensor_scalar_or_none(diagnostic_record.get("post_nms_score")),
+                    "selected_segment": self._tensor_row_to_list(diagnostic_record["selected_segment"]),
+                    "physical_segment": self._tensor_row_to_list(physical_segment),
+                    "selected_length": self._tensor_scalar_or_none(diagnostic_record.get("selected_length")),
+                    "physical_length": round((physical_segment[1] - physical_segment[0]).item(), 4),
+                    "proposal_width": self._tensor_scalar_or_none(diagnostic_record.get("proposal_width")),
+                    "gap_mean": self._tensor_scalar_or_none(diagnostic_record.get("gap_mean")),
+                    "visibility_support": self._tensor_scalar_or_none(diagnostic_record.get("visibility_support")),
+                    "coverage": self._tensor_scalar_or_none(diagnostic_record.get("coverage")),
+                    "endpoint_support": self._tensor_scalar_or_none(diagnostic_record.get("endpoint_support")),
+                    "level_id": None
+                    if diagnostic_record.get("level_id") is None
+                    else int(diagnostic_record["level_id"].item()),
+                    "point_index": None
+                    if diagnostic_record.get("point_index") is None
+                    else int(diagnostic_record["point_index"].item()),
+                    "coverage_available": bool(diagnostic_record.get("coverage_available", False)),
+                }
+            )
+        return candidates
 
     def _attach_qc_v2_diagnostic_record(self, output_record, diagnostic_record, physical_segment):
         if not diagnostic_record:
@@ -271,6 +375,15 @@ class SingleStageDetector(BaseDetector):
                 "visibility_support": self._tensor_scalar_or_none(diagnostic_record.get("visibility_support")),
                 "coverage": self._tensor_scalar_or_none(diagnostic_record.get("coverage")),
                 "endpoint_support": self._tensor_scalar_or_none(diagnostic_record.get("endpoint_support")),
+                "pre_nms_rank": diagnostic_record.get("pre_nms_rank"),
+                "pre_nms_score": self._tensor_scalar_or_none(diagnostic_record.get("pre_nms_score")),
+                "rank_semantics": diagnostic_record.get("rank_semantics"),
+                "survived_after_topk": bool(diagnostic_record.get("survived_after_topk", False)),
+                "post_topk_rank": diagnostic_record.get("post_topk_rank"),
+                "post_topk_score": self._tensor_scalar_or_none(diagnostic_record.get("post_topk_score")),
+                "survived_after_nms": bool(diagnostic_record.get("survived_after_nms", False)),
+                "post_nms_rank": diagnostic_record.get("post_nms_rank"),
+                "post_nms_score": self._tensor_scalar_or_none(diagnostic_record.get("post_nms_score")),
                 "level_id": None
                 if diagnostic_record.get("level_id") is None
                 else int(diagnostic_record["level_id"].item()),

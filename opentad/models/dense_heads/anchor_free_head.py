@@ -495,10 +495,7 @@ class AnchorFreeHead(nn.Module):
                 device=device,
             )
 
-        selected_center = points[:, 0].to(device=device, dtype=dtype)
-        selected_center = selected_center.clamp(min=0.0)
-        selected_scale = max(float(length - 1), 1.0)
-        selected_time = selected_center / selected_scale
+        selected_center = points[:, 0].to(device=device, dtype=dtype).clamp(min=0.0)
         features = []
         for batch_idx in range(batch):
             meta = metas[batch_idx]
@@ -519,6 +516,8 @@ class AnchorFreeHead(nn.Module):
                 device=device,
             ).reshape(-1)
             valid_len = max(float(meta["irregular_selected_valid_len"]), 1e-6)
+            selected_scale = max(float(positions.numel() - 1), 1.0)
+            selected_time = selected_center.clamp(max=selected_scale) / selected_scale
             fp = torch.cat([positions, positions.new_tensor([valid_len])], dim=0)
             gap = (fp[1:] - fp[:-1]).clamp(min=1e-6)
             expected_gap = max(valid_len / float(positions.numel()), 1e-6)

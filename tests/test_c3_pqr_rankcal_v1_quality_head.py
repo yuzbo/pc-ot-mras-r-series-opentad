@@ -269,6 +269,45 @@ def test_sparse_irregular_qc_v2_point_geometry_keeps_left_and_right_gap_directio
     assert torch.isfinite(geometry).all()
 
 
+def test_sparse_irregular_qc_v2_selected_time_uses_selected_axis_for_stride_points():
+    torch, _ = _torch_and_head()
+    head = _make_head(
+        dict(
+            enabled=True,
+            mode="sparse_irregular_qc_v2",
+            target_mode="sparse_physical_iou_visibility",
+            diagnostic_dump=True,
+            loss_weight=0.03,
+            score_alpha=0.10,
+            weight_init=0.0,
+            bias_init=0.0,
+        )
+    )
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 10000.0, 2.0],
+            [2.0, 0.0, 10000.0, 2.0],
+            [4.0, 0.0, 10000.0, 2.0],
+        ]
+    )
+    mask = torch.tensor([[True, True, True]])
+    metas = [
+        dict(
+            irregular_selected_positions=[0.0, 2.0, 4.0, 6.0, 8.0, 10.0],
+            irregular_selected_valid_len=12.0,
+            irregular_native_axis=False,
+        )
+    ]
+
+    geometry = head._sparse_irregular_qc_v2_point_geometry(points, mask, metas, torch.float32, points.device)
+    selected_idx = head.quality_qc_v2_geometry_feature_names.index("selected_time")
+    selected_time = geometry[0, selected_idx]
+
+    assert torch.all(selected_time >= 0)
+    assert torch.all(selected_time <= 1)
+    assert selected_time.tolist() == pytest.approx([0.0, 0.4, 0.8])
+
+
 def test_sparse_irregular_qc_v2_test_path_rejects_gt_targets():
     torch, _ = _torch_and_head()
     head = _make_head(

@@ -30,6 +30,7 @@ QC_V2_FLOAT_KEYS = (
     "endpoint_support",
 )
 QC_V2_INT_KEYS = ("level_id", "point_index")
+QC_V2_PRE_NMS_CANDIDATES_KEY = "qc_v2_pre_nms_candidates"
 
 
 def _segment_iou(segment, candidates):
@@ -212,6 +213,15 @@ def _prediction_records(predictions, gt_by_video):
                 "quality_score": quality_score,
                 "cls_score": cls_score,
                 "fused_score": fused_score,
+                "pre_nms_rank": pred.get("pre_nms_rank"),
+                "pre_nms_score": _as_float_or_none(pred.get("pre_nms_score")),
+                "rank_semantics": pred.get("rank_semantics"),
+                "survived_after_topk": pred.get("survived_after_topk"),
+                "post_topk_rank": pred.get("post_topk_rank"),
+                "post_topk_score": _as_float_or_none(pred.get("post_topk_score")),
+                "survived_after_nms": pred.get("survived_after_nms"),
+                "post_nms_rank": pred.get("post_nms_rank"),
+                "post_nms_score": _as_float_or_none(pred.get("post_nms_score")),
                 "selected_start": None if selected_segment is None else selected_segment[0],
                 "selected_end": None if selected_segment is None else selected_segment[1],
                 "physical_start": None if physical_segment is None else physical_segment[0],
@@ -225,6 +235,20 @@ def _prediction_records(predictions, gt_by_video):
                 record[key] = None if value is None else int(value)
             records.append(record)
     return records, per_video_counts, per_video_label_counts
+
+
+def _pre_nms_candidate_records(predictions):
+    candidates = []
+    for video_id, video_predictions in predictions.items():
+        for pred_rank, prediction in enumerate(video_predictions, start=1):
+            for candidate in prediction.get(QC_V2_PRE_NMS_CANDIDATES_KEY, []) or []:
+                if not isinstance(candidate, dict):
+                    continue
+                record = dict(candidate)
+                record["video_id"] = video_id
+                record["source_prediction_rank"] = pred_rank
+                candidates.append(record)
+    return candidates
 
 
 def _count_records(records):
@@ -374,6 +398,7 @@ def _qc_v2_diagnostic_state(records):
     has_level_point = lambda record: record.get("level_id") is not None and record.get("point_index") is not None
     full_geometry = lambda record: has_selected(record) and has_physical(record) and has_geometry(record) and has_level_point(record)
 
+    has_survival = lambda record: record.get("survived_after_nms") is not None and record.get("pre_nms_rank") is not None
     coverage = {
         "records_total": total,
         "records_with_quality_score": sum(1 for record in records if record.get("quality_score") is not None),
@@ -383,6 +408,7 @@ def _qc_v2_diagnostic_state(records):
         "records_with_physical_coordinates": sum(1 for record in records if has_physical(record)),
         "records_with_geometry_support": sum(1 for record in records if has_geometry(record)),
         "records_with_level_point_index": sum(1 for record in records if has_level_point(record)),
+        "records_with_nms_survival_state": sum(1 for record in records if has_survival(record)),
         "records_with_full_qc_v2_geometry": sum(1 for record in records if full_geometry(record)),
     }
     if total == 0 or coverage["records_with_full_qc_v2_geometry"] == 0:
@@ -408,6 +434,79 @@ def _qc_v2_diagnostic_state(records):
                 lambda record: record.get("fused_score") is not None and has_selected(record) and has_geometry(record),
             ),
             "proposal_cap_overload_check": "AVAILABLE",
+        },
+    }
+
+
+def _qc_v2_pre_nms_diagnostic_state(pre_nms_candidates):
+    total = len(pre_nms_candidates)
+    if total == 0:
+        return {
+            "status": "MISSING_QC_V2_PRE_NMS_SURVIVAL_DUMP",
+            "diagnostic_only": True,
+            "official_map_claim": False,
+            "field_coverage": {
+                "pre_nms_candidates_total": 0,
+                "pre_nms_candidates_with_selected_proposal": 0,
+                "pre_nms_candidates_with_physical_proposal": 0,
+                "pre_nms_candidates_with_core_score": 0,
+                "pre_nms_candidates_with_quality_score": 0,
+                "pre_nms_candidates_with_fused_score": 0,
+                "pre_nms_candidates_with_level_point_index": 0,
+                "pre_nms_candidates_with_rank_semantics": 0,
+                "pre_nms_candidates_with_survival_core": 0,
+                "pre_nms_candidates_survived_after_nms": 0,
+                "pre_nms_candidates_suppressed_after_nms": 0,
+            },
+        }
+
+    has_selected = lambda record: _segment_or_none(record.get("selected_segment")) is not None
+    has_physical = lambda record: _segment_or_none(record.get("physical_segment")) is not None
+    has_core_score = lambda record: (
+        _as_float_or_none(record.get("cls_score")) is not None
+        or _as_float_or_none(record.get("score")) is not None
+        or _as_float_or_none(record.get("pre_nms_score")) is not None
+    )
+    has_quality_score = lambda record: _as_float_or_none(record.get("quality_score")) is not None
+    has_fused_score = lambda record: _as_float_or_none(record.get("fused_score")) is not None
+    has_level_point = lambda record: record.get("level_id") is not None and record.get("point_index") is not None
+    has_rank_semantics = lambda record: record.get("rank_semantics") is not None
+    has_survival_core = lambda record: (
+        has_selected(record)
+        and has_physical(record)
+        and has_core_score(record)
+        and has_level_point(record)
+        and record.get("pre_nms_rank") is not None
+        and record.get("survived_after_topk") is not None
+        and record.get("survived_after_nms") is not None
+    )
+    survived = sum(1 for record in pre_nms_candidates if record.get("survived_after_nms") is True)
+    suppressed = sum(1 for record in pre_nms_candidates if record.get("survived_after_nms") is False)
+    core_count = sum(1 for record in pre_nms_candidates if has_survival_core(record))
+
+    if core_count == total:
+        status = "PASS_QC_V2_PRE_NMS_SURVIVAL_DUMP"
+    elif core_count > 0:
+        status = "PARTIAL_QC_V2_PRE_NMS_SURVIVAL_DUMP"
+    else:
+        status = "MISSING_QC_V2_PRE_NMS_SURVIVAL_DUMP"
+
+    return {
+        "status": status,
+        "diagnostic_only": True,
+        "official_map_claim": False,
+        "field_coverage": {
+            "pre_nms_candidates_total": total,
+            "pre_nms_candidates_with_selected_proposal": sum(1 for record in pre_nms_candidates if has_selected(record)),
+            "pre_nms_candidates_with_physical_proposal": sum(1 for record in pre_nms_candidates if has_physical(record)),
+            "pre_nms_candidates_with_core_score": sum(1 for record in pre_nms_candidates if has_core_score(record)),
+            "pre_nms_candidates_with_quality_score": sum(1 for record in pre_nms_candidates if has_quality_score(record)),
+            "pre_nms_candidates_with_fused_score": sum(1 for record in pre_nms_candidates if has_fused_score(record)),
+            "pre_nms_candidates_with_level_point_index": sum(1 for record in pre_nms_candidates if has_level_point(record)),
+            "pre_nms_candidates_with_rank_semantics": sum(1 for record in pre_nms_candidates if has_rank_semantics(record)),
+            "pre_nms_candidates_with_survival_core": core_count,
+            "pre_nms_candidates_survived_after_nms": survived,
+            "pre_nms_candidates_suppressed_after_nms": suppressed,
         },
     }
 
@@ -704,6 +803,7 @@ def analyze(
     predictions = _load_predictions(prediction_path)
     gt_by_video = _load_annotations(annotation_path, subset)
     records, per_video_counts, per_video_label_counts = _prediction_records(predictions, gt_by_video)
+    pre_nms_candidates = _pre_nms_candidate_records(predictions)
 
     summary = {
         "status": "PASS_DIAGNOSTIC_ANALYSIS",
@@ -724,6 +824,7 @@ def analyze(
             proposal_cap_value=DEFAULT_PROPOSAL_CAP,
         )
     )
+    summary["qc_v2_pre_nms_survival_state"] = _qc_v2_pre_nms_diagnostic_state(pre_nms_candidates)
     if include_sweep:
         return summary, records, _diagnostic_sweep(prediction_path, annotation_path, subset, records, gt_by_video, per_video_counts)
     return summary, records
@@ -823,6 +924,15 @@ def _write_records_csv(records, csv_path):
         "visibility_support",
         "coverage",
         "endpoint_support",
+        "pre_nms_rank",
+        "pre_nms_score",
+        "rank_semantics",
+        "survived_after_topk",
+        "post_topk_rank",
+        "post_topk_score",
+        "survived_after_nms",
+        "post_nms_rank",
+        "post_nms_score",
         "level_id",
         "point_index",
         "coverage_available",
