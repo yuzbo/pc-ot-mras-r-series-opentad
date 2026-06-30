@@ -1,14 +1,17 @@
+import os
+
 _base_ = ["./input_random_fixed_50pct_adapter_irregular_headv3_x.py"]
 
 route_label = "DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3"
-route_status = "LOCAL_FINAL_CODE_CANDIDATE_PRECHECK_GATE_LOCKED_NO_REMOTE_NO_TRAINING_NO_METRIC_CLAIMS"
-formal_train_unlocked = False
+route_status = "USER_OVERRIDE_FORMAL_TRAIN_QUEUED_AFTER_BVR_NO_METRIC_CLAIMS"
+formal_train_unlocked = True
 sparse_compute_claim = False
 
-annotation_path = "/root/autodl-tmp/annotations/thumos_14_anno.json"
-class_map = "/root/autodl-tmp/annotations/category_idx.txt"
-train_data_path = "/root/autodl-tmp/train"
-test_data_path = "/root/autodl-tmp/test"
+thumos_root = os.environ.get("THUMOS_ROOT", "/data/home/sczc063/run/yuzibo/thumos14")
+annotation_path = os.path.join(thumos_root, "annotations", "thumos_14_anno.json")
+class_map = os.path.join(thumos_root, "annotations", "category_idx.txt")
+train_data_path = os.path.join(thumos_root, "train")
+test_data_path = os.path.join(thumos_root, "test")
 
 window_size = 384
 dense_window_size = 768
@@ -58,7 +61,7 @@ mdl_knot_acquisition = dict(
     no_runtime_claims=True,
     no_deploy_claims=True,
     no_paper_claims=True,
-    formal_train_unlocked=False,
+    formal_train_unlocked=True,
     sparse_compute_claim=False,
 )
 
@@ -175,4 +178,22 @@ dataset = dict(
     ),
 )
 
-work_dir = "exps/thumos/adatad/input_mdl_knot_dynamic_adapter_irregular_headv3_local_final_code_candidate"
+solver = dict(
+    amp=False,
+    fp16_compress=False,
+    train=dict(batch_size=1, num_workers=2),
+    val=dict(batch_size=1, num_workers=2),
+    test=dict(batch_size=1, num_workers=2),
+)
+
+workflow = dict(
+    logging_interval=50,
+    checkpoint_interval=10,
+    val_loss_interval=-1,
+    val_eval_interval=2,
+    val_start_epoch=40,
+    end_epoch=60,
+    disable_checkpoint=False,
+)
+
+work_dir = "exps/thumos/adatad/input_mdl_knot_dynamic_adapter_irregular_headv3_user_override_formal_train"
