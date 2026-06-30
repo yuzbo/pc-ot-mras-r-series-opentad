@@ -67,10 +67,11 @@ def _runtime_build_backbone(backbone_cfg):
     }
 
 
-def run_pretrain_audit(config, out_dir=None, require_runtime=False):
+def run_pretrain_audit(config, out_dir=None, require_runtime=False, check_file=False):
     config_path = Path(config)
     cfg, custom_cfg, model_cfg, pretrain = _resolve_config(config_path)
     expected_name = "vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth"
+    require_file = bool(check_file or require_runtime)
     summary = {
         "audit": "bvr_twb_pretrain_load",
         "config": str(config_path),
@@ -82,6 +83,7 @@ def run_pretrain_audit(config, out_dir=None, require_runtime=False):
         "resolved_pretrain": pretrain,
         "expected_videomae_s_pretrain_name": expected_name,
         "pretrain_resolves_videomae_s": isinstance(pretrain, str) and expected_name in pretrain,
+        "pretrain_file_check_required": require_file,
         "no_training": True,
         "no_video_decode": True,
         "no_metric_claim": True,
@@ -102,13 +104,25 @@ def run_pretrain_audit(config, out_dir=None, require_runtime=False):
                 "runtime_load_attempted": False,
             }
         )
+    elif not (isinstance(pretrain, str) and expected_name in pretrain):
+        summary.update(
+            {
+                "verdict": "BLOCKER_PRETRAIN_NOT_VIDEOMAE_S",
+                "blocked": True,
+                "blocked_reason": (
+                    "Resolved cfg.model.backbone.custom.pretrain does not point to the "
+                    f"expected VideoMAE-S checkpoint name: {expected_name}"
+                ),
+                "runtime_load_attempted": False,
+            }
+        )
     else:
         pretrain_path = Path(pretrain)
         if not pretrain_path.is_absolute():
             pretrain_path = (ROOT / pretrain_path).resolve()
         summary["resolved_pretrain_abs"] = str(pretrain_path)
         summary["pretrain_file_exists"] = pretrain_path.exists()
-        if not pretrain_path.exists():
+        if require_file and not pretrain_path.exists():
             summary.update(
                 {
                     "verdict": "BLOCKER_PRETRAIN_FILE_MISSING",
@@ -118,12 +132,17 @@ def run_pretrain_audit(config, out_dir=None, require_runtime=False):
                 }
             )
         else:
-            summary.update(_checkpoint_stats(pretrain_path))
+            if require_file:
+                summary.update(_checkpoint_stats(pretrain_path))
             if require_runtime:
                 summary.update(_runtime_build_backbone(cfg.model.backbone))
             summary.update(
                 {
-                    "verdict": "PASS_PRETRAIN_RESOLVED_AND_READABLE_NO_TRAINING",
+                    "verdict": (
+                        "PASS_PRETRAIN_RESOLVED_AND_READABLE_NO_TRAINING"
+                        if require_file
+                        else "PASS_PRETRAIN_RESOLVED_STATIC_NO_TRAINING"
+                    ),
                     "blocked": False,
                     "runtime_load_attempted": bool(require_runtime),
                 }
@@ -143,14 +162,42 @@ def main():
     parser = argparse.ArgumentParser(description="Audit BVR-TWB resolved pretrain path without training.")
     parser.add_argument(
         "--config",
-        default="configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py",
+        action="append",
+        default=None,
     )
     parser.add_argument("--out-dir")
+    parser.add_argument("--check-file", action="store_true")
     parser.add_argument("--require-runtime", action="store_true")
     args = parser.parse_args()
-    summary = run_pretrain_audit(args.config, out_dir=args.out_dir, require_runtime=args.require_runtime)
+    configs = args.config or ["configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py"]
+    blocked = False
+    summaries = []
+    for config in configs:
+        summary = run_pretrain_audit(
+            config,
+            out_dir=args.out_dir if len(configs) == 1 else None,
+            require_runtime=args.require_runtime,
+            check_file=args.check_file,
+        )
+        summaries.append(summary)
+        blocked = blocked or bool(summary.get("blocked"))
+    summary = summaries[0] if len(summaries) == 1 else {
+        "audit": "bvr_twb_pretrain_load_multi_config",
+        "blocked": blocked,
+        "summaries": summaries,
+        "no_training": True,
+        "no_metric_claim": True,
+        "full_training_unlocked": False,
+    }
+    if args.out_dir and len(configs) > 1:
+        out = Path(args.out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "summary.json").write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
-    if summary.get("blocked"):
+    if blocked:
         raise SystemExit(2)
 
 

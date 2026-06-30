@@ -31,9 +31,132 @@ No BVR config, model, detector head, loss, post-processing, full-train launcher,
 
 ## Diagnostic Outcomes
 
-### 1. Actual Runtime Pretrain-Load Audit
+## Focused Pretrain-Config Repair Update
 
-Status: **BLOCKED**
+Timestamp: 2026-06-30 18:17:18 +08:00
+
+Stage: `focused pretrain-config repair`
+
+Writable owner exception: the divergent-route skill is normally delegation-first, but the user explicitly assigned this turn's BVR focused repair to the current agent as the only writable code owner. No other writable agent was used.
+
+Changed files:
+
+- `configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py`
+- `tools/bvr_twb/audit_pretrain_load.py`
+- `tests/test_bvr_twb_bounded_diagnostics.py`
+- `research-wiki/experiments/DIVERGENT_BVR_TWB_BOUNDED_DIAGNOSTIC_EVIDENCE_20260630.md`
+
+Repair:
+
+- The final BVR config still needs `_delete_=True` for `model.backbone.custom` because it replaces the inherited fixed-length Adapter pipeline with the BVR fixed-length padded bridge pipeline.
+- The deleted inherited custom block also contained the canonical VideoMAE-S pretrain path.
+- The repair explicitly restores `pretrain="pretrained/vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth"` inside the final BVR custom block.
+
+Before:
+
+```json
+{
+  "resolved_pretrain": null,
+  "verdict": "BLOCKER_PRETRAIN_MISSING_IN_RESOLVED_CONFIG"
+}
+```
+
+After:
+
+```json
+{
+  "blocked": false,
+  "resolved_pretrain": "pretrained/vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth",
+  "pretrain_resolves_videomae_s": true,
+  "pretrain_file_check_required": false,
+  "pretrain_file_exists": false,
+  "verdict": "PASS_PRETRAIN_RESOLVED_STATIC_NO_TRAINING"
+}
+```
+
+Local pretrain audit log:
+
+```text
+E:\DeskTop\TAD\temrefuse-tad\OpenTAD_BVR_TWB_Final_Worktree_20260630\logs\bvr_twb_pretrain_config_repair_audit_20260630\summary.json
+```
+
+The local audit intentionally did not require checkpoint-file presence because this Windows worktree has no local `pretrained/` checkpoint directory. The static config blocker is cleared locally; file/readability/runtime loading should be rechecked on N16R4 or any environment that has the actual pretrained checkpoint by adding `--check-file` or `--require-runtime`.
+
+Audit/test strengthening:
+
+- `audit_pretrain_load.py` now blocks non-null but wrong pretrain paths with `BLOCKER_PRETRAIN_NOT_VIDEOMAE_S`.
+- It distinguishes static resolved-config evidence from file/readability evidence through `--check-file` and `--require-runtime`.
+- It accepts repeated `--config` arguments so local and future N16R4 BVR config variants can be audited in one no-training pass.
+- `tests/test_bvr_twb_bounded_diagnostics.py` now discovers all `configs/adatad/thumos/*bvr_twb*.py` variants and requires each to resolve the canonical VideoMAE-S pretrain path. At this commit, only `input_bvr_twb_dynamic_adapter_irregular_headv3.py` exists; no separate BVR N16R4 variant exists in this worktree.
+
+Commands and results:
+
+```powershell
+python -m py_compile tools\bvr_twb\audit_pretrain_load.py
+```
+
+Result: passed.
+
+```powershell
+python tools\bvr_twb\audit_pretrain_load.py --out-dir logs\bvr_twb_pretrain_config_repair_audit_20260630
+```
+
+Result: exit code 0; `PASS_PRETRAIN_RESOLVED_STATIC_NO_TRAINING`.
+
+```powershell
+python -m py_compile tools\bvr_twb\audit_pretrain_load.py tools\bvr_twb\dump_bridge_roundtrip.py tools\bvr_twb\validate_bvr_twb_geometry_contracts.py tools\bvr_twb\audit_opentad_bvr_twb_pipeline.py tools\bvr_twb\audit_sparse_forward_precheck.py
+```
+
+Result: passed.
+
+```powershell
+$env:PYTHONPATH=(Get-Location).Path; pytest -q tests\test_bvr_twb_bounded_diagnostics.py tests\test_bvr_twb_geometry_contracts.py tests\test_bvr_twb_opentad_pipeline.py tests\test_bvr_twb_sparse_forward_audit.py tests\test_bvr_twb_validators.py
+```
+
+Result: `36 passed, 12 skipped, 1 warning in 4.75s`.
+
+```powershell
+python tools\bvr_twb\validate_bvr_twb_geometry_contracts.py
+```
+
+Result: passed numpy/source contracts; Windows torch runtime skipped with `WinError 1114` while preserving `no_training=true` and `no_metric_claim=true`.
+
+```powershell
+python tools\bvr_twb\audit_opentad_bvr_twb_pipeline.py --out-dir logs\bvr_twb_pretrain_config_repair_pipeline_audit_20260630 --overwrite
+```
+
+Result: `ledgers=3 all_validated=True sparse_compute_claim=False blocked=False`.
+
+```powershell
+python tools\bvr_twb\audit_sparse_forward_precheck.py --mode fake_raw --out-dir logs\bvr_twb_pretrain_config_repair_sparse_fake_raw_20260630 --overwrite
+```
+
+Result: `PASS_LOCAL_SHAPE_ONLY_NO_SPARSE_COMPUTE_CLAIM` for 3 ledgers.
+
+```powershell
+python tools\bvr_twb\audit_sparse_forward_precheck.py --mode module_fake_forward --out-dir logs\bvr_twb_pretrain_config_repair_sparse_module_fake_forward_20260630 --overwrite
+```
+
+Result: `PASS_REAL_MODULE_FORWARD_NO_METRIC_CLAIM` for 3 ledgers.
+
+Remote note:
+
+- No remote CPU rerun was performed in this repair pass. The next bounded diagnostic may sync/pull the repaired branch into the existing clean remote clone and rerun `audit_pretrain_load.py --check-file` without GPU, Slurm, training, or evaluation.
+
+Tracker/log note:
+
+- This owned worktree does not contain `research-wiki/log.md` or `research-wiki/experiments/SPARSE_TAD_TASK_FLOW_TRACKER_20260520.md`.
+- The user-provided write whitelist for this stage allowed BVR route reports but did not allow tracker/log writes. To avoid shared-worktree or out-of-scope writes, only this BVR route report was updated.
+
+Current decision:
+
+- `BLOCKER_PRETRAIN_MISSING_IN_RESOLVED_CONFIG` is cleared by local static resolved-config evidence.
+- BVR formal/full training remains locked.
+- Allowed next action is bounded diagnostic rerun / read-only review / optional N16R4 CPU pretrain-file audit, not Slurm/full training.
+
+### 1. Historical Runtime Pretrain-Load Audit Before Repair
+
+Historical status before focused repair: **BLOCKED**
 
 The final BVR config resolves `cfg.model.backbone.custom` without a `pretrain` key:
 
@@ -230,15 +353,15 @@ Review gate note:
 
 - Exact required subagent configuration (`model=gpt-5.5`, `reasoning_effort=high`, normal speed) was not available through the callable review tools in this environment. Claude/Gemini/weak/default review tools were deliberately not used. Because the required final read-only subagent review is unavailable and the pretrain blocker is real, this report does not unlock launch or deployment.
 
-## Current Blocker And Next Action
+## Historical Blocker And Current Next Action
 
-Blocking finding:
+Historical blocking finding, now cleared by the focused repair above:
 
 `input_bvr_twb_dynamic_adapter_irregular_headv3.py` deletes inherited `model.backbone.custom` and does not restore the VideoMAE-S `pretrain` path. The resolved final config would silently skip pretrain loading and random-initialize the backbone.
 
-Allowed next action:
+Allowed next action after repair:
 
-`BOUNDED_DIAGNOSTIC_ONLY` or a focused BVR config repair in the owned worktree, followed by py_compile, focused BVR pytest, pretrain-load audit, Linux CPU geometry/pipeline/sparse precheck, and the required exact-model read-only review if/when available.
+`BOUNDED_DIAGNOSTIC_ONLY` rerun and read-only review, optionally including N16R4 CPU `audit_pretrain_load.py --check-file` in the existing clean remote clone. Do not proceed to Slurm/full training until the required gates explicitly allow it.
 
 Still locked:
 
