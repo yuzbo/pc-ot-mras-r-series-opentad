@@ -42,9 +42,21 @@ The new `--formal-readiness-summary` path is fail-closed. It stays locked unless
 - `max_gap` and `gap_p95` distributions;
 - passing mask/metadata alignment;
 - measurable short-action/boundary guard evidence;
-- validated shortdiag evidence.
+- zero uncovered short-island and transition guard counts;
+- validated shortdiag execution evidence with a real one-epoch train-log path and finite train losses;
+- explicit locked actions for remote sync, Slurm, training, evaluation, and `tools/test.py`;
+- explicit no-claim locks for mAP, runtime, FLOPs, deployment, paper, and sparse-compute claims.
 
-Current state: formal train remains locked because no real-video pipeline diagnostic summary and no validated shortdiag execution evidence are present in this worktree.
+Current state: formal train remains locked. Complete diagnostic evidence can only prove `FORMAL_READINESS_DIAGNOSTICS_PRESENT`; it does not unlock formal training, remote sync, Slurm, evaluation, deployment, or claims. No full-train user/coordinator approval exists in this stage.
+
+## 2026-06-30 Final Review Blocker Fixes
+
+The 075553b final read-only review blockers were fixed in this owned worktree only:
+
+- Route drift detection now rejects `C3`, `C3-Pro`, `C3_MAINLINE`, and GlobalRank spellings after stripping the legal MDL route label.
+- Formal readiness evidence now rejects contradictory summaries, including `formal_train_unlocked=True`, unlocked training/evaluation/tools actions, and open mAP/runtime/FLOPs/deploy/paper/sparse-compute claims.
+- Short diagnostic validation without `--train-log` is now a static config check only: it exits successfully for local inspection but emits `validated=false`, `log_evidence=null`, and `evidence_scope=static_config_only`, so it cannot satisfy formal readiness.
+- Short-action and boundary guard uncovered counts are now readiness blockers. Any uncovered short-island or transition band keeps formal readiness locked.
 
 ## Fixed-Pad Compute Boundary
 
@@ -79,3 +91,17 @@ Forbidden in this stage:
 - Slurm/GPU;
 - Pro/Oracle/Rosetta;
 - C3/BVR/ABR/combo route changes.
+
+## Verification Rerun
+
+Commands rerun locally in the owned worktree on branch `codex/divergent-mdl-knot-formal-gate-20260630`:
+
+- `python -m py_compile opentad\acquisition\mdl_knot\diagnostics.py tools\mdl_knot\validate_mdl_knot_launch_gate.py tools\mdl_knot\validate_mdl_knot_shortdiag.py tools\mdl_knot\audit_mdl_knot_pipeline_precheck.py tests\test_mdl_knot_shortdiag.py tests\test_mdl_knot_tools_and_integration.py` passed.
+- `python -m pytest tests\test_mdl_knot_shortdiag.py tests\test_mdl_knot_tools_and_integration.py -q` passed: `21 passed, 1 skipped`.
+- `python -m pytest tests\test_mdl_knot_core.py tests\test_mdl_knot_shortdiag.py tests\test_mdl_knot_tools_and_integration.py -q` passed: `34 passed, 1 skipped`.
+- `python tools\mdl_knot\validate_mdl_knot_launch_gate.py --config configs\adatad\thumos\input_mdl_knot_dynamic_adapter_irregular_headv3.py` passed as `PRECHECK_ONLY_REQUEST_ALLOWED` and kept all locks.
+- `python tools\mdl_knot\validate_mdl_knot_shortdiag.py --config configs\adatad\thumos\input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py` passed as `SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED` with `validated=false`.
+- `python tools\mdl_knot\validate_mdl_knot_shortdiag.py --config configs\adatad\thumos\input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py --train-log <temporary finite-loss one-epoch log>` passed as `SHORT_DIAGNOSTIC_ONLY_REQUEST_ALLOWED` with `validated=true`.
+- `python tools\mdl_knot\validate_mdl_knot_launch_gate.py --config configs\adatad\thumos\input_mdl_knot_dynamic_adapter_irregular_headv3.py --formal-readiness-summary __missing_formal_readiness_summary__.json` locked as expected.
+
+No training, evaluation, GPU, Slurm, remote sync, `tools/test.py`, Pro/Oracle/Rosetta, mAP claim, runtime/FLOPs claim, deploy claim, paper claim, or sparse-compute claim was run or unlocked.

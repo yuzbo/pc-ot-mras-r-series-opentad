@@ -63,7 +63,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fail-closed MDL-Knot SHORT_DIAGNOSTIC_ONLY gate.")
     parser.add_argument("--config", required=True, help="MDL-Knot short diagnostic config to validate.")
     parser.add_argument("--route-label", default=MDL_KNOT_ROUTE_LABEL)
-    parser.add_argument("--train-log", default=None, help="Optional one-epoch diagnostic train log to validate.")
+    parser.add_argument(
+        "--train-log",
+        default=None,
+        help="One-epoch diagnostic train log to validate as execution evidence. Omit for static config check only.",
+    )
     return parser.parse_args()
 
 
@@ -275,13 +279,21 @@ def main() -> int:
             return status
 
     evidence = dict(evidence or {})
-    evidence["validated"] = True
+    evidence["validated"] = log_evidence is not None
     evidence["formal_train_unlocked"] = False
     evidence["no_sparse_compute_claim"] = True
     evidence["log_evidence"] = log_evidence
-    print("SHORT_DIAGNOSTIC_ONLY_REQUEST_ALLOWED")
+    evidence["execution_evidence_required_for_formal_readiness"] = log_evidence is None
+    evidence["evidence_scope"] = "one_epoch_train_log" if log_evidence is not None else "static_config_only"
+    if log_evidence is None:
+        print("SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED")
+    else:
+        print("SHORT_DIAGNOSTIC_ONLY_REQUEST_ALLOWED")
     print("SHORTDIAG_EVIDENCE=" + json.dumps(evidence, sort_keys=True))
-    print("Still locked: full training, evaluation, checkpoints, tools/test.py, mAP and sparse-compute claims remain locked")
+    print(
+        "Still locked: full training, evaluation, checkpoints, tools/test.py, "
+        "mAP and sparse-compute claims remain locked"
+    )
     return 0
 
 

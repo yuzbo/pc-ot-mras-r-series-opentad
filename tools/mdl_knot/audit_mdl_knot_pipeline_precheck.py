@@ -176,6 +176,7 @@ def main() -> int:
             "FLOPs": True,
             "deploy": True,
             "paper": True,
+            "sparse_compute": True,
         },
         "locked_actions": {
             "remote_sync": True,

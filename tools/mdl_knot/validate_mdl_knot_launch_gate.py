@@ -18,8 +18,17 @@ from opentad.acquisition.mdl_knot import (  # noqa: E402
 
 
 FORBIDDEN_ROUTE_DRIFT = (
+    "C3",
+    "C3_PRO",
+    "C3-PRO",
+    "C3 PRO",
+    "C3_ORIGINAL",
+    "C3_MAINLINE",
     "EVENT_SURPRISE",
     "GLOBALRANK",
+    "GLOBAL_RANK",
+    "GLOBAL-RANK",
+    "GLOBAL RANK",
     "INTERVAL",
     "ORACLE",
     "BVR",
@@ -197,6 +206,8 @@ def _validate_precheck_summary(summary_arg: str, config_evidence: dict) -> int:
         return _locked(f"C3 drift token in summary config: {drift_tokens}")
     if any("COMBO" in token for token in drift_tokens):
         return _locked(f"COMBO drift token in summary config: {drift_tokens}")
+    if any("GLOBALRANK" in token or "GLOBAL_RANK" in token or "GLOBAL-RANK" in token for token in drift_tokens):
+        return _locked(f"GlobalRank drift token in summary config: {drift_tokens}")
     if summary_config.get("deploy_scout_source") != config_evidence.get("deploy_scout_source"):
         return _locked("summary config deploy scout source does not match --config")
     if summary_config.get("synthetic_fallback_allowed") is not False:
@@ -235,7 +246,7 @@ def main() -> int:
     args = parse_args()
     if args.route_label != MDL_KNOT_ROUTE_LABEL:
         return _locked(f"route label mismatch: {args.route_label}")
-    upper_label = args.route_label.upper()
+    upper_label = args.route_label.upper().replace(MDL_KNOT_ROUTE_LABEL.upper(), "")
     for token in FORBIDDEN_ROUTE_DRIFT:
         if token in upper_label:
             return _locked(f"forbidden route drift token in label: {token}")

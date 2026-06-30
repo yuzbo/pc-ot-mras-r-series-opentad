@@ -15,7 +15,9 @@ from opentad.acquisition.mdl_knot import (
     build_raw_frame_motion_scout_curve,
     build_synthetic_scout_curve,
     greedy_mdl_knot_select,
+    validate_formal_readiness_evidence,
 )
+from opentad.acquisition.mdl_knot.diagnostics import FormalReadinessLocked
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -327,6 +329,31 @@ def test_launch_gate_rejects_non_mdl_config_evidence_and_forbidden_tokens(tmp_pa
     assert "forbidden route tokens" in proc.stdout
 
 
+def test_launch_gate_rejects_c3_pro_and_globalrank_drift_in_config_text(tmp_path):
+    drift_config = tmp_path / "input_mdl_knot_with_drift_comment.py"
+    text = CONFIG_PATH.read_text(encoding="utf-8")
+    drift_config.write_text(text + "\n# forbidden drift: C3-Pro GlobalRank C3_MAINLINE\n", encoding="utf-8")
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
+            "--config",
+            str(drift_config),
+            "--route-label",
+            ROUTE_LABEL,
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert proc.returncode != 0
+    assert "forbidden route drift tokens" in proc.stdout
+    assert "C3" in proc.stdout
+    assert "GLOBALRANK" in proc.stdout
+
+
 def test_launch_gate_rejects_missing_tools_test_lock_random_fixed_and_combo(tmp_path):
     safety = {
         split: {
@@ -427,6 +454,166 @@ def test_launch_gate_rejects_missing_tools_test_lock_random_fixed_and_combo(tmp_
     )
     assert proc.returncode != 0
     assert "COMBO" in proc.stdout
+
+    summary["config_evidence"]["drift_tokens"] = ["C3-Pro", "GlobalRank"]
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
+            "--config",
+            str(CONFIG_PATH),
+            "--route-label",
+            ROUTE_LABEL,
+            "--precheck-summary",
+            str(summary_path),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert proc.returncode != 0
+    assert "C3 drift" in proc.stdout
+
+
+def _formal_readiness_summary() -> dict:
+    return {
+        "route_label": ROUTE_LABEL,
+        "validated": True,
+        "formal_train_unlocked": False,
+        "full_train_unlocked": False,
+        "locked_actions": {
+            "remote_sync": True,
+            "slurm": True,
+            "training": True,
+            "evaluation": True,
+            "tools_test_py": True,
+        },
+        "no_claims": {
+            "mAP": True,
+            "runtime": True,
+            "FLOPs": True,
+            "deploy": True,
+            "paper": True,
+            "sparse_compute": True,
+        },
+        "real_video_pipeline_diagnostics": {
+            "window_count": 3,
+            "raw_frame_scout_windows": 2,
+            "metadata_fallback_windows": 1,
+            "synthetic_fallback_windows": 0,
+            "synthetic_fallback_rejected": True,
+            "valid_k_distribution": {"count": 3, "unique_count": 2, "nonconstant": True},
+            "max_gap_distribution": {"count": 3},
+            "gap_p95_distribution": {"count": 3},
+            "mask_metadata_alignment": {"all_aligned": True},
+            "short_boundary_risk_monitoring": {
+                "short_island_total": 2,
+                "short_island_uncovered_count": 0,
+                "transition_band_total": 2,
+                "transition_band_uncovered_count": 0,
+                "vanilla_mdl_smoothing_risk_measurable": True,
+            },
+            "fixed_pad_bridge_compute_boundary": {
+                "bridge": "fixed_pad",
+                "sparse_compute_claim": False,
+            },
+        },
+        "shortdiag_evidence": {
+            "validated": True,
+            "formal_train_unlocked": False,
+            "no_sparse_compute_claim": True,
+            "evidence_scope": "one_epoch_train_log",
+            "log_evidence": {
+                "train_log": "logs/mdl_knot_shortdiag_one_epoch.log",
+                "finite_loss_count": 3,
+                "loss_min": 0.1,
+                "loss_max": 2.0,
+                "epoch_max": 1,
+            },
+        },
+    }
+
+
+def test_formal_readiness_evidence_rejects_unlocked_actions_claims_and_config_only_shortdiag():
+    valid = _formal_readiness_summary()
+    validate_formal_readiness_evidence(valid)
+
+    bad = _formal_readiness_summary()
+    bad["formal_train_unlocked"] = True
+    with pytest.raises(FormalReadinessLocked, match="formal_train_unlocked"):
+        validate_formal_readiness_evidence(bad)
+
+    bad = _formal_readiness_summary()
+    bad["locked_actions"]["training"] = False
+    with pytest.raises(FormalReadinessLocked, match="training"):
+        validate_formal_readiness_evidence(bad)
+
+    bad = _formal_readiness_summary()
+    bad["no_claims"]["mAP"] = False
+    with pytest.raises(FormalReadinessLocked, match="mAP"):
+        validate_formal_readiness_evidence(bad)
+
+    bad = _formal_readiness_summary()
+    bad["no_claims"]["runtime"] = False
+    with pytest.raises(FormalReadinessLocked, match="runtime"):
+        validate_formal_readiness_evidence(bad)
+
+    bad = _formal_readiness_summary()
+    bad["no_claims"]["paper"] = False
+    with pytest.raises(FormalReadinessLocked, match="paper"):
+        validate_formal_readiness_evidence(bad)
+
+    bad = _formal_readiness_summary()
+    bad["no_claims"]["sparse_compute"] = False
+    with pytest.raises(FormalReadinessLocked, match="sparse_compute"):
+        validate_formal_readiness_evidence(bad)
+
+    bad = _formal_readiness_summary()
+    bad["shortdiag_evidence"]["validated"] = False
+    bad["shortdiag_evidence"]["log_evidence"] = None
+    bad["shortdiag_evidence"]["evidence_scope"] = "static_config_only"
+    with pytest.raises(FormalReadinessLocked, match="shortdiag execution"):
+        validate_formal_readiness_evidence(bad)
+
+
+def test_formal_readiness_evidence_rejects_uncovered_short_or_transition_guards():
+    bad = _formal_readiness_summary()
+    bad["real_video_pipeline_diagnostics"]["short_boundary_risk_monitoring"]["short_island_uncovered_count"] = 1
+    with pytest.raises(FormalReadinessLocked, match="short-island guard"):
+        validate_formal_readiness_evidence(bad)
+
+    bad = _formal_readiness_summary()
+    bad["real_video_pipeline_diagnostics"]["short_boundary_risk_monitoring"]["transition_band_uncovered_count"] = 1
+    with pytest.raises(FormalReadinessLocked, match="transition guard"):
+        validate_formal_readiness_evidence(bad)
+
+
+def test_formal_readiness_launch_gate_requires_shortdiag_execution_evidence(tmp_path):
+    summary = _formal_readiness_summary()
+    summary["shortdiag_evidence"]["validated"] = False
+    summary["shortdiag_evidence"]["log_evidence"] = None
+    summary["shortdiag_evidence"]["evidence_scope"] = "static_config_only"
+    summary_path = tmp_path / "config_only_shortdiag_formal.json"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
+            "--config",
+            str(CONFIG_PATH),
+            "--formal-readiness-summary",
+            str(summary_path),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert proc.returncode != 0
+    assert "formal training remains locked" in proc.stdout
+    assert "shortdiag execution" in proc.stdout
 
 
 def test_formal_readiness_gate_rejects_missing_or_synthetic_only_diagnostics(tmp_path):

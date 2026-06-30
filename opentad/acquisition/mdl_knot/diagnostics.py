@@ -226,6 +226,23 @@ def summarize_pipeline_diagnostics(diagnostics: Sequence[Mapping[str, object]]) 
 def validate_formal_readiness_evidence(summary: Mapping[str, object]) -> None:
     if summary.get("route_label") != MDL_KNOT_ROUTE_LABEL:
         raise FormalReadinessLocked("formal readiness route_label mismatch")
+    if summary.get("formal_train_unlocked") is not False:
+        raise FormalReadinessLocked("formal_train_unlocked must remain false in readiness evidence")
+    if summary.get("full_train_unlocked", False) is not False:
+        raise FormalReadinessLocked("full_train_unlocked must remain false in readiness evidence")
+    locked_actions = summary.get("locked_actions")
+    if not isinstance(locked_actions, Mapping):
+        raise FormalReadinessLocked("missing locked_actions in formal readiness summary")
+    for key in ("remote_sync", "slurm", "training", "evaluation", "tools_test_py"):
+        if locked_actions.get(key) is not True:
+            raise FormalReadinessLocked(f"formal readiness summary does not keep {key} locked")
+    no_claims = summary.get("no_claims")
+    if not isinstance(no_claims, Mapping):
+        raise FormalReadinessLocked("missing no_claims in formal readiness summary")
+    for key in ("mAP", "runtime", "FLOPs", "deploy", "paper", "sparse_compute"):
+        if no_claims.get(key) is not True:
+            raise FormalReadinessLocked(f"formal readiness summary does not explicitly lock {key} claims")
+
     diag = summary.get("real_video_pipeline_diagnostics")
     if not isinstance(diag, Mapping):
         raise FormalReadinessLocked("missing real_video_pipeline_diagnostics")
@@ -244,10 +261,28 @@ def validate_formal_readiness_evidence(summary: Mapping[str, object]) -> None:
         raise FormalReadinessLocked("missing max_gap or gap_p95 diagnostic distributions")
     shortdiag = summary.get("shortdiag_evidence")
     if not isinstance(shortdiag, Mapping) or shortdiag.get("validated") is not True:
-        raise FormalReadinessLocked("missing validated shortdiag_evidence")
+        raise FormalReadinessLocked("missing validated shortdiag execution evidence")
+    if shortdiag.get("formal_train_unlocked") is not False:
+        raise FormalReadinessLocked("shortdiag evidence must keep formal_train_unlocked false")
+    if shortdiag.get("no_sparse_compute_claim") is not True:
+        raise FormalReadinessLocked("shortdiag evidence must keep sparse-compute claims locked")
+    for key in ("metric_claim", "sparse_compute_claim", "runtime_claim", "deploy_claim", "paper_claim"):
+        if shortdiag.get(key, False) is True:
+            raise FormalReadinessLocked(f"shortdiag evidence opens forbidden {key}")
+    log_evidence = shortdiag.get("log_evidence")
+    if not isinstance(log_evidence, Mapping):
+        raise FormalReadinessLocked("validated shortdiag evidence requires real train-log evidence")
+    if not str(log_evidence.get("train_log", "")).strip():
+        raise FormalReadinessLocked("validated shortdiag evidence is missing train_log path")
+    if int(log_evidence.get("finite_loss_count", 0)) <= 0:
+        raise FormalReadinessLocked("validated shortdiag evidence has no finite train loss")
     risk = dict(diag.get("short_boundary_risk_monitoring", {}))
     if risk.get("vanilla_mdl_smoothing_risk_measurable") is not True:
         raise FormalReadinessLocked("short-action/boundary smoothing risk is not measurable")
+    if int(risk.get("short_island_uncovered_count", 0)) != 0:
+        raise FormalReadinessLocked("short-island guard has uncovered risky islands")
+    if int(risk.get("transition_band_uncovered_count", 0)) != 0:
+        raise FormalReadinessLocked("transition guard has uncovered transition bands")
     boundary = dict(diag.get("fixed_pad_bridge_compute_boundary", {}))
     if boundary.get("sparse_compute_claim") is not False:
         raise FormalReadinessLocked("fixed_pad bridge must not make sparse-compute claims")

@@ -49,19 +49,22 @@ def test_shortdiag_config_extends_mdl_route_and_keeps_all_locks():
     assert cfg["work_dir"].endswith("input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag")
 
 
-def test_shortdiag_validator_passes_config_only_and_reports_still_locked():
+def test_shortdiag_validator_config_only_is_static_check_not_execution_evidence():
     proc = _run_validator()
 
     assert proc.returncode == 0, proc.stderr
-    assert "SHORT_DIAGNOSTIC_ONLY_REQUEST_ALLOWED" in proc.stdout
+    assert "SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED" in proc.stdout
     assert "Still locked" in proc.stdout
     evidence = json.loads(proc.stdout.split("SHORTDIAG_EVIDENCE=", 1)[1].splitlines()[0])
     assert evidence["diagnostic_only"] is True
-    assert evidence["validated"] is True
+    assert evidence["validated"] is False
     assert evidence["full_train_unlocked"] is False
     assert evidence["metric_claim"] is False
     assert evidence["sparse_compute_claim"] is False
     assert evidence["no_sparse_compute_claim"] is True
+    assert evidence["log_evidence"] is None
+    assert evidence["execution_evidence_required_for_formal_readiness"] is True
+    assert evidence["evidence_scope"] == "static_config_only"
 
 
 def test_shortdiag_validator_accepts_finite_loss_log_but_keeps_claim_locked(tmp_path):
@@ -83,6 +86,11 @@ def test_shortdiag_validator_accepts_finite_loss_log_but_keeps_claim_locked(tmp_
     assert "SHORT_DIAGNOSTIC_ONLY_REQUEST_ALLOWED" in proc.stdout
     assert "mAP" in proc.stdout
     assert "claims remain locked" in proc.stdout
+    evidence = json.loads(proc.stdout.split("SHORTDIAG_EVIDENCE=", 1)[1].splitlines()[0])
+    assert evidence["validated"] is True
+    assert evidence["log_evidence"]["finite_loss_count"] >= 2
+    assert evidence["execution_evidence_required_for_formal_readiness"] is False
+    assert evidence["evidence_scope"] == "one_epoch_train_log"
 
 
 def test_shortdiag_validator_rejects_bad_logs(tmp_path):
