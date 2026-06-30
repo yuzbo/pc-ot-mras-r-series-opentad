@@ -307,15 +307,16 @@ def _dense_scout_transitions(curve: Sequence[float], config: ABRConfig) -> List[
     transitions: List[Tuple[int, int, str]] = []
     if len(curve) < 2:
         return transitions
-    prev_state = state_at_position(curve, 0, config)
+    prev_state: Optional[str] = state_at_position(curve, 0, config)
     prev_pos = 0
+    if prev_state == "ambiguous":
+        prev_state = None
+        prev_pos = -1
     for pos in range(1, len(curve)):
         state = state_at_position(curve, pos, config)
         if state == "ambiguous":
-            prev_state = state
-            prev_pos = pos
             continue
-        if prev_state != "ambiguous" and state != prev_state:
+        if prev_state is not None and state != prev_state:
             kind = "start" if prev_state == "background" and state == "action" else "end"
             transitions.append((prev_pos, pos, kind))
         prev_state = state

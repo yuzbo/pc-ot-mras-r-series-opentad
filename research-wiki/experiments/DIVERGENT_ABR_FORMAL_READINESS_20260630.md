@@ -44,6 +44,21 @@ The round-0 ABR ledger now records:
 - `missed_transitions`
 - scout source and diagnostic-fallback flag
 
+Blocker fix timestamp: `2026-06-30T11:34:42.1723161+08:00`
+
+The dense transition scanner now ignores ambiguous samples while preserving the
+nearest prior non-ambiguous state and position. When the next non-ambiguous
+state flips, it records the transition across the ambiguous span. This closes
+the formal-readiness blocker where `background -> ambiguous -> action` and
+`action -> ambiguous -> background` could previously produce
+`transition_count = 0` and falsely report `first_round_bracket_recall = 1.0`.
+
+Focused tests now cover both ambiguous-mediated start and end transitions. In
+each case a deliberately insufficient first-round scaffold records one missed
+transition, `first_round_bracket_recall = 0.0`, and
+`first_round_transition_coverage = 0.0`; the formal-readiness payload rejects
+that evidence with `LOCKED`.
+
 `tools/abr/audit_abr_pipeline_precheck.py --mock-only` now writes the same first-round fields into the precheck summary. The current synthetic precheck rich case intentionally remains insufficient for formal readiness:
 
 - `first_round_bracket_recall = 0.3333333333333333`
