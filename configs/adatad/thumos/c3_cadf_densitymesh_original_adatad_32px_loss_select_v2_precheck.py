@@ -26,6 +26,7 @@ solver = dict(
     test=dict(batch_size=1, num_workers=0),
     amp=False,
     fp16_compress=False,
+    static_graph=True,
     ema=False,
     nonfinite_loss_guard=dict(enabled=True, max_skips=0, max_consecutive_skips=0),
 )

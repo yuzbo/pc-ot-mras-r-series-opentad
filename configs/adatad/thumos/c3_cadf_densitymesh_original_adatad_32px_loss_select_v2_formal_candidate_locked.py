@@ -27,7 +27,7 @@ solver = dict(
     clip_grad_norm=1,
     amp=False,
     fp16_compress=False,
-    static_graph=False,
+    static_graph=True,
     ema=False,
     nonfinite_loss_guard=dict(enabled=True, max_skips=0, max_consecutive_skips=0),
 )
