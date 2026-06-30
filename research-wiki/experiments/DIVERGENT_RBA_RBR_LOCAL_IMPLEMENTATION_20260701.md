@@ -429,3 +429,39 @@ Current allowed next action:
 - Relaunch RBA-RBR `SHORT_DIAGNOSTIC_ONLY` on GPU0 if the protected hold remains active and GPU0 memory is safe.
 - Formal full training remains locked.
 - No mAP/runtime/FLOPs/deploy/paper claim is unlocked.
+
+## Remote Raw Scout Shortdiag Relaunch - 2026-07-01 04:07:58 +08:00
+
+Final read-only review:
+
+- Review agent verdict: `PASS_SUBAGENT_FINAL_REVIEW_ONLY`.
+- Blocking findings: none.
+- Review conclusion: raw scout path is deploy-visible and uses `video_reader` raw frames only; it does not use GT, teacher, cache, detector predictions, or diagnostic fallback. The formal path still fails closed without preview metadata or `video_reader`.
+
+Remote sync and verification:
+
+- Repaired files were copied into N16R4 route-owned worktree `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49`.
+- Remote route-owned commit: `c0574d58015dbe76f99a75644acfee654b45ff74`.
+- Remote verification:
+  - `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q`
+    - Result: `19 passed in 27.67s`.
+  - `python tools/rba_rbr/validate_rba_rbr_launch_gate.py --config configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py`
+    - Result: `gate_pass=true`, `full_train_unlocked=false`, `deploy_claim_unlocked=false`, `paper_claim_unlocked=false`, `sparse_compute_claim=false`.
+
+Short diagnostic relaunch:
+
+- Protected parent hold `1118197 pcot_dbg2g` was not modified, released, cancelled, or replaced.
+- GPU binding: GPU0 only, `CUDA_VISIBLE_DEVICES=0` through the route launcher.
+- Child step: `1118197.538`, job name `rba_rbr_short_g0`.
+- Log directory: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_shortdiag_rawscout_c0574d5_gpu0_20260701_040627_+0800`.
+- Startup sanity:
+  - Child exceeded the old failure point (`1118197.537` failed at 34 seconds; `1118197.538` reached at least 1:19 running).
+  - Bad-pattern count for preview error, Traceback, RuntimeError, OOM, killed, NaN, non-finite: `0`.
+  - First observed training loss: `[000][00020/00199] Loss=2.0044 cls_loss=0.2843 reg_loss=0.2525 boundary_loss=1.4675 mem=9344MB`.
+
+Current state:
+
+- RBA-RBR `SHORT_DIAGNOSTIC_ONLY` is running on GPU0.
+- This is not a formal full train and not a mAP-producing run; the shortdiag config disables eval/checkpoint and ends early.
+- Formal full training remains locked.
+- No mAP/runtime/FLOPs/deploy/paper claim is unlocked.
