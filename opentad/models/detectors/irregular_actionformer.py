@@ -141,6 +141,13 @@ class IrregularActionFormer(BaseDetector):
             return True
         return any(str(key).startswith("bvr_twb_") for key in meta.keys())
 
+    def _is_rba_rbr_meta(self, meta):
+        if meta is None:
+            return False
+        if "rba_rbr_ledger" in meta:
+            return True
+        return any(str(key).startswith("rba_rbr_") for key in meta.keys())
+
     def _cfg_get(self, cfg, key, default=None):
         if cfg is None:
             return default
@@ -301,6 +308,41 @@ class IrregularActionFormer(BaseDetector):
             for row in rows:
                 self._append_env_jsonl_audit("BVR_TWB_GRID_AUDIT_PATH", row)
 
+    def _record_rba_rbr_grid_audit(self, metas, masks, grid):
+        if os.environ.get("RBA_RBR_GRID_AUDIT", "").lower() not in {"1", "true", "yes"}:
+            return
+        rows = []
+        for idx, meta in enumerate(metas):
+            if not self._is_rba_rbr_meta(meta):
+                continue
+            positions = meta.get("rba_rbr_detector_feature_positions", [])
+            native_axis = bool(meta.get("irregular_native_axis", False))
+            mask_true = int(masks[idx].bool().sum().item())
+            grid_valid_true = int(grid["valid_mask"][idx].bool().sum().item())
+            row = {
+                "audit_type": "rba_rbr_detector_temporal_grid",
+                "route_label": "DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3",
+                "video_name": meta.get("video_name", "unknown"),
+                "dispatch_hit": True,
+                "native_axis": native_axis,
+                "mask_shape": list(masks[idx].shape),
+                "mask_true_count": mask_true,
+                "meta_detector_feature_position_count": int(len(positions)),
+                "meta_detector_feature_valid_len": float(meta.get("rba_rbr_detector_feature_valid_len", 0.0)),
+                "grid_center_prefix": [
+                    float(value)
+                    for value in grid["center"][idx, : min(mask_true, 8)].detach().cpu().tolist()
+                ],
+                "grid_valid_mask_true_count": grid_valid_true,
+                "grid_fresh_mask_true_count": int(grid["fresh_mask"][idx].bool().sum().item()),
+                "status": "PASS_RBA_RBR_NATIVE_AXIS_POSITIONS_ENTERED_MODEL",
+            }
+            rows.append(row)
+        if rows:
+            self._last_rba_rbr_grid_audit = rows
+            for row in rows:
+                self._append_env_jsonl_audit("RBA_RBR_GRID_AUDIT_PATH", row)
+
     def _bvr_twb_temporal_grid_from_meta(self, meta, mask):
         required = ("bvr_twb_detector_feature_positions", "bvr_twb_detector_feature_valid_len")
         missing = [key for key in required if key not in meta or meta.get(key) is None]
@@ -336,13 +378,54 @@ class IrregularActionFormer(BaseDetector):
             raise ValueError(
                 "BVR-TWB detector temporal grid native valid length must exceed the last detector feature position: "
                 f"valid_len={valid_len}, last_position={float(pos.max().item())}"
+        )
+        return self._build_center_grid_from_positions(pos, valid_len, mask)
+
+    def _rba_rbr_temporal_grid_from_meta(self, meta, mask):
+        required = ("rba_rbr_detector_feature_positions", "rba_rbr_detector_feature_valid_len")
+        missing = [key for key in required if key not in meta or meta.get(key) is None]
+        if missing:
+            raise ValueError(
+                "RBA-RBR detector temporal grid requires "
+                "rba_rbr_detector_feature_positions and rba_rbr_detector_feature_valid_len; "
+                f"missing={missing}"
+            )
+        if not bool(meta.get("irregular_native_axis", False)):
+            raise ValueError(
+                "RBA-RBR detector temporal grid requires irregular_native_axis=True "
+                "because remap_gt_to_selected_axis=False keeps Head coordinates on the native dense axis."
+            )
+
+        pos = torch.as_tensor(
+            meta["rba_rbr_detector_feature_positions"],
+            device=mask.device,
+            dtype=torch.float32,
+        ).flatten()
+        if pos.numel() == 0:
+            raise ValueError("RBA-RBR detector temporal grid received empty rba_rbr_detector_feature_positions")
+
+        mask_valid = int(mask.bool().sum().item())
+        if mask_valid != int(pos.numel()):
+            raise ValueError(
+                "RBA-RBR detector temporal grid mask true count must equal detector feature position count: "
+                f"mask_true={mask_valid}, positions={int(pos.numel())}"
+            )
+
+        valid_len = max(int(round(float(meta["rba_rbr_detector_feature_valid_len"]))), 1)
+        if valid_len <= float(pos.max().item()):
+            raise ValueError(
+                "RBA-RBR detector temporal grid native valid length must exceed the last detector feature position: "
+                f"valid_len={valid_len}, last_position={float(pos.max().item())}"
             )
         return self._build_center_grid_from_positions(pos, valid_len, mask)
 
     def _temporal_grid_from_metas(self, metas, masks):
         if metas is None:
             return None
-        if not all((self._is_bvr_twb_meta(meta) or "irregular_selected_positions" in meta) for meta in metas):
+        if not all(
+            (self._is_bvr_twb_meta(meta) or self._is_rba_rbr_meta(meta) or "irregular_selected_positions" in meta)
+            for meta in metas
+        ):
             return None
 
         grids = []
@@ -350,6 +433,9 @@ class IrregularActionFormer(BaseDetector):
         for meta, mask in zip(metas, masks):
             if self._is_bvr_twb_meta(meta):
                 grids.append(self._bvr_twb_temporal_grid_from_meta(meta, mask))
+                continue
+            if self._is_rba_rbr_meta(meta):
+                grids.append(self._rba_rbr_temporal_grid_from_meta(meta, mask))
                 continue
 
             pos = meta.get("irregular_selected_positions", None)
@@ -386,6 +472,7 @@ class IrregularActionFormer(BaseDetector):
             "level_scale": torch.cat([grid["level_scale"] for grid in grids], dim=0),
         }
         self._record_bvr_twb_grid_audit(metas, masks, grid)
+        self._record_rba_rbr_grid_audit(metas, masks, grid)
         return grid
 
     def pad_data(self, inputs, masks, temporal_grid=None):
