@@ -48,6 +48,12 @@ class AnchorFreeHead(nn.Module):
         self.reg_residual_cfg = None if reg_residual_cfg is None else dict(reg_residual_cfg)
         self.quality_head_cfg = {} if quality_head_cfg is None else dict(quality_head_cfg)
         self.quality_head_enabled = bool(self.quality_head_cfg.get("enabled", False))
+        self.quality_head_mode = self.quality_head_cfg.get("mode", "standard")
+        valid_quality_head_modes = {"standard", "sparse_irregular_qc_v2"}
+        if self.quality_head_mode not in valid_quality_head_modes:
+            raise ValueError(f"Unsupported quality head mode: {self.quality_head_mode}")
+        self.quality_qc_v2_enabled = self.quality_head_enabled and self.quality_head_mode == "sparse_irregular_qc_v2"
+        self.quality_qc_v2_diagnostic_dump = bool(self.quality_head_cfg.get("diagnostic_dump", False))
         self.quality_loss_weight = float(self.quality_head_cfg.get("loss_weight", 0.0))
         self.quality_score_alpha = float(self.quality_head_cfg.get("score_alpha", 0.0))
         self.quality_target_mode = self.quality_head_cfg.get("target_mode", "assigned_iou")
@@ -57,7 +63,12 @@ class AnchorFreeHead(nn.Module):
         self.quality_keep_loss_graph_when_weight_zero = bool(
             self.quality_head_cfg.get("keep_loss_graph_when_weight_zero", False)
         )
-        valid_quality_target_modes = {"assigned_iou", "max_iou", "positive_max_iou"}
+        valid_quality_target_modes = {
+            "assigned_iou",
+            "max_iou",
+            "positive_max_iou",
+            "sparse_physical_iou_visibility",
+        }
         if self.quality_target_mode not in valid_quality_target_modes:
             raise ValueError(f"Unsupported quality target mode: {self.quality_target_mode}")
         valid_quality_normalizers = {"valid", "weighted", "positive"}
@@ -475,10 +486,23 @@ class AnchorFreeHead(nn.Module):
         points = self.prior_generator(feat_list)
 
         quality_pred = quality_pred if self.quality_head_enabled else None
-        losses = self.losses(cls_pred, reg_pred, mask_list, points, gt_segments, gt_labels, quality_pred=quality_pred)
+        losses = self.losses(
+            cls_pred,
+            reg_pred,
+            mask_list,
+            points,
+            gt_segments,
+            gt_labels,
+            quality_pred=quality_pred,
+            metas=kwargs.get("metas", None),
+        )
         return losses
 
     def forward_test(self, feat_list, mask_list, **kwargs):
+        forbidden_target_keys = ("gt_segments", "gt_labels", "teacher", "teacher_outputs", "raw_prediction_cache")
+        leaked_keys = [key for key in forbidden_target_keys if kwargs.get(key, None) is not None]
+        assert not leaked_keys, f"GT/teacher/cache inputs are forbidden in QC V2 test path: {leaked_keys}"
+
         cls_pred = []
         reg_pred = []
         quality_pred = []
@@ -500,10 +524,14 @@ class AnchorFreeHead(nn.Module):
 
         # get refined proposals and scores
         quality_pred = quality_pred if self.quality_head_enabled else None
-        proposals, scores = self.get_valid_proposals_scores(
-            points, reg_pred, cls_pred, mask_list, quality_pred=quality_pred
+        return self.get_valid_proposals_scores(
+            points,
+            reg_pred,
+            cls_pred,
+            mask_list,
+            quality_pred=quality_pred,
+            metas=kwargs.get("metas", None),
         )  # list [T,2]
-        return proposals, scores
 
     def get_refined_proposals(self, points, reg_pred):
         points = torch.cat(points, dim=0)  # [T,4]
@@ -514,7 +542,7 @@ class AnchorFreeHead(nn.Module):
         proposals = torch.stack((start, end), dim=-1)  # [B,T,2]
         return proposals
 
-    def get_valid_proposals_scores(self, points, reg_pred, cls_pred, mask_list, quality_pred=None):
+    def get_valid_proposals_scores(self, points, reg_pred, cls_pred, mask_list, quality_pred=None, metas=None):
         # apply regression to get refined proposals
         proposals = self.get_refined_proposals(points, reg_pred)  # [B,T,2]
         # proposal scores
@@ -526,14 +554,127 @@ class AnchorFreeHead(nn.Module):
 
         # mask out invalid, and return a list with batch size
         masks = torch.cat(mask_list, dim=1)  # [B,T]
-        new_proposals, new_scores = [], []
-        for proposal, score, mask, quality_score in zip(proposals, scores, masks, quality_scores):
+        new_proposals, new_scores, diagnostics = [], [], []
+        for batch_idx, (proposal, score, mask, quality_score) in enumerate(zip(proposals, scores, masks, quality_scores)):
+            raw_score = score
             if quality_score is not None:
                 quality_score = quality_score.clamp(min=1e-6, max=1.0)
                 score = score * quality_score.pow(self.quality_score_alpha)
             new_proposals.append(proposal[mask])  # [T,2]
             new_scores.append(score[mask])  # [T,num_classes]
+            if self.quality_qc_v2_enabled and self.quality_qc_v2_diagnostic_dump:
+                meta = None if metas is None else metas[batch_idx]
+                diagnostics.append(self._build_sparse_irregular_qc_v2_diagnostics(proposal, raw_score, mask, quality_score, meta))
+        if self.quality_qc_v2_enabled and self.quality_qc_v2_diagnostic_dump:
+            return new_proposals, new_scores, diagnostics
         return new_proposals, new_scores
+
+    @staticmethod
+    def _has_sparse_irregular_geometry(meta):
+        if meta is None or meta.get("irregular_native_axis", False):
+            return False
+        positions = meta.get("irregular_selected_positions", None)
+        valid_len = meta.get("irregular_selected_valid_len", None)
+        if positions is None or valid_len is None:
+            return False
+        return torch.as_tensor(positions).numel() > 0 and float(valid_len) > 0
+
+    @staticmethod
+    def _selected_axis_to_dense_axis(coords, meta):
+        if not AnchorFreeHead._has_sparse_irregular_geometry(meta):
+            return coords
+
+        positions = torch.as_tensor(
+            meta["irregular_selected_positions"],
+            dtype=coords.dtype,
+            device=coords.device,
+        ).reshape(-1)
+        xp = torch.arange(positions.numel(), dtype=coords.dtype, device=coords.device)
+        xp = torch.cat([xp, xp.new_tensor([float(positions.numel())])], dim=0)
+        fp = torch.cat([positions, positions.new_tensor([float(meta["irregular_selected_valid_len"])])], dim=0)
+
+        coord_shape = coords.shape
+        coord_flat = coords.reshape(-1).clamp(min=0.0, max=float(positions.numel()))
+        right_idx = torch.searchsorted(xp, coord_flat, right=True).clamp(min=1, max=xp.numel() - 1)
+        left_idx = right_idx - 1
+        x0 = xp[left_idx]
+        x1 = xp[right_idx]
+        y0 = fp[left_idx]
+        y1 = fp[right_idx]
+        weight = (coord_flat - x0) / (x1 - x0).clamp(min=1e-6)
+        return (y0 + weight * (y1 - y0)).reshape(coord_shape)
+
+    @staticmethod
+    def _sparse_visibility_descriptor(segments, meta):
+        descriptor = {
+            "coverage_available": False,
+            "physical_segments": segments.clone(),
+            "physical_lengths": (segments[:, 1] - segments[:, 0]).clamp(min=0.0),
+            "gap_mean": segments.new_zeros((segments.shape[0],)),
+            "visibility_support": segments.new_ones((segments.shape[0],)),
+            "coverage": segments.new_zeros((segments.shape[0],)),
+            "endpoint_support": segments.new_ones((segments.shape[0],)),
+        }
+        if not AnchorFreeHead._has_sparse_irregular_geometry(meta) or segments.numel() == 0:
+            return descriptor
+
+        positions = torch.as_tensor(
+            meta["irregular_selected_positions"],
+            dtype=segments.dtype,
+            device=segments.device,
+        ).reshape(-1)
+        valid_len = float(meta["irregular_selected_valid_len"])
+        if positions.numel() < 1 or valid_len <= 0:
+            return descriptor
+
+        physical_segments = AnchorFreeHead._selected_axis_to_dense_axis(segments, meta)
+        selected_lengths = (segments[:, 1] - segments[:, 0]).clamp(min=0.0)
+        physical_lengths = (physical_segments[:, 1] - physical_segments[:, 0]).clamp(min=0.0)
+
+        fp = torch.cat([positions, positions.new_tensor([valid_len])], dim=0)
+        local_gap = (fp[1:] - fp[:-1]).clamp(min=1e-6)
+        expected_gap = max(valid_len / float(positions.numel()), 1e-6)
+        coords = segments.clamp(min=0.0, max=float(positions.numel()))
+        endpoint_idx = torch.floor(coords).to(dtype=torch.long).clamp(min=0, max=local_gap.numel() - 1)
+        endpoint_gaps = local_gap[endpoint_idx]
+        endpoint_support = (expected_gap / endpoint_gaps).clamp(max=1.0).min(dim=1).values
+        gap_mean = endpoint_gaps.mean(dim=1)
+        span_support = (selected_lengths * expected_gap / physical_lengths.clamp(min=1e-6)).clamp(max=1.0)
+        visibility_support = torch.minimum(endpoint_support, span_support).clamp(min=0.0, max=1.0)
+        coverage = (selected_lengths / physical_lengths.clamp(min=1e-6)).clamp(min=0.0, max=1.0)
+
+        descriptor.update(
+            {
+                "coverage_available": True,
+                "physical_segments": physical_segments,
+                "physical_lengths": physical_lengths,
+                "gap_mean": gap_mean,
+                "visibility_support": visibility_support,
+                "coverage": coverage,
+                "endpoint_support": endpoint_support,
+            }
+        )
+        return descriptor
+
+    def _build_sparse_irregular_qc_v2_diagnostics(self, proposal, cls_score, mask, quality_score, meta):
+        valid_proposal = proposal[mask]
+        selected_lengths = (valid_proposal[:, 1] - valid_proposal[:, 0]).clamp(min=0.0)
+        descriptor = self._sparse_visibility_descriptor(valid_proposal, meta)
+        diagnostic = {
+            "diagnostic_available": True,
+            "coverage_available": descriptor["coverage_available"],
+            "cls_scores": cls_score[mask].detach(),
+            "quality_scores": None if quality_score is None else quality_score[mask].squeeze(-1).detach(),
+            "selected_segments": valid_proposal.detach(),
+            "physical_segments": descriptor["physical_segments"].detach(),
+            "selected_lengths": selected_lengths.detach(),
+            "physical_lengths": descriptor["physical_lengths"].detach(),
+            "gap_mean": descriptor["gap_mean"].detach(),
+            "visibility_support": descriptor["visibility_support"].detach(),
+            "coverage": descriptor["coverage"].detach(),
+            "endpoint_support": descriptor["endpoint_support"].detach(),
+        }
+        return diagnostic
 
     @staticmethod
     def _segment_iou_1d(pred_segments, target_segments, eps=1e-6):
@@ -572,6 +713,29 @@ class AnchorFreeHead(nn.Module):
             )
         return quality_target
 
+    @torch.no_grad()
+    def _sparse_irregular_qc_v2_quality_target(self, all_pred_segments, valid_mask, gt_segments, metas, dtype=None):
+        if metas is None:
+            raise ValueError("sparse_irregular_qc_v2 quality target requires deploy-visible metas")
+        target_dtype = all_pred_segments.dtype if dtype is None else dtype
+        quality_target = torch.zeros_like(valid_mask, dtype=target_dtype)
+        for batch_idx, gt_segment in enumerate(gt_segments):
+            valid = valid_mask[batch_idx]
+            if not valid.any() or gt_segment.numel() == 0:
+                continue
+            meta = metas[batch_idx]
+            if not self._has_sparse_irregular_geometry(meta):
+                raise ValueError("sparse_irregular_qc_v2 quality target requires irregular selected-position metadata")
+
+            pred_selected = all_pred_segments[batch_idx, valid].detach()
+            gt_selected = gt_segment.detach().to(device=pred_selected.device, dtype=pred_selected.dtype)
+            pred_physical = self._selected_axis_to_dense_axis(pred_selected, meta)
+            gt_physical = self._selected_axis_to_dense_axis(gt_selected, meta)
+            physical_iou = self._pairwise_segment_iou_1d(pred_physical, gt_physical).max(dim=1).values
+            visibility = self._sparse_visibility_descriptor(pred_selected, meta)["visibility_support"]
+            quality_target[batch_idx, valid] = (physical_iou * visibility).to(dtype=target_dtype).clamp(min=0.0, max=1.0)
+        return quality_target
+
     def _quality_loss(
         self,
         quality_pred,
@@ -581,6 +745,7 @@ class AnchorFreeHead(nn.Module):
         target_segments,
         all_pred_segments=None,
         gt_segments=None,
+        metas=None,
     ):
         quality_pred = torch.cat(quality_pred, dim=-1).squeeze(1)
         quality_pred = quality_pred.float()
@@ -606,6 +771,16 @@ class AnchorFreeHead(nn.Module):
                 quality_target[pos_mask] = max_iou_target[pos_mask]
             else:
                 quality_target = max_iou_target
+        elif self.quality_target_mode == "sparse_physical_iou_visibility":
+            if all_pred_segments is None or gt_segments is None:
+                raise ValueError("sparse_irregular_qc_v2 quality target requires all_pred_segments and gt_segments")
+            quality_target = self._sparse_irregular_qc_v2_quality_target(
+                all_pred_segments.detach(),
+                valid_mask,
+                gt_segments,
+                metas,
+                dtype=quality_pred.dtype,
+            )
         else:
             raise ValueError(f"Unsupported quality target mode: {self.quality_target_mode}")
 
@@ -630,7 +805,7 @@ class AnchorFreeHead(nn.Module):
         quality_loss /= denom.to(dtype=quality_loss.dtype)
         return quality_loss
 
-    def losses(self, cls_pred, reg_pred, mask_list, points, gt_segments, gt_labels, quality_pred=None):
+    def losses(self, cls_pred, reg_pred, mask_list, points, gt_segments, gt_labels, quality_pred=None, metas=None):
         if self.assigner is None:
             gt_cls, gt_reg = self.prepare_targets(points, gt_segments, gt_labels)
             target_weights = None
@@ -716,6 +891,7 @@ class AnchorFreeHead(nn.Module):
                     target_segments,
                     all_pred_segments=all_pred_segments,
                     gt_segments=gt_segments,
+                    metas=metas,
                 )
                 losses["quality_loss"] = quality_loss * self.quality_loss_weight
             elif self.quality_loss_weight <= 0 and self.quality_keep_loss_graph_when_weight_zero:

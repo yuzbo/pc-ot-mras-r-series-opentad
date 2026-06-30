@@ -1,4 +1,7 @@
 import json
+from types import SimpleNamespace
+
+import pytest
 
 from tools.analyze_c3_pqr_rankcal_proposals import analyze, main
 
@@ -415,3 +418,165 @@ def test_pqr_proposal_diagnostic_records_csv_preserves_optional_quality_and_sele
     assert "0.7" in row
     assert "2.0" in row
     assert "4.0" in row
+
+
+def test_pqr_proposal_diagnostic_reads_qc_v2_geometry_fields(tmp_path):
+    annotation = tmp_path / "thumos_14_anno.json"
+    prediction = tmp_path / "result_detection.json"
+    _write_json(annotation, {"database": {"video_a": {"subset": "validation", "annotations": []}}})
+    _write_json(
+        prediction,
+        {
+            "results": {
+                "video_a": [
+                    {
+                        "segment": [0.0, 1.0],
+                        "selected_segment": [0.0, 2.0],
+                        "label": "Diving",
+                        "score": 0.8,
+                        "quality_score": 0.5,
+                        "cls_score": 0.7,
+                        "physical_segment": [0.0, 1.0],
+                        "selected_length": 2.0,
+                        "physical_length": 1.0,
+                        "gap_mean": 2.0,
+                        "visibility_support": 0.75,
+                        "coverage": 0.5,
+                        "endpoint_support": 0.8,
+                        "coverage_available": True,
+                    }
+                ]
+            }
+        },
+    )
+
+    _summary, records = analyze(prediction, annotation, subset="validation")
+
+    record = records[0]
+    assert record["physical_start"] == 0.0
+    assert record["physical_end"] == 1.0
+    assert record["selected_length"] == 2.0
+    assert record["physical_length"] == 1.0
+    assert record["gap_mean"] == 2.0
+    assert record["visibility_support"] == 0.75
+    assert record["coverage"] == 0.5
+    assert record["endpoint_support"] == 0.8
+    assert record["coverage_available"] is True
+
+
+def test_single_stage_post_processing_attaches_qc_v2_diagnostic_fields():
+    try:
+        import torch
+        from opentad.models.detectors.single_stage import SingleStageDetector
+    except OSError as exc:
+        pytest.skip(f"torch import failed in this Windows environment: {exc}")
+    except ModuleNotFoundError as exc:
+        if exc.name == "nms_1d_cpu":
+            pytest.skip(f"local OpenTAD NMS extension is unavailable: {exc}")
+        raise
+
+    predictions = (
+        [torch.tensor([[0.0, 2.0]])],
+        [torch.tensor([[0.8, 0.1]])],
+        [
+            dict(
+                diagnostic_available=True,
+                coverage_available=True,
+                cls_scores=torch.tensor([[0.8, 0.1]]),
+                quality_scores=torch.tensor([0.5]),
+                selected_segments=torch.tensor([[0.0, 2.0]]),
+                physical_segments=torch.tensor([[0.0, 4.0]]),
+                selected_lengths=torch.tensor([2.0]),
+                physical_lengths=torch.tensor([4.0]),
+                gap_mean=torch.tensor([2.0]),
+                visibility_support=torch.tensor([0.75]),
+                coverage=torch.tensor([0.5]),
+                endpoint_support=torch.tensor([0.8]),
+            )
+        ],
+    )
+    metas = [
+        dict(
+            video_name="video_a",
+            fps=1.0,
+            duration=10.0,
+            snippet_stride=1,
+            offset_frames=0,
+            window_start_frame=0,
+            irregular_selected_positions=[0.0, 2.0],
+            irregular_selected_valid_len=4.0,
+            irregular_native_axis=False,
+        )
+    ]
+    post_cfg = SimpleNamespace(pre_nms_thresh=0.0, pre_nms_topk=5, sliding_window=False, nms=None)
+
+    results = SingleStageDetector.post_processing(
+        SingleStageDetector.__new__(SingleStageDetector),
+        predictions,
+        metas,
+        post_cfg,
+        ext_cls=["Diving", "BaseballPitch"],
+    )
+
+    record = results["video_a"][0]
+    assert record["cls_score"] == 0.8
+    assert record["quality_score"] == 0.5
+    assert record["selected_segment"] == [0.0, 2.0]
+    assert record["physical_segment"] == [0.0, 4.0]
+    assert record["selected_length"] == 2.0
+    assert record["physical_length"] == 4.0
+    assert record["gap_mean"] == 2.0
+    assert record["visibility_support"] == 0.75
+    assert record["coverage"] == 0.5
+    assert record["endpoint_support"] == 0.8
+    assert record["coverage_available"] is True
+
+
+def test_test_engine_nms_match_preserves_qc_v2_diagnostic_fields():
+    try:
+        import torch
+        from opentad.cores.test_engine import _match_extra_fields_after_nms
+    except OSError as exc:
+        pytest.skip(f"torch import failed in this Windows environment: {exc}")
+    except ModuleNotFoundError as exc:
+        if exc.name == "nms_1d_cpu":
+            pytest.skip(f"local OpenTAD NMS extension is unavailable: {exc}")
+        raise
+
+    source_records = [
+        {
+            "segment": [0.0, 2.0],
+            "label": "Diving",
+            "score": 0.8,
+            "cls_score": 0.7,
+            "quality_score": 0.5,
+            "selected_segment": [0.0, 1.0],
+            "coverage_available": True,
+        },
+        {
+            "segment": [4.0, 6.0],
+            "label": "BaseballPitch",
+            "score": 0.6,
+            "cls_score": 0.55,
+            "quality_score": 0.4,
+            "selected_segment": [2.0, 3.0],
+            "coverage_available": False,
+        },
+    ]
+    nms_segments = torch.tensor([[0.0, 2.0], [4.0, 6.0]])
+    nms_labels = torch.tensor([0, 1])
+    extras = _match_extra_fields_after_nms(
+        source_records,
+        nms_segments,
+        nms_labels,
+        ["Diving", "BaseballPitch"],
+    )
+
+    assert extras[0]["cls_score"] == 0.7
+    assert extras[0]["quality_score"] == 0.5
+    assert extras[0]["selected_segment"] == [0.0, 1.0]
+    assert extras[0]["coverage_available"] is True
+    assert extras[1]["cls_score"] == 0.55
+    assert extras[1]["quality_score"] == 0.4
+    assert extras[1]["selected_segment"] == [2.0, 3.0]
+    assert extras[1]["coverage_available"] is False

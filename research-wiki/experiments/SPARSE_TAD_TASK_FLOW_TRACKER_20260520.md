@@ -114,3 +114,16 @@ the broader source for cross-route orchestration.
 - Current mAP evidence: none.
 - Next launch decision: still locked pending subagent final review and remote
   PRECHECK/2-iter smoke. No remote action was performed in this fix.
+
+## 2026-06-30 13:43:26 +08:00 Sparse/Irregular-Aware QC V2 Local Implementation
+
+- Experiment/config: `c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_sparse_irregular_qc_v2_precheck.py`.
+- Changed surface: detector head sparse/irregular quality calibration V2, optional proposal diagnostic dump, PQR validator, focused tests, and local route records. Input sampling, Adapter internals, loss assignment outside the quality target, and post-processing score/NMS logic remain unchanged.
+- Changed files: `opentad/models/dense_heads/anchor_free_head.py`, `opentad/models/detectors/actionformer.py`, `opentad/models/detectors/single_stage.py`, `opentad/cores/test_engine.py`, `tools/analyze_c3_pqr_rankcal_proposals.py`, `tools/validate_c3_pqr_rankcal_v1_config.py`, new QC V2 precheck config, three focused test files, this tracker, and `research-wiki/log.md`.
+- Strict random-fixed 50% contract: preserved; QC V2 config inherits the PQR random-fixed Adapter 50% backend and validator still checks train/val/test loaders.
+- GT/teacher leakage risk: test-time GT/teacher/cache paths are rejected; QC V2 test diagnostics use only deploy-visible `metas` geometry plus model predictions. Training quality target may use training GT with selected-position metadata.
+- Current mAP evidence: none. This is local/precheck candidate code only; no `tools/train.py`, `tools/test.py`, remote sync, Slurm, checkpoint, or result claim was run.
+- Local verification: py_compile PASS; QC V2 validator PASS; default Python focused pytest `37 passed, 8 skipped, 1 warning`; `torch_1` focused pytest `37 passed, 8 skipped`; `git diff --check` exit 0 with CRLF warnings only. The extra focused test covers `test_engine` NMS-result diagnostic-field preservation when the local NMS extension is available.
+- Review gate: read-only subagent final review returned `PASS_SUBAGENT_FINAL_REVIEW_ONLY` with no blocking findings. Non-blocking findings were: test-time GT/teacher/cache assertion is a safety behavior change for illegal test calls, Linux precheck should rerun real torch/NMS paths, and the new `gather_ddp_results` extras coverage was desirable; the last item has been covered locally.
+- Local limitation: Windows default Python torch DLL initialization emits access-violation text and skips torch-backed tests; `torch_1` skips OpenTAD import paths that require the unavailable local `nms_1d_cpu` extension. Linux/remote PRECHECK must rerun these paths before any Slurm child.
+- Next launch decision: remain locked for fulltrain. Allowed next action is remote PRECHECK_ONLY / bounded 2-iter smoke on GPU1 or CPU-login checks as appropriate, with no official mAP, checkpoint, paper/deploy claim, or route-quality judgment. PQR formal full training remains locked until diagnostic gates explicitly unlock it.

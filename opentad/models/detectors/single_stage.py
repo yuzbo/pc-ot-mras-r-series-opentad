@@ -85,16 +85,20 @@ class SingleStageDetector(BaseDetector):
             x, masks = self.neck(x, masks)
 
         if self.with_rpn_head:
-            rpn_proposals, rpn_scores = self.rpn_head.forward_test(x, masks)
+            predictions = self.rpn_head.forward_test(x, masks, metas=metas)
         else:
             rpn_proposals = rpn_scores = None
+            predictions = rpn_proposals, rpn_scores
 
-        predictions = rpn_proposals, rpn_scores
         return predictions
 
     @torch.no_grad()
     def post_processing(self, predictions, metas, post_cfg, ext_cls, **kwargs):
-        rpn_proposals, rpn_scores = predictions
+        if len(predictions) == 3:
+            rpn_proposals, rpn_scores, rpn_diagnostics = predictions
+        else:
+            rpn_proposals, rpn_scores = predictions
+            rpn_diagnostics = None
         # rpn_proposals,  # [B,K,2]
         # rpn_scores,  # [B,K,num_classes] after sigmoid
 
@@ -106,10 +110,16 @@ class SingleStageDetector(BaseDetector):
         for i in range(len(metas)):  # processing each video
             segments = rpn_proposals[i].detach().cpu()  # [N,2]
             scores = rpn_scores[i].detach().cpu()  # [N,class]
+            diagnostics = None if rpn_diagnostics is None else rpn_diagnostics[i]
 
             if num_classes == 1:
                 scores = scores.squeeze(-1)
                 labels = torch.zeros(scores.shape[0]).contiguous()
+                diagnostic_records = self._build_qc_v2_diagnostic_records(
+                    diagnostics,
+                    torch.arange(segments.shape[0]),
+                    labels,
+                )
             else:
                 pred_prob = scores.flatten()  # [N*class]
 
@@ -132,10 +142,21 @@ class SingleStageDetector(BaseDetector):
                 segments = segments[pt_idxs]
                 scores = pred_prob
                 labels = cls_idxs
+                diagnostic_records = self._build_qc_v2_diagnostic_records(diagnostics, pt_idxs, cls_idxs)
 
             # if not sliding window, do nms
             if post_cfg.sliding_window == False and post_cfg.nms is not None:
+                pre_nms_segments = segments.clone()
+                pre_nms_labels = labels.clone()
+                pre_nms_diagnostic_records = diagnostic_records
                 segments, scores, labels = batched_nms(segments, scores, labels, **post_cfg.nms)
+                diagnostic_records = self._match_qc_v2_diagnostics_after_nms(
+                    pre_nms_segments,
+                    pre_nms_labels,
+                    pre_nms_diagnostic_records,
+                    segments,
+                    labels,
+                )
 
             video_id = metas[i]["video_name"]
 
@@ -149,15 +170,16 @@ class SingleStageDetector(BaseDetector):
                 segments, labels, scores = ext_cls(video_id, segments, scores)
 
             results_per_video = []
-            for segment, label, score in zip(segments, labels, scores):
+            for det_idx, (segment, label, score) in enumerate(zip(segments, labels, scores)):
                 # convert to python scalars
-                results_per_video.append(
-                    dict(
-                        segment=[round(seg.item(), 2) for seg in segment],
-                        label=label,
-                        score=round(score.item(), 4),
-                    )
+                record = dict(
+                    segment=[round(seg.item(), 2) for seg in segment],
+                    label=label,
+                    score=round(score.item(), 4),
                 )
+                if diagnostic_records is not None and det_idx < len(diagnostic_records):
+                    self._attach_qc_v2_diagnostic_record(record, diagnostic_records[det_idx], segment)
+                results_per_video.append(record)
 
             if video_id in results.keys():
                 results[video_id].extend(results_per_video)
@@ -165,3 +187,78 @@ class SingleStageDetector(BaseDetector):
                 results[video_id] = results_per_video
 
         return results
+
+    @staticmethod
+    def _tensor_row_to_list(tensor):
+        return [round(value.item(), 4) for value in tensor]
+
+    @staticmethod
+    def _tensor_scalar_or_none(tensor):
+        if tensor is None:
+            return None
+        return round(tensor.item(), 4)
+
+    @staticmethod
+    def _build_qc_v2_diagnostic_records(diagnostics, point_indices, class_indices):
+        if diagnostics is None or not diagnostics.get("diagnostic_available", False):
+            return None
+
+        records = []
+        quality_scores = diagnostics.get("quality_scores", None)
+        for point_idx, class_idx in zip(point_indices, class_indices):
+            point_idx = int(point_idx.item())
+            class_idx = int(class_idx.item())
+            cls_scores = diagnostics["cls_scores"][point_idx]
+            record = {
+                "coverage_available": bool(diagnostics.get("coverage_available", False)),
+                "cls_score": cls_scores[class_idx],
+                "quality_score": None if quality_scores is None else quality_scores[point_idx],
+                "selected_segment": diagnostics["selected_segments"][point_idx],
+                "selected_length": diagnostics["selected_lengths"][point_idx],
+                "physical_length": diagnostics["physical_lengths"][point_idx],
+                "gap_mean": diagnostics["gap_mean"][point_idx],
+                "visibility_support": diagnostics["visibility_support"][point_idx],
+                "coverage": diagnostics["coverage"][point_idx],
+                "endpoint_support": diagnostics["endpoint_support"][point_idx],
+            }
+            records.append(record)
+        return records
+
+    @staticmethod
+    def _match_qc_v2_diagnostics_after_nms(old_segments, old_labels, old_records, new_segments, new_labels):
+        if old_records is None:
+            return None
+        matched = []
+        used = set()
+        for segment, label in zip(new_segments, new_labels):
+            found = None
+            for idx, (old_segment, old_label) in enumerate(zip(old_segments, old_labels)):
+                if idx in used or int(old_label.item()) != int(label.item()):
+                    continue
+                if torch.allclose(old_segment, segment, atol=1e-4, rtol=0.0):
+                    found = old_records[idx]
+                    used.add(idx)
+                    break
+            matched.append(found or {"coverage_available": False})
+        return matched
+
+    def _attach_qc_v2_diagnostic_record(self, output_record, diagnostic_record, physical_segment):
+        if not diagnostic_record:
+            output_record["coverage_available"] = False
+            return
+
+        output_record.update(
+            {
+                "cls_score": self._tensor_scalar_or_none(diagnostic_record.get("cls_score")),
+                "quality_score": self._tensor_scalar_or_none(diagnostic_record.get("quality_score")),
+                "selected_segment": self._tensor_row_to_list(diagnostic_record["selected_segment"]),
+                "physical_segment": self._tensor_row_to_list(physical_segment),
+                "selected_length": self._tensor_scalar_or_none(diagnostic_record["selected_length"]),
+                "physical_length": round((physical_segment[1] - physical_segment[0]).item(), 4),
+                "gap_mean": self._tensor_scalar_or_none(diagnostic_record.get("gap_mean")),
+                "visibility_support": self._tensor_scalar_or_none(diagnostic_record.get("visibility_support")),
+                "coverage": self._tensor_scalar_or_none(diagnostic_record.get("coverage")),
+                "endpoint_support": self._tensor_scalar_or_none(diagnostic_record.get("endpoint_support")),
+                "coverage_available": bool(diagnostic_record.get("coverage_available", False)),
+            }
+        )

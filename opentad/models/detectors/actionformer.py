@@ -91,6 +91,7 @@ class ActionFormer(SingleStageDetector):
             masks,
             gt_segments=gt_segments,
             gt_labels=gt_labels,
+            metas=metas,
             **kwargs,
         )
         losses.update(loc_losses)
@@ -113,8 +114,7 @@ class ActionFormer(SingleStageDetector):
         if self.with_neck:
             x, masks = self.neck(x, masks)
 
-        rpn_proposals, rpn_scores = self.rpn_head.forward_test(x, masks, **kwargs)
-        predictions = rpn_proposals, rpn_scores
+        predictions = self.rpn_head.forward_test(x, masks, metas=metas, **kwargs)
         return predictions
 
     def grad_clip_parameters(self):

@@ -17,6 +17,15 @@ SWEEP_SCORE_ALPHA = (0.0, 0.05, 0.10, 0.20, 0.30)
 QUALITY_KEYS = ("quality_score", "quality")
 CLS_SCORE_KEYS = ("cls_score", "class_score", "model_score")
 SELECTED_SEGMENT_KEYS = ("selected_segment", "segment_selected")
+PHYSICAL_SEGMENT_KEYS = ("physical_segment", "segment_physical")
+QC_V2_FLOAT_KEYS = (
+    "selected_length",
+    "physical_length",
+    "gap_mean",
+    "visibility_support",
+    "coverage",
+    "endpoint_support",
+)
 
 
 def _segment_iou(segment, candidates):
@@ -160,6 +169,7 @@ def _prediction_records(predictions, gt_by_video):
             label = pred.get("label")
             segment = _segment_or_none(pred.get("segment")) or [0.0, 0.0]
             selected_segment = _segment_or_none(_first_present(pred, SELECTED_SEGMENT_KEYS))
+            physical_segment = _segment_or_none(_first_present(pred, PHYSICAL_SEGMENT_KEYS))
             score = float(pred.get("score", 0.0))
             quality_score = _as_float_or_none(_first_present(pred, QUALITY_KEYS))
             cls_score = _as_float_or_none(_first_present(pred, CLS_SCORE_KEYS))
@@ -181,7 +191,12 @@ def _prediction_records(predictions, gt_by_video):
                 "cls_score": cls_score,
                 "selected_start": None if selected_segment is None else selected_segment[0],
                 "selected_end": None if selected_segment is None else selected_segment[1],
+                "physical_start": None if physical_segment is None else physical_segment[0],
+                "physical_end": None if physical_segment is None else physical_segment[1],
+                "coverage_available": bool(pred.get("coverage_available", False)),
             }
+            for key in QC_V2_FLOAT_KEYS:
+                record[key] = _as_float_or_none(pred.get(key))
             records.append(record)
     return records, per_video_counts, per_video_label_counts
 
@@ -694,6 +709,15 @@ def _write_records_csv(records, csv_path):
         "cls_score",
         "selected_start",
         "selected_end",
+        "physical_start",
+        "physical_end",
+        "selected_length",
+        "physical_length",
+        "gap_mean",
+        "visibility_support",
+        "coverage",
+        "endpoint_support",
+        "coverage_available",
     ]
     with Path(csv_path).open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)

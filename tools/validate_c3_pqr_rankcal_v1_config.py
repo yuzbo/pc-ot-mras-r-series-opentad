@@ -11,6 +11,7 @@ ALLOWED_ROUTE_FAMILY = "C3_ORIGINAL_OPTIMIZATION_ROUTE"
 ALLOWED_ROUTE_VARIANTS = {
     "C3_PQR_RankCalV1_MaxIoU",
     "C3_PQR_RankCalV1_MaxIoU_Stride2UniformBackendControl",
+    "C3_PQR_RankCalV1_SparseIrregularQCV2",
 }
 FORBIDDEN_ROUTE_TOKENS = ("BH", "BH-SDC", "BH_SDC", "DIVERGENT", "CADF")
 EXPECTED_PRECHECK_SCOPE = "config_validator_plus_quality_head_unit"
@@ -28,6 +29,8 @@ SUPPORTED_QUALITY_HEAD_KEYS = {
     "negative_weight",
     "loss_normalizer",
     "keep_loss_graph_when_weight_zero",
+    "mode",
+    "diagnostic_dump",
 }
 
 
@@ -126,7 +129,13 @@ def _validate_quality_head(cfg):
     unknown_quality_keys = sorted(set(quality.keys()) - SUPPORTED_QUALITY_HEAD_KEYS)
     assert not unknown_quality_keys, f"unsupported quality_head_cfg key(s): {unknown_quality_keys}"
     assert quality.enabled is True
-    assert quality.target_mode == "max_iou"
+    mode = quality.get("mode", "standard")
+    assert mode in {"standard", "sparse_irregular_qc_v2"}
+    if mode == "sparse_irregular_qc_v2":
+        assert quality.target_mode == "sparse_physical_iou_visibility"
+        assert quality.diagnostic_dump is True
+    else:
+        assert quality.target_mode == "max_iou"
     assert quality.weight_init == 0.0
     assert float(quality.bias_init) >= 4.0
     assert 0.02 <= float(quality.loss_weight) <= 0.05
@@ -158,6 +167,23 @@ def _validate_diagnostic_gate(cfg):
     assert "pseudo_boundary" in cfg.pqr_rankcal_v1.build_only_blockers
     assert "restoration" in cfg.pqr_rankcal_v1.build_only_blockers
     assert "remote PRECHECK" in cfg.pqr_rankcal_v1.build_only_blockers
+
+
+def _validate_sparse_irregular_qc_v2_gate(cfg):
+    is_qc_v2 = cfg.model.rpn_head.quality_head_cfg.get("mode", "standard") == "sparse_irregular_qc_v2"
+    if not is_qc_v2:
+        return
+
+    assert cfg.route_variant == "C3_PQR_RankCalV1_SparseIrregularQCV2"
+    assert cfg.pqr_rankcal_v1.diagnostic_only is True, "QC V2 must remain diagnostic-only"
+    assert cfg.pqr_rankcal_v1.get("formal_fulltrain", False) is False, "QC V2 fulltrain config is locked"
+    assert cfg.pqr_rankcal_v1.get("user_override_fulltrain", False) is False, "QC V2 must not define user-unlocked fulltrain"
+    assert cfg.pqr_rankcal_v1.remote_launch_locked is True, "QC V2 remote launch must be locked"
+    assert cfg.pqr_rankcal_v1.official_map_claim is False, "QC V2 cannot make official map claims"
+    assert cfg.pqr_rankcal_v1.claim_map_improvement is False, "QC V2 cannot claim improvement from diagnostic precheck"
+    assert cfg.pqr_rankcal_v1.changed_surface == "detector_head_sparse_irregular_quality_calibration_v2"
+    assert cfg.post_processing.save_dict is True
+    assert cfg.post_processing.qc_v2_diagnostic_dump is True
 
 
 def _validate_formal_fulltrain_gate(cfg):
@@ -220,6 +246,7 @@ def validate_config(config_path):
     assert cfg.chunk_num == 24
 
     _validate_route_contract(cfg)
+    _validate_sparse_irregular_qc_v2_gate(cfg)
     if cfg.pqr_rankcal_v1.get("formal_fulltrain", False):
         _validate_formal_fulltrain_gate(cfg)
     else:

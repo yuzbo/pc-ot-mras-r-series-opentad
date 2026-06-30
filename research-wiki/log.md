@@ -1,5 +1,35 @@
 # Research Log
 
+## 2026-06-30 14:20:00 +08:00
+
+C3 PQR Sparse/Irregular-Aware QC V2 local gate passed implementation and
+read-only review in the route-owned worktree
+`OpenTAD_C3PQRRankCal_Worktree_20260629`.
+
+- Route: `C3_MAINLINE_OPTIMIZATION` / `C3_ORIGINAL_OPTIMIZATION_ROUTE`.
+- Config: `configs/adatad/thumos/c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_sparse_irregular_qc_v2_precheck.py`.
+- Changed surface: default-off detector-head sparse/irregular quality calibration
+  V2, proposal diagnostic fields, validator, and focused tests. Input sampling,
+  Adapter internals, ordinary detection losses, evaluator, and post-processing
+  score/NMS logic are not claimed as changed.
+- Protocol: diagnostic-only and fail-closed; no teacher, no test GT, no raw
+  prediction cache, no official mAP claim, no fulltrain unlock.
+- Verification: py_compile PASS; QC V2 validator PASS; default Python focused
+  pytest `37 passed, 8 skipped, 1 warning`; `torch_1` focused pytest
+  `37 passed, 8 skipped`; `git diff --check` exit 0 with LF/CRLF warnings
+  only.
+- Review: read-only subagent final review returned
+  `PASS_SUBAGENT_FINAL_REVIEW_ONLY`; no blocking findings. A suggested
+  `test_engine` diagnostic extras preservation test was added before this final
+  record.
+- Limitation: Windows local tests still skip true OpenTAD NMS paths when
+  `nms_1d_cpu` is unavailable or the default torch DLL import fails, so Linux
+  remote PRECHECK must rerun those paths.
+- Next decision: QC V2 remains locked for fulltrain and metric claims. Allowed
+  next action is remote PRECHECK_ONLY / bounded smoke on the C3 mainline GPU1
+  rule; no `tools/test.py` official eval or long training is unlocked by this
+  local gate alone.
+
 ## 2026-06-30 04:28:44 +08:00
 
 C3 PQR RankCal V1 pseudo-boundary clean-clone runtime dependency blocker fixed
@@ -114,3 +144,15 @@ owned worktree `OpenTAD_C3PQRRankCal_Worktree_20260629`.
 - Allowed next action: fix the runtime iteration gate and add a test proving it is consumed.
 - Still locked: 2-iter smoke until gate fix, 8-epoch short diagnostic, formal/full train, `tools/test.py`, mAP claim, checkpoint claim, paper/deploy claim.
 - No SSH, Slurm, training, evaluation, remote write, or N16R4 long-held allocation action was performed.
+
+## 2026-06-30 13:43:26 +08:00
+
+Sparse/Irregular-Aware QC V2 local implementation completed in the route owned
+worktree `OpenTAD_C3PQRRankCal_Worktree_20260629`.
+
+- Route: `C3_MAINLINE_OPTIMIZATION` / `C3_ORIGINAL_OPTIMIZATION_ROUTE`.
+- Config: `configs/adatad/thumos/c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_sparse_irregular_qc_v2_precheck.py`.
+- Changed surface: default-off head support for `mode="sparse_irregular_qc_v2"`, train-only physical IoU/visibility quality target, deploy-visible proposal diagnostics, fail-closed validator/config gates, and focused tests.
+- Leakage boundary: no test-time GT, teacher, raw prediction cache, or official mAP claim; test diagnostics use only model predictions plus selected-coordinate metadata.
+- Local verification: py_compile PASS; validator PASS; focused config/diagnostics pytest `36 passed, 1 skipped`; focused quality-head pytest `1 passed, 6 skipped`; `git diff --check` exit 0 with line-ending warnings only.
+- Still locked: remote launch, Slurm, `tools/train.py`, `tools/test.py`, fulltrain, official mAP/checkpoint/paper/deploy claims, and Pro/subagent gates. No stage/commit/push was performed.

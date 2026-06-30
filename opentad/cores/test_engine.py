@@ -113,17 +113,44 @@ def gather_ddp_results(world_size, result_dict, post_cfg):
             labels = torch.Tensor(labels)
 
             segments, scores, labels = batched_nms(segments, scores, labels, **post_cfg.nms)
+            extras = _match_extra_fields_after_nms(v, segments, labels, class_idx)
 
             results_per_video = []
-            for segment, label, score in zip(segments, labels, scores):
+            for det_idx, (segment, label, score) in enumerate(zip(segments, labels, scores)):
                 # convert to python scalars
-                results_per_video.append(
-                    dict(
-                        segment=[round(seg.item(), 2) for seg in segment],
-                        label=class_idx[int(label.item())],
-                        score=round(score.item(), 4),
-                    )
+                record = dict(
+                    segment=[round(seg.item(), 2) for seg in segment],
+                    label=class_idx[int(label.item())],
+                    score=round(score.item(), 4),
                 )
+                record.update(extras[det_idx])
+                results_per_video.append(record)
             tmp_result_dict[k] = results_per_video
         result_dict = tmp_result_dict
     return result_dict
+
+
+def _match_extra_fields_after_nms(source_records, nms_segments, nms_labels, class_idx):
+    extra_keys = [
+        key
+        for key in source_records[0].keys()
+        if key not in {"segment", "label", "score"}
+    ] if source_records else []
+    if not extra_keys:
+        return [{} for _ in range(nms_segments.shape[0])]
+
+    used = set()
+    extras = []
+    for segment, label in zip(nms_segments, nms_labels):
+        label_name = class_idx[int(label.item())]
+        matched = {}
+        for idx, record in enumerate(source_records):
+            if idx in used or record.get("label") != label_name:
+                continue
+            record_segment = torch.tensor(record["segment"], dtype=segment.dtype)
+            if torch.allclose(record_segment, segment, atol=1e-2, rtol=0.0):
+                matched = {key: record[key] for key in extra_keys if key in record}
+                used.add(idx)
+                break
+        extras.append(matched)
+    return extras

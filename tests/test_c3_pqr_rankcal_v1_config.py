@@ -22,6 +22,10 @@ EXACT_UNIFORM_CONFIG = (
     / "configs/adatad/thumos/c3_indirect_original_adatad_32px_a_exact_uniform_backend_control_pqr_rankcal_v1_shortdiag.py"
 )
 FULLTRAIN_CONFIG = ROOT / "configs/adatad/thumos/c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_fulltrain.py"
+QC_V2_PRECHECK_CONFIG = (
+    ROOT
+    / "configs/adatad/thumos/c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_sparse_irregular_qc_v2_precheck.py"
+)
 
 
 def _load(config_path):
@@ -191,12 +195,18 @@ def _make_runtime_gate_fixtures():
     return model, optimizer, scheduler
 
 
-@pytest.mark.parametrize("config_path", [PRECHECK_CONFIG, SHORTDIAG_CONFIG, EXACT_UNIFORM_CONFIG, FULLTRAIN_CONFIG])
+@pytest.mark.parametrize(
+    "config_path",
+    [PRECHECK_CONFIG, SHORTDIAG_CONFIG, EXACT_UNIFORM_CONFIG, FULLTRAIN_CONFIG, QC_V2_PRECHECK_CONFIG],
+)
 def test_pqr_rankcal_configs_pass_fail_closed_validator(config_path):
     validate_config(config_path)
 
 
-@pytest.mark.parametrize("config_path", [PRECHECK_CONFIG, SHORTDIAG_CONFIG, EXACT_UNIFORM_CONFIG, FULLTRAIN_CONFIG])
+@pytest.mark.parametrize(
+    "config_path",
+    [PRECHECK_CONFIG, SHORTDIAG_CONFIG, EXACT_UNIFORM_CONFIG, FULLTRAIN_CONFIG, QC_V2_PRECHECK_CONFIG],
+)
 def test_pqr_rankcal_configs_do_not_define_unconsumed_frame_selector(config_path):
     cfg = _load(config_path)
 
@@ -351,7 +361,64 @@ def test_quality_head_config_fields_are_supported_by_anchor_free_head():
     for key in quality_keys:
         assert f'"{key}"' in source, f"quality_head_cfg field is not consumed by AnchorFreeHead: {key}"
     assert '"max_iou"' in source
-    assert 'valid_quality_target_modes = {"assigned_iou", "max_iou", "positive_max_iou"}' in source
+    assert '"sparse_physical_iou_visibility"' in source
+
+
+def test_sparse_irregular_qc_v2_precheck_is_diagnostic_only_and_fail_closed():
+    cfg = _load(QC_V2_PRECHECK_CONFIG)
+    quality = cfg.model.rpn_head.quality_head_cfg
+
+    assert cfg.route_label == "C3_MAINLINE_OPTIMIZATION"
+    assert cfg.route_family == "C3_ORIGINAL_OPTIMIZATION_ROUTE"
+    assert cfg.route_variant == "C3_PQR_RankCalV1_SparseIrregularQCV2"
+    assert cfg.pqr_rankcal_v1.diagnostic_only is True
+    assert cfg.pqr_rankcal_v1.official_map_claim is False
+    assert cfg.pqr_rankcal_v1.remote_launch_locked is True
+    assert cfg.pqr_rankcal_v1.use_teacher is False
+    assert cfg.pqr_rankcal_v1.use_test_gt is False
+    assert cfg.pqr_rankcal_v1.use_raw_prediction_cache is False
+    assert cfg.pqr_rankcal_v1.formal_fulltrain is False
+    assert cfg.pqr_rankcal_v1.changed_surface == "detector_head_sparse_irregular_quality_calibration_v2"
+    assert quality.enabled is True
+    assert quality.mode == "sparse_irregular_qc_v2"
+    assert quality.target_mode == "sparse_physical_iou_visibility"
+    assert quality.diagnostic_dump is True
+    assert cfg.post_processing.save_dict is True
+    assert cfg.post_processing.qc_v2_diagnostic_dump is True
+    assert cfg.workflow.max_train_iters == 2
+    assert cfg.workflow.disable_checkpoint is True
+
+
+def test_sparse_irregular_qc_v2_validator_rejects_unlocked_fulltrain(tmp_path):
+    bad_config = tmp_path / "bad_qc_v2_fulltrain.py"
+    bad_config.write_text(
+        "\n".join(
+            [
+                f'_base_ = [r"{QC_V2_PRECHECK_CONFIG.as_posix()}"]',
+                "pqr_rankcal_v1 = dict(diagnostic_only=False, formal_fulltrain=True, remote_launch_locked=False)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="QC V2"):
+        validate_config(bad_config)
+
+
+def test_sparse_irregular_qc_v2_validator_rejects_bh_or_divergent_route(tmp_path):
+    bad_config = tmp_path / "bad_qc_v2_route.py"
+    bad_config.write_text(
+        "\n".join(
+            [
+                f'_base_ = [r"{QC_V2_PRECHECK_CONFIG.as_posix()}"]',
+                'route_family = "BH_SDC_DIVERGENT_INNOVATION_ROUTE"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError):
+        validate_config(bad_config)
 
 
 def test_validator_rejects_forbidden_routes_and_switches(tmp_path):
