@@ -136,16 +136,35 @@ def validate_first_round_bracket_diagnostics(
     min_recall: float = 0.95,
     min_transition_coverage: float = 0.95,
     require_deploy_visible_scout: bool = False,
-) -> Dict[str, float]:
+) -> Dict[str, Any]:
     if not isinstance(diagnostics, Mapping):
         raise ABRValidationError("LOCKED: first-round bracket diagnostics must be a mapping")
     if require_deploy_visible_scout:
         source = str(diagnostics.get("scout_source", ""))
         if diagnostics.get("diagnostic_fallback_used") is True or source.startswith("diagnostic_fallback:"):
             raise ABRValidationError("LOCKED: formal ABR requires deploy-visible scout; diagnostic fallback is rejected")
+    transition_count = _require_nonnegative_int(diagnostics, "transition_count")
+    bracketed_transition_count = _require_nonnegative_int(diagnostics, "bracketed_transition_count")
+    missed = _require_nonnegative_int(diagnostics, "missed_transition_count")
+    if transition_count <= 0:
+        raise ABRValidationError("LOCKED: formal first-round evidence requires transition_count > 0")
+    if bracketed_transition_count > transition_count:
+        raise ABRValidationError("LOCKED: bracketed_transition_count exceeds transition_count")
+    if missed > transition_count:
+        raise ABRValidationError("LOCKED: missed_transition_count exceeds transition_count")
+    if bracketed_transition_count + missed != transition_count:
+        raise ABRValidationError(
+            "LOCKED: first-round transition counts are inconsistent; "
+            "bracketed_transition_count + missed_transition_count must equal transition_count"
+        )
     recall = _require_fraction(diagnostics, "first_round_bracket_recall")
     coverage = _require_fraction(diagnostics, "first_round_transition_coverage")
-    missed = int(diagnostics.get("missed_transition_count", 0))
+    expected_recall = bracketed_transition_count / float(transition_count)
+    if abs(recall - expected_recall) > 1e-6:
+        raise ABRValidationError(
+            "LOCKED: first_round_bracket_recall is inconsistent with "
+            "bracketed_transition_count / transition_count"
+        )
     if recall < float(min_recall):
         raise ABRValidationError(
             f"LOCKED: first_round_bracket_recall {recall:.4f} below required {float(min_recall):.4f}"
@@ -157,7 +176,18 @@ def validate_first_round_bracket_diagnostics(
         )
     if missed > 0:
         raise ABRValidationError(f"LOCKED: first-round bracket diagnostics report {missed} missed transitions")
+    if bracketed_transition_count != transition_count:
+        raise ABRValidationError(
+            "LOCKED: formal first-round evidence requires bracketed_transition_count == transition_count"
+        )
+    if abs(coverage - 1.0) > 1e-6:
+        raise ABRValidationError(
+            "LOCKED: first_round_transition_coverage is inconsistent with fully bracketed transitions"
+        )
     return {
+        "transition_count": int(transition_count),
+        "bracketed_transition_count": int(bracketed_transition_count),
+        "missed_transition_count": int(missed),
         "first_round_bracket_recall": float(recall),
         "first_round_transition_coverage": float(coverage),
     }
@@ -215,6 +245,22 @@ def _require_fraction(payload: Mapping[str, Any], key: str) -> float:
     if value < 0.0 or value > 1.0:
         raise ABRValidationError(f"LOCKED: first-round diagnostic field {key} must be in [0, 1]")
     return value
+
+
+def _require_nonnegative_int(payload: Mapping[str, Any], key: str) -> int:
+    if key not in payload:
+        raise ABRValidationError(f"LOCKED: missing first-round diagnostic field {key}")
+    value = payload[key]
+    if isinstance(value, bool):
+        raise ABRValidationError(f"LOCKED: first-round diagnostic field {key} must be a non-negative integer")
+    try:
+        int_value = int(value)
+        float_value = float(value)
+    except (TypeError, ValueError):
+        raise ABRValidationError(f"LOCKED: first-round diagnostic field {key} must be a non-negative integer")
+    if int_value != float_value or int_value < 0:
+        raise ABRValidationError(f"LOCKED: first-round diagnostic field {key} must be a non-negative integer")
+    return int_value
 
 
 def _walk_string_values(payload: Any, prefix: str = "") -> Iterable[tuple[str, str]]:
