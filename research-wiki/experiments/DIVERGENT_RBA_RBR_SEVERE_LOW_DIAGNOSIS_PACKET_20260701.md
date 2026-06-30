@@ -176,3 +176,18 @@ Because ordinary `git push` could not safely update the existing GitHub branch, 
 - Review URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-grid-audit-aadf9708-20260701`.
 
 This branch is intended for Pro/Oracle severe-result diagnosis and remote sparse-forward precheck context only. It does not unlock full training or any metric/runtime/FLOPs/deploy/paper claim.
+
+## Grid-Audit Remote PRECHECK_ONLY - 2026-07-01 07:48:48 +08:00
+
+The grid-audit update was also checked in a Linux/OpenTAD no-GPU environment:
+
+- Remote route-owned precheck copy: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GridAuditPrecheck_20260701_600fc8f2`.
+- Source tree: copied from `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49`, then overlaid with the five grid-audit files from the evidence branch.
+- Package: `/data/run01/sczc063/yuzibo/rba_rbr_grid_audit_600fc8f2.tar`.
+- `python -m py_compile opentad/models/detectors/irregular_actionformer.py tests/test_rba_rbr_integration.py` passed.
+- `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` passed: `23 passed in 50.13s`.
+- Logs:
+  - `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GridAuditPrecheck_20260701_600fc8f2/logs/rba_rbr_grid_audit_precheck_600fc8f2/py_compile.log`.
+  - `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GridAuditPrecheck_20260701_600fc8f2/logs/rba_rbr_grid_audit_precheck_600fc8f2/pytest.log`.
+
+This verifies that the sparse-forward temporal-grid audit is runnable on N16R4/Linux. It does not diagnose or fix the severe-low mAP by itself, does not run training, does not run `tools/test.py`, and does not unlock formal full training or any claim.
