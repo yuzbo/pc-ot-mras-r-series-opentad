@@ -258,6 +258,8 @@ def build_pipeline_diagnostic(
         audit_mode = "full_raw"
     if audit_mode == "selected_only":
         audit_mode = "sampled_raw"
+    full_observation = bool(handoff_audit.get("full_observation_no_compression", False))
+    sampled_raw_sparse_compute_evidence = bool(handoff_audit.get("sampled_raw_sparse_compute_evidence", False))
     visible_count = sum(mask_values[:valid_k]) if mask_values else 0
     source = str(scout_source)
     provenance = dict(scout_provenance or {})
@@ -283,6 +285,13 @@ def build_pipeline_diagnostic(
         "full_raw_dense_comparison": bool(handoff_audit.get("full_raw_dense_comparison", False)),
         "bounded_raw_sample_comparison": bool(handoff_audit.get("bounded_raw_sample_comparison", False)),
         "formal_raw_handoff_evidence": bool(handoff_audit.get("formal_raw_handoff_evidence", False)),
+        "full_observation_no_compression": full_observation,
+        "no_compression_edge_case": bool(handoff_audit.get("no_compression_edge_case", False)),
+        "sampled_raw_sparse_compute_evidence": sampled_raw_sparse_compute_evidence,
+        "raw_sparse_compute_evidence": bool(handoff_audit.get("raw_sparse_compute_evidence", False)),
+        "structural_only_handoff_evidence": bool(handoff_audit.get("structural_only_handoff_evidence", False)),
+        "sparse_compute_claim": bool(handoff_audit.get("sparse_compute_claim", False)),
+        "no_sparse_compute_claim": handoff_audit.get("no_sparse_compute_claim", True) is True,
         "dense_window_materialized_for_audit": bool(handoff_audit.get("dense_window_materialized_for_audit", False)),
         "raw_audit_frame_count": int(handoff_audit.get("raw_audit_frame_count", 0)),
         "selected_len_matches_valid_k": int(handoff_audit.get("selected_len", -1)) == valid_k,
@@ -429,8 +438,25 @@ def summarize_pipeline_diagnostics(diagnostics: Sequence[Mapping[str, object]]) 
         },
         "frame_handoff_alignment_status": "aligned" if count > 0 and not handoff_failures else "failed",
         "handoff_audit_modes": audit_modes,
-        "full_raw_handoff_evidence_windows": int(audit_modes.get("full_raw", 0)),
-        "sampled_raw_handoff_evidence_windows": int(audit_modes.get("sampled_raw", 0)),
+        "full_raw_handoff_evidence_windows": sum(
+            1
+            for item in items
+            if dict(item.get("frame_handoff_alignment", {})).get("audit_mode") == "full_raw"
+            and dict(item.get("frame_handoff_alignment", {})).get("full_observation_no_compression") is not True
+        ),
+        "sampled_raw_handoff_evidence_windows": sum(
+            1
+            for item in items
+            if dict(item.get("frame_handoff_alignment", {})).get("audit_mode") == "sampled_raw"
+            and dict(item.get("frame_handoff_alignment", {})).get("sampled_raw_sparse_compute_evidence") is True
+        ),
+        "full_observation_no_compression_windows": sum(
+            1
+            for item in items
+            if dict(item.get("frame_handoff_alignment", {})).get("full_observation_no_compression") is True
+        ),
+        "sampled_raw_full_observation_windows": int(audit_modes.get("sampled_raw_full_observation", 0)),
+        "full_raw_full_observation_windows": int(audit_modes.get("full_raw_full_observation", 0)),
         "structural_handoff_evidence_windows": int(audit_modes.get("structural", 0)),
         "raw_audit_frame_count_distribution": _stats(raw_audit_frame_counts),
         "short_boundary_risk_monitoring": {

@@ -140,7 +140,24 @@ def _same_raw_values(left, right) -> bool:
     return True
 
 
-def validate_real_sparse_handoff(batch: Mapping[str, object], ledger) -> None:
+def _handoff_evidence_flags(selected_len: int, dense_t: int, audit_mode: str) -> dict:
+    full_observation = int(selected_len) == int(dense_t)
+    return {
+        "audit_mode": str(audit_mode),
+        "selected_len": int(selected_len),
+        "dense_T": int(dense_t),
+        "full_observation_no_compression": bool(full_observation),
+        "no_compression_edge_case": bool(full_observation),
+        "sampled_raw_sparse_compute_evidence": bool((not full_observation) and audit_mode == "sampled_raw"),
+        "real_sparse_handoff_evidence": bool(not full_observation),
+        "raw_sparse_compute_evidence": bool(not full_observation),
+        "structural_only_handoff_evidence": bool(full_observation),
+        "sparse_compute_claim": False,
+        "no_sparse_compute_claim": True,
+    }
+
+
+def validate_real_sparse_handoff(batch: Mapping[str, object], ledger) -> dict:
     data = _ledger_dict(ledger)
     validate_knot_ledger(data)
     selected_inputs = batch.get("selected_inputs")
@@ -156,12 +173,14 @@ def validate_real_sparse_handoff(batch: Mapping[str, object], ledger) -> None:
     dense_t = int(data.get("dense_T"))
     if selected_inputs is dense_inputs:
         raise ValueError("selected_inputs and dense_inputs must not be the same object")
-    if selected_len >= dense_len:
+    if selected_len == dense_len and selected_len != valid_k:
         raise ValueError("selected_inputs must be a real sparse gather, not dense passthrough")
     if selected_len != valid_k:
         raise ValueError(f"selected_inputs length {selected_len} must equal valid_k {valid_k}")
     if dense_len != dense_t:
         raise ValueError(f"dense_inputs audit length {dense_len} must equal dense_T {dense_t}")
+    if selected_len > dense_t or selected_len > dense_len:
+        raise ValueError("selected_inputs length cannot exceed dense audit length")
     if not _contains_raw_samples(selected_inputs):
         raise ValueError("selected_inputs must contain gathered raw frame/tensor samples, not frame indices")
     positions = [int(v) for v in data["selected_positions"]]
@@ -180,6 +199,7 @@ def validate_real_sparse_handoff(batch: Mapping[str, object], ledger) -> None:
         raise ValueError("all valid sparse entries must be visible")
     if meta.get("position_unit", "original_dense_time_index") != "original_dense_time_index":
         raise ValueError("meta position_unit must be original_dense_time_index")
+    return _handoff_evidence_flags(selected_len, dense_t, "full_raw")
 
 
 def validate_structural_sparse_handoff(batch: Mapping[str, object], ledger) -> None:
@@ -215,12 +235,14 @@ def validate_structural_sparse_handoff(batch: Mapping[str, object], ledger) -> N
         raise ValueError("meta position_unit must be original_dense_time_index")
 
 
-def validate_sampled_sparse_handoff(batch: Mapping[str, object], ledger) -> None:
+def validate_sampled_sparse_handoff(batch: Mapping[str, object], ledger) -> dict:
     """Validate true sparse raw-frame handoff without materializing dense inputs.
 
     This is used by short diagnostics where reading every dense-window frame only
     for audit can dominate runtime. It still requires real raw/tensor samples for
-    every selected sparse position and rejects index-only or dense-length inputs.
+    every selected sparse position and rejects index-only inputs. If a short
+    dense window selects every position, the audit is valid as a full-observation
+    no-compression edge case, but it is not sparse selected-only evidence.
     """
     data = _ledger_dict(ledger)
     validate_knot_ledger(data)
@@ -231,10 +253,10 @@ def validate_sampled_sparse_handoff(batch: Mapping[str, object], ledger) -> None
     selected_len = _sequence_len(selected_inputs)
     valid_k = int(data.get("valid_k", data.get("actual_k")))
     dense_t = int(data.get("dense_T"))
-    if selected_len >= dense_t:
-        raise ValueError("selected_inputs must be shorter than dense_T for sparse selected-only audit")
     if selected_len != valid_k:
         raise ValueError(f"selected_inputs length {selected_len} must equal valid_k {valid_k}")
+    if selected_len > dense_t:
+        raise ValueError("selected_inputs length cannot exceed dense_T")
     if not _contains_raw_samples(selected_inputs):
         raise ValueError("selected_inputs must contain gathered raw frame/tensor samples, not frame indices")
     positions = [int(v) for v in data["selected_positions"]]
@@ -257,6 +279,7 @@ def validate_sampled_sparse_handoff(batch: Mapping[str, object], ledger) -> None
         raise ValueError("all valid sparse entries must be visible")
     if meta.get("position_unit", "original_dense_time_index") != "original_dense_time_index":
         raise ValueError("meta position_unit must be original_dense_time_index")
+    return _handoff_evidence_flags(selected_len, dense_t, "sampled_raw")
 
 
 def validate_selected_sparse_handoff(batch: Mapping[str, object], ledger) -> None:
