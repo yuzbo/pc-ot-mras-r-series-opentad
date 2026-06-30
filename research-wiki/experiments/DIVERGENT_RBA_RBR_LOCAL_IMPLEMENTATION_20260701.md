@@ -388,3 +388,44 @@ Current state:
 - Protected parent hold `1118197 pcot_dbg2g` was not modified, released, cancelled, or replaced.
 - Formal full training remains locked.
 - No mAP/runtime/FLOPs/deploy/paper claim is unlocked.
+
+## Deploy-Visible Raw Scout Repair - 2026-07-01 03:47:32 +08:00
+
+Failure being repaired:
+
+- After the watcher was stopped for manual parallel launch, RBA-RBR short diagnostic child `1118197.537` failed before training.
+- Failed log path: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_shortdiag_9311f49_manual_parallel_gpu0_20260701_033839_+0800/srun-1118197.out`.
+- Error: `ValueError: RBA-RBR formal path requires deploy-visible preview metadata; diagnostic fallback is disabled`.
+- Root cause: the formal path only accepted pre-existing `rba_rbr_preview_actionness` metadata, but the real THUMOS OpenTAD path enters RBA-RBR after `DecordInit` with a deploy-visible `video_reader` and no injected preview arrays.
+
+Changed files:
+
+- `opentad/acquisition/rba_rbr/open_tad_bridge.py`
+  - Added `raw_rgb_lowres_scout` as a formal deploy-visible scout source.
+  - It samples a small number of raw frames from `video_reader`, converts them to low-resolution grayscale, and derives actionness, uncertainty, and transition curves from motion, contrast, and mean-change signals.
+  - It still fails closed when neither explicit preview metadata nor a `video_reader` is available and diagnostic fallback is disabled.
+- `opentad/datasets/transforms/end_to_end.py`
+  - Added and propagated `rba_rbr_scout_sample_count`.
+- `configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py`
+  - Sets `rba_rbr_scout_sample_count=32`.
+- `tools/rba_rbr/validate_rba_rbr_launch_gate.py`
+  - Requires the deploy-visible raw scout sample-count setting.
+- `tests/test_rba_rbr_core.py`
+  - Added formal-selection coverage for raw scout without preview metadata and fail-closed coverage when both metadata and reader are absent.
+- `tests/test_rba_rbr_integration.py`
+  - Added LoadFrames coverage for the real failure shape: no preview metadata, but a deploy-visible `video_reader`.
+
+Verification:
+
+- `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q`
+  - Result: `17 passed, 2 skipped in 3.80s`.
+- `python tools/rba_rbr/validate_rba_rbr_launch_gate.py --config configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py`
+  - Result: `gate_pass=true`, `full_train_unlocked=false`, `deploy_claim_unlocked=false`, `paper_claim_unlocked=false`, `remote_sync_unlocked_by_local_gate=false`, `sparse_compute_claim=false`.
+
+Current allowed next action:
+
+- Run the route-required read-only final review for this repair.
+- If review has no blockers, sync the repaired branch to GitHub and the N16R4 route-owned RBA worktree.
+- Relaunch RBA-RBR `SHORT_DIAGNOSTIC_ONLY` on GPU0 if the protected hold remains active and GPU0 memory is safe.
+- Formal full training remains locked.
+- No mAP/runtime/FLOPs/deploy/paper claim is unlocked.

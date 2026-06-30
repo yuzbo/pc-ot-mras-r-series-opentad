@@ -31,6 +31,28 @@ def _missed_boundary_case():
     return actionness, uncertainty, transition
 
 
+class _FakeBatch:
+    def __init__(self, frames):
+        self._frames = np.asarray(frames, dtype=np.uint8)
+
+    def asnumpy(self):
+        return self._frames
+
+
+class _FakeVideoReader:
+    def get_batch(self, frame_indices):
+        return _FakeBatch([self._frame(idx) for idx in frame_indices])
+
+    @staticmethod
+    def _frame(frame_index):
+        frame_index = int(frame_index)
+        frame = np.zeros((24, 24, 3), dtype=np.uint8)
+        pos = int((frame_index * 3) % 18)
+        frame[pos : pos + 6, pos : pos + 6, :] = 180 + int(frame_index % 40)
+        frame[:, :, 1] = np.clip(frame[:, :, 1] + (frame_index * 7) % 80, 0, 255)
+        return frame
+
+
 def test_route_identity_rejects_c3_and_other_route_mixing_tokens():
     assert ROUTE_LABEL == "DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3"
     assert validate_route_identity({"route_label": ROUTE_LABEL, "note": "local rba rbr"})
@@ -124,6 +146,41 @@ def test_val_test_selection_allows_downstream_gt_payload_without_regret_labels()
         assert selected["ledger"]["train_value_labels_present"] is False
         assert selected["regret_labels"] == []
         assert selected["ledger"]["selector_provenance"]["selection_uses_gt"] is False
+
+
+def test_formal_selection_builds_raw_scout_without_preview_metadata():
+    result = build_rba_rbr_open_tad_selection(
+        {
+            "video_name": "raw_scout_case",
+            "video_reader": _FakeVideoReader(),
+        },
+        dense_window=np.arange(64, dtype=np.int64),
+        target_frame_num=16,
+        split="test",
+        train_value_labels=False,
+        allow_diagnostic_preview_fallback=False,
+        scout_sample_count=8,
+    )
+    ledger = result["ledger"]
+    assert ledger["preview_source"] == "raw_rgb_lowres_scout"
+    assert ledger["scout_is_deploy_visible"] is True
+    assert ledger["diagnostic_preview_fallback_used"] is False
+    assert ledger["preview_meta"]["scout_sample_count"] == 8
+    assert ledger["preview_meta"]["formal_scout_source"] == "raw_rgb_lowres_scout"
+    assert ledger["value_labels_used_at_test"] is False
+    assert ledger["selected_positions"] == sorted(set(ledger["selected_positions"]))
+
+
+def test_formal_selection_still_rejects_missing_preview_and_reader():
+    with pytest.raises(ValueError, match="requires deploy-visible preview metadata or a video_reader raw RGB scout"):
+        build_rba_rbr_open_tad_selection(
+            {"video_name": "missing_scout"},
+            dense_window=np.arange(64, dtype=np.int64),
+            target_frame_num=16,
+            split="test",
+            train_value_labels=False,
+            allow_diagnostic_preview_fallback=False,
+        )
 
 
 def test_val_test_reject_selector_facing_leakage_but_not_plain_gt_payload():

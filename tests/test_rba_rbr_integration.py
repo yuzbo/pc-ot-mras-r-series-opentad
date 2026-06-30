@@ -15,6 +15,28 @@ from tools.rba_rbr.validate_rba_rbr_launch_gate import validate_launch_gate
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class _FakeBatch:
+    def __init__(self, frames):
+        self._frames = np.asarray(frames, dtype=np.uint8)
+
+    def asnumpy(self):
+        return self._frames
+
+
+class _FakeVideoReader:
+    def get_batch(self, frame_indices):
+        return _FakeBatch([self._frame(idx) for idx in frame_indices])
+
+    @staticmethod
+    def _frame(frame_index):
+        frame_index = int(frame_index)
+        frame = np.zeros((24, 24, 3), dtype=np.uint8)
+        pos = int((frame_index * 5) % 18)
+        frame[pos : pos + 6, pos : pos + 6, :] = 160 + int(frame_index % 60)
+        frame[:, :, 2] = np.clip(frame[:, :, 2] + (frame_index * 11) % 90, 0, 255)
+        return frame
+
+
 def test_rba_rbr_config_resolves_and_stays_fail_closed():
     mmengine_config = pytest.importorskip("mmengine.config")
     cfg = mmengine_config.Config.fromfile(
@@ -34,6 +56,7 @@ def test_rba_rbr_config_resolves_and_stays_fail_closed():
     assert "/root/autodl-tmp" not in cfg.evaluation.ground_truth_filename.replace("\\", "/")
     assert cfg.dataset.train.pipeline[2].method == "rba_rbr_recoverable_bracketing"
     assert cfg.dataset.train.pipeline[2].rba_rbr_split == "train"
+    assert cfg.dataset.train.pipeline[2].rba_rbr_scout_sample_count == 32
     assert cfg.dataset.val.pipeline[2].rba_rbr_train_value_labels is False
     assert cfg.dataset.test.pipeline[2].rba_rbr_train_value_labels is False
     required_meta = {
@@ -243,3 +266,52 @@ def test_loadframes_dispatch_records_rba_rbr_ledger_if_runtime_available():
     assert out["rba_rbr_ledger"]["method"] == "rba_rbr_recoverable_bracketing"
     assert out["frame_inds"].shape[0] == out["rba_rbr_adapter_input_frame_count"]
     assert out["rba_rbr_ledger"]["selected_positions"] == sorted(set(out["rba_rbr_ledger"]["selected_positions"]))
+
+
+def test_loadframes_dispatch_builds_raw_scout_when_preview_metadata_is_absent():
+    torch_probe = subprocess.run(
+        [sys.executable, "-c", "import torch"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if torch_probe.returncode != 0:
+        pytest.skip("torch unavailable for LoadFrames runtime dispatch")
+
+    from opentad.datasets.transforms.end_to_end import LoadFrames
+
+    dense_T = 80
+    transform = LoadFrames(
+        num_clips=1,
+        method="rba_rbr_recoverable_bracketing",
+        method_base="sliding_window",
+        target_len=16,
+        scale_factor=1,
+        remap_gt_to_selected_axis=False,
+        rba_rbr_split="test",
+        rba_rbr_min_keep=5,
+        rba_rbr_max_keep=16,
+        rba_rbr_scaffold_k=4,
+        rba_rbr_train_value_labels=False,
+        rba_rbr_allow_diagnostic_preview_fallback=False,
+        rba_rbr_scout_sample_count=8,
+    )
+    out = transform(
+        {
+            "total_frames": dense_T,
+            "avg_fps": 30.0,
+            "snippet_stride": 1,
+            "window_size": dense_T,
+            "feature_start_idx": 0,
+            "feature_end_idx": dense_T - 1,
+            "video_name": "loadframes_rba_raw_scout",
+            "video_reader": _FakeVideoReader(),
+        }
+    )
+    ledger = out["rba_rbr_ledger"]
+    assert ledger["preview_source"] == "raw_rgb_lowres_scout"
+    assert ledger["scout_is_deploy_visible"] is True
+    assert ledger["diagnostic_preview_fallback_used"] is False
+    assert ledger["preview_meta"]["scout_sample_count"] == 8
+    assert out["frame_inds"].shape[0] == out["rba_rbr_adapter_input_frame_count"]
+    assert ledger["selected_positions"] == sorted(set(ledger["selected_positions"]))
