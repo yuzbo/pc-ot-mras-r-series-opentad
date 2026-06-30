@@ -341,3 +341,50 @@ Current allowed next action:
 - RBA-RBR can be queued as `SHORT_DIAGNOSTIC_ONLY` after GPU0 is free, or submitted to a separate authorized Slurm allocation if the coordinator/user chooses not to wait behind MDL.
 - Formal full training remains locked.
 - No mAP/runtime/FLOPs/deploy/paper claim is unlocked.
+
+## Remote Short Diagnostic Staging - 2026-07-01 03:08:44 +08:00
+
+GitHub source:
+
+- Branch: `codex/divergent-rba-rbr-20260701`.
+- Remote commit: `9311f490f19e86f2ec3f7cc8a9c3233b4c1d4ee6`.
+
+N16R4 route-owned shortdiag worktree:
+
+- Path: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49`.
+- Branch: `codex/divergent-rba-rbr-20260701-shortdiag-9311f49`.
+- HEAD: `9311f490f19e86f2ec3f7cc8a9c3233b4c1d4ee6`.
+- Runtime resource links: `data -> ../OpenTAD_Back_check/data`, `pretrained -> ../pretrained`.
+
+Remote preflight evidence:
+
+- `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q`
+  - Result: `16 passed in 28.03s`.
+- RBA launch gate:
+  - Result: `gate_pass=true`, `full_train_unlocked=false`, `deploy_claim_unlocked=false`, `paper_claim_unlocked=false`, `remote_sync_unlocked_by_local_gate=false`, `sparse_compute_claim=false`.
+- Shortdiag config parse:
+  - `short_diagnostic_only=true`.
+  - `end_epoch=2`.
+  - `val_eval_interval=-1`.
+  - `disable_checkpoint=true`.
+  - `ground_truth_filename=/data/home/sczc063/run/yuzibo/thumos14/annotations/thumos_14_anno.json`.
+
+Watcher deployment:
+
+- Watcher directory: `/data/run01/sczc063/yuzibo/route_watchers/rba_rbr_after_mdl_1118197_535_20260701_0310_+0800`.
+- Watcher PID: `2477396`.
+- Waiting on protected hold child step: `1118197.535 mdl_formal_g0`.
+- When the MDL step disappears and parent hold `1118197` still exists, watcher will launch:
+  - Job name: `rba_rbr_short_g0`.
+  - GPU binding: `CUDA_VISIBLE_DEVICES=0`.
+  - Config: `configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_shortdiag.py`.
+  - Command form: `python -m torch.distributed.run --standalone --nnodes=1 --nproc_per_node=1 tools/train.py ... --id 0 --disable_deterministic`.
+- First watcher log:
+  - `[2026-07-01T03:08:44+08:00] waiting_for_mdl step=1118197.535`.
+
+Current state:
+
+- RBA-RBR short diagnostic is staged/queued behind MDL; it is not running yet.
+- Protected parent hold `1118197 pcot_dbg2g` was not modified, released, cancelled, or replaced.
+- Formal full training remains locked.
+- No mAP/runtime/FLOPs/deploy/paper claim is unlocked.

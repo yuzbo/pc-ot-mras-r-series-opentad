@@ -57,3 +57,10 @@
 - Added `input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_shortdiag.py` as a two-epoch, no-eval, no-checkpoint, claim-locked short diagnostic config.
 - Verification passed: `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` -> `15 passed, 1 skipped`; PowerShell-expanded py_compile -> pass; RBA launch gate -> `gate_pass=true`, `full_train_unlocked=false`, `deploy_claim_unlocked=false`, `paper_claim_unlocked=false`.
 - Resource state: protected hold `1118197` unchanged; BVR child disappeared after evaluator failure and MDL child `1118197.535 mdl_formal_g0` started on GPU0; C3 child `1118197.528` remains on GPU1. RBA-RBR short diagnostic is staged but not running.
+
+## 2026-07-01 03:08:44 +08:00 - RBA-RBR short diagnostic staged behind MDL
+
+- Created N16R4 route-owned shortdiag worktree `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49` from GitHub branch `codex/divergent-rba-rbr-20260701` at commit `9311f490f19e86f2ec3f7cc8a9c3233b4c1d4ee6`.
+- Remote preflight passed: `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` -> `16 passed`; RBA launch gate -> `gate_pass=true`; shortdiag config parse -> `end_epoch=2`, `val_eval_interval=-1`, `disable_checkpoint=true`, local N16R4 annotation path.
+- Started watcher `/data/run01/sczc063/yuzibo/route_watchers/rba_rbr_after_mdl_1118197_535_20260701_0310_+0800`, PID `2477396`, waiting for MDL child step `1118197.535` to finish before launching `rba_rbr_short_g0` on GPU0 with `CUDA_VISIBLE_DEVICES=0`.
+- RBA-RBR is queued/staged only, not running yet. Protected parent hold `1118197 pcot_dbg2g` was not released/cancelled/replaced. Formal full training and all metric/runtime/deploy/paper claims remain locked.
