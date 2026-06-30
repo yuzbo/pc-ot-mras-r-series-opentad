@@ -13,6 +13,7 @@ if str(REPO_ROOT) not in sys.path:
 from opentad.acquisition.abr import ABR_ROUTE_LABEL
 from opentad.acquisition.abr.validators import (
     ABRValidationError,
+    assert_loadframes_abr_integration,
     assert_no_forbidden_route_tokens,
     validate_launch_gate_payload,
 )
@@ -41,6 +42,7 @@ def main(argv=None) -> int:
 def validate_config(config_path: Path) -> dict:
     if not config_path.exists():
         raise ABRValidationError(f"config not found: {config_path}")
+    assert_loadframes_abr_integration(REPO_ROOT)
     source = config_path.read_text(encoding="utf-8")
     assert_no_forbidden_route_tokens(source)
     namespace = runpy.run_path(str(config_path))

@@ -123,3 +123,53 @@ Interpretation: the repair substantially improves real deploy-visible first-roun
   - Result: passed
 - `python tools\abr\validate_abr_formal_gate.py --config configs\adatad\thumos\input_abr_active_bracket_refinement_adapter_irregular_headv3_formal.py`
   - Result: `formal_config_ok=true`, `full_train_unlocked=false`, `allowed_next_action=FORMAL_REVIEW_PACKET_ONLY`
+
+## 2026-06-30 Practical Readiness Repair - LoadFrames And Diagnostic Gates
+
+Timestamp: `2026-06-30T20:54:00+08:00`
+
+Owned worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_ABR_ScoutPolicyRepair_Worktree_20260630`
+Owned branch: `codex/divergent-abr-scout-policy-repair-20260630`
+Route label: `DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3`
+
+### Readiness Decision
+
+ABR is locally ready for bounded non-claim diagnostics, not for formal metric claims or full training.
+
+The formal first-round recall gate remains a formal-readiness and claim gate. It must not be used to permanently block all ABR work. Protocol-safe local work remains allowed when it is explicitly labeled `PRECHECK_ONLY` or `SHORT_DIAGNOSTIC_ONLY`, avoids validation/test GT, teacher, detector feedback, raw prediction/cache shortcuts, and does not run evaluation or make mAP/runtime/sparse-compute/deploy/paper claims.
+
+The one-epoch short diagnostic scope is stability and direction only. Low short diagnostic mAP, smoke numbers, or early training numbers must not be used as final route rejection evidence unless the run exposes a hard failure such as NaN/Inf, OOM, traceback/runtime error, no-space, leakage, evaluator shortcut, or tensor/coordinate/mask contract breakage.
+
+### Implementation Checks Added
+
+- `tools/abr/validate_abr_launch_gate.py`, `tools/abr/validate_abr_formal_gate.py`, and `tools/abr/validate_abr_shortdiag.py` now fail closed unless the real OpenTAD `LoadFrames` source contains the ABR integration hook.
+- `opentad/acquisition/abr/validators.py` now exposes `assert_loadframes_abr_integration(...)`, which checks that `LoadFrames` has the `abr_active_bracket_refinement` branch, calls `apply_abr_to_results`, strips `gt_segments`/`gt_labels` before selection, passes `dense_window`, and propagates ABR handoff metadata.
+- `tools/abr/validate_abr_shortdiag.py` now returns explicit fields:
+  - `formal_recall_gate=not_required_for_short_diagnostic_only`
+  - `short_diagnostic_judgment_scope=stability_direction_only_no_route_rejection_by_low_map`
+- Focused tests now cover:
+  - formal gate does not directly block short diagnostic config validation;
+  - missing LoadFrames ABR hook fails closed;
+  - real LoadFrames integration is present;
+  - multi-round ABR narrows at least one round-0 bracket and exposes detector-ready metadata (`selected_positions`, roles, bracket ids, provenance, single detector forward count);
+  - selected raw frame indices and handoff metadata remain sorted, sparse, local/global consistent, and GT/teacher/cache-free.
+
+### Current Config State
+
+- Short diagnostic config exists: `configs/adatad/thumos/input_abr_active_bracket_refinement_adapter_irregular_headv3_shortdiag.py`.
+- Formal locked config exists: `configs/adatad/thumos/input_abr_active_bracket_refinement_adapter_irregular_headv3_formal.py`.
+- Base precheck config exists: `configs/adatad/thumos/input_abr_active_bracket_refinement_adapter_irregular_headv3.py`.
+- Real `LoadFrames` ABR integration exists in `opentad/datasets/transforms/end_to_end.py`, but this repair did not edit that file because it is outside the current allowed write scope.
+
+### Still Locked
+
+- Formal full training.
+- Remote sync and Slurm launch.
+- `tools/test.py`, evaluator runs, raw prediction shortcuts, checkpoint/result claims.
+- mAP, runtime/FLOPs, sparse-compute, deploy, and paper claims.
+- Any claim that ABR is deployment-safe.
+
+### Verification
+
+- `python -m pytest tests\test_abr_shortdiag.py tests\test_abr_pipeline_and_gate.py tests\test_abr_core.py -q`
+  - Result: `37 passed, 1 skipped in 2.22s`

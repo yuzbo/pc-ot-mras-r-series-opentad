@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence
 
 from .types import ABR_ROUTE_LABEL, DEFAULT_PROVENANCE
@@ -107,6 +108,32 @@ def assert_real_sparse_handoff(handoff: Mapping[str, Any]) -> None:
         raise ABRValidationError("handoff is not sparse: valid_k must be smaller than dense_T")
     if any(selected_mask[valid_k:]):
         raise ABRValidationError("padding entries after valid_k must be invalid")
+
+
+def assert_loadframes_abr_integration(repo_root: str | Path) -> None:
+    root = Path(repo_root)
+    source_path = root / "opentad" / "datasets" / "transforms" / "end_to_end.py"
+    if not source_path.exists():
+        raise ABRValidationError(f"LoadFrames integration source not found: {source_path}")
+    source = source_path.read_text(encoding="utf-8")
+    required_tokens = (
+        "class LoadFrames",
+        "abr_config",
+        "abr_allow_gt_after_selection",
+        "abr_active_bracket_refinement",
+        "apply_abr_to_results",
+        "selection_results = {key: value for key, value in results.items() if key not in (\"gt_segments\", \"gt_labels\")}",
+        "dense_window=dense_window",
+        "abr_selection_ledger",
+        "irregular_selected_positions",
+        "irregular_native_axis",
+    )
+    missing = [token for token in required_tokens if token not in source]
+    if missing:
+        raise ABRValidationError(
+            "LoadFrames ABR integration is incomplete; missing required hook token(s): "
+            + ", ".join(missing)
+        )
 
 
 def validate_launch_gate_payload(payload: Mapping[str, Any]) -> Dict[str, str]:

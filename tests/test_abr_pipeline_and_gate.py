@@ -8,7 +8,11 @@ import pytest
 
 from opentad.acquisition.abr import ABRConfig, ABR_ROUTE_LABEL
 from opentad.acquisition.abr.integration import apply_abr_to_results
-from opentad.acquisition.abr.validators import ABRValidationError, validate_launch_gate_payload
+from opentad.acquisition.abr.validators import (
+    ABRValidationError,
+    assert_loadframes_abr_integration,
+    validate_launch_gate_payload,
+)
 from tools.abr.audit_abr_pipeline_precheck import build_precheck_summary
 
 
@@ -100,6 +104,7 @@ def test_real_loadframes_method_abr_active_bracket_refinement_is_integrated_in_r
     source = (REPO_ROOT / "opentad" / "datasets" / "transforms" / "end_to_end.py").read_text(encoding="utf-8")
     assert "abr_active_bracket_refinement" in source
     assert "apply_abr_to_results" in source
+    assert_loadframes_abr_integration(REPO_ROOT)
     proc = subprocess.run(
         [
             sys.executable,
@@ -126,6 +131,21 @@ def test_real_loadframes_method_abr_active_bracket_refinement_is_integrated_in_r
     if proc.returncode != 0 and ("torch" in proc.stderr.lower() or "c10.dll" in proc.stderr.lower()):
         pytest.skip(f"real LoadFrames smoke locked by local torch import failure: {proc.stderr.strip()}")
     assert proc.returncode == 0, proc.stderr
+
+
+def test_loadframes_integration_validator_fails_closed_when_hook_is_missing(tmp_path):
+    fake_root = tmp_path / "fake_repo"
+    transform_dir = fake_root / "opentad" / "datasets" / "transforms"
+    transform_dir.mkdir(parents=True)
+    (transform_dir / "end_to_end.py").write_text(
+        "class LoadFrames:\n"
+        "    def __call__(self, results):\n"
+        "        return results\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ABRValidationError, match="LoadFrames"):
+        assert_loadframes_abr_integration(fake_root)
 
 
 def test_apply_abr_rejects_eval_gt_teacher_cache_and_detector_feedback():

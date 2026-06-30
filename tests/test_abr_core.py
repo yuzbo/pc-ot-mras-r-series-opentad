@@ -169,6 +169,47 @@ def test_round2_is_bounded_and_only_for_unresolved_high_value_brackets():
     assert result.valid_k <= 19
 
 
+def test_multiround_bracket_refinement_narrows_round0_brackets_and_exposes_detector_metadata():
+    curve = [0.02] * 20 + [0.85] * 10 + [0.08] * 22 + [0.9] * 8 + [0.03] * 20
+    result = select_active_bracket_refinement(
+        dense_t=len(curve),
+        fps=25.0,
+        video_id="synthetic_multiround_contract",
+        scout_curve=curve,
+        scout_source="abr_scout_curve:deploy_visible",
+        config=ABRConfig(k0=8, k1_cap=12, k2_cap=4, max_total_k=28, max_gap=14, round2_enabled=True),
+    )
+
+    assert [ledger.round_id for ledger in result.round_ledgers] == [0, 1, 2]
+    round0_brackets = {
+        item["bracket_id"]: item
+        for item in result.round_ledgers[0].diagnostics["first_round_brackets"]
+    }
+    narrowed = [
+        bracket
+        for bracket in result.brackets
+        if bracket.parent_id in round0_brackets
+        and bracket.width < round0_brackets[bracket.parent_id]["width"]
+    ]
+    narrowed.extend(
+        bracket
+        for bracket in result.brackets
+        if bracket.bracket_id in round0_brackets
+        and bracket.width < round0_brackets[bracket.bracket_id]["width"]
+    )
+
+    assert narrowed, "round1/round2 must shrink at least one round0 bracket"
+    assert any(role != "scaffold" for role in result.selected_roles)
+    assert any(round_id == 2 for round_id in result.selected_rounds)
+    assert result.selected_positions == sorted(set(result.selected_positions))
+    assert len(result.selected_positions) == len(result.selected_roles) == len(result.selected_bracket_ids)
+    payload = result.to_dict()
+    assert payload["route_label"] == ABR_ROUTE_LABEL
+    assert payload["scout_source"] == "abr_scout_curve:deploy_visible"
+    assert payload["provenance"]["uses_gt"] is False
+    assert payload["cost"]["detector_forward_count"] == 1
+
+
 def test_real_sparse_handoff_validator_rejects_padding_as_valid_and_dense_handoff():
     handoff = {
         "selected_positions_window_local": [0, 3, 7, 12],

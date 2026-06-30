@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 from opentad.acquisition.abr import ABR_ROUTE_LABEL
 from opentad.acquisition.abr.validators import (
     ABRValidationError,
+    assert_loadframes_abr_integration,
     assert_no_forbidden_route_tokens,
     validate_formal_readiness_payload,
 )
@@ -44,6 +45,7 @@ def validate_formal_config(config_path: Path) -> dict[str, Any]:
     config_path = _resolve_inside_repo(config_path)
     if config_path.name != FORMAL_CONFIG_NAME:
         raise ABRValidationError(f"formal config must be named {FORMAL_CONFIG_NAME}")
+    assert_loadframes_abr_integration(REPO_ROOT)
     source = config_path.read_text(encoding="utf-8")
     assert_no_forbidden_route_tokens(_scrub_route_label(source))
     namespace = runpy.run_path(str(config_path))

@@ -14,7 +14,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from opentad.acquisition.abr import ABR_ROUTE_LABEL
-from opentad.acquisition.abr.validators import ABRValidationError, assert_no_forbidden_route_tokens
+from opentad.acquisition.abr.validators import (
+    ABRValidationError,
+    assert_loadframes_abr_integration,
+    assert_no_forbidden_route_tokens,
+)
 
 EXPECTED_BASE = "./input_abr_active_bracket_refinement_adapter_irregular_headv3.py"
 SHORTDIAG_CONFIG_NAME = "input_abr_active_bracket_refinement_adapter_irregular_headv3_shortdiag.py"
@@ -93,6 +97,8 @@ def validate_shortdiag(config_path: Path, train_log_path: Path | None = None) ->
         "allowed_next_action": "ONE_EPOCH_TRAIN_LOSS_DIAGNOSTIC_ONLY",
         "config": str(config_path.relative_to(REPO_ROOT)),
         "diagnostic_only": True,
+        "formal_recall_gate": "not_required_for_short_diagnostic_only",
+        "short_diagnostic_judgment_scope": "stability_direction_only_no_route_rejection_by_low_map",
         "full_train_unlocked": False,
         "metric_claim": False,
         "sparse_compute_claim": False,
@@ -118,6 +124,7 @@ def validate_config(config_path: Path) -> dict[str, Any]:
         raise ABRValidationError(f"config not found: {config_path}")
     if config_path.name != SHORTDIAG_CONFIG_NAME:
         raise ABRValidationError(f"shortdiag config must be named {SHORTDIAG_CONFIG_NAME}")
+    assert_loadframes_abr_integration(REPO_ROOT)
 
     source = config_path.read_text(encoding="utf-8")
     _assert_clean_text(source, context="config", allow_abr_route_label=True)

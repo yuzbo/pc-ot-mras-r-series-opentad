@@ -25,6 +25,8 @@ def test_shortdiag_config_extends_abr_and_keeps_all_claim_locks():
     assert decision["full_train_unlocked"] is False
     assert decision["metric_claim"] is False
     assert decision["sparse_compute_claim"] is False
+    assert decision["formal_recall_gate"] == "not_required_for_short_diagnostic_only"
+    assert decision["short_diagnostic_judgment_scope"] == "stability_direction_only_no_route_rejection_by_low_map"
     assert "FORMAL_FULL_TRAIN" in decision["still_locked"]
     assert "TOOLS_TEST_PY" in decision["still_locked"]
     assert "MAPPAPER_CLAIM" in decision["still_locked"]
