@@ -125,6 +125,8 @@ def _validate_cadf_densitymesh_route(cfg, cfg_text):
         if float(selector.get("actionness_loss_weight", 0.0)) <= 0.0:
             raise AssertionError("CADF ST+actionness combo gate must enable actionness aux loss")
     if claim_status == "formal_selector_candidate_locked":
+        speed_fix = cfg.get("c3_speed_fix", None)
+        speed_fix_enabled = speed_fix == "selector_cpu_once_repair_diag_off_amp_withcp_probe"
         if cfg.get("c3_formal_selector_candidate", None) is not True:
             raise AssertionError("CADF formal selector candidate must be explicitly marked")
         if cfg.get("launch_locked_until_combo_pass", None) is not True:
@@ -136,7 +138,18 @@ def _validate_cadf_densitymesh_route(cfg, cfg_text):
             raise AssertionError("CADF formal selector candidate must record pending old-window combo status")
         if cfg.get("c3_combo_old_window_pass_evidence", None) != "PENDING":
             raise AssertionError("CADF formal selector candidate evidence must remain PENDING before launch")
-        if bool(cfg.solver.get("amp", False)) or bool(cfg.solver.get("fp16_compress", False)) or bool(cfg.solver.get("ema", False)):
+        if speed_fix_enabled:
+            if selector.get("fast_cpu_selection", None) is not True:
+                raise AssertionError("CADF speed-fix formal candidate must enable fast_cpu_selection")
+            if selector.get("emit_selection_diagnostics", None) is not False:
+                raise AssertionError("CADF speed-fix formal candidate must disable per-iteration selection diagnostics")
+            if int(selector.get("selection_diagnostics_interval", -1)) != 0:
+                raise AssertionError("CADF speed-fix formal candidate must set selection_diagnostics_interval=0")
+            if bool(cfg.solver.get("ema", False)):
+                raise AssertionError("CADF speed-fix formal candidate must keep EMA disabled")
+            if bool(cfg.solver.get("amp", False)) is not True or bool(cfg.solver.get("fp16_compress", False)) is not True:
+                raise AssertionError("CADF speed-fix formal candidate must explicitly gate AMP/fp16 for speed smoke")
+        elif bool(cfg.solver.get("amp", False)) or bool(cfg.solver.get("fp16_compress", False)) or bool(cfg.solver.get("ema", False)):
             raise AssertionError("CADF formal selector candidate must keep AMP/fp16/EMA disabled")
         if float(selector.get("density_alpha", 0.0)) <= 0.0:
             raise AssertionError("CADF formal selector candidate must use positive density_alpha, not alpha0 backend control")

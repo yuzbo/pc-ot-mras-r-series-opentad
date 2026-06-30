@@ -1,3 +1,5 @@
+import inspect
+
 import torch
 import torch.nn as nn
 import pytest
@@ -281,6 +283,107 @@ def test_cadf_repair_diagnostics_split_dedupe_guard_add_prune_and_row_fraction()
     assert repair_stats["gap_guard_prune_count"] > 0
     assert diagnostics[0]["row_repair_fraction"] == pytest.approx(repair_mask.float().mean().item())
     assert diagnostics[0]["row_repair_fraction"] < 1.0
+
+
+def test_cadf_fast_cpu_selection_matches_legacy_guarded_selection():
+    legacy = _make_cadf_selector(
+        target_len=8,
+        dense_window_size=24,
+        max_gap_guard_count=4,
+        fast_cpu_selection=False,
+    )
+    fast = _make_cadf_selector(
+        target_len=8,
+        dense_window_size=24,
+        max_gap_guard_count=4,
+        fast_cpu_selection=True,
+    )
+    valid_idx = torch.arange(24)
+    density = torch.ones(24, dtype=torch.float32) * 0.001
+    density[2] = 4.0
+    density[21] = 3.5
+    density[10:14] = torch.tensor([0.25, 0.35, 0.45, 0.55])
+    density = density / density.sum()
+
+    legacy_selected, legacy_repair, legacy_stats = legacy._inverse_cdf_select_one(
+        density,
+        valid_idx,
+        return_diagnostics=True,
+    )
+    fast_selected, fast_repair, fast_stats = fast._inverse_cdf_select_one(
+        density,
+        valid_idx,
+        return_diagnostics=True,
+    )
+
+    assert torch.equal(fast_selected, legacy_selected)
+    assert torch.equal(fast_repair, legacy_repair)
+    assert fast_stats == legacy_stats
+
+
+def test_cadf_formal_can_disable_per_iter_selection_diagnostics(monkeypatch):
+    selector = _make_cadf_selector(
+        emit_selection_diagnostics=False,
+        selection_diagnostics_interval=0,
+    )
+    selector.scout = StaticCADFScout(
+        action_logits=[0, 0, 0, 0, 0, 0, 0, 0],
+        utility_logits=[-20, -20, 6, 6, 6, 6, -20, -20],
+    )
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("formal fast path should not emit per-iteration selection diagnostics")
+
+    monkeypatch.setattr(selector, "_selection_diagnostics", fail_if_called)
+
+    outputs = selector.forward_train(
+        _make_inputs(),
+        torch.ones(1, 8, dtype=torch.bool),
+        [dict(video_name="video_0", window_size=8, snippet_stride=4)],
+        [torch.tensor([[2.0, 6.0]], dtype=torch.float32)],
+        [torch.tensor([1], dtype=torch.long)],
+    )
+
+    meta = outputs["metas"][0]
+    assert meta["c3_density_mesh_alpha"] == pytest.approx(1.0)
+    assert meta["c3_density_mesh_nonuniform_selection"] is True
+    assert "c3_density_mesh_max_gap" not in meta
+    assert "c3_density_mesh_repair_fraction" not in meta
+
+
+def test_cadf_fast_cpu_selection_does_not_call_legacy_gpu_scalar_prune(monkeypatch):
+    selector = _make_cadf_selector(
+        target_len=4,
+        dense_window_size=10,
+        max_gap_guard_count=2,
+        fast_cpu_selection=True,
+    )
+    valid_idx = torch.tensor([2, 3, 5, 7, 9], dtype=torch.long)
+    density = torch.zeros(10, dtype=torch.float32)
+    density[valid_idx] = torch.tensor([0.35, 0.05, 0.05, 0.05, 0.50])
+    density = density / density.sum()
+
+    def fail_legacy_prune(*args, **kwargs):
+        raise AssertionError("fast CPU selection must not call legacy GPU scalar prune")
+
+    monkeypatch.setattr(selector, "_prune_guarded_selection", fail_legacy_prune)
+
+    selected, repair_mask, repair_stats = selector._inverse_cdf_select_one(
+        density,
+        valid_idx,
+        return_diagnostics=True,
+    )
+
+    assert selected.numel() == selector.target_len
+    assert repair_mask.numel() == selector.target_len
+    assert repair_stats["gap_guard_add_count"] > 0
+
+
+def test_cadf_robust_normalize_rows_has_no_row_level_scalar_sync():
+    source = inspect.getsource(type(_make_cadf_selector())._robust_normalize_rows)
+
+    assert ".item()" not in source
+    assert "for row_idx" not in source
 
 
 def test_cadf_max_gap_guard_reduces_real_gap_for_two_peak_density():

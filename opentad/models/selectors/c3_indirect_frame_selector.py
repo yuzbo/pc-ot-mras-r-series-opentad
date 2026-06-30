@@ -149,6 +149,9 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         st_local_radius=2,
         st_scale=1.0,
         actionness_loss_weight=0.05,
+        fast_cpu_selection=False,
+        emit_selection_diagnostics=True,
+        selection_diagnostics_interval=0,
         scout=None,
     ):
         super().__init__()
@@ -212,6 +215,10 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         self.st_local_radius = int(st_local_radius)
         self.st_scale = float(st_scale)
         self.actionness_loss_weight = float(actionness_loss_weight)
+        self.fast_cpu_selection = bool(fast_cpu_selection)
+        self.emit_selection_diagnostics = bool(emit_selection_diagnostics)
+        self.selection_diagnostics_interval = max(int(selection_diagnostics_interval), 0)
+        self._selection_call_count = 0
 
         self.scout = SELECTORS.build(scout)
 
@@ -499,6 +506,7 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         selected_rows = []
         repair_rows = []
         repair_stats_rows = []
+        emit_diagnostics = self._should_emit_selection_diagnostics()
         for row_idx in range(density.shape[0]):
             valid_idx = dense_masks[row_idx].nonzero(as_tuple=True)[0]
             if valid_idx.numel() == 0:
@@ -510,14 +518,30 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
             repair_rows.append(row_repair)
             repair_stats_rows.append(row_repair_stats)
         selected = torch.stack(selected_rows, dim=0)
-        repairs = torch.stack(repair_rows, dim=0)
-        diagnostics = self._selection_diagnostics(selected, dense_masks, density, repairs, repair_stats=repair_stats_rows)
+        diagnostics = None
+        if emit_diagnostics:
+            repairs = torch.stack(repair_rows, dim=0)
+            diagnostics = self._selection_diagnostics(
+                selected,
+                dense_masks,
+                density,
+                repairs,
+                repair_stats=repair_stats_rows,
+            )
+        self._selection_call_count += 1
         return {
             "selected": selected,
             "st_logits": acquisition_logits,
             "density": density,
             "diagnostics": diagnostics,
         }
+
+    def _should_emit_selection_diagnostics(self):
+        if not self.emit_selection_diagnostics:
+            return False
+        if self.selection_diagnostics_interval <= 0:
+            return True
+        return (self._selection_call_count % self.selection_diagnostics_interval) == 0
 
     def _cadf_density(self, scout_outputs, dense_masks, mode=None):
         action_logits = scout_outputs["action_logits"]
@@ -596,18 +620,20 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         return mixed / mixed.sum(dim=1, keepdim=True).clamp_min(1e-6)
 
     def _robust_normalize_rows(self, values, dense_masks, clamp_value=5.0):
-        normalized = torch.zeros_like(values)
-        for row_idx in range(values.shape[0]):
-            row_mask = dense_masks[row_idx]
-            if row_mask.sum().item() <= 1:
-                continue
-            valid_values = values[row_idx][row_mask]
-            center = valid_values.median()
-            mad = (valid_values - center).abs().median()
-            scale = (mad * 1.4826).clamp_min(1e-6)
-            row = ((values[row_idx] - center) / scale).clamp(-clamp_value, clamp_value)
-            normalized[row_idx] = row.masked_fill(~row_mask, 0.0)
-        return normalized
+        if values.numel() == 0:
+            return torch.zeros_like(values)
+        counts = dense_masks.sum(dim=1)
+        median_idx = ((counts.clamp_min(1) - 1) // 2).clamp_min(0)
+        inf = torch.tensor(float("inf"), device=values.device, dtype=values.dtype)
+        sorted_values = values.masked_fill(~dense_masks, inf).sort(dim=1).values
+        center = sorted_values.gather(1, median_idx[:, None])
+        deviations = (values - center).abs().masked_fill(~dense_masks, inf)
+        sorted_deviations = deviations.sort(dim=1).values
+        mad = sorted_deviations.gather(1, median_idx[:, None])
+        scale = (mad * 1.4826).clamp_min(1e-6)
+        normalized = ((values - center) / scale).clamp(-clamp_value, clamp_value)
+        valid = dense_masks & (counts[:, None] > 1)
+        return torch.where(valid, normalized, torch.zeros_like(values))
 
     def _inverse_cdf_select_one(self, density, valid_idx, return_diagnostics=False):
         if self.target_len <= 0:
@@ -628,14 +654,22 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         selected_pos = torch.searchsorted(cdf, quantiles, right=False).clamp(0, valid_idx.numel() - 1)
         selected = valid_idx[selected_pos]
 
-        selected, repair_mask = self._dedupe_inverse_cdf_selection(selected, valid_idx, valid_density, target_unique)
-        repair_stats = dict(
-            dedupe_repair_count=int(repair_mask.float().sum().item()),
-            gap_guard_add_count=0,
-            gap_guard_prune_count=0,
-            pad_repair_count=0,
-        )
-        if self.max_gap_guard_count > 0 and selected.numel() >= 2:
+        if self.fast_cpu_selection:
+            selected, repair_mask, repair_stats = self._repair_inverse_cdf_selection_cpu_once(
+                selected,
+                valid_idx,
+                density,
+                target_unique,
+            )
+        else:
+            selected, repair_mask = self._dedupe_inverse_cdf_selection(selected, valid_idx, valid_density, target_unique)
+            repair_stats = dict(
+                dedupe_repair_count=int(repair_mask.float().sum().item()),
+                gap_guard_add_count=0,
+                gap_guard_prune_count=0,
+                pad_repair_count=0,
+            )
+        if (not self.fast_cpu_selection) and self.max_gap_guard_count > 0 and selected.numel() >= 2:
             pre_guard = [int(x) for x in selected.tolist()]
             pre_mask_by_idx = {
                 int(idx): float(mask)
@@ -667,6 +701,132 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         if return_diagnostics:
             return selected, repair_mask, repair_stats
         return selected, repair_mask
+
+    def _repair_inverse_cdf_selection_cpu_once(self, selected, valid_idx, density, target_unique):
+        valid_list = [int(x) for x in valid_idx.detach().cpu().tolist()]
+        selected_list = [int(x) for x in selected.detach().cpu().tolist()]
+        density_cpu = density.detach().float().cpu()
+        valid_positions = {idx: pos for pos, idx in enumerate(valid_list)}
+        used = set()
+        repaired = []
+        repair_mask = []
+
+        for idx in selected_list:
+            if idx not in used:
+                repaired.append(idx)
+                used.add(idx)
+                repair_mask.append(0.0)
+                continue
+            replacement = None
+            center_pos = valid_positions.get(idx, 0)
+            for radius in range(1, len(valid_list) + 1):
+                for cand_pos in (center_pos - radius, center_pos + radius):
+                    if cand_pos < 0 or cand_pos >= len(valid_list):
+                        continue
+                    cand = valid_list[cand_pos]
+                    if cand not in used:
+                        replacement = cand
+                        break
+                if replacement is not None:
+                    break
+            if replacement is None:
+                replacement = idx
+            repaired.append(replacement)
+            used.add(replacement)
+            repair_mask.append(1.0)
+
+        if len(repaired) < target_unique:
+            for cand in self._uniform_positions_cpu(valid_list, target_unique):
+                if cand not in used:
+                    repaired.append(cand)
+                    used.add(cand)
+                    repair_mask.append(1.0)
+                if len(repaired) == target_unique:
+                    break
+
+        order = sorted(range(len(repaired)), key=lambda i: repaired[i])
+        repaired = [repaired[i] for i in order[:target_unique]]
+        repair_mask = [repair_mask[i] for i in order[:target_unique]]
+        repair_stats = dict(
+            dedupe_repair_count=int(sum(repair_mask)),
+            gap_guard_add_count=0,
+            gap_guard_prune_count=0,
+            pad_repair_count=0,
+        )
+
+        if self.max_gap_guard_count > 0 and len(repaired) >= 2:
+            pre_guard = list(repaired)
+            pre_mask_by_idx = {int(idx): float(mask) for idx, mask in zip(repaired, repair_mask)}
+            guards = self._max_gap_guard_cpu(valid_list, pre_guard, self.max_gap_guard_count)
+            pre_guard_set = set(pre_guard)
+            added_guards = [idx for idx in guards if idx not in pre_guard_set]
+            repair_stats["gap_guard_add_count"] = len(set(added_guards))
+            guarded = sorted(set(pre_guard + guards))
+            before_prune_count = len(guarded)
+            if len(guarded) > target_unique:
+                guarded = self._prune_guarded_selection_cpu(guarded, density_cpu, target_unique)
+            guarded = sorted(set(int(x) for x in guarded))[:target_unique]
+            repair_stats["gap_guard_prune_count"] = max(0, before_prune_count - len(guarded))
+            added_guard_set = set(added_guards)
+            repaired = guarded
+            repair_mask = [
+                1.0 if idx in added_guard_set else pre_mask_by_idx.get(idx, 0.0)
+                for idx in guarded
+            ]
+
+        return valid_idx.new_tensor(repaired), density.new_tensor(repair_mask, dtype=torch.float32), repair_stats
+
+    def _uniform_positions_cpu(self, valid_list, count):
+        if count <= 0:
+            return []
+        if len(valid_list) == 1:
+            return [valid_list[0]] * count
+        steps = torch.linspace(0, len(valid_list) - 1, steps=count, device="cpu")
+        positions = steps.round().long().clamp(0, len(valid_list) - 1).tolist()
+        return [valid_list[int(pos)] for pos in positions]
+
+    def _max_gap_guard_cpu(self, valid_list, picks, count):
+        if count <= 0 or len(picks) < 2:
+            return []
+        current = sorted(set(int(p) for p in picks))
+        guards = []
+        for _ in range(count):
+            gaps = [(right - left, left, right) for left, right in zip(current[:-1], current[1:])]
+            if not gaps:
+                break
+            _, left, right = max(gaps)
+            mid = int(round((left + right) * 0.5))
+            candidates = [idx for idx in valid_list if left <= idx <= right]
+            if candidates:
+                mid = min(candidates, key=lambda idx: abs(idx - mid))
+            if mid in current:
+                break
+            current.append(mid)
+            current.sort()
+            guards.append(mid)
+        return guards
+
+    def _prune_guarded_selection_cpu(self, picks, density_cpu, target_unique):
+        pruned = sorted(set(int(x) for x in picks))
+        while len(pruned) > target_unique:
+            best_remove = None
+            best_key = None
+            for candidate in pruned:
+                trial = [idx for idx in pruned if idx != candidate]
+                if len(trial) < 2:
+                    max_gap = 0
+                    mean_gap = 0.0
+                else:
+                    gaps = [right - left for left, right in zip(trial[:-1], trial[1:])]
+                    max_gap = max(gaps)
+                    mean_gap = sum(gaps) / float(len(gaps))
+                score = float(density_cpu[candidate])
+                key = (max_gap, mean_gap, score)
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best_remove = candidate
+            pruned.remove(best_remove)
+        return pruned
 
     def _prune_guarded_selection(self, picks, density, target_unique):
         pruned = sorted(set(int(x) for x in picks))

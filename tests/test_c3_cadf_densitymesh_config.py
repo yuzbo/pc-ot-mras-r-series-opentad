@@ -30,6 +30,9 @@ CANDIDATE32 = ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_
 FORMAL32 = (
     ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_32px_formal_selector_candidate_locked.py"
 )
+FORMAL_FASTFIX32 = (
+    ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_32px_formal_selector_candidate_fastfix.py"
+)
 DENSITY_LOSS_V2_DIAG32 = (
     ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_32px_density_loss_v2_diagnostic.py"
 )
@@ -366,6 +369,7 @@ def test_cadf_densitymesh_64px_configs_only_change_scout_resolution():
         STAGED32,
         CANDIDATE32,
         FORMAL32,
+        FORMAL_FASTFIX32,
         DENSITY_LOSS_V2_DIAG32,
         SMOKE64,
         FULL64,
@@ -373,6 +377,26 @@ def test_cadf_densitymesh_64px_configs_only_change_scout_resolution():
 )
 def test_cadf_densitymesh_configs_pass_shared_precheck_validator(config_path):
     validate_config(config_path)
+
+
+def test_cadf_formal_fastfix_keeps_method_semantics_but_enables_speed_guards():
+    cfg = Config.fromfile(FORMAL_FASTFIX32)
+
+    _assert_cadf_config(cfg, 32)
+    assert cfg.c3_claim_status == "formal_selector_candidate_locked"
+    assert cfg.c3_speed_fix == "selector_cpu_once_repair_diag_off_amp_withcp_probe"
+    assert cfg.model.frame_selector.fast_cpu_selection is True
+    assert cfg.model.frame_selector.emit_selection_diagnostics is False
+    assert cfg.model.frame_selector.selection_diagnostics_interval == 0
+    assert cfg.model.frame_selector.max_gap_guard_count == 12
+    assert cfg.model.frame_selector.st_local_radius == 2
+    assert cfg.model.frame_selector.st_scale == 0.5
+    assert cfg.model.frame_selector.density_alpha == pytest.approx(0.65)
+    assert cfg.solver.train.batch_size == 2
+    assert cfg.solver.train.num_workers >= 2
+    assert cfg.solver.amp is True
+    assert cfg.solver.fp16_compress is True
+    validate_config(FORMAL_FASTFIX32)
 
 
 def test_cadf_densitymesh_rejects_invalid_density_weight_configs():
