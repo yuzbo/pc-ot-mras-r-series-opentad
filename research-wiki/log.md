@@ -69,3 +69,13 @@
 - Added TDD coverage for a subthreshold short raw-video graydiff event between sparse scaffold points; the test failed before the fix with `first_round_bracket_recall=0.0` and now passes with full boundary/action coverage under bounded width/density checks.
 - Verification passed: focused new test `1 passed`; ABR suite `50 passed, 1 skipped`; formal config validator stayed `full_train_unlocked=false`; launch gate stayed `allowed_next_action=LOCAL_PRECHECK_ONLY_VALIDATION`.
 - No remote sync, Slurm, GPU training/evaluation, `tools/test.py`, stage, commit, push, mAP/runtime/sparse-compute/deploy/paper claim, or formal unlock was performed. Real full raw-video diagnostic evidence remains for the main process to harvest.
+
+## 2026-06-30T23:36:21+08:00 - ABR recall repair 3 remote short diagnostic launched
+
+- Main process committed and pushed ABR recall repair 3 as `ccf7db3 DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3 repair robust scout brackets` on branch `codex/divergent-abr-recall-repair3-20260630`.
+- Remote clone synced to `/data/home/sczc063/run/yuzibo/OpenTAD_ABR_RecallRepair3_20260630_ccf7db3` with `data -> /data/run01/sczc063/yuzibo/thumos14` and `pretrained -> /data/home/sczc063/run/yuzibo/pretrained`.
+- Final read-only review returned `PASS_SUBAGENT_FINAL_REVIEW_ONLY`; main-process ABR suite stayed `50 passed, 1 skipped`; formal gate stayed `full_train_unlocked=false`.
+- Launched CPU/no-GPU real deploy-visible scout recall diagnostic under protected hold `1118197 pcot_dbg2g`, child step `1118197.534 abr_r3diag`, node `g0030`.
+- Diagnostic log dir: `/data/home/sczc063/run/yuzibo/OpenTAD_ABR_RecallRepair3_20260630_ccf7db3/logs/abr_repair3_real_scout_recall_max32_gpu0safe_20260630_233530_+0800`.
+- Scope is validation `--max-videos 32`, `curve_len=384`, `resize=64`, `CUDA_VISIBLE_DEVICES=EMPTY`; parent hold was not released/cancelled/replaced.
+- ABR formal training, `tools/test.py`, mAP/runtime/FLOPs/sparse-compute/deploy/paper claims remain locked.

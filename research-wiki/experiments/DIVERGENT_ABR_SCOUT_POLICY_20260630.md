@@ -218,3 +218,39 @@ TDD evidence:
 
 - No remote sync, Slurm, GPU training/evaluation, `tools/test.py`, staging, commit, push, mAP/runtime/sparse-compute/deploy/paper claim, or formal train unlock was performed.
 - This repair has synthetic recall evidence only in this code-owner pass. The remote/main process must harvest the pending full real raw-video diagnostic before any route-level conclusion.
+
+## 2026-06-30 Main-Process Sync and Real Scout Recall Diagnostic
+
+Timestamp: `2026-06-30T23:36:21+08:00`
+
+Owned worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_ABR_RecallRepair3_Worktree_20260630`
+Owned branch: `codex/divergent-abr-recall-repair3-20260630`
+Route label: `DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3`
+
+Main process committed and pushed the recall repair 3 implementation as:
+
+- Commit: `ccf7db3 DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3 repair robust scout brackets`
+- Remote branch: `codex/divergent-abr-recall-repair3-20260630`
+- Remote clone: `/data/home/sczc063/run/yuzibo/OpenTAD_ABR_RecallRepair3_20260630_ccf7db3`
+- Remote resources: `data -> /data/run01/sczc063/yuzibo/thumos14`, `pretrained -> /data/home/sczc063/run/yuzibo/pretrained`
+
+Review and verification before remote diagnostic:
+
+- Main-process focused ABR suite: `50 passed, 1 skipped`
+- `tools/abr/validate_abr_formal_gate.py` stayed `full_train_unlocked=false`
+- `tools/abr/validate_abr_launch_gate.py` stayed `allowed_next_action=LOCAL_PRECHECK_ONLY_VALIDATION`
+- Final read-only subagent review returned `PASS_SUBAGENT_FINAL_REVIEW_ONLY` with no blocking findings.
+
+Remote diagnostic launched under protected hold `1118197 pcot_dbg2g` on node `g0030`:
+
+- Child step: `1118197.534 abr_r3diag`
+- Log dir: `/data/home/sczc063/run/yuzibo/OpenTAD_ABR_RecallRepair3_20260630_ccf7db3/logs/abr_repair3_real_scout_recall_max32_gpu0safe_20260630_233530_+0800`
+- Scope: real deploy-visible scout export plus first-round bracket recall audit on validation subset, bounded to `--max-videos 32`, `curve_len=384`, `resize=64`
+- Resource boundary: CPU/no-GPU child step with `CUDA_VISIBLE_DEVICES=EMPTY`, `cpus-per-task=2`, `mem=12G`
+- Parent hold was not released, cancelled, replaced, or modified.
+
+Interpretation boundary:
+
+- This is `SHORT_DIAGNOSTIC_ONLY` / deploy-visible recall evidence, not formal training.
+- ABR formal full training remains locked.
+- No `tools/test.py`, mAP, runtime/FLOPs, sparse-compute, deploy, or paper claim is allowed from this diagnostic.
