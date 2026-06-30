@@ -1,3 +1,6 @@
+import json
+import os
+
 import torch
 
 from ..builder import DETECTORS, build_backbone, build_projection, build_head, build_neck
@@ -138,6 +141,48 @@ class IrregularActionFormer(BaseDetector):
             return True
         return any(str(key).startswith("bvr_twb_") for key in meta.keys())
 
+    def _append_env_jsonl_audit(self, env_key, row):
+        path = os.environ.get(env_key)
+        if not path:
+            return
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+    def _record_bvr_twb_grid_audit(self, metas, masks, grid):
+        if os.environ.get("BVR_TWB_GRID_AUDIT", "").lower() not in {"1", "true", "yes"}:
+            return
+        rows = []
+        for idx, meta in enumerate(metas):
+            if not self._is_bvr_twb_meta(meta):
+                continue
+            positions = meta.get("bvr_twb_detector_feature_positions", [])
+            native_axis = bool(meta.get("irregular_native_axis", False))
+            mask_true = int(masks[idx].bool().sum().item())
+            grid_valid_true = int(grid["valid_mask"][idx].bool().sum().item())
+            row = {
+                "audit_type": "bvr_twb_detector_temporal_grid",
+                "route_label": "DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3",
+                "video_name": meta.get("video_name", "unknown"),
+                "dispatch_hit": True,
+                "native_axis": native_axis,
+                "mask_shape": list(masks[idx].shape),
+                "mask_true_count": mask_true,
+                "meta_detector_feature_position_count": int(len(positions)),
+                "meta_detector_feature_valid_len": float(meta.get("bvr_twb_detector_feature_valid_len", 0.0)),
+                "grid_center_prefix": [
+                    float(value)
+                    for value in grid["center"][idx, : min(mask_true, 8)].detach().cpu().tolist()
+                ],
+                "grid_valid_mask_true_count": grid_valid_true,
+                "grid_fresh_mask_true_count": int(grid["fresh_mask"][idx].bool().sum().item()),
+                "status": "PASS_NATIVE_AXIS_POSITIONS_ENTERED_MODEL",
+            }
+            rows.append(row)
+        if rows:
+            self._last_bvr_twb_grid_audit = rows
+            for row in rows:
+                self._append_env_jsonl_audit("BVR_TWB_GRID_AUDIT_PATH", row)
+
     def _bvr_twb_temporal_grid_from_meta(self, meta, mask):
         required = ("bvr_twb_detector_feature_positions", "bvr_twb_detector_feature_valid_len")
         missing = [key for key in required if key not in meta or meta.get(key) is None]
@@ -214,7 +259,7 @@ class IrregularActionFormer(BaseDetector):
             fresh[:selected_len] = True
             grids.append(normalize_temporal_grid_input({"center": pos[:target_len][None], "fresh_mask": fresh[None]}, mask[None]))
 
-        return {
+        grid = {
             "center": torch.cat([grid["center"] for grid in grids], dim=0),
             "cell_left": torch.cat([grid["cell_left"] for grid in grids], dim=0),
             "cell_right": torch.cat([grid["cell_right"] for grid in grids], dim=0),
@@ -222,6 +267,8 @@ class IrregularActionFormer(BaseDetector):
             "fresh_mask": torch.cat([grid["fresh_mask"] for grid in grids], dim=0),
             "level_scale": torch.cat([grid["level_scale"] for grid in grids], dim=0),
         }
+        self._record_bvr_twb_grid_audit(metas, masks, grid)
+        return grid
 
     def pad_data(self, inputs, masks, temporal_grid=None):
         feat_len = inputs.shape[-1]
@@ -303,16 +350,43 @@ class IrregularActionFormer(BaseDetector):
         num_classes = rpn_scores[0].shape[-1]
 
         results = {}
+        audit_rows = []
         for i in range(len(metas)):
             segments = rpn_proposals[i].detach().cpu()
             scores = rpn_scores[i].detach().cpu()
+            raw_proposal_count = int(segments.shape[0])
+            raw_score_count = int(scores.numel())
+            audit_row = None
+            if self._is_bvr_twb_meta(metas[i]) and os.environ.get("BVR_TWB_POSTPROCESS_AUDIT", "").lower() in {
+                "1",
+                "true",
+                "yes",
+            }:
+                audit_row = {
+                    "audit_type": "bvr_twb_postprocess_proposal_count",
+                    "route_label": "DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3",
+                    "video_name": metas[i].get("video_name", "unknown"),
+                    "raw_proposal_count": raw_proposal_count,
+                    "num_classes": int(num_classes),
+                    "raw_score_shape": list(scores.shape),
+                    "flattened_candidate_count": raw_score_count,
+                    "pre_nms_thresh": float(pre_nms_thresh),
+                    "pre_nms_topk": int(pre_nms_topk),
+                    "nms_enabled": bool(post_cfg.sliding_window is False and post_cfg.nms is not None),
+                    "native_axis": bool(metas[i].get("irregular_native_axis", False)),
+                }
 
             if num_classes == 1:
                 scores = scores.squeeze(-1)
                 labels = torch.zeros(scores.shape[0]).contiguous()
+                if audit_row is not None:
+                    audit_row["above_threshold_count"] = int(scores.shape[0])
+                    audit_row["pre_nms_selected_count"] = int(scores.shape[0])
             else:
                 pred_prob = scores.flatten()
                 keep_idxs1 = pred_prob > pre_nms_thresh
+                if audit_row is not None:
+                    audit_row["above_threshold_count"] = int(keep_idxs1.sum().item())
                 pred_prob = pred_prob[keep_idxs1]
                 topk_idxs = keep_idxs1.nonzero(as_tuple=True)[0]
                 num_topk = min(pre_nms_topk, topk_idxs.size(0))
@@ -324,9 +398,13 @@ class IrregularActionFormer(BaseDetector):
                 segments = segments[pt_idxs]
                 scores = pred_prob
                 labels = cls_idxs
+                if audit_row is not None:
+                    audit_row["pre_nms_selected_count"] = int(num_topk)
 
             if post_cfg.sliding_window is False and post_cfg.nms is not None:
                 segments, scores, labels = batched_nms(segments, scores, labels, **post_cfg.nms)
+            if audit_row is not None:
+                audit_row["post_nms_count"] = int(segments.shape[0])
 
             video_id = metas[i]["video_name"]
             segments = convert_to_seconds(segments, metas[i])
@@ -335,6 +413,12 @@ class IrregularActionFormer(BaseDetector):
                 labels = [ext_cls[label.item()] for label in labels]
             else:
                 segments, labels, scores = ext_cls(video_id, segments, scores)
+            if audit_row is not None:
+                audit_row["final_result_count"] = int(len(scores))
+                audit_row["explains_large_prediction_count"] = raw_score_count >= 365940
+                audit_row["status"] = "PASS_POSTPROCESS_COUNT_AUDITED_NO_METRIC_CLAIM"
+                audit_rows.append(audit_row)
+                self._append_env_jsonl_audit("BVR_TWB_POSTPROCESS_AUDIT_PATH", audit_row)
 
             results_per_video = []
             for segment, label, score in zip(segments, labels, scores):
@@ -350,6 +434,8 @@ class IrregularActionFormer(BaseDetector):
                 results[video_id].extend(results_per_video)
             else:
                 results[video_id] = results_per_video
+        if audit_rows:
+            self._last_bvr_twb_postprocess_audit = audit_rows
         return results
 
     def get_optim_groups(self, cfg):

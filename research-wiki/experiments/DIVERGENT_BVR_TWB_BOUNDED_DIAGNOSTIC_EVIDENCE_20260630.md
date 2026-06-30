@@ -458,3 +458,117 @@ Still locked:
 - Deploy claim.
 - Paper claim.
 - Any C3/BVR/ABR/MDL combo or merge.
+
+## 2026-06-30 19:28:58 +08:00 Pro-Requested Severe-Collapse D0-D5 Local Diagnostic Tooling
+
+Route label: `DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3`
+
+Owned worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_BVR_TWB_Final_Worktree_20260630`
+
+Owned branch: `codex/divergent-bvr-twb-final-20260630`
+
+Writable owner exception: the divergent-route skill is delegation-first, but the user explicitly assigned this stage to the current agent as the only writable BVR-TWB code owner. No other writable worker was used.
+
+Pro decision being satisfied:
+
+- Severe BVR collapse remains frozen for formal training.
+- New training must not proceed until runtime provenance proves the loaded `LoadFrames.__call__` contains `bvr_twb_dynamic_subsample` and calls `build_bvr_twb_open_tad_selection`.
+- A one-sample pipeline trace must prove BVR-selected raw frame indices are the indices handed to decode/backbone metadata, with ledger, mask, and GT native-axis evidence.
+- Detector grid/mask audit must prove native-axis detector feature positions enter the model.
+- Post-processing audit must explain or prove the proposal-count expansion behind `365940` predictions.
+
+Changed files in this stage:
+
+- `tools/bvr_twb/audit_runtime_provenance.py`
+- `tools/bvr_twb/trace_one_sample_pipeline.py`
+- `tools/bvr_twb/audit_postprocess_proposals.py`
+- `tests/test_bvr_twb_runtime_diagnostics.py`
+- `opentad/datasets/transforms/end_to_end.py`
+- `opentad/models/detectors/irregular_actionformer.py`
+- `research-wiki/experiments/DIVERGENT_BVR_TWB_BOUNDED_DIAGNOSTIC_EVIDENCE_20260630.md`
+
+Implemented D0-D5 bounded diagnostics:
+
+- D0 runtime provenance audit tool: `audit_runtime_provenance.py` checks source tokens, loaded function provenance when torch runtime is safe, function hashes, dispatch ledger, and no-training/no-video/no-metric status.
+- D1 fail-closed dispatch: unsupported `LoadFrames.method` now raises `ValueError("Unsupported LoadFrames method: ...")` instead of falling through to an implicit undefined-variable failure.
+- D2 one-sample pipeline trace: `trace_one_sample_pipeline.py` uses synthetic metadata, BVR `LoadFrames`, fake decode, NCTHW formatting, and collected meta keys to prove `dispatch_hit`, ledger, `frame_inds`, selected-frame subset, mask count, detector positions, and native-axis GT preservation when CPU torch runtime is available.
+- D3 detector temporal-grid audit: `IrregularActionFormer` now has env-gated `BVR_TWB_GRID_AUDIT=1` / `BVR_TWB_GRID_AUDIT_PATH=...` JSONL audit rows proving BVR detector feature positions become model temporal-grid centers. Default behavior is unchanged.
+- D4 post-processing proposal-count audit: `IrregularActionFormer.post_processing` now has env-gated `BVR_TWB_POSTPROCESS_AUDIT=1` / `BVR_TWB_POSTPROCESS_AUDIT_PATH=...` JSONL count rows. `audit_postprocess_proposals.py` constructs the diagnostic-only formula `19260 raw proposals * 19 classes = 365940 flattened candidates`, then records threshold/top-k/NMS/result counts when CPU torch runtime is available.
+- D5 tests and documentation: `tests/test_bvr_twb_runtime_diagnostics.py` covers source provenance, unsupported method fail-closed, diagnostic output keys without GPU, grid audit hook, and postprocess audit helper/source behavior.
+
+Local commands and results:
+
+```powershell
+python -m py_compile tools\bvr_twb\audit_runtime_provenance.py tools\bvr_twb\trace_one_sample_pipeline.py tools\bvr_twb\audit_postprocess_proposals.py tests\test_bvr_twb_runtime_diagnostics.py opentad\models\detectors\irregular_actionformer.py opentad\datasets\transforms\end_to_end.py
+```
+
+Result: passed.
+
+```powershell
+$env:PYTHONPATH=(Get-Location).Path; pytest -q tests\test_bvr_twb_runtime_diagnostics.py
+```
+
+Result: `3 passed, 2 skipped in 3.75s`.
+
+Focused BVR suite rerun after the new diagnostics:
+
+```powershell
+$env:PYTHONPATH=(Get-Location).Path; pytest -q tests\test_bvr_twb_bounded_diagnostics.py tests\test_bvr_twb_geometry_contracts.py tests\test_bvr_twb_opentad_pipeline.py tests\test_bvr_twb_sparse_forward_audit.py tests\test_bvr_twb_validators.py tests\test_bvr_twb_runtime_diagnostics.py
+```
+
+Result: `39 passed, 14 skipped, 1 warning in 9.67s`.
+
+The two skipped runtime tests are expected on this Windows environment because torch import is not safe here. The tools now probe torch in a child process first, so local source/schema checks do not crash or falsely pass runtime provenance.
+
+```powershell
+python tools\bvr_twb\audit_runtime_provenance.py --out-dir tools\bvr_twb\.tmp_bvr_twb_runtime_provenance_cli --overwrite
+```
+
+Result: `runtime=skipped dispatch_hit=False blocked=False`.
+
+```powershell
+python tools\bvr_twb\trace_one_sample_pipeline.py --out-dir tools\bvr_twb\.tmp_bvr_twb_one_sample_trace_cli --overwrite
+```
+
+Result: `runtime=skipped dispatch_hit=False trace_keys=False`.
+
+```powershell
+python tools\bvr_twb\audit_postprocess_proposals.py --out-dir tools\bvr_twb\.tmp_bvr_twb_postprocess_cli --overwrite
+```
+
+Result: `runtime=skipped flattened=None explains_365940=False`.
+
+```powershell
+git diff --check -- tools/bvr_twb/audit_runtime_provenance.py tools/bvr_twb/trace_one_sample_pipeline.py tools/bvr_twb/audit_postprocess_proposals.py tests/test_bvr_twb_runtime_diagnostics.py opentad/models/detectors/irregular_actionformer.py opentad/datasets/transforms/end_to_end.py
+```
+
+Result: exit code `0`; only Windows LF-to-CRLF warnings.
+
+Generated `.tmp_bvr_twb*` and `__pycache__` directories from local verification were removed after the checks.
+
+Current blocker:
+
+- This Windows environment still cannot provide the required runtime proof because torch import fails in the child probe. Therefore D0-D5 runtime evidence is implemented but not fully proven locally.
+- No mAP, runtime, sparse compute, deploy, or paper claim is made.
+
+Allowed next action:
+
+- Run the three new tools in a Linux CPU environment with torch available, using `--require-runtime`, plus the focused pytest file. This remains bounded diagnostic-only and does not require GPU, real THUMOS videos, Slurm, checkpoint, or `tools/test.py`.
+
+Suggested Linux CPU commands:
+
+```bash
+python tools/bvr_twb/audit_runtime_provenance.py --out-dir logs/bvr_twb_runtime_provenance_d0 --overwrite --require-runtime
+python tools/bvr_twb/trace_one_sample_pipeline.py --out-dir logs/bvr_twb_one_sample_trace_d1 --overwrite --require-runtime
+python tools/bvr_twb/audit_postprocess_proposals.py --out-dir logs/bvr_twb_postprocess_count_d4 --overwrite --require-runtime
+PYTHONPATH="$PWD" pytest -q tests/test_bvr_twb_runtime_diagnostics.py
+```
+
+Still locked:
+
+- BVR formal/full training.
+- Slurm or remote sync for training.
+- GPU allocations.
+- `tools/test.py` and official evaluation.
+- mAP, runtime/FLOPs, sparse compute, deploy, or paper claims.
+- Any C3/BVR/ABR/MDL combo or merge.

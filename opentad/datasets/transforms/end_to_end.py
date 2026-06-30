@@ -1228,6 +1228,8 @@ class LoadFrames:
 
         elif self.method == "padding":
             raise NotImplementedError
+        else:
+            raise ValueError(f"Unsupported LoadFrames method: {self.method}")
 
         # truncate to [0, total_frames-1], and round to int
         frame_idxs = np.clip(frame_idxs, 0, total_frames - 1).round()
