@@ -1,3 +1,5 @@
+import os
+
 _base_ = ["./input_random_fixed_50pct_adapter_irregular_headv3_x.py"]
 
 route_label = "DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3"
@@ -7,8 +9,18 @@ dense_window_size = 384
 scale_factor = 1
 chunk_num = window_size * scale_factor // 16
 
+thumos_root = os.environ.get("THUMOS_ROOT", "/data/home/sczc063/run/yuzibo/thumos14")
+annotation_path = os.path.join(thumos_root, "annotations", "thumos_14_anno.json")
+class_map = os.path.join(thumos_root, "annotations", "category_idx.txt")
+train_data_path = os.path.join(thumos_root, "train")
+test_data_path = os.path.join(thumos_root, "test")
+
 dataset = dict(
     train=dict(
+        ann_file=annotation_path,
+        class_map=class_map,
+        data_path=train_data_path,
+        sample_stride=1,
         pipeline=[
             dict(type="PrepareVideoInfo", format="mp4"),
             dict(type="mmaction.DecordInit", num_threads=4),
@@ -51,6 +63,10 @@ dataset = dict(
         ],
     ),
     val=dict(
+        ann_file=annotation_path,
+        class_map=class_map,
+        data_path=test_data_path,
+        sample_stride=1,
         window_size=dense_window_size,
         pipeline=[
             dict(type="PrepareVideoInfo", format="mp4"),
@@ -87,6 +103,10 @@ dataset = dict(
         ],
     ),
     test=dict(
+        ann_file=annotation_path,
+        class_map=class_map,
+        data_path=test_data_path,
+        sample_stride=1,
         window_size=dense_window_size,
         pipeline=[
             dict(type="PrepareVideoInfo", format="mp4"),
