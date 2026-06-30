@@ -47,7 +47,7 @@
 - Remote logdir: `/data/home/sczc063/run/yuzibo/abr_precheck_logs/abr_gpu1_precheck_0bab835_20260630_010247`.
 - Protected hold: `1118197 pcot_dbg2g`, node `g0030`, `CUDA_VISIBLE_DEVICES=1`; parent hold was not released or cancelled.
 - Result: `15 passed in 10.62s`.
-- Precheck summary: `status=PASS_PRECHECK_ONLY`, `precheck_validated=true`, `route_label=DIVERGENT_INNOVATION_BOUNDARY_MICROSCOPE_DO_NOT_MERGE_WITH_C3`.
+- Precheck summary: `status=PASS_PRECHECK_ONLY`, `precheck_validated=true`, `route_label=DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3`. Correction note: an earlier local record used the stale Boundary Microscope label; the route-owned code/config/tests and current formal-gate evidence use the ABR label, and this log entry is corrected to prevent Pro-packet route drift.
 - Required fields passed: `detector_forward_count=1`, `dynamic_k_nonconstant=true`, `nonzero_window_ok=true`, `val_test_gt_rejection_ok=true`, `real_sparse_handoff_ok=true`, `forbidden_inputs_ok=true`, `pipeline_valid_k=24`, `easy_valid_k=13`, `rich_valid_k=24`.
 - Gate output: `allowed_next_action=REMOTE_PRECHECK_ONLY_REQUEST`, `still_locked=TRAIN_EVAL_SYNC_STAGE_COMMIT_PUSH`.
 - Interpretation: Linux/N16R4 `PRECHECK_ONLY` passed after the clean-clone dependency fix, but full train, evaluation, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper claims, and sparse-compute claims remain locked.
