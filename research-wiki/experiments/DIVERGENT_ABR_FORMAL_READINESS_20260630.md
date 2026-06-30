@@ -471,3 +471,67 @@ Result: no whitespace errors; Git reported only LF/CRLF working-copy warnings.
 Locks remain unchanged: no commit/push, no remote, no Slurm, no training, no
 `tools/test.py`, no detector evaluation, no formal full train, and no
 mAP/runtime/FLOPs/sparse-compute/deploy/paper claim.
+
+## Deploy-Visible Raw-Video Scout Export Entry
+
+Timestamp: `2026-06-30T14:16:21+08:00`
+
+This update adds a real deploy-visible scout input exporter for the existing
+first-round ABR bracket recall audit. The new CLI reads THUMOS-style annotation
+JSON only for subset/video id/duration/frame/fps metadata, finds each raw video
+under one or more `--video-root` paths, samples low-resolution raw pixels
+uniformly, and writes a normalized grayscale-brightness/frame-difference mixed
+curve compatible with:
+
+```powershell
+python tools\abr\audit_abr_first_round_bracket_recall.py --annotation-json <thumos_14_anno.json> --scout-json <exported_scout.json>
+```
+
+New files:
+
+- `tools/abr/export_abr_deploy_visible_scout.py`
+- `tests/test_abr_deploy_visible_scout_export.py`
+
+Output contract:
+
+- Top-level `videos -> video_id -> deploy_visible_scout_curve`.
+- Per-video and top-level `scout_source="deploy_visible_raw_video_graydiff_v1"`.
+- No GT segments/labels/annotations, teacher fields, prediction/cache fields,
+  detector fields, or dense-backbone handoff fields in each scout record.
+- Missing videos fail closed by default.
+- `--allow-missing` records skipped missing videos, but still fails if no video
+  is successfully exported.
+
+Verification:
+
+Passed:
+
+```powershell
+python -m pytest tests\test_abr_deploy_visible_scout_export.py tests\test_abr_first_round_bracket_recall.py -q
+```
+
+Result: `17 passed`.
+
+Passed:
+
+```powershell
+python -m pytest tests\test_abr_core.py tests\test_abr_pipeline_and_gate.py tests\test_abr_formal_gate.py tests\test_abr_shortdiag.py tests\test_abr_first_round_bracket_recall.py tests\test_abr_deploy_visible_scout_export.py -q
+```
+
+Result: `61 passed, 1 skipped`.
+
+Passed:
+
+```powershell
+python -m py_compile tools\abr\export_abr_deploy_visible_scout.py tools\abr\audit_abr_first_round_bracket_recall.py tools\abr\audit_abr_pipeline_precheck.py tools\abr\validate_abr_formal_gate.py tools\abr\validate_abr_launch_gate.py tools\abr\validate_abr_shortdiag.py tests\test_abr_deploy_visible_scout_export.py tests\test_abr_first_round_bracket_recall.py tests\test_abr_core.py tests\test_abr_pipeline_and_gate.py tests\test_abr_formal_gate.py tests\test_abr_shortdiag.py
+```
+
+Passed:
+
+```powershell
+git diff --check
+```
+
+Locks remain unchanged: no commit/push, no remote, no Slurm, no training, no
+`tools/test.py`, no detector evaluation, no Pro/Gemini/Claude, no C3/BVR/MDL
+file writes, and no mAP/runtime/FLOPs/sparse-compute/deploy/paper claim.

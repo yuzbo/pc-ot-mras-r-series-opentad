@@ -35,6 +35,7 @@ CLAIM_LOCKS = {
 FORBIDDEN_SCOUT_KEYS = {
     "gt_segments",
     "gt_labels",
+    "annotations",
     "teacher_logits",
     "teacher_features",
     "prediction_cache",

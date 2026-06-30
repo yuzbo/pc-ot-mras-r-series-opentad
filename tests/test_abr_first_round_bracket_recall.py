@@ -283,6 +283,20 @@ def test_forbidden_route_tokens_in_scout_source_are_rejected(tmp_path):
         run_audit(ann, scout)
 
 
+def test_scout_record_with_annotations_is_rejected_as_not_deploy_visible(tmp_path):
+    ann = _write_json(
+        tmp_path / "ann.json",
+        _annotation_payload([{"segment": [2.0, 4.0], "label": "BaseballPitch"}]),
+    )
+    scout = _write_json(
+        tmp_path / "scout_with_annotations.json",
+        _scout_payload(annotations=[{"segment": [2.0, 4.0], "label": "BaseballPitch"}]),
+    )
+
+    with pytest.raises(ABRValidationError, match="annotations"):
+        run_audit(ann, scout)
+
+
 def test_fail_closed_missing_or_ambiguous_artifacts(tmp_path):
     invalid_ann = _write_json(
         tmp_path / "invalid_ann.json",
