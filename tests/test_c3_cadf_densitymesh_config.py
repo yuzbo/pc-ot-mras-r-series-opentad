@@ -36,7 +36,19 @@ FORMAL_FASTFIX32 = (
 DENSITY_LOSS_V2_DIAG32 = (
     ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_32px_density_loss_v2_diagnostic.py"
 )
+LOSS_SELECT_V2_PRECHECK32 = (
+    ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_32px_loss_select_v2_precheck.py"
+)
+LOSS_SELECT_V2_SHORTDIAG32 = (
+    ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_32px_loss_select_v2_shortdiag.py"
+)
+LOSS_SELECT_V2_FORMAL32 = (
+    ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_32px_loss_select_v2_formal_candidate_locked.py"
+)
 FORMAL_LAUNCHER = ROOT / "logs/run_c3_cadf_formal_selector_candidate_locked_n16r4.sh"
+LOSS_SELECT_V2_PRECHECK_LAUNCHER = ROOT / "scripts/run_c3_cadf_loss_select_v2_precheck_gpu1.sh"
+LOSS_SELECT_V2_SHORTDIAG_LAUNCHER = ROOT / "scripts/run_c3_cadf_loss_select_v2_shortdiag_gpu1.sh"
+LOSS_SELECT_V2_FORMAL_LAUNCHER = ROOT / "scripts/run_c3_cadf_loss_select_v2_formal_candidate_locked_gpu1.sh"
 SMOKE64 = ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_64px_short_smoke.py"
 FULL64 = ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_64px_full_train.py"
 
@@ -319,6 +331,97 @@ def test_cadf_density_loss_v2_diagnostic_config_is_default_closed_for_claims():
     validate_config(DENSITY_LOSS_V2_DIAG32)
 
 
+def _assert_loss_select_v2_config(cfg):
+    _assert_cadf_config(cfg, 32)
+    selector = cfg.model.frame_selector
+    assert cfg.c3_loss_select_v2 is True
+    assert cfg.c3_loss_select_v2_deploy_time_inputs == "scout_actionness_uncertainty_change_only"
+    assert cfg.c3_loss_select_v2_test_aux_source_leakage == "forbidden"
+    assert cfg.c3_full_train_claim_unlocked is False
+    assert selector.density_distribution_loss_weight > 0.0
+    assert selector.density_distribution_loss_weights.smooth >= 0.0
+    assert selector.density_distribution_loss_weights.local_cap > 0.0
+    assert selector.density_distribution_loss_weights.large_gap > 0.0
+    assert selector.density_distribution_loss_weights.collapse > 0.0
+    assert selector.density_distribution_loss_weights.target_kl > 0.0
+    assert selector.density_distribution_train_gt_target_weight >= 0.0
+    assert selector.density_distribution_loss_nan_guard is True
+    assert selector.density_distribution_logit_clamp == pytest.approx(20.0)
+    assert selector.fast_cpu_selection is True
+    assert selector.emit_selection_diagnostics is True
+    assert selector.selection_diagnostics_interval == 1
+    assert cfg.solver.nonfinite_loss_guard.enabled is True
+    assert cfg.solver.nonfinite_loss_guard.max_skips == 0
+    assert cfg.solver.nonfinite_loss_guard.max_consecutive_skips == 0
+    assert selector.physical_time_postprocess_enabled is False
+    assert selector.selected_index_aware_postprocess_enabled is False
+
+
+def test_cadf_loss_select_v2_precheck_config_is_local_only_and_diagnostic():
+    cfg = Config.fromfile(LOSS_SELECT_V2_PRECHECK32)
+
+    _assert_loss_select_v2_config(cfg)
+    assert cfg.c3_claim_status == "precheck_only"
+    assert cfg.workflow.end_epoch == 1
+    assert cfg.workflow.max_train_iters == 2
+    assert cfg.workflow.disable_checkpoint is True
+    assert cfg.workflow.val_eval_interval == -1
+    assert cfg.solver.amp is False
+    assert cfg.solver.fp16_compress is False
+    assert cfg.solver.ema is False
+    validate_config(LOSS_SELECT_V2_PRECHECK32)
+
+
+def test_cadf_loss_select_v2_shortdiag_config_keeps_nan_safety_and_no_final_claim():
+    cfg = Config.fromfile(LOSS_SELECT_V2_SHORTDIAG32)
+
+    _assert_loss_select_v2_config(cfg)
+    assert cfg.c3_claim_status == "diagnostic_only"
+    assert cfg.workflow.end_epoch == 4
+    assert cfg.workflow.disable_checkpoint is True
+    assert cfg.workflow.val_eval_interval == -1
+    assert cfg.solver.amp is False
+    assert cfg.solver.fp16_compress is False
+    assert cfg.solver.ema is False
+    validate_config(LOSS_SELECT_V2_SHORTDIAG32)
+
+
+def test_cadf_loss_select_v2_formal_candidate_is_fail_closed_and_keeps_fastfix():
+    cfg = Config.fromfile(LOSS_SELECT_V2_FORMAL32)
+
+    _assert_loss_select_v2_config(cfg)
+    assert cfg.c3_claim_status == "formal_selector_candidate_locked"
+    assert cfg.c3_loss_select_v2_formal_candidate is True
+    assert cfg.launch_locked_until_user_unlock is True
+    assert cfg.c3_loss_select_v2_user_unlock_evidence == "PENDING"
+    assert cfg.c3_speed_fix == "selector_cpu_once_repair_diag_off_amp_withcp_probe"
+    assert cfg.workflow.end_epoch == 60
+    assert cfg.workflow.max_train_iters is None
+    assert cfg.workflow.disable_checkpoint is False
+    assert cfg.solver.amp is False
+    assert cfg.solver.fp16_compress is False
+    assert cfg.solver.ema is False
+    validate_config(LOSS_SELECT_V2_FORMAL32)
+
+
+def test_cadf_loss_select_v2_launcher_scripts_require_gpu1_and_fail_closed():
+    for launcher in [
+        LOSS_SELECT_V2_PRECHECK_LAUNCHER,
+        LOSS_SELECT_V2_SHORTDIAG_LAUNCHER,
+        LOSS_SELECT_V2_FORMAL_LAUNCHER,
+    ]:
+        text = launcher.read_text(encoding="utf-8")
+        assert "CUDA_VISIBLE_DEVICES=1" in text
+        assert "GPU1" in text
+        assert "tools/train.py" in text
+        assert "DIVERGENT" not in text
+        assert "BH-SDC" not in text
+    formal = LOSS_SELECT_V2_FORMAL_LAUNCHER.read_text(encoding="utf-8")
+    assert "CADF_LOSS_SELECT_V2_FORMAL_UNLOCK" in formal
+    assert "CONFIRMED" in formal
+    assert "exit 2" in formal
+
+
 def test_shared_precheck_validator_rejects_formal_selector_candidate_with_density_loss_v2(tmp_path):
     cfg = Config.fromfile(FORMAL32)
     cfg.model.frame_selector.density_window_mass_loss_weight = 0.01
@@ -371,6 +474,9 @@ def test_cadf_densitymesh_64px_configs_only_change_scout_resolution():
         FORMAL32,
         FORMAL_FASTFIX32,
         DENSITY_LOSS_V2_DIAG32,
+        LOSS_SELECT_V2_PRECHECK32,
+        LOSS_SELECT_V2_SHORTDIAG32,
+        LOSS_SELECT_V2_FORMAL32,
         SMOKE64,
         FULL64,
     ],

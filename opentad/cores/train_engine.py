@@ -4,6 +4,30 @@ import tqdm
 from opentad.utils.misc import AverageMeter, reduce_loss
 
 
+def _parse_nonfinite_loss_guard(nonfinite_loss_guard):
+    if nonfinite_loss_guard is None or nonfinite_loss_guard is False:
+        return dict(enabled=False, max_skips=0, max_consecutive_skips=0)
+    if nonfinite_loss_guard is True:
+        return dict(enabled=True, max_skips=0, max_consecutive_skips=0)
+    if not isinstance(nonfinite_loss_guard, dict):
+        raise ValueError("nonfinite_loss_guard must be None, bool, or dict")
+    return dict(
+        enabled=bool(nonfinite_loss_guard.get("enabled", False)),
+        max_skips=int(nonfinite_loss_guard.get("max_skips", 0)),
+        max_consecutive_skips=int(nonfinite_loss_guard.get("max_consecutive_skips", 0)),
+    )
+
+
+def _nonfinite_loss_names(losses):
+    names = []
+    for key, value in losses.items():
+        if not torch.is_tensor(value):
+            continue
+        if not torch.isfinite(value.detach()).all():
+            names.append(key)
+    return names
+
+
 def train_one_epoch(
     train_loader,
     model,
@@ -16,6 +40,7 @@ def train_one_epoch(
     logging_interval=200,
     scaler=None,
     max_train_iters=None,
+    nonfinite_loss_guard=None,
 ):
     """Training the model for one epoch"""
 
@@ -23,6 +48,9 @@ def train_one_epoch(
     losses_tracker = {}
     num_iters = len(train_loader)
     use_amp = False if scaler is None else True
+    guard = _parse_nonfinite_loss_guard(nonfinite_loss_guard)
+    nonfinite_skip_count = 0
+    consecutive_nonfinite_skip_count = 0
 
     model.train()
     for iter_idx, data_dict in enumerate(train_loader):
@@ -41,6 +69,34 @@ def train_one_epoch(
         # forward pass
         with torch.cuda.amp.autocast(dtype=torch.float16, enabled=use_amp):
             losses = model(**data_dict, return_loss=True)
+
+        nonfinite_names = _nonfinite_loss_names(losses)
+        if guard["enabled"] and nonfinite_names:
+            nonfinite_skip_count += 1
+            consecutive_nonfinite_skip_count += 1
+            optimizer.zero_grad()
+            logger.warning(
+                "[Train]: non-finite loss detected at epoch {:d} iter {:d}; skip optimizer.step; names={}".format(
+                    curr_epoch,
+                    iter_idx,
+                    nonfinite_names,
+                )
+            )
+            if (
+                (guard["max_skips"] >= 0 and nonfinite_skip_count > guard["max_skips"])
+                or (
+                    guard["max_consecutive_skips"] >= 0
+                    and consecutive_nonfinite_skip_count > guard["max_consecutive_skips"]
+                )
+            ):
+                raise RuntimeError(
+                    "Non-finite training loss exceeded guard threshold: "
+                    f"total_skips={nonfinite_skip_count}, "
+                    f"consecutive_skips={consecutive_nonfinite_skip_count}, "
+                    f"names={nonfinite_names}"
+                )
+            continue
+        consecutive_nonfinite_skip_count = 0
 
         # compute the gradients
         if use_amp:

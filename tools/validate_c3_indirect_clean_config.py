@@ -115,6 +115,36 @@ def _validate_cadf_densitymesh_route(cfg, cfg_text):
             raise AssertionError("Density-Loss V2 diagnostic config must keep c3_density_loss_v2_claim_unlocked=False")
         if bool(cfg.get("c3_full_train_claim_unlocked", False)):
             raise AssertionError("Density-Loss V2 diagnostic config must not unlock full-train or paper claims")
+    distribution_loss_weights = selector.get("density_distribution_loss_weights", {})
+    distribution_loss_enabled = float(selector.get("density_distribution_loss_weight", 0.0)) > 0.0
+    if distribution_loss_enabled:
+        if cfg.get("c3_loss_select_v2", None) is not True:
+            raise AssertionError("CADF loss-select V2 must be marked c3_loss_select_v2=True")
+        if cfg.get("c3_loss_select_v2_deploy_time_inputs", None) != "scout_actionness_uncertainty_change_only":
+            raise AssertionError("CADF loss-select V2 deploy-time inputs must be scout/actionness/uncertainty/change only")
+        if cfg.get("c3_loss_select_v2_test_aux_source_leakage", None) != "forbidden":
+            raise AssertionError("CADF loss-select V2 must explicitly forbid test-time auxiliary-source leakage")
+        if bool(selector.get("density_distribution_loss_nan_guard", False)) is not True:
+            raise AssertionError("CADF loss-select V2 must enable distribution NaN guard")
+        if float(selector.get("density_distribution_logit_clamp", 0.0)) <= 0.0:
+            raise AssertionError("CADF loss-select V2 must set a positive finite logit clamp")
+        if float(selector.get("density_distribution_train_gt_target_weight", 0.0)) < 0.0:
+            raise AssertionError("CADF loss-select V2 train-only GT target weight must be non-negative")
+        required_distribution_parts = {"smooth", "local_cap", "large_gap", "collapse", "target_kl"}
+        if set(distribution_loss_weights.keys()) != required_distribution_parts:
+            raise AssertionError("CADF loss-select V2 must configure all distribution loss components")
+        for name in required_distribution_parts:
+            if float(distribution_loss_weights[name]) < 0.0:
+                raise AssertionError(f"CADF loss-select V2 distribution weight must be non-negative: {name}")
+        if selector.get("fast_cpu_selection", None) is not True:
+            raise AssertionError("CADF loss-select V2 must preserve fast_cpu_selection")
+        if bool(cfg.solver.get("amp", False)) or bool(cfg.solver.get("fp16_compress", False)) or bool(cfg.solver.get("ema", False)):
+            raise AssertionError("CADF loss-select V2 keeps AMP/fp16/EMA disabled until the NaN gate is cleared")
+        guard = cfg.solver.get("nonfinite_loss_guard", {})
+        if not bool(guard.get("enabled", False)):
+            raise AssertionError("CADF loss-select V2 must enable train-engine nonfinite_loss_guard")
+        if int(guard.get("max_skips", -1)) != 0 or int(guard.get("max_consecutive_skips", -1)) != 0:
+            raise AssertionError("CADF loss-select V2 nonfinite_loss_guard must fail closed on the first non-finite cost")
     if cfg.get("c3_alpha0_combo_gate", None) == "st_soft_path_plus_actionness_fp32_no_amp_no_ema":
         if bool(cfg.solver.get("amp", False)) or bool(cfg.solver.get("fp16_compress", False)) or bool(cfg.solver.get("ema", False)):
             raise AssertionError("CADF ST+actionness combo gate must keep AMP/fp16/EMA disabled")
@@ -124,7 +154,22 @@ def _validate_cadf_densitymesh_route(cfg, cfg_text):
             raise AssertionError("CADF ST+actionness combo gate must enable ST soft path")
         if float(selector.get("actionness_loss_weight", 0.0)) <= 0.0:
             raise AssertionError("CADF ST+actionness combo gate must enable actionness aux loss")
-    if claim_status == "formal_selector_candidate_locked":
+    if claim_status == "formal_selector_candidate_locked" and bool(cfg.get("c3_loss_select_v2_formal_candidate", False)):
+        if cfg.get("launch_locked_until_user_unlock", None) is not True:
+            raise AssertionError("CADF loss-select V2 formal candidate must remain locked until user unlock")
+        if cfg.get("c3_loss_select_v2_user_unlock_evidence", None) != "PENDING":
+            raise AssertionError("CADF loss-select V2 formal candidate evidence must remain PENDING before launch")
+        if cfg.get("c3_speed_fix", None) != "selector_cpu_once_repair_diag_off_amp_withcp_probe":
+            raise AssertionError("CADF loss-select V2 formal candidate must preserve the CADF fastfix marker")
+        if selector.get("fast_cpu_selection", None) is not True:
+            raise AssertionError("CADF loss-select V2 formal candidate must preserve fast_cpu_selection")
+        if int(selector.get("selection_diagnostics_interval", -1)) != 1:
+            raise AssertionError("CADF loss-select V2 formal candidate must keep bounded diagnostics interval=1")
+        if "density_alpha_schedule" in selector:
+            raise AssertionError("CADF loss-select V2 formal candidate must not use diagnostic alpha schedule")
+        if float(selector.get("density_alpha", 0.0)) <= 0.0:
+            raise AssertionError("CADF loss-select V2 formal candidate must use positive density_alpha")
+    elif claim_status == "formal_selector_candidate_locked":
         speed_fix = cfg.get("c3_speed_fix", None)
         speed_fix_enabled = speed_fix == "selector_cpu_once_repair_diag_off_amp_withcp_probe"
         if cfg.get("c3_formal_selector_candidate", None) is not True:

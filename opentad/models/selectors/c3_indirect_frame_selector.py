@@ -135,6 +135,12 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         density_max_gap_loss_weight=0.0,
         density_blue_noise_loss_weight=0.0,
         density_weak_target_loss_weight=0.0,
+        density_distribution_loss_weight=0.0,
+        density_distribution_loss_weights=None,
+        density_distribution_train_gt_target_weight=0.0,
+        density_distribution_target_smooth_radius=1,
+        density_distribution_loss_nan_guard=True,
+        density_distribution_logit_clamp=20.0,
         density_uniform_floor=0.08,
         density_body_floor_weight=0.08,
         density_context_floor_weight=0.04,
@@ -201,6 +207,20 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         self.density_weak_target_loss_weight = self._validate_nonnegative_weight(
             density_weak_target_loss_weight, "density_weak_target_loss_weight"
         )
+        self.density_distribution_loss_weight = self._validate_nonnegative_weight(
+            density_distribution_loss_weight, "density_distribution_loss_weight"
+        )
+        self.density_distribution_loss_weights = self._validate_distribution_loss_weights(
+            density_distribution_loss_weights
+        )
+        self.density_distribution_train_gt_target_weight = min(
+            max(float(density_distribution_train_gt_target_weight), 0.0), 1.0
+        )
+        self.density_distribution_target_smooth_radius = max(int(density_distribution_target_smooth_radius), 0)
+        self.density_distribution_loss_nan_guard = bool(density_distribution_loss_nan_guard)
+        self.density_distribution_logit_clamp = float(density_distribution_logit_clamp)
+        if not math.isfinite(self.density_distribution_logit_clamp) or self.density_distribution_logit_clamp <= 0:
+            raise ValueError("density_distribution_logit_clamp must be finite and positive")
         self.density_uniform_floor = min(max(float(density_uniform_floor), 0.0), 0.95)
         self.density_body_floor_weight = min(max(float(density_body_floor_weight), 0.0), 0.95)
         self.density_context_floor_weight = min(max(float(density_context_floor_weight), 0.0), 0.95)
@@ -221,6 +241,21 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         self._selection_call_count = 0
 
         self.scout = SELECTORS.build(scout)
+
+    def _validate_distribution_loss_weights(self, weights):
+        defaults = dict(smooth=0.2, local_cap=0.4, large_gap=0.6, collapse=0.4, target_kl=0.6)
+        if weights is None:
+            return defaults
+        if not isinstance(weights, dict):
+            raise ValueError("density_distribution_loss_weights must be a dict when provided")
+        unknown = set(weights) - set(defaults)
+        if unknown:
+            raise ValueError(f"density_distribution_loss_weights contains unsupported keys: {sorted(unknown)}")
+        parsed = defaults
+        parsed.update(weights)
+        for name, value in parsed.items():
+            parsed[name] = self._validate_nonnegative_weight(value, f"density_distribution_loss_weights.{name}")
+        return parsed
 
     def _validate_nonnegative_weight(self, value, name):
         if isinstance(value, bool) or not isinstance(value, numbers.Real):
@@ -323,8 +358,8 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
     def forward_train(self, inputs, masks, metas, gt_segments, gt_labels):
         dense_masks = self._normalize_dense_masks(masks, inputs)
         scout_inputs = self._build_scout_inputs(inputs)
-        scout_outputs = self.scout(scout_inputs, dense_masks)
-        action_logits = scout_outputs["action_logits"]
+        scout_outputs = self._sanitize_scout_outputs(self.scout(scout_inputs, dense_masks), dense_masks)
+        action_logits = self._sanitize_score_values(scout_outputs["action_logits"], dense_masks)
         selection_outputs = self._select_indices(scout_outputs, dense_masks, mode="train")
         self._advance_density_alpha_schedule()
         selected = selection_outputs["selected"]
@@ -341,8 +376,9 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
             loss = F.binary_cross_entropy_with_logits(action_logits[dense_masks], target[dense_masks])
             losses["loss_c3_actionness"] = loss * self.actionness_loss_weight
         if self.boundary_loss_weight > 0 and "boundary_logits" in scout_outputs:
-            target = self._build_boundary_targets(scout_outputs["boundary_logits"], dense_masks, gt_segments)
-            loss = F.binary_cross_entropy_with_logits(scout_outputs["boundary_logits"][dense_masks], target[dense_masks])
+            boundary_logits = self._sanitize_score_values(scout_outputs["boundary_logits"], dense_masks)
+            target = self._build_boundary_targets(boundary_logits, dense_masks, gt_segments)
+            loss = F.binary_cross_entropy_with_logits(boundary_logits[dense_masks], target[dense_masks])
             losses["loss_c3_boundary"] = loss * self.boundary_loss_weight
         if self.density_entropy_loss_weight > 0 and "density" in selection_outputs:
             entropy_loss = self._density_entropy_floor_loss(selection_outputs["density"], dense_masks)
@@ -370,6 +406,23 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
             losses["loss_c3_density_weak_target"] = weak_loss * self.density_weak_target_loss_weight
             for meta in selected_metas:
                 meta["c3_density_weak_target_loss_enabled"] = True
+        if self.density_distribution_loss_weight > 0 and "density" in selection_outputs:
+            dist_loss, dist_parts, _ = self._density_distribution_objective(
+                selection_outputs["density"],
+                dense_masks,
+                scout_outputs,
+                gt_segments=gt_segments,
+                return_parts=True,
+            )
+            losses["loss_c3_density_distribution"] = dist_loss * self.density_distribution_loss_weight
+            for meta in selected_metas:
+                meta["c3_density_distribution_loss_enabled"] = True
+                meta["c3_density_distribution_train_gt_target_enabled"] = (
+                    self.density_distribution_train_gt_target_weight > 0.0
+                )
+                meta["c3_density_distribution_loss_components"] = {
+                    name: float(value.detach().item()) for name, value in dist_parts.items()
+                }
 
         output = dict(
             inputs=selected_inputs,
@@ -392,8 +445,8 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         dense_masks = self._normalize_dense_masks(masks, inputs)
         scout_inputs = self._build_scout_inputs(inputs)
         with torch.no_grad():
-            scout_outputs = self.scout(scout_inputs, dense_masks)
-            action_logits = scout_outputs["action_logits"]
+            scout_outputs = self._sanitize_scout_outputs(self.scout(scout_inputs, dense_masks), dense_masks)
+            action_logits = self._sanitize_score_values(scout_outputs["action_logits"], dense_masks)
             selection_outputs = self._select_indices(scout_outputs, dense_masks, mode="test")
             selected = selection_outputs["selected"]
             st_logits = selection_outputs.get("st_logits", action_logits)
@@ -413,6 +466,22 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         if "density" in selection_outputs:
             output["density"] = selection_outputs["density"]
         return output
+
+    def _sanitize_scout_outputs(self, scout_outputs, dense_masks):
+        sanitized = {}
+        for key, value in scout_outputs.items():
+            safe = self._sanitize_score_values(value, dense_masks, clamp_finite=False)
+            sanitized[key] = safe
+        return sanitized
+
+    def _sanitize_score_values(self, values, dense_masks=None, clamp_finite=True):
+        clamp = self.density_distribution_logit_clamp
+        safe = torch.nan_to_num(values.float(), nan=0.0, posinf=clamp, neginf=-clamp)
+        if clamp_finite:
+            safe = safe.clamp(-clamp, clamp)
+        if dense_masks is not None:
+            safe = safe.masked_fill(~dense_masks, -clamp)
+        return safe
 
     def _normalize_dense_masks(self, masks, inputs):
         if masks is None:
@@ -458,6 +527,7 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         return {"selected": selected, "st_logits": action_logits, "diagnostics": diagnostics}
 
     def _selection_scores(self, action_logits, dense_masks):
+        action_logits = self._sanitize_score_values(action_logits, dense_masks)
         p_action = action_logits.sigmoid()
         entropy = -(p_action * (p_action + 1e-6).log() + (1.0 - p_action) * (1.0 - p_action + 1e-6).log())
         change = torch.zeros_like(p_action)
@@ -527,6 +597,7 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
                 density,
                 repairs,
                 repair_stats=repair_stats_rows,
+                scout_outputs=scout_outputs,
             )
         self._selection_call_count += 1
         return {
@@ -544,22 +615,28 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         return (self._selection_call_count % self.selection_diagnostics_interval) == 0
 
     def _cadf_density(self, scout_outputs, dense_masks, mode=None):
-        action_logits = scout_outputs["action_logits"]
+        raw_action_logits = self._sanitize_score_values(
+            scout_outputs["action_logits"], dense_masks, clamp_finite=False
+        )
+        raw_utility_logits = self._sanitize_score_values(
+            scout_outputs.get("utility_logits", torch.zeros_like(raw_action_logits)), dense_masks, clamp_finite=False
+        )
+        raw_boundary_logits = self._sanitize_score_values(
+            scout_outputs.get("boundary_logits", torch.zeros_like(raw_action_logits)), dense_masks, clamp_finite=False
+        )
+        action_logits = self._sanitize_score_values(raw_action_logits, dense_masks)
         p_action = action_logits.sigmoid()
         entropy = -(p_action * (p_action + 1e-6).log() + (1.0 - p_action) * (1.0 - p_action + 1e-6).log())
         change = torch.zeros_like(p_action)
         change[:, 1:] = (p_action[:, 1:] - p_action[:, :-1]).abs()
         change = self._smooth_rows(change, dense_masks, self.density_transition_smooth_radius)
-        utility_logits = scout_outputs.get("utility_logits", torch.zeros_like(action_logits))
-        boundary_logits = scout_outputs.get("boundary_logits", torch.zeros_like(action_logits))
-
-        action_score = self._robust_normalize_rows(action_logits, dense_masks)
+        action_score = self._robust_normalize_rows(raw_action_logits, dense_masks)
         action_floor_prob = action_score.sigmoid() * dense_masks.to(dtype=action_score.dtype)
         action_context = self._smooth_rows(action_floor_prob, dense_masks, radius=2)
         entropy_score = self._robust_normalize_rows(entropy * action_context.clamp_min(0.05), dense_masks)
         change_score = self._robust_normalize_rows(change * action_context.clamp_min(0.05), dense_masks)
-        utility_score = self._robust_normalize_rows(utility_logits, dense_masks)
-        boundary_score = self._robust_normalize_rows(boundary_logits, dense_masks)
+        utility_score = self._robust_normalize_rows(raw_utility_logits, dense_masks)
+        boundary_score = self._robust_normalize_rows(raw_boundary_logits, dense_masks)
 
         weights = self.density_weights
         acquisition_logits = (
@@ -569,10 +646,10 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
             + float(weights.get("utility", 0.0)) * utility_score
             + float(weights.get("boundary", 0.0)) * boundary_score
         )
-        acquisition_logits = acquisition_logits.masked_fill(~dense_masks, -20.0)
+        acquisition_logits = self._sanitize_score_values(acquisition_logits, dense_masks)
         temperature = max(self.density_temperature, 1e-4)
         learned_density = F.softmax(acquisition_logits / temperature, dim=1) * dense_masks.to(dtype=acquisition_logits.dtype)
-        learned_density = learned_density / learned_density.sum(dim=1, keepdim=True).clamp_min(1e-6)
+        learned_density = self._sanitize_density(learned_density, dense_masks)
         uniform_density = dense_masks.to(dtype=acquisition_logits.dtype)
         uniform_density = uniform_density / uniform_density.sum(dim=1, keepdim=True).clamp_min(1.0)
         floor_mix = self._density_safety_floor(uniform_density, action_floor_prob, action_context, dense_masks)
@@ -580,9 +657,18 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         alpha = self._resolve_density_alpha(mode=mode)
         self._last_density_alpha = alpha
         density = (1.0 - alpha) * uniform_density + alpha * learned_density
-        density = density * dense_masks.to(dtype=density.dtype)
-        density = density / density.sum(dim=1, keepdim=True).clamp_min(1e-6)
+        density = self._sanitize_density(density, dense_masks)
         return density, acquisition_logits
+
+    def _sanitize_density(self, density, dense_masks):
+        safe = torch.nan_to_num(density.float(), nan=0.0, posinf=0.0, neginf=0.0)
+        safe = safe.clamp_min(0.0) * dense_masks.to(dtype=safe.dtype)
+        row_sum = safe.sum(dim=1, keepdim=True)
+        valid_count = dense_masks.sum(dim=1, keepdim=True).clamp_min(1).to(dtype=safe.dtype)
+        uniform = dense_masks.to(dtype=safe.dtype) / valid_count
+        normalized = safe / row_sum.clamp_min(1e-6)
+        normalized = torch.where(row_sum > 1e-6, normalized, uniform)
+        return normalized.to(dtype=density.dtype)
 
     def _smooth_rows(self, values, dense_masks, radius):
         if radius <= 0:
@@ -620,6 +706,7 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         return mixed / mixed.sum(dim=1, keepdim=True).clamp_min(1e-6)
 
     def _robust_normalize_rows(self, values, dense_masks, clamp_value=5.0):
+        values = self._sanitize_score_values(values, dense_masks, clamp_finite=False)
         if values.numel() == 0:
             return torch.zeros_like(values)
         counts = dense_masks.sum(dim=1)
@@ -894,13 +981,23 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         repair_mask = [repair_mask[i] for i in order[:target_unique]]
         return valid_idx.new_tensor(repaired), valid_density.new_tensor(repair_mask)
 
-    def _selection_diagnostics(self, selected, dense_masks, density, repair_mask, repair_stats=None):
+    def _selection_diagnostics(self, selected, dense_masks, density, repair_mask, repair_stats=None, scout_outputs=None):
+        distribution_target = None
+        uncertainty = None
+        change = None
+        if scout_outputs is not None:
+            distribution_target, uncertainty, change = self._density_distribution_deploy_target(
+                scout_outputs,
+                dense_masks,
+                return_features=True,
+            )
         rows = []
         for row_idx in range(selected.shape[0]):
             row_selected = selected[row_idx]
             row_valid = dense_masks[row_idx]
             selected_mask = self._selected_masks(row_valid[None], row_selected[None])[0]
             valid_selected = row_selected[selected_mask]
+            selected_unique = set(int(x) for x in valid_selected.detach().cpu().tolist())
             if valid_selected.numel() >= 2:
                 gaps = valid_selected[1:] - valid_selected[:-1]
                 max_gap = int(gaps.max().item())
@@ -914,6 +1011,8 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
                 "repair_fraction": float(repair_mask[row_idx].float().mean().item()) if repair_mask.numel() > 0 else 0.0,
                 "row_repair_fraction": float(repair_mask[row_idx].float().mean().item()) if repair_mask.numel() > 0 else 0.0,
                 "repair_count": int(repair_mask[row_idx].float().sum().item()) if repair_mask.numel() > 0 else 0,
+                "duplicate_count": int(row_selected.numel() - len(set(int(x) for x in row_selected.detach().cpu().tolist()))),
+                "selected_fill_fraction": float(valid_selected.numel()) / float(max(self.target_len, 1)),
                 "alpha": float(self._last_density_alpha),
                 "temperature": float(self.density_temperature),
             }
@@ -936,6 +1035,37 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
                     row["density_top_positions"] = [int(x) for x in top_pos.detach().cpu().tolist()]
                 else:
                     row["density_top_positions"] = []
+                hist = torch.histc(
+                    valid_density.detach().float().cpu(),
+                    bins=8,
+                    min=0.0,
+                    max=float(valid_density.detach().max().clamp_min(1e-6).item()),
+                )
+                hist = hist / hist.sum().clamp_min(1.0)
+                row["density_histogram_8"] = [float(x) for x in hist.tolist()]
+            if distribution_target is not None and valid_selected.numel() > 0:
+                row_target = distribution_target[row_idx]
+                row_uncertainty = uncertainty[row_idx]
+                row_change = change[row_idx]
+                valid_target = row_target[row_valid]
+                valid_uncertainty = row_uncertainty[row_valid]
+                valid_change = row_change[row_valid]
+                selected_target_mass = row_target.gather(0, valid_selected).sum().clamp(0.0, 1.0)
+                row["distribution_target_selected_fraction"] = float(selected_target_mass.item())
+                if valid_uncertainty.numel() > 0:
+                    uncertainty_cut = torch.quantile(valid_uncertainty.detach().float(), 0.75)
+                    change_cut = torch.quantile(valid_change.detach().float(), 0.75)
+                    selected_uncertainty = row_uncertainty.gather(0, valid_selected)
+                    selected_change = row_change.gather(0, valid_selected)
+                    row["uncertainty_selected_fraction"] = float((selected_uncertainty >= uncertainty_cut).float().mean().item())
+                    row["change_selected_fraction"] = float((selected_change >= change_cut).float().mean().item())
+                    target_positions = row_valid.nonzero(as_tuple=True)[0][valid_target.argsort(descending=True)[: min(8, valid_target.numel())]]
+                    row["distribution_target_top_positions"] = [int(x) for x in target_positions.detach().cpu().tolist()]
+                else:
+                    row["uncertainty_selected_fraction"] = 0.0
+                    row["change_selected_fraction"] = 0.0
+                    row["distribution_target_top_positions"] = []
+                row["selected_unique_count"] = len(selected_unique)
             rows.append(row)
         return rows
 
@@ -1002,6 +1132,7 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         return gathered & unique_mask
 
     def _local_soft_inputs(self, inputs, selected, action_logits):
+        action_logits = self._sanitize_score_values(action_logits)
         offsets = torch.arange(
             -self.st_local_radius,
             self.st_local_radius + 1,
@@ -1103,6 +1234,137 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
             kernel = torch.exp(-pair_distance / max(min_spacing, 1e-6)).masked_fill(eye, 0.0)
             pair_mass = valid_density[:, None] * valid_density[None, :]
             losses.append((pair_mass * kernel).sum())
+        if not losses:
+            return density.sum() * 0.0
+        return torch.stack(losses).mean()
+
+    def _density_distribution_deploy_target(self, scout_outputs, dense_masks, return_features=False):
+        action_logits = self._sanitize_score_values(scout_outputs["action_logits"], dense_masks)
+        p_action = action_logits.sigmoid() * dense_masks.to(dtype=action_logits.dtype)
+        entropy = -(p_action * (p_action + 1e-6).log() + (1.0 - p_action) * (1.0 - p_action + 1e-6).log())
+        entropy = entropy * dense_masks.to(dtype=entropy.dtype)
+        change = torch.zeros_like(p_action)
+        change[:, 1:] = (p_action[:, 1:] - p_action[:, :-1]).abs()
+        change = self._smooth_rows(change, dense_masks, self.density_distribution_target_smooth_radius)
+        action_context = self._smooth_rows(p_action, dense_masks, radius=2)
+        uncertainty_target = self._normalize_positive_rows(entropy * action_context.clamp_min(0.05), dense_masks)
+        change_target = self._normalize_positive_rows(change * action_context.clamp_min(0.05), dense_masks)
+        context_target = self._normalize_positive_rows(action_context, dense_masks)
+        uniform = dense_masks.to(dtype=action_logits.dtype)
+        uniform = uniform / uniform.sum(dim=1, keepdim=True).clamp_min(1.0)
+        target = 0.40 * uncertainty_target + 0.35 * change_target + 0.15 * context_target + 0.10 * uniform
+        target = self._sanitize_density(target, dense_masks)
+        if return_features:
+            return target, entropy, change
+        return target
+
+    def _density_distribution_objective(self, density, dense_masks, scout_outputs, gt_segments=None, return_parts=False):
+        density = self._sanitize_density(density, dense_masks)
+        target = self._density_distribution_deploy_target(scout_outputs, dense_masks)
+        if (
+            gt_segments is not None
+            and self.density_distribution_train_gt_target_weight > 0.0
+        ):
+            gt_target = self._build_density_weak_targets(density, dense_masks, gt_segments)
+            weight = self.density_distribution_train_gt_target_weight
+            target = self._sanitize_density((1.0 - weight) * target + weight * gt_target, dense_masks)
+
+        parts = {
+            "smooth": self._density_distribution_smooth_loss(density, dense_masks),
+            "local_cap": self._density_distribution_local_cap_loss(density, dense_masks),
+            "large_gap": self._density_distribution_large_gap_loss(density, dense_masks),
+            "collapse": self._density_distribution_collapse_loss(density, dense_masks),
+            "target_kl": self._density_distribution_target_kl_loss(density, target, dense_masks),
+        }
+        weighted = density.sum() * 0.0
+        for name, value in parts.items():
+            weighted = weighted + float(self.density_distribution_loss_weights.get(name, 0.0)) * value
+        if self.density_distribution_loss_nan_guard:
+            weighted = torch.nan_to_num(weighted, nan=0.0, posinf=1e4, neginf=0.0)
+            parts = {
+                name: torch.nan_to_num(value, nan=0.0, posinf=1e4, neginf=0.0)
+                for name, value in parts.items()
+            }
+        if return_parts:
+            return weighted, parts, target
+        return weighted
+
+    def _density_distribution_smooth_loss(self, density, dense_masks):
+        losses = []
+        for row_density, row_mask in zip(density, dense_masks):
+            valid_density = row_density[row_mask]
+            if valid_density.numel() <= 1:
+                continue
+            diffs = valid_density[1:] - valid_density[:-1]
+            losses.append((diffs * diffs).mean() * float(valid_density.numel()))
+        if not losses:
+            return density.sum() * 0.0
+        return torch.stack(losses).mean()
+
+    def _density_distribution_local_cap_loss(self, density, dense_masks):
+        losses = []
+        for row_density, row_mask in zip(density, dense_masks):
+            valid_density = row_density[row_mask]
+            valid_len = int(valid_density.numel())
+            if valid_len <= 1:
+                continue
+            window = max(1, min(valid_len, int(math.ceil(float(valid_len) / float(max(self.target_len, 1))))))
+            masses = []
+            for start in range(0, valid_len - window + 1):
+                masses.append(valid_density[start : start + window].sum())
+            if not masses:
+                continue
+            masses = torch.stack(masses)
+            cap = valid_density.new_tensor(2.5 * float(window) / float(valid_len))
+            losses.append(F.relu(masses - cap).pow(2).mean())
+        if not losses:
+            return density.sum() * 0.0
+        return torch.stack(losses).mean()
+
+    def _density_distribution_large_gap_loss(self, density, dense_masks):
+        losses = []
+        for row_density, row_mask in zip(density, dense_masks):
+            valid_density = row_density[row_mask]
+            valid_len = int(valid_density.numel())
+            if valid_len <= 1:
+                continue
+            ideal_gap = max(float(valid_len) / float(max(self.target_len, 1)), 1.0)
+            window = max(1, min(valid_len, int(math.ceil(ideal_gap))))
+            masses = []
+            for start in range(0, valid_len - window + 1):
+                masses.append(valid_density[start : start + window].sum())
+            if not masses:
+                continue
+            masses = torch.stack(masses)
+            temperature = valid_density.new_tensor(float(max(self.target_len, 1)))
+            losses.append(torch.exp(-masses * temperature).mean())
+        if not losses:
+            return density.sum() * 0.0
+        return torch.stack(losses).mean()
+
+    def _density_distribution_collapse_loss(self, density, dense_masks):
+        losses = []
+        for row_density, row_mask in zip(density, dense_masks):
+            valid_density = row_density[row_mask]
+            valid_len = int(valid_density.numel())
+            if valid_len <= 1:
+                continue
+            concentration = (valid_density * valid_density).sum() * float(valid_len)
+            losses.append(F.relu(concentration - 1.0))
+        if not losses:
+            return density.sum() * 0.0
+        return torch.stack(losses).mean()
+
+    def _density_distribution_target_kl_loss(self, density, target, dense_masks):
+        losses = []
+        for row_density, row_target, row_mask in zip(density, target, dense_masks):
+            valid_density = row_density[row_mask].clamp_min(1e-6)
+            valid_target = row_target[row_mask].clamp_min(1e-6)
+            if valid_density.numel() <= 1:
+                continue
+            valid_density = valid_density / valid_density.sum().clamp_min(1e-6)
+            valid_target = valid_target / valid_target.sum().clamp_min(1e-6)
+            losses.append((valid_target * (valid_target.log() - valid_density.log())).sum())
         if not losses:
             return density.sum() * 0.0
         return torch.stack(losses).mean()
@@ -1232,6 +1494,8 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
                     new_meta["c3_density_mesh_repair_fraction"] = diag["repair_fraction"]
                     new_meta["c3_density_mesh_row_repair_fraction"] = diag.get("row_repair_fraction", diag["repair_fraction"])
                     new_meta["c3_density_mesh_repair_count"] = diag["repair_count"]
+                    new_meta["c3_density_mesh_duplicate_count"] = diag.get("duplicate_count", 0)
+                    new_meta["c3_density_mesh_selected_fill_fraction"] = diag.get("selected_fill_fraction", 0.0)
                     new_meta["c3_density_mesh_dedupe_repair_count"] = diag.get("dedupe_repair_count", 0)
                     new_meta["c3_density_mesh_gap_guard_add_count"] = diag.get("gap_guard_add_count", 0)
                     new_meta["c3_density_mesh_gap_guard_prune_count"] = diag.get("gap_guard_prune_count", 0)
@@ -1241,6 +1505,16 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
                         if "selected_density_sum" in diag:
                             new_meta["c3_density_mesh_selected_density_sum"] = diag["selected_density_sum"]
                         new_meta["c3_density_mesh_density_top_positions"] = diag.get("density_top_positions", [])
+                        new_meta["c3_density_mesh_density_histogram_8"] = diag.get("density_histogram_8", [])
+                    if "uncertainty_selected_fraction" in diag:
+                        new_meta["c3_density_mesh_uncertainty_selected_fraction"] = diag["uncertainty_selected_fraction"]
+                        new_meta["c3_density_mesh_change_selected_fraction"] = diag["change_selected_fraction"]
+                        new_meta["c3_density_mesh_distribution_target_selected_fraction"] = diag[
+                            "distribution_target_selected_fraction"
+                        ]
+                        new_meta["c3_density_mesh_distribution_target_top_positions"] = diag.get(
+                            "distribution_target_top_positions", []
+                        )
             returnable = new_meta
             new_metas.append(returnable)
         return new_metas

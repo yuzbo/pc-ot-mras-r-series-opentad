@@ -8,3 +8,5 @@ def test_train_one_epoch_exposes_max_train_iters_for_clean_smoke():
 
     assert "max_train_iters" in signature.parameters
     assert signature.parameters["max_train_iters"].default is None
+    assert "nonfinite_loss_guard" in signature.parameters
+    assert signature.parameters["nonfinite_loss_guard"].default is None

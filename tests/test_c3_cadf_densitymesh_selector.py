@@ -183,6 +183,288 @@ def test_density_weak_target_v2_loss_is_train_only_and_gt_derived():
     assert "c3_density_weak_target_loss_enabled" not in test_outputs["metas"][0]
 
 
+def test_cadf_loss_select_distribution_objective_is_finite_and_backpropagates():
+    selector = _make_cadf_selector(
+        density_distribution_loss_weight=0.3,
+        density_distribution_loss_weights=dict(
+            smooth=0.4,
+            local_cap=0.6,
+            large_gap=0.8,
+            collapse=0.5,
+            target_kl=0.7,
+        ),
+        density_distribution_train_gt_target_weight=0.25,
+    )
+    density = torch.tensor(
+        [[0.03, 0.05, 0.08, 0.36, 0.18, 0.14, 0.10, 0.06]],
+        dtype=torch.float32,
+        requires_grad=True,
+    )
+    masks = torch.ones(1, 8, dtype=torch.bool)
+    scout_outputs = {
+        "action_logits": torch.tensor([[-4.0, -2.0, 0.0, 1.5, 3.0, 1.0, -1.0, -3.0]]),
+        "utility_logits": torch.zeros(1, 8),
+    }
+    gt_segments = [torch.tensor([[2.0, 6.0]], dtype=torch.float32)]
+
+    loss, parts, target = selector._density_distribution_objective(
+        density,
+        masks,
+        scout_outputs,
+        gt_segments=gt_segments,
+        return_parts=True,
+    )
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert set(parts) == {
+        "smooth",
+        "local_cap",
+        "large_gap",
+        "collapse",
+        "target_kl",
+    }
+    assert torch.isfinite(torch.stack(list(parts.values()))).all()
+    assert torch.isfinite(target).all()
+    assert target[0].sum().item() == pytest.approx(1.0)
+    assert density.grad is not None
+    assert torch.isfinite(density.grad).all()
+    assert density.grad.abs().sum().item() > 0.0
+
+
+def test_cadf_loss_select_penalizes_collapsed_and_large_gap_distributions_more_than_uniform():
+    selector = _make_cadf_selector(
+        target_len=4,
+        dense_window_size=16,
+        density_distribution_loss_weights=dict(
+            smooth=0.0,
+            local_cap=1.0,
+            large_gap=1.0,
+            collapse=1.0,
+            target_kl=0.0,
+        ),
+    )
+    masks = torch.ones(1, 16, dtype=torch.bool)
+    scout_outputs = {
+        "action_logits": torch.zeros(1, 16),
+        "utility_logits": torch.zeros(1, 16),
+    }
+    uniform = torch.ones(1, 16, dtype=torch.float32) / 16.0
+    collapsed = torch.ones(1, 16, dtype=torch.float32) * (0.04 / 15.0)
+    collapsed[0, 7] = 0.96
+
+    uniform_loss = selector._density_distribution_objective(uniform, masks, scout_outputs)
+    collapsed_loss = selector._density_distribution_objective(collapsed, masks, scout_outputs)
+
+    assert collapsed_loss.item() > uniform_loss.item()
+
+
+def test_cadf_loss_select_train_only_gt_target_and_test_no_leakage():
+    selector = _make_cadf_selector(
+        density_distribution_loss_weight=0.2,
+        density_distribution_loss_weights=dict(
+            smooth=0.2,
+            local_cap=0.2,
+            large_gap=0.2,
+            collapse=0.2,
+            target_kl=1.0,
+        ),
+        density_distribution_train_gt_target_weight=0.5,
+    )
+    selector.scout = StaticCADFScout(
+        action_logits=[-4, -2, 0, 2, 4, 2, 0, -2],
+        utility_logits=[0, 0, 0, 0, 0, 0, 0, 0],
+    )
+    inputs = _make_inputs()
+    masks = torch.ones(1, 8, dtype=torch.bool)
+    metas = [dict(video_name="video_0", window_size=8, snippet_stride=4)]
+    gt_segments = [torch.tensor([[2.0, 6.0]], dtype=torch.float32)]
+    gt_labels = [torch.tensor([1], dtype=torch.long)]
+
+    train_outputs = selector.forward_train(inputs, masks, metas, gt_segments, gt_labels)
+    test_outputs = selector.forward_test(inputs, masks, metas)
+
+    assert "loss_c3_density_distribution" in train_outputs["losses"]
+    assert torch.isfinite(train_outputs["losses"]["loss_c3_density_distribution"])
+    assert "losses" not in test_outputs
+    assert train_outputs["metas"][0]["c3_density_distribution_loss_enabled"] is True
+    assert train_outputs["metas"][0]["c3_density_distribution_train_gt_target_enabled"] is True
+    assert "c3_density_distribution_train_gt_target_enabled" not in test_outputs["metas"][0]
+    assert torch.equal(train_outputs["selected_dense_indices"], test_outputs["selected_dense_indices"])
+
+
+def test_cadf_loss_select_diagnostics_report_density_gaps_duplicates_and_scout_support():
+    selector = _make_cadf_selector(target_len=6, dense_window_size=12)
+    selector.scout = StaticCADFScout(
+        action_logits=[-5, -5, -2, 0, 2, 4, 2, 0, -2, -5, -5, -5],
+        utility_logits=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    )
+    inputs = _make_inputs(dense_len=12)
+    masks = torch.ones(1, 12, dtype=torch.bool)
+    metas = [dict(video_name="video_0", window_size=12, snippet_stride=4)]
+
+    outputs = selector.forward_test(inputs, masks, metas)
+    meta = outputs["metas"][0]
+
+    assert len(meta["c3_density_mesh_density_histogram_8"]) == 8
+    assert meta["c3_density_mesh_duplicate_count"] >= 0
+    assert 0.0 <= meta["c3_density_mesh_uncertainty_selected_fraction"] <= 1.0
+    assert 0.0 <= meta["c3_density_mesh_change_selected_fraction"] <= 1.0
+    assert 0.0 <= meta["c3_density_mesh_distribution_target_selected_fraction"] <= 1.0
+
+
+def test_cadf_loss_select_is_finite_for_extreme_logits_density_and_short_valid_lengths():
+    selector = _make_cadf_selector(
+        target_len=4,
+        dense_window_size=8,
+        density_distribution_loss_weight=0.5,
+        density_distribution_loss_weights=dict(
+            smooth=1.0,
+            local_cap=1.0,
+            large_gap=1.0,
+            collapse=1.0,
+            target_kl=1.0,
+        ),
+    )
+    masks = torch.tensor(
+        [
+            [True, False, False, False, False, False, False, False],
+            [True, True, False, False, False, False, False, False],
+            [True, True, True, False, False, False, False, False],
+        ]
+    )
+    raw_density = torch.tensor(
+        [
+            [float("nan"), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [float("inf"), -float("inf"), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [1000.0, 0.0, -1000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+        requires_grad=True,
+    )
+    scout_outputs = {
+        "action_logits": torch.tensor(
+            [
+                [float("inf"), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [10000.0, -10000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [float("nan"), 10000.0, -10000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ],
+            dtype=torch.float32,
+        ),
+        "utility_logits": torch.zeros(3, 8),
+    }
+
+    density = selector._sanitize_density(raw_density, masks)
+    loss, parts, target = selector._density_distribution_objective(
+        density,
+        masks,
+        scout_outputs,
+        return_parts=True,
+    )
+    loss.backward()
+
+    assert torch.isfinite(density).all()
+    assert torch.isfinite(loss)
+    assert torch.isfinite(torch.stack(list(parts.values()))).all()
+    assert torch.isfinite(target).all()
+    assert raw_density.grad is not None
+    assert torch.isfinite(raw_density.grad).all()
+
+
+def test_cadf_forward_train_sanitizes_extreme_scout_outputs_before_st_and_losses():
+    selector = _make_cadf_selector(
+        density_distribution_loss_weight=0.2,
+        density_distribution_loss_weights=dict(
+            smooth=0.2,
+            local_cap=0.2,
+            large_gap=0.2,
+            collapse=0.2,
+            target_kl=0.2,
+        ),
+        actionness_loss_weight=0.2,
+        st_local_radius=2,
+        st_scale=0.5,
+    )
+    selector.scout = StaticCADFScout(
+        action_logits=[float("inf"), -float("inf"), float("nan"), 10000.0, -10000.0, 0.0, 20.0, -20.0],
+        utility_logits=[float("nan"), 10000.0, -10000.0, float("inf"), -float("inf"), 0.0, 20.0, -20.0],
+    )
+    inputs = _make_inputs()
+    masks = torch.ones(1, 8, dtype=torch.bool)
+    metas = [dict(video_name="video_0", window_size=8, snippet_stride=4)]
+    gt_segments = [torch.tensor([[1.0, 6.0]], dtype=torch.float32)]
+    gt_labels = [torch.tensor([1], dtype=torch.long)]
+
+    outputs = selector.forward_train(inputs, masks, metas, gt_segments, gt_labels)
+
+    assert torch.isfinite(outputs["inputs"]).all()
+    assert torch.isfinite(outputs["density"]).all()
+    assert torch.isfinite(outputs["action_logits"]).all()
+    assert all(torch.isfinite(loss) for loss in outputs["losses"].values())
+
+
+def test_cadf_loss_select_amp_autocast_keeps_selector_outputs_and_losses_finite():
+    selector = _make_cadf_selector(
+        density_distribution_loss_weight=0.2,
+        density_distribution_loss_weights=dict(
+            smooth=0.2,
+            local_cap=0.2,
+            large_gap=0.2,
+            collapse=0.2,
+            target_kl=0.2,
+        ),
+        actionness_loss_weight=0.2,
+    )
+    selector.scout = StaticCADFScout(
+        action_logits=[-20.0, -10.0, 0.0, 10.0, 20.0, 10.0, 0.0, -10.0],
+        utility_logits=[20.0, -20.0, 10.0, -10.0, 0.0, 5.0, -5.0, 0.0],
+    )
+    inputs = _make_inputs()
+    masks = torch.ones(1, 8, dtype=torch.bool)
+    metas = [dict(video_name="video_0", window_size=8, snippet_stride=4)]
+    gt_segments = [torch.tensor([[1.0, 6.0]], dtype=torch.float32)]
+    gt_labels = [torch.tensor([1], dtype=torch.long)]
+
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        outputs = selector.forward_train(inputs, masks, metas, gt_segments, gt_labels)
+
+    assert outputs["action_logits"].dtype == torch.float32
+    assert outputs["density"].dtype == torch.float32
+    assert torch.isfinite(outputs["inputs"]).all()
+    assert torch.isfinite(outputs["density"]).all()
+    assert all(torch.isfinite(loss.float()) for loss in outputs["losses"].values())
+
+
+def test_cadf_loss_select_all_padding_density_objective_is_finite_boundary_case():
+    selector = _make_cadf_selector(
+        target_len=4,
+        dense_window_size=8,
+        density_distribution_loss_weight=0.2,
+    )
+    masks = torch.zeros(1, 8, dtype=torch.bool)
+    density = torch.full((1, 8), float("nan"), dtype=torch.float32, requires_grad=True)
+    scout_outputs = {
+        "action_logits": torch.full((1, 8), float("inf")),
+        "utility_logits": torch.full((1, 8), -float("inf")),
+    }
+
+    safe_density = selector._sanitize_density(density, masks)
+    loss, parts, target = selector._density_distribution_objective(
+        safe_density,
+        masks,
+        scout_outputs,
+        return_parts=True,
+    )
+    loss.backward()
+
+    assert torch.isfinite(safe_density).all()
+    assert torch.isfinite(target).all()
+    assert torch.isfinite(loss)
+    assert torch.isfinite(torch.stack(list(parts.values()))).all()
+    assert density.grad is not None
+    assert torch.isfinite(density.grad).all()
+
+
 def test_cadf_train_and_test_selection_use_same_hard_policy():
     selector = _make_cadf_selector()
     selector.scout = StaticCADFScout(
