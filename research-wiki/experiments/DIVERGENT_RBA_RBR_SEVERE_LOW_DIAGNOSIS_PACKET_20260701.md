@@ -131,3 +131,36 @@ Ask GPT-5.5 Pro to inspect the synchronized GitHub branch and answer code-ground
 - Do not interpret the bounded diagnostic metric as a final route result or paper claim.
 - Synchronize GitHub before any Pro request if using repository URLs, because local and N16R4 route-owned worktrees are ahead of the tracked GitHub branch.
 - Send this packet plus current files/logs to Pro/Oracle for severe-result diagnosis before any further RBA-RBR long run or route-level conclusion.
+
+## Local Sparse-Forward Precheck Audit - 2026-07-01 07:23:37 +08:00
+
+Purpose:
+
+- This update adds a minimal detector temporal-grid audit for the severe-low follow-up.
+- It is intended to diagnose whether RBA-RBR detector feature positions are actually handed to the irregular Head on the native dense time axis.
+- It is not a performance claim, not a metric interpretation, and not a full-train unlock.
+
+Changed behavior:
+
+- `IrregularActionFormer` now detects RBA-RBR metadata independently via `rba_rbr_*`.
+- RBA-RBR grid construction uses `rba_rbr_detector_feature_positions` / `rba_rbr_detector_feature_valid_len`, even when generic `irregular_selected_positions` is present.
+- RBA-RBR grid construction fails closed unless `irregular_native_axis=True`.
+- RBA-RBR grid construction fails closed when the input mask true count does not equal the number of detector feature positions.
+- If `RBA_RBR_GRID_AUDIT=1` and `RBA_RBR_GRID_AUDIT_PATH` are set, the detector appends JSONL rows labeled `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Existing BVR grid audit remains independently labeled and was covered by a regression test.
+
+Verification:
+
+- `python -m py_compile opentad\models\detectors\irregular_actionformer.py tests\test_rba_rbr_integration.py` passed.
+- `python -m pytest tests\test_rba_rbr_integration.py -q` passed: `8 passed, 5 skipped`.
+- `python -m pytest tests\test_rba_rbr_core.py tests\test_rba_rbr_integration.py -q` passed: `18 passed, 5 skipped`.
+- A wildcard attempt `python -m pytest tests\test_rba_rbr*.py -q` did not run because PowerShell did not expand the path for pytest; the explicit file-list command above is the valid suite result.
+
+Still locked:
+
+- No training, remote sync, Slurm, Pro submission, or GPU job was run for this audit update.
+- Local staging/commit and GitHub API sync were performed only after the focused tests passed, to keep the severe-result evidence visible for later Pro diagnosis.
+- The optional route-owned CPU ledger diagnostic tool was deferred to keep this stage minimal and avoid broadening the implementation.
+- Formal full training remains locked.
+- Pro transport remains `INCOMPLETE`; no valid Pro severe-result diagnosis has been harvested.
+- No final mAP, runtime/FLOPs, deployment, or paper claim is unlocked.
