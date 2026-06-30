@@ -629,3 +629,29 @@ Decision:
 - RBA-RBR formal full training remains locked.
 - Do not launch RBA-RBR follow-up long training until a severe-result diagnosis has inspected the current GitHub/code/log evidence and produced a concrete go/no-go or repair plan.
 - Preserve the current evidence packet `research-wiki/experiments/DIVERGENT_RBA_RBR_SEVERE_LOW_DIAGNOSIS_PACKET_20260701.md` and update it with the completed `.539` metrics before any Pro/Oracle discussion.
+
+## GitHub API Sync After Final Diagnostic - 2026-07-01 06:45:00 +08:00
+
+Sync motivation:
+
+- Ordinary HTTPS `git push` remained blocked by local network reset:
+  - `fatal: unable to access 'https://github.com/yuzbo/pc-ot-mras-r-series-opentad.git/': Recv failure: Connection was reset`.
+- `gh auth status` confirmed an authenticated `repo`-scoped account, so the coordinator used the GitHub Git Data API to create an equivalent branch snapshot commit.
+
+GitHub sync outcome:
+
+- Branch: `codex/divergent-rba-rbr-20260701`.
+- GitHub parent before sync: `b9d18aab922426823cf52369fa6fbde677251ec3`.
+- New GitHub commit: `88e498cdbba62e981d042a6e3fee22b7edb70f50`.
+- Confirmed GitHub ref after sync: `88e498cdbba62e981d042a6e3fee22b7edb70f50`.
+- Synced file count: `35`.
+- Synced surfaces include RBA configs, RBA acquisition bridge, dataset transform handoff, RBA tests, launch gate, Pro transport evidence, severe-low diagnosis packet, route-owned tracker mirror, and `research-wiki/log.md`.
+
+Repository URL for external review:
+
+- `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-20260701`
+
+Decision after sync:
+
+- GitHub now has the code/evidence needed for a severe-result Pro/Oracle diagnosis.
+- Formal RBA-RBR full training remains locked until that diagnosis returns a concrete repair or go/no-go plan.

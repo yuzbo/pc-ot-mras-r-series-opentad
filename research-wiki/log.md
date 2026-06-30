@@ -120,3 +120,13 @@
 - Bad-pattern count remained `0`; no Traceback/OOM/NaN/non-finite/permission/path failure was found.
 - Final bounded diagnostic metric after epoch 3: `Average-mAP=4.42%`, `mAP@0.30=10.92%`, `mAP@0.40=6.35%`, `mAP@0.50=3.16%`, `mAP@0.60=1.28%`, `mAP@0.70=0.37%`.
 - Decision: `SEVERE_RESULT_GATE_TRIGGERED`. This is stable execution but failure-scale detector performance, so RBA-RBR formal training remains locked pending sparse-forward/coordinate/postprocess diagnosis and Pro/Oracle review. Parent hold was not modified or released.
+
+## 2026-07-01 06:45:00 +08:00 - RBA-RBR GitHub API sync after final diagnostic
+
+- Ordinary HTTPS `git push` still failed with `Recv failure: Connection was reset`.
+- Used authenticated `gh api` Git Data API sync for branch `codex/divergent-rba-rbr-20260701`.
+- GitHub parent before sync: `b9d18aab922426823cf52369fa6fbde677251ec3`.
+- New GitHub commit and confirmed branch ref: `88e498cdbba62e981d042a6e3fee22b7edb70f50`.
+- Synced 35 RBA files, including configs, acquisition/transform code, tests, launch gate, Pro transport evidence, severe-low diagnosis packet, route-owned tracker mirror, and log.
+- External review URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-20260701`.
+- RBA-RBR formal full training remains locked pending severe-result diagnosis.
