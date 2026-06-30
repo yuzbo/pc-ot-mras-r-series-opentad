@@ -572,3 +572,47 @@ Still locked:
 - `tools/test.py` and official evaluation.
 - mAP, runtime/FLOPs, sparse compute, deploy, or paper claims.
 - Any C3/BVR/ABR/MDL combo or merge.
+
+## 2026-06-30 N16R4 Runtime Diagnostics After GitHub Proxy Sync
+
+Remote GitHub synchronization was performed on N16R4 with the platform academic
+proxy. The existing remote clone
+`/data/home/sczc063/run/yuzibo/OpenTAD_BVR_TWB_Final_20260630_92ec024`
+fast-forwarded to branch `codex/divergent-bvr-twb-final-20260630`, commit
+`46337e2`.
+
+Bounded Linux diagnostics were then run without GPU training, `tools/test.py`,
+official evaluation, checkpoint claims, or sparse-compute claims:
+
+```bash
+python tools/bvr_twb/audit_runtime_provenance.py --out-dir logs/bvr_twb_runtime_bounded_diagnostics_46337e2_20260630_195852_+0800_r2/runtime_provenance_d0 --require-runtime
+python tools/bvr_twb/trace_one_sample_pipeline.py --out-dir logs/bvr_twb_runtime_bounded_diagnostics_46337e2_20260630_195852_+0800_r2/one_sample_trace_d1 --require-runtime
+python tools/bvr_twb/audit_postprocess_proposals.py --out-dir logs/bvr_twb_runtime_bounded_diagnostics_46337e2_20260630_195852_+0800_r2/postprocess_count_d4 --require-runtime
+PYTHONPATH="$PWD" pytest -q tests/test_bvr_twb_runtime_diagnostics.py
+```
+
+Results:
+
+- Runtime provenance: `runtime_contract=passed`, `dispatch_hit=True`, `blocked=False`.
+- One-sample trace: `dispatch_hit=True`, `trace_keys=True`, `blocked=False`.
+- Focused pytest: `5 passed in 46.07s`.
+- Postprocess proposal-count audit: `runtime_contract=passed`, `blocked=False`,
+  `raw_proposal_count=19260`, `num_classes=19`,
+  `flattened_candidate_count=365940`, `above_threshold_count=365940`,
+  `pre_nms_selected_count=2000`, `post_nms_count=2000`,
+  `explains_365940_predictions=True`.
+
+Evidence root:
+
+`/data/home/sczc063/run/yuzibo/OpenTAD_BVR_TWB_Final_20260630_92ec024/logs/bvr_twb_runtime_bounded_diagnostics_46337e2_20260630_195852_+0800_r2`
+
+Interpretation:
+
+- The severe-run `365940` prediction count is now localized to the
+  postprocess raw-proposal by class flattening stage:
+  `19260 raw proposals * 19 classes = 365940 flattened candidates`.
+- This does not prove the BVR idea has failed. It supports the earlier Pro
+  diagnosis that the severe result is an implementation/protocol/postprocess
+  failure mode rather than route rejection.
+- BVR formal/full training remains locked. The next BVR work should focus on
+  proposal/postprocess control or a reviewed repair before any new long run.
