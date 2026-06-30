@@ -1,5 +1,13 @@
 # Research Log
 
+## 2026-07-01 07:48:48 +08:00 - RBA-RBR grid-audit remote PRECHECK_ONLY passed
+
+- Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Created route-owned remote precheck copy `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GridAuditPrecheck_20260701_600fc8f2` from the existing RBA N16R4 tree plus the five grid-audit files from the new GitHub evidence branch.
+- Verification passed without GPU or Slurm: py_compile passed; `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` -> `23 passed in 50.13s`.
+- Logs: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GridAuditPrecheck_20260701_600fc8f2/logs/rba_rbr_grid_audit_precheck_600fc8f2/`.
+- This proves only Linux/OpenTAD audit launchability. It does not resolve the severe-low `4.42%` diagnostic, does not unlock formal full training, and creates no mAP/runtime/FLOPs/deploy/paper claim.
+
 ## 2026-07-01 07:39:58 +08:00 - RBA-RBR grid-audit GitHub API branch synced
 
 - Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
