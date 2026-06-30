@@ -12,6 +12,22 @@ from opentad.acquisition.rba_rbr.adapter_bridge import ADAPTER_FIXED_LENGTH_PADD
 from opentad.acquisition.rba_rbr.types import FORBIDDEN_ROUTE_TOKENS, ROUTE_LABEL  # noqa: E402
 
 
+def _resolved_config_is_clean(config_path):
+    from mmengine.config import Config
+
+    cfg = Config.fromfile(str(config_path))
+    annotation_path = str(cfg.annotation_path)
+    ground_truth_filename = str(cfg.evaluation.ground_truth_filename)
+    if ground_truth_filename != annotation_path:
+        raise ValueError(
+            "RBA-RBR launch gate requires evaluation.ground_truth_filename "
+            "to match the route-owned annotation_path"
+        )
+    if "/root/autodl-tmp" in ground_truth_filename.replace("\\", "/"):
+        raise ValueError("RBA-RBR launch gate rejects legacy /root/autodl-tmp evaluation paths")
+    return True
+
+
 def _config_text_is_clean(config_path):
     text = Path(config_path).read_text(encoding="utf-8")
     if "rba_rbr_recoverable_bracketing" not in text:
@@ -28,6 +44,7 @@ def _config_text_is_clean(config_path):
         "no_runtime_claim = True": "runtime claim lock",
         "no_deploy_claim = True": "deploy claim lock",
         "no_paper_claim = True": "paper claim lock",
+        "ground_truth_filename=annotation_path": "N16R4 evaluation annotation path override",
         "rba_rbr_train_value_labels=True": "train-only labels enabled only in train pipeline",
         "rba_rbr_train_value_labels=False": "train-only labels disabled in val/test pipeline",
         "rba_rbr_allow_diagnostic_preview_fallback=False": "formal preview fallback lock",
@@ -43,6 +60,7 @@ def _config_text_is_clean(config_path):
 
 def validate_launch_gate(config_path, precheck_summary_path):
     _config_text_is_clean(config_path)
+    _resolved_config_is_clean(config_path)
     summary = json.loads(Path(precheck_summary_path).read_text(encoding="utf-8"))
     if summary.get("route_label") != ROUTE_LABEL:
         raise ValueError("RBA-RBR launch gate summary has wrong route_label")

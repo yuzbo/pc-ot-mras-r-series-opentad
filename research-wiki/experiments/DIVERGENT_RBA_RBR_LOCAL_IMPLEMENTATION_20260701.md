@@ -287,3 +287,57 @@ Current route state after Pro transport failure:
 - `SHORT_DIAGNOSTIC_ONLY` remains the next practical experimental tier once GPU0 is free, subject to coordinator/project decision.
 - Formal full training remains locked.
 - No mAP/runtime/FLOPs/deploy/paper claim is unlocked.
+
+## GitHub API Sync And Shortdiag Gate Fix - 2026-07-01 03:05:00 +08:00
+
+GitHub sync outcome:
+
+- Ordinary HTTPS `git push` was blocked by local network resets, so the coordinator used the GitHub API to create an equivalent remote commit on branch `codex/divergent-rba-rbr-20260701`.
+- Remote parent before API sync: `87eae60369bacf4f58cbe870170a6eecd1fa57c3`.
+- New GitHub commit: `52ce1ef71142dc5c08c91755451d10deb0b24494`.
+- Synced file count: `25`.
+- This records the previous Pro transport evidence on GitHub. It does not change the Pro verdict: `INCOMPLETE_PRO_DECISION`.
+
+Fix motivation:
+
+- BVR on N16R4 reached epoch 41 validation, then failed in evaluator construction with `PermissionError: [Errno 13] Permission denied: '/root/autodl-tmp/annotations/thumos_14_anno.json'`.
+- RBA-RBR already overrode dataset paths to N16R4 local data, but inherited evaluation config could still point at the old `/root/autodl-tmp` annotation path.
+- This is a launch/stability hazard for any metric-producing or validation-bearing RBA run.
+
+Changed files:
+
+- `configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py`
+  - Added `evaluation = dict(ground_truth_filename=annotation_path)`.
+- `configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_shortdiag.py`
+  - New short diagnostic config.
+  - Keeps `full_train_unlocked=False`, `no_metric_claim=True`, `no_runtime_claim=True`, `no_deploy_claim=True`, and `no_paper_claim=True`.
+  - Limits training to `workflow.end_epoch=2`.
+  - Disables eval with `workflow.val_eval_interval=-1`.
+  - Disables checkpoints with `workflow.disable_checkpoint=True`.
+- `tools/rba_rbr/validate_rba_rbr_launch_gate.py`
+  - Added resolved-config check that `evaluation.ground_truth_filename == annotation_path`.
+  - Rejects legacy `/root/autodl-tmp` evaluation paths.
+- `tests/test_rba_rbr_integration.py`
+  - Added tests for RBA eval path safety and the short diagnostic config.
+
+Verification:
+
+- `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q`
+  - Result: `15 passed, 1 skipped in 3.01s`.
+- `python -m py_compile` over PowerShell-expanded `opentad/acquisition/rba_rbr/*.py` and `tools/rba_rbr/*.py`
+  - Result: pass.
+- `python tools/rba_rbr/validate_rba_rbr_launch_gate.py --config configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py --audit-out-dir %TEMP%/rba_rbr_gate_after_eval_path_fix`
+  - Result: `gate_pass=true`, `full_train_unlocked=false`, `deploy_claim_unlocked=false`, `paper_claim_unlocked=false`, `remote_sync_unlocked_by_local_gate=false`, `sparse_compute_claim=false`.
+
+Current resource state:
+
+- Protected parent hold `1118197 pcot_dbg2g` was not modified, released, cancelled, or replaced.
+- GPU0 is not available for RBA-RBR: BVR child `1118197.519` disappeared after evaluator failure and the existing MDL watcher started `1118197.535 mdl_formal_g0`.
+- GPU1 remains assigned to C3 child `1118197.528`.
+
+Current allowed next action:
+
+- RBA-RBR is ready to sync this shortdiag gate-fix commit to GitHub and then to the remote RBA worktree.
+- RBA-RBR can be queued as `SHORT_DIAGNOSTIC_ONLY` after GPU0 is free, or submitted to a separate authorized Slurm allocation if the coordinator/user chooses not to wait behind MDL.
+- Formal full training remains locked.
+- No mAP/runtime/FLOPs/deploy/paper claim is unlocked.
