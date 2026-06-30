@@ -154,6 +154,88 @@ Current decision:
 - BVR formal/full training remains locked.
 - Allowed next action is bounded diagnostic rerun / read-only review / optional N16R4 CPU pretrain-file audit, not Slurm/full training.
 
+## N16R4 CPU Pretrain File Audit After Repair
+
+Timestamp: 2026-06-30 18:26:39 +08:00
+
+Scope: `PRECHECK_ONLY / CPU / no Slurm / no GPU / no training / no evaluation`.
+
+Remote clone:
+
+```text
+/data/home/sczc063/run/yuzibo/OpenTAD_BVR_TWB_Final_20260630_92ec024
+```
+
+Remote branch state:
+
+```text
+HEAD=af00464
+```
+
+The clone was fast-forwarded from `92ec024` to `af00464`. The code resolved
+`cfg.model.backbone.custom.pretrain` to the canonical VideoMAE-S path, but the
+clone initially lacked its runtime resource symlink:
+
+```text
+pretrained -> ../pretrained
+```
+
+The parent resource directory and checkpoint were already present under the
+authorized N16R4 workspace:
+
+```text
+../pretrained/vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth
+```
+
+The coordinator created only the missing clone-local resource symlink and then
+ran:
+
+```bash
+/data/home/sczc063/run/yuzibo/conda_envs/opentad/bin/python \
+  tools/bvr_twb/audit_pretrain_load.py \
+  --check-file \
+  --out-dir logs/bvr_twb_pretrain_repair_af00464_cpu_check_symlink_20260630_182639_+0800/pretrain_check_file
+```
+
+Audit result:
+
+```json
+{
+  "blocked": false,
+  "pretrain_file_check_required": true,
+  "pretrain_file_exists": true,
+  "pretrain_resolves_videomae_s": true,
+  "resolved_pretrain": "pretrained/vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth",
+  "has_backbone_like_keys": true,
+  "state_dict_num_keys": 163,
+  "verdict": "PASS_PRETRAIN_RESOLVED_AND_READABLE_NO_TRAINING"
+}
+```
+
+Log paths:
+
+```text
+/data/home/sczc063/run/yuzibo/OpenTAD_BVR_TWB_Final_20260630_92ec024/logs/bvr_twb_pretrain_repair_af00464_cpu_check_symlink_20260630_182639_+0800/precheck.log
+/data/home/sczc063/run/yuzibo/OpenTAD_BVR_TWB_Final_20260630_92ec024/logs/bvr_twb_pretrain_repair_af00464_cpu_check_symlink_20260630_182639_+0800/pretrain_check_file/summary.json
+```
+
+Wrapper note:
+
+- The audit itself printed `AUDIT_RC=0` and wrote the pass summary above.
+- The outer SSH command returned nonzero because a CR character in the shell
+  wrapper made `exit 0` parse as a non-numeric argument. This is recorded as a
+  wrapper anomaly, not as an audit failure.
+
+Current decision after this audit:
+
+- The resolved-config pretrain blocker is cleared locally and on N16R4.
+- The actual VideoMAE-S checkpoint is present and readable in the N16R4 clone
+  through the restored resource symlink.
+- BVR formal/full training remains locked pending the remaining bounded
+  diagnostic/review/launch decision gates; this audit does not unlock Slurm
+  training, `tools/test.py`, official mAP, runtime/FLOPs, deploy, paper, sparse
+  compute, or combo claims.
+
 ### 1. Historical Runtime Pretrain-Load Audit Before Repair
 
 Historical status before focused repair: **BLOCKED**
