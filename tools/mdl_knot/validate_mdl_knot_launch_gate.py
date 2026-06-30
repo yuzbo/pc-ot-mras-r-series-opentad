@@ -10,7 +10,11 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from opentad.acquisition.mdl_knot import MDL_KNOT_ROUTE_LABEL  # noqa: E402
+from opentad.acquisition.mdl_knot import (  # noqa: E402
+    MDL_KNOT_ROUTE_LABEL,
+    FormalReadinessLocked,
+    validate_formal_readiness_evidence,
+)
 
 
 FORBIDDEN_ROUTE_DRIFT = (
@@ -35,6 +39,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", required=True, help="MDL-Knot route config to validate.")
     parser.add_argument("--route-label", default=MDL_KNOT_ROUTE_LABEL)
     parser.add_argument("--precheck-summary", default=None)
+    parser.add_argument(
+        "--formal-readiness-summary",
+        default=None,
+        help="Real-video/shortdiag evidence summary. Missing or incomplete evidence keeps formal training locked.",
+    )
     return parser.parse_args()
 
 
@@ -143,6 +152,12 @@ def _validate_config(config_path: Path, cfg: dict) -> tuple[int, dict | None]:
         "scout_sources": scout_sources,
         "safety": safety,
         "changed_surface": acq.get("changed_surface", {}),
+        "formal_train_unlocked": False,
+        "fixed_pad_bridge_compute_boundary": {
+            "bridge": acq.get("bridge"),
+            "sparse_compute_claim": False,
+            "statement": "fixed_pad pads dynamic valid_k to the inherited Adapter target length; no sparse-compute claim is made",
+        },
         "no_metric_runtime_deploy_claims": True,
     }
     return 0, evidence
@@ -197,6 +212,25 @@ def _validate_precheck_summary(summary_arg: str, config_evidence: dict) -> int:
     return 0
 
 
+def _validate_formal_readiness_summary(summary_arg: str) -> int:
+    summary_path = Path(summary_arg)
+    if not summary_path.is_absolute():
+        summary_path = ROOT / summary_path
+    if not summary_path.exists():
+        return _locked(f"missing formal readiness summary: {summary_path}")
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return _locked(f"cannot read formal readiness summary: {exc}")
+    try:
+        validate_formal_readiness_evidence(summary)
+    except FormalReadinessLocked as exc:
+        return _locked(f"formal training remains locked: {exc}")
+    print("FORMAL_READINESS_DIAGNOSTICS_PRESENT")
+    print("Still locked: formal training requires explicit coordinator/user launch decision; no mAP/runtime/FLOPs/deploy/paper claims")
+    return 0
+
+
 def main() -> int:
     args = parse_args()
     if args.route_label != MDL_KNOT_ROUTE_LABEL:
@@ -217,6 +251,8 @@ def main() -> int:
         status = _validate_precheck_summary(args.precheck_summary, evidence or {})
         if status != 0:
             return status
+    if args.formal_readiness_summary:
+        return _validate_formal_readiness_summary(args.formal_readiness_summary)
     print("PRECHECK_ONLY_REQUEST_ALLOWED")
     print(json.dumps(evidence, indent=2, sort_keys=True))
     print("Still locked: remote_sync, Slurm, training, evaluation, tools/test.py, mAP/runtime/FLOPs/deploy/paper claims")

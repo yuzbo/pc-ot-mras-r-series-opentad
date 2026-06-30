@@ -275,6 +275,9 @@ def main() -> int:
             return status
 
     evidence = dict(evidence or {})
+    evidence["validated"] = True
+    evidence["formal_train_unlocked"] = False
+    evidence["no_sparse_compute_claim"] = True
     evidence["log_evidence"] = log_evidence
     print("SHORT_DIAGNOSTIC_ONLY_REQUEST_ALLOWED")
     print("SHORTDIAG_EVIDENCE=" + json.dumps(evidence, sort_keys=True))

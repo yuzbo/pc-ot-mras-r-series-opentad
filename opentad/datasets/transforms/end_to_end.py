@@ -20,6 +20,7 @@ from opentad.acquisition.mdl_knot import (
     MDL_KNOT_ROUTE_LABEL,
     MDLKnotConfig,
     apply_mdl_knot_to_dense_window,
+    build_pipeline_diagnostic,
     build_deploy_scout_curve,
     build_frame_metadata_scout_curve,
     build_raw_frame_motion_scout_curve,
@@ -1032,6 +1033,15 @@ class LoadFrames:
                 results["mdl_knot_route_label"] = MDL_KNOT_ROUTE_LABEL
                 results["mdl_knot_deploy_scout_source"] = scout_curve.source
                 results["mdl_knot_deploy_scout_provenance"] = dict(scout_curve.provenance)
+                results["mdl_knot_pipeline_diagnostic"] = build_pipeline_diagnostic(
+                    ledger=results["mdl_knot_ledger"],
+                    sparse_meta=results["mdl_knot_sparse_meta"],
+                    masks=masks,
+                    scout_source=scout_curve.source,
+                    scout_provenance=scout_curve.provenance,
+                    bridge=self.mdl_knot_bridge,
+                    adapter_target_len=frame_num,
+                )
             elif self.method == "stratified_random_fixed_subsample":
                 keep_positions = self._select_stratified_random_fixed_positions(valid_len, frame_num, sample_key)
             elif self.method == "pseudo_boundary_hybrid_subsample":

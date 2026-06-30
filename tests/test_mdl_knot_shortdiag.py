@@ -57,9 +57,11 @@ def test_shortdiag_validator_passes_config_only_and_reports_still_locked():
     assert "Still locked" in proc.stdout
     evidence = json.loads(proc.stdout.split("SHORTDIAG_EVIDENCE=", 1)[1].splitlines()[0])
     assert evidence["diagnostic_only"] is True
+    assert evidence["validated"] is True
     assert evidence["full_train_unlocked"] is False
     assert evidence["metric_claim"] is False
     assert evidence["sparse_compute_claim"] is False
+    assert evidence["no_sparse_compute_claim"] is True
 
 
 def test_shortdiag_validator_accepts_finite_loss_log_but_keeps_claim_locked(tmp_path):

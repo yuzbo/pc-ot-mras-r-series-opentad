@@ -2,6 +2,8 @@ _base_ = ["./input_random_fixed_50pct_adapter_irregular_headv3_x.py"]
 
 route_label = "DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3"
 route_status = "LOCAL_FINAL_CODE_CANDIDATE_PRECHECK_GATE_LOCKED_NO_REMOTE_NO_TRAINING_NO_METRIC_CLAIMS"
+formal_train_unlocked = False
+sparse_compute_claim = False
 
 annotation_path = "/root/autodl-tmp/annotations/thumos_14_anno.json"
 class_map = "/root/autodl-tmp/annotations/category_idx.txt"
@@ -15,6 +17,13 @@ scale_factor = 1
 mdl_knot_acquisition = dict(
     method="mdl_knot_dynamic_subsample",
     bridge="fixed_pad",
+    fixed_pad_bridge_compute_boundary=dict(
+        detector_input_len=window_size,
+        dynamic_valid_k_is_measured=True,
+        padding_counts_as_valid=False,
+        sparse_compute_claim=False,
+        statement="fixed_pad keeps the inherited Adapter tensor length at 384; this route currently measures acquisition behavior, not sparse compute",
+    ),
     deploy_scout_source="raw_frame_motion_scout_with_metadata_fallback",
     real_scout_unavailable=False,
     synthetic_fallback_allowed=False,
@@ -43,6 +52,8 @@ mdl_knot_acquisition = dict(
     no_runtime_claims=True,
     no_deploy_claims=True,
     no_paper_claims=True,
+    formal_train_unlocked=False,
+    sparse_compute_claim=False,
 )
 
 _mdl_load_train = dict(

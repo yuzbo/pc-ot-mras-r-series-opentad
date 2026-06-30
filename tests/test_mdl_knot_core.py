@@ -1,16 +1,20 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from opentad.acquisition.mdl_knot import (
     MDLKnotConfig,
+    build_pipeline_diagnostic,
     build_deploy_scout_curve,
+    build_raw_frame_motion_scout_curve,
     build_synthetic_scout_curve,
     generate_matched_controls,
     greedy_mdl_knot_select,
     mdl_objective,
     piecewise_linear_reconstruct,
+    summarize_pipeline_diagnostics,
     validate_knot_ledger,
     validate_no_forbidden_sources,
     validate_real_sparse_handoff,
@@ -162,3 +166,60 @@ def test_synthetic_scout_is_labeled_diagnostic_only():
 
     assert curve.source == "synthetic_precheck_diagnostic"
     assert curve.provenance["synthetic_precheck_only"] is True
+
+
+def test_pipeline_diagnostics_report_raw_scout_gaps_masks_and_short_risk():
+    frames = []
+    for idx in range(8):
+        frame = np.zeros((20, 20, 3), dtype=np.uint8)
+        frame[:, :, 0] = idx * 18
+        frame[3:10, 3:10, 1] = idx * 25
+        frames.append(frame)
+    curve = build_raw_frame_motion_scout_curve(
+        frames,
+        probe_positions=[0, 4, 8, 12, 16, 20, 24, 31],
+        dense_t=32,
+    )
+    ledger = greedy_mdl_knot_select(curve, MDLKnotConfig(route_label=ROUTE_LABEL, max_k=24))
+    diagnostic = build_pipeline_diagnostic(
+        ledger=ledger,
+        sparse_meta=ledger.to_sparse_meta().to_dict(),
+        masks=[True] * ledger.valid_k + [False] * (24 - ledger.valid_k),
+        scout_source=curve.source,
+        scout_provenance=curve.provenance,
+        bridge="fixed_pad",
+        adapter_target_len=24,
+    )
+
+    assert diagnostic["raw_frame_scout_used"] is True
+    assert diagnostic["metadata_fallback_used"] is False
+    assert diagnostic["synthetic_fallback_rejected"] is True
+    assert diagnostic["mask_metadata_alignment"]["all_aligned"] is True
+    assert diagnostic["fixed_pad_bridge_compute_boundary"]["sparse_compute_claim"] is False
+    assert "short_island_total" in diagnostic["short_boundary_risk"]
+
+
+def test_pipeline_diagnostic_summary_keeps_synthetic_precheck_from_formal_evidence():
+    cfg = MDLKnotConfig(route_label=ROUTE_LABEL, max_k=40)
+    diagnostics = []
+    for pattern in ("stable_background", "short_islands"):
+        curve = build_synthetic_scout_curve(pattern, dense_t=64)
+        ledger = greedy_mdl_knot_select(curve, cfg)
+        diagnostics.append(
+            build_pipeline_diagnostic(
+                ledger=ledger,
+                sparse_meta=ledger.to_sparse_meta().to_dict(),
+                masks=[True] * ledger.valid_k + [False] * (40 - ledger.valid_k),
+                scout_source=curve.source,
+                scout_provenance=curve.provenance,
+                bridge="fixed_pad",
+                adapter_target_len=40,
+            )
+        )
+    summary = summarize_pipeline_diagnostics(diagnostics)
+
+    assert summary["window_count"] == 2
+    assert summary["synthetic_fallback_windows"] == 2
+    assert summary["synthetic_fallback_rejected"] is False
+    assert summary["valid_k_distribution"]["nonconstant"] is True
+    assert summary["fixed_pad_bridge_compute_boundary"]["sparse_compute_claim"] is False

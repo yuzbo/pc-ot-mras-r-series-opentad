@@ -15,9 +15,11 @@ if str(ROOT) not in sys.path:
 from opentad.acquisition.mdl_knot import (  # noqa: E402
     MDL_KNOT_ROUTE_LABEL,
     MDLKnotConfig,
+    build_pipeline_diagnostic,
     build_synthetic_scout_curve,
     generate_matched_controls,
     greedy_mdl_knot_select,
+    summarize_pipeline_diagnostics,
     validate_knot_ledger,
     validate_real_sparse_handoff,
 )
@@ -127,6 +129,7 @@ def main() -> int:
     patterns = ["stable_background", "sharp_transition", "two_islands", "short_islands"]
     cases = {}
     ledgers = {}
+    pipeline_diagnostics = []
     for pattern in patterns:
         curve = build_synthetic_scout_curve(pattern, dense_t=128)
         ledger = greedy_mdl_knot_select(curve, cfg, video_id=pattern)
@@ -136,6 +139,17 @@ def main() -> int:
         validate_real_sparse_handoff(
             batch={"selected_inputs": selected, "dense_inputs": dense, "meta": ledger.to_sparse_meta().to_dict()},
             ledger=ledger,
+        )
+        pipeline_diagnostics.append(
+            build_pipeline_diagnostic(
+                ledger=ledger,
+                sparse_meta=ledger.to_sparse_meta().to_dict(),
+                masks=[True] * ledger.valid_k + [False] * max(args.max_k - ledger.valid_k, 0),
+                scout_source=curve.source,
+                scout_provenance=curve.provenance,
+                bridge="fixed_pad",
+                adapter_target_len=max(args.max_k, ledger.valid_k),
+            )
         )
         controls = generate_matched_controls(curve, ledger, seed=13)
         for control in controls.values():
@@ -172,6 +186,10 @@ def main() -> int:
         },
         "optional_imports": _check_optional_imports(),
         "config_evidence": _collect_config_evidence(),
+        "synthetic_pipeline_diagnostics": summarize_pipeline_diagnostics(pipeline_diagnostics),
+        "real_video_pipeline_diagnostics": None,
+        "shortdiag_evidence": None,
+        "formal_train_unlocked": False,
         "cases": cases,
     }
     summary_path = out_dir / "mdl_knot_precheck_summary.json"

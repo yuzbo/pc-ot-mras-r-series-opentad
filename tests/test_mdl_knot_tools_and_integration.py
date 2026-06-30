@@ -118,6 +118,9 @@ def test_mdl_knot_config_overrides_real_dataset_pipelines_without_dead_standalon
     assert cfg["mdl_knot_acquisition"]["no_val_test_gt_selector"] is True
     assert cfg["mdl_knot_acquisition"]["deploy_scout_source"] == "raw_frame_motion_scout_with_metadata_fallback"
     assert cfg["mdl_knot_acquisition"]["synthetic_fallback_allowed"] is False
+    assert cfg["formal_train_unlocked"] is False
+    assert cfg["sparse_compute_claim"] is False
+    assert cfg["mdl_knot_acquisition"]["fixed_pad_bridge_compute_boundary"]["sparse_compute_claim"] is False
 
 
 def test_real_loadframes_mdl_knot_branch_sets_sparse_frame_inds_before_decode():
@@ -164,6 +167,10 @@ def test_real_loadframes_mdl_knot_branch_sets_sparse_frame_inds_before_decode():
     assert out["mdl_knot_selector_used_gt"] is False
     assert out["mdl_knot_deploy_scout_source"] == "frame_metadata_scout"
     assert out["mdl_knot_deploy_scout_provenance"]["metadata_only"] is True
+    diagnostic = out["mdl_knot_pipeline_diagnostic"]
+    assert diagnostic["metadata_fallback_used"] is False
+    assert diagnostic["mask_metadata_alignment"]["all_aligned"] is True
+    assert diagnostic["fixed_pad_bridge_compute_boundary"]["sparse_compute_claim"] is False
 
 
 def test_raw_frame_motion_scout_builder_is_deploy_visible_and_non_synthetic():
@@ -221,6 +228,9 @@ def test_precheck_outputs_validated_json_summary(tmp_path):
     assert summary["validated"] is True
     assert summary["locked_actions"]["remote_sync"] is True
     assert summary["cases"]["short_islands"]["valid_k"] != summary["cases"]["stable_background"]["valid_k"]
+    assert summary["real_video_pipeline_diagnostics"] is None
+    assert summary["synthetic_pipeline_diagnostics"]["synthetic_fallback_rejected"] is False
+    assert summary["synthetic_pipeline_diagnostics"]["valid_k_distribution"]["nonconstant"] is True
 
 
 def test_launch_gate_unlocks_only_for_valid_precheck_summary(tmp_path):
@@ -417,3 +427,53 @@ def test_launch_gate_rejects_missing_tools_test_lock_random_fixed_and_combo(tmp_
     )
     assert proc.returncode != 0
     assert "COMBO" in proc.stdout
+
+
+def test_formal_readiness_gate_rejects_missing_or_synthetic_only_diagnostics(tmp_path):
+    missing = tmp_path / "missing_formal.json"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
+            "--config",
+            str(CONFIG_PATH),
+            "--formal-readiness-summary",
+            str(missing),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert proc.returncode != 0
+    assert "formal readiness summary" in proc.stdout
+
+    out_dir = tmp_path / "precheck"
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "mdl_knot" / "audit_mdl_knot_pipeline_precheck.py"),
+            "--out-dir",
+            str(out_dir),
+            "--overwrite",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
+            "--config",
+            str(CONFIG_PATH),
+            "--formal-readiness-summary",
+            str(out_dir / "mdl_knot_precheck_summary.json"),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert proc.returncode != 0
+    assert "formal training remains locked" in proc.stdout
+    assert "real_video_pipeline_diagnostics" in proc.stdout

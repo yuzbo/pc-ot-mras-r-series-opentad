@@ -1,0 +1,253 @@
+from __future__ import annotations
+
+from statistics import mean
+from typing import Iterable, Mapping, Sequence
+
+from .types import MDL_KNOT_ROUTE_LABEL, KnotLedger
+from .validators import validate_knot_ledger
+
+
+class FormalReadinessLocked(ValueError):
+    """Raised when MDL-Knot evidence is not enough for formal train readiness."""
+
+
+def _ledger_dict(ledger) -> dict:
+    if isinstance(ledger, KnotLedger):
+        return ledger.to_dict()
+    if isinstance(ledger, Mapping):
+        return dict(ledger)
+    raise TypeError(f"unsupported ledger type: {type(ledger)!r}")
+
+
+def _percentile(values: Sequence[float], pct: float) -> float:
+    vals = sorted(float(v) for v in values)
+    if not vals:
+        return 0.0
+    if len(vals) == 1:
+        return vals[0]
+    rank = (len(vals) - 1) * float(pct) / 100.0
+    lo = int(rank)
+    hi = min(lo + 1, len(vals) - 1)
+    weight = rank - lo
+    return vals[lo] * (1.0 - weight) + vals[hi] * weight
+
+
+def _stats(values: Iterable[float]) -> dict:
+    vals = [float(v) for v in values]
+    if not vals:
+        return {"count": 0, "min": 0.0, "max": 0.0, "mean": 0.0, "p50": 0.0, "p95": 0.0}
+    return {
+        "count": len(vals),
+        "min": min(vals),
+        "max": max(vals),
+        "mean": float(mean(vals)),
+        "p50": _percentile(vals, 50.0),
+        "p95": _percentile(vals, 95.0),
+    }
+
+
+def _mask_values(mask) -> list[bool]:
+    if mask is None:
+        return []
+    if hasattr(mask, "detach"):
+        mask = mask.detach().cpu().tolist()
+    elif hasattr(mask, "tolist"):
+        mask = mask.tolist()
+    return [bool(v) for v in mask]
+
+
+def _is_metadata_fallback(source: str, provenance: Mapping[str, object]) -> bool:
+    policy = str(provenance.get("scout_policy", ""))
+    return source == "frame_metadata_scout" and policy == "raw_frame_motion_scout_with_metadata_fallback"
+
+
+def _is_synthetic(source: str, provenance: Mapping[str, object]) -> bool:
+    return bool(provenance.get("synthetic_precheck_only", False)) or "synthetic" in source.lower()
+
+
+def _guard_coverage(ledger_data: Mapping[str, object]) -> dict:
+    roles = [str(role) for role in ledger_data.get("selected_roles", [])]
+    islands = list(ledger_data.get("estimated_islands", []))
+    bands = list(ledger_data.get("transition_bands", []))
+    positions = [int(v) for v in ledger_data.get("selected_positions", [])]
+
+    short_islands = [item for item in islands if bool(item.get("short_risk", False))]
+    uncovered_short = 0
+    for island in short_islands:
+        start, end = int(island["start"]), int(island["end"])
+        if not any(start <= pos <= end for pos, role in zip(positions, roles) if role == "short_risk_guard"):
+            uncovered_short += 1
+
+    uncovered_transition = 0
+    for band in bands:
+        start, end = int(band["start"]), int(band["end"])
+        if not any(start <= pos <= end for pos, role in zip(positions, roles) if role == "transition_guard"):
+            uncovered_transition += 1
+
+    return {
+        "short_island_total": len(short_islands),
+        "short_island_guard_count": roles.count("short_risk_guard"),
+        "short_island_uncovered_count": uncovered_short,
+        "transition_band_total": len(bands),
+        "transition_guard_count": roles.count("transition_guard"),
+        "transition_band_uncovered_count": uncovered_transition,
+        "vanilla_mdl_smoothing_risk_measurable": bool(short_islands or bands),
+    }
+
+
+def build_pipeline_diagnostic(
+    *,
+    ledger,
+    sparse_meta: Mapping[str, object],
+    masks,
+    scout_source: str,
+    scout_provenance: Mapping[str, object],
+    bridge: str,
+    adapter_target_len: int,
+) -> dict:
+    ledger_data = _ledger_dict(ledger)
+    validate_knot_ledger(ledger_data)
+    meta = dict(sparse_meta)
+    mask_values = _mask_values(masks)
+    valid_k = int(ledger_data["valid_k"])
+    selected = [int(v) for v in ledger_data["selected_positions"]]
+    meta_selected = [int(v) for v in meta.get("selected_positions", [])]
+    visible_count = sum(mask_values[:valid_k]) if mask_values else 0
+    source = str(scout_source)
+    provenance = dict(scout_provenance or {})
+
+    mask_metadata_alignment = {
+        "checked": True,
+        "selected_positions_match": selected == meta_selected,
+        "valid_k_match": int(meta.get("valid_k", -1)) == valid_k,
+        "mask_true_count_matches_valid_k": visible_count == valid_k,
+        "mask_prefix_visible": mask_values[:valid_k] == [True] * valid_k if mask_values else False,
+        "padding_masked_out": all(not flag for flag in mask_values[valid_k:]) if mask_values else False,
+        "position_unit_match": meta.get("position_unit") == ledger_data.get("position_unit"),
+    }
+    mask_metadata_alignment["all_aligned"] = all(mask_metadata_alignment.values())
+
+    synthetic_used = _is_synthetic(source, provenance)
+    guard = _guard_coverage(ledger_data)
+    return {
+        "route_label": ledger_data.get("route_label"),
+        "video_id": ledger_data.get("video_id"),
+        "window_id": int(ledger_data.get("window_id", 0)),
+        "scout_source": source,
+        "raw_frame_scout_used": bool(provenance.get("uses_raw_frame_probe", False)),
+        "metadata_fallback_used": _is_metadata_fallback(source, provenance),
+        "metadata_only": bool(provenance.get("metadata_only", False)),
+        "synthetic_fallback_used": synthetic_used,
+        "synthetic_fallback_rejected": not synthetic_used,
+        "valid_k": valid_k,
+        "adapter_target_len": int(adapter_target_len),
+        "dense_T": int(ledger_data["dense_T"]),
+        "max_gap": int(ledger_data["max_gap"]),
+        "gap_p95": float(ledger_data["gap_p95"]),
+        "mask_metadata_alignment": mask_metadata_alignment,
+        "short_boundary_risk": guard,
+        "fixed_pad_bridge_compute_boundary": {
+            "bridge": str(bridge),
+            "detector_input_len": int(adapter_target_len),
+            "dynamic_valid_k": valid_k,
+            "padding_counts_as_valid": False,
+            "sparse_compute_claim": False,
+            "claim": "fixed_pad preserves Adapter tensor length; it is not sparse-compute evidence",
+        },
+    }
+
+
+def summarize_pipeline_diagnostics(diagnostics: Sequence[Mapping[str, object]]) -> dict:
+    items = [dict(item) for item in diagnostics]
+    raw = sum(1 for item in items if item.get("raw_frame_scout_used") is True)
+    metadata = sum(1 for item in items if item.get("metadata_fallback_used") is True)
+    synthetic = sum(1 for item in items if item.get("synthetic_fallback_used") is True)
+    align_failures = [
+        item.get("video_id", "unknown")
+        for item in items
+        if not dict(item.get("mask_metadata_alignment", {})).get("all_aligned", False)
+    ]
+    valid_ks = [int(item.get("valid_k", 0)) for item in items]
+    short_total = sum(int(dict(item.get("short_boundary_risk", {})).get("short_island_total", 0)) for item in items)
+    short_uncovered = sum(
+        int(dict(item.get("short_boundary_risk", {})).get("short_island_uncovered_count", 0)) for item in items
+    )
+    transition_total = sum(
+        int(dict(item.get("short_boundary_risk", {})).get("transition_band_total", 0)) for item in items
+    )
+    transition_uncovered = sum(
+        int(dict(item.get("short_boundary_risk", {})).get("transition_band_uncovered_count", 0)) for item in items
+    )
+    count = len(items)
+    return {
+        "route_label": MDL_KNOT_ROUTE_LABEL,
+        "validation_scope": "real_video_pipeline_diagnostics_required_for_formal_train",
+        "window_count": count,
+        "raw_frame_scout_windows": raw,
+        "metadata_fallback_windows": metadata,
+        "synthetic_fallback_windows": synthetic,
+        "raw_frame_scout_ratio": raw / count if count else 0.0,
+        "metadata_fallback_ratio": metadata / count if count else 0.0,
+        "synthetic_fallback_ratio": synthetic / count if count else 0.0,
+        "synthetic_fallback_rejected": synthetic == 0 and count > 0,
+        "valid_k_distribution": {
+            **_stats(valid_ks),
+            "unique_count": len(set(valid_ks)),
+            "nonconstant": len(set(valid_ks)) > 1,
+        },
+        "max_gap_distribution": _stats([float(item.get("max_gap", 0)) for item in items]),
+        "gap_p95_distribution": _stats([float(item.get("gap_p95", 0.0)) for item in items]),
+        "mask_metadata_alignment": {
+            "checked_windows": count,
+            "failure_count": len(align_failures),
+            "failed_video_ids": align_failures[:20],
+            "all_aligned": count > 0 and not align_failures,
+        },
+        "short_boundary_risk_monitoring": {
+            "short_island_total": short_total,
+            "short_island_uncovered_count": short_uncovered,
+            "short_island_guard_coverage_ratio": 1.0 - short_uncovered / short_total if short_total else 1.0,
+            "transition_band_total": transition_total,
+            "transition_band_uncovered_count": transition_uncovered,
+            "transition_guard_coverage_ratio": 1.0 - transition_uncovered / transition_total if transition_total else 1.0,
+            "vanilla_mdl_smoothing_risk_measurable": any(
+                dict(item.get("short_boundary_risk", {})).get("vanilla_mdl_smoothing_risk_measurable", False)
+                for item in items
+            ),
+        },
+        "fixed_pad_bridge_compute_boundary": {
+            "bridge": "fixed_pad",
+            "sparse_compute_claim": False,
+            "statement": "dynamic valid_k is padded to fixed Adapter length; report acquisition evidence only",
+        },
+    }
+
+
+def validate_formal_readiness_evidence(summary: Mapping[str, object]) -> None:
+    if summary.get("route_label") != MDL_KNOT_ROUTE_LABEL:
+        raise FormalReadinessLocked("formal readiness route_label mismatch")
+    diag = summary.get("real_video_pipeline_diagnostics")
+    if not isinstance(diag, Mapping):
+        raise FormalReadinessLocked("missing real_video_pipeline_diagnostics")
+    if int(diag.get("window_count", 0)) <= 0:
+        raise FormalReadinessLocked("real diagnostics must include at least one real pipeline window")
+    if int(diag.get("raw_frame_scout_windows", 0)) <= 0:
+        raise FormalReadinessLocked("real diagnostics have no raw-frame scout usage")
+    if diag.get("synthetic_fallback_rejected") is not True or int(diag.get("synthetic_fallback_windows", 0)) != 0:
+        raise FormalReadinessLocked("formal diagnostics must reject synthetic fallback")
+    valid_k = dict(diag.get("valid_k_distribution", {}))
+    if valid_k.get("nonconstant") is not True or int(valid_k.get("unique_count", 0)) <= 1:
+        raise FormalReadinessLocked("valid_k distribution is not dynamic in real diagnostics")
+    if dict(diag.get("mask_metadata_alignment", {})).get("all_aligned") is not True:
+        raise FormalReadinessLocked("mask/metadata alignment diagnostics did not pass")
+    if "max_gap_distribution" not in diag or "gap_p95_distribution" not in diag:
+        raise FormalReadinessLocked("missing max_gap or gap_p95 diagnostic distributions")
+    shortdiag = summary.get("shortdiag_evidence")
+    if not isinstance(shortdiag, Mapping) or shortdiag.get("validated") is not True:
+        raise FormalReadinessLocked("missing validated shortdiag_evidence")
+    risk = dict(diag.get("short_boundary_risk_monitoring", {}))
+    if risk.get("vanilla_mdl_smoothing_risk_measurable") is not True:
+        raise FormalReadinessLocked("short-action/boundary smoothing risk is not measurable")
+    boundary = dict(diag.get("fixed_pad_bridge_compute_boundary", {}))
+    if boundary.get("sparse_compute_claim") is not False:
+        raise FormalReadinessLocked("fixed_pad bridge must not make sparse-compute claims")

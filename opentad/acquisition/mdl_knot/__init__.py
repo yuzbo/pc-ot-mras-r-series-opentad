@@ -1,4 +1,10 @@
 from .controls import generate_matched_controls, same_k_uniform_positions
+from .diagnostics import (
+    FormalReadinessLocked,
+    build_pipeline_diagnostic,
+    summarize_pipeline_diagnostics,
+    validate_formal_readiness_evidence,
+)
 from .handoff import apply_mdl_knot_to_dense_window
 from .objective import mdl_objective, piecewise_linear_reconstruct
 from .scout import (
@@ -29,7 +35,9 @@ __all__ = [
     "KnotLedger",
     "ScoutCurve",
     "SparseTemporalMeta",
+    "FormalReadinessLocked",
     "apply_mdl_knot_to_dense_window",
+    "build_pipeline_diagnostic",
     "build_deploy_scout_curve",
     "build_frame_metadata_scout_curve",
     "build_raw_frame_motion_scout_curve",
@@ -39,6 +47,8 @@ __all__ = [
     "mdl_objective",
     "piecewise_linear_reconstruct",
     "same_k_uniform_positions",
+    "summarize_pipeline_diagnostics",
+    "validate_formal_readiness_evidence",
     "validate_knot_ledger",
     "validate_no_forbidden_sources",
     "validate_real_sparse_handoff",
