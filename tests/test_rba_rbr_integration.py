@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -338,3 +339,129 @@ def test_loadframes_dispatch_builds_raw_scout_when_preview_metadata_is_absent():
     assert ledger["preview_meta"]["scout_sample_count"] == 8
     assert out["frame_inds"].shape[0] == out["rba_rbr_adapter_input_frame_count"]
     assert ledger["selected_positions"] == sorted(set(ledger["selected_positions"]))
+
+
+def _require_torch_for_detector_grid():
+    torch_probe = subprocess.run(
+        [sys.executable, "-c", "import torch"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if torch_probe.returncode != 0:
+        pytest.skip("torch unavailable for detector temporal-grid audit")
+
+
+def test_rba_rbr_detector_grid_audit_uses_route_specific_native_axis_positions(tmp_path):
+    _require_torch_for_detector_grid()
+    import torch
+
+    from opentad.models.detectors.irregular_actionformer import IrregularActionFormer
+
+    audit_path = tmp_path / "rba_rbr_grid_audit.jsonl"
+    old_enabled = os.environ.get("RBA_RBR_GRID_AUDIT")
+    old_path = os.environ.get("RBA_RBR_GRID_AUDIT_PATH")
+    try:
+        os.environ["RBA_RBR_GRID_AUDIT"] = "1"
+        os.environ["RBA_RBR_GRID_AUDIT_PATH"] = str(audit_path)
+        detector = object.__new__(IrregularActionFormer)
+        masks = torch.tensor([[True, True, True, False, False]])
+        meta = {
+            "video_name": "rba_grid_audit_unit",
+            "irregular_native_axis": True,
+            "irregular_selected_positions": np.asarray([100.0, 101.0, 102.0], dtype=np.float32),
+            "irregular_selected_valid_len": 128.0,
+            "rba_rbr_ledger": {"method": "rba_rbr_recoverable_bracketing"},
+            "rba_rbr_detector_feature_positions": np.asarray([4.0, 20.0, 44.0], dtype=np.float32),
+            "rba_rbr_detector_feature_valid_len": 128.0,
+        }
+
+        grid = detector._temporal_grid_from_metas([meta], masks)
+        rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+
+        assert torch.allclose(grid["center"][0, :3], torch.tensor([4.0, 20.0, 44.0]))
+        assert not torch.allclose(grid["center"][0, :3], torch.tensor([100.0, 101.0, 102.0]))
+        assert grid["valid_mask"][0].tolist() == [True, True, True, False, False]
+        assert rows[0]["audit_type"] == "rba_rbr_detector_temporal_grid"
+        assert rows[0]["route_label"] == ROUTE_LABEL
+        assert rows[0]["native_axis"] is True
+        assert rows[0]["mask_true_count"] == 3
+        assert rows[0]["meta_detector_feature_position_count"] == 3
+        assert rows[0]["grid_center_prefix"] == [4.0, 20.0, 44.0]
+        assert rows[0]["status"] == "PASS_RBA_RBR_NATIVE_AXIS_POSITIONS_ENTERED_MODEL"
+    finally:
+        if old_enabled is None:
+            os.environ.pop("RBA_RBR_GRID_AUDIT", None)
+        else:
+            os.environ["RBA_RBR_GRID_AUDIT"] = old_enabled
+        if old_path is None:
+            os.environ.pop("RBA_RBR_GRID_AUDIT_PATH", None)
+        else:
+            os.environ["RBA_RBR_GRID_AUDIT_PATH"] = old_path
+
+
+def test_rba_rbr_detector_grid_fails_closed_on_mask_position_mismatch():
+    _require_torch_for_detector_grid()
+    import torch
+
+    from opentad.models.detectors.irregular_actionformer import IrregularActionFormer
+
+    detector = object.__new__(IrregularActionFormer)
+    masks = torch.tensor([[True, True, False, False]])
+    meta = {
+        "video_name": "rba_grid_mismatch_unit",
+        "irregular_native_axis": True,
+        "rba_rbr_ledger": {"method": "rba_rbr_recoverable_bracketing"},
+        "rba_rbr_detector_feature_positions": np.asarray([4.0, 20.0, 44.0], dtype=np.float32),
+        "rba_rbr_detector_feature_valid_len": 128.0,
+    }
+
+    with pytest.raises(ValueError, match="RBA-RBR detector temporal grid mask true count"):
+        detector._temporal_grid_from_metas([meta], masks)
+
+
+def test_bvr_detector_grid_path_is_not_captured_by_rba_rbr_audit(tmp_path):
+    _require_torch_for_detector_grid()
+    import torch
+
+    from opentad.models.detectors.irregular_actionformer import IrregularActionFormer
+
+    rba_audit_path = tmp_path / "rba_should_stay_empty.jsonl"
+    bvr_audit_path = tmp_path / "bvr_grid_audit.jsonl"
+    old_rba_enabled = os.environ.get("RBA_RBR_GRID_AUDIT")
+    old_rba_path = os.environ.get("RBA_RBR_GRID_AUDIT_PATH")
+    old_bvr_enabled = os.environ.get("BVR_TWB_GRID_AUDIT")
+    old_bvr_path = os.environ.get("BVR_TWB_GRID_AUDIT_PATH")
+    try:
+        os.environ["RBA_RBR_GRID_AUDIT"] = "1"
+        os.environ["RBA_RBR_GRID_AUDIT_PATH"] = str(rba_audit_path)
+        os.environ["BVR_TWB_GRID_AUDIT"] = "1"
+        os.environ["BVR_TWB_GRID_AUDIT_PATH"] = str(bvr_audit_path)
+        detector = object.__new__(IrregularActionFormer)
+        masks = torch.tensor([[True, True, False, False]])
+        meta = {
+            "video_name": "bvr_still_uses_bvr_grid",
+            "irregular_native_axis": True,
+            "bvr_twb_ledger": {"method": "bvr_twb_dynamic_subsample"},
+            "bvr_twb_detector_feature_positions": np.asarray([6.0, 30.0], dtype=np.float32),
+            "bvr_twb_detector_feature_valid_len": 96.0,
+        }
+
+        grid = detector._temporal_grid_from_metas([meta], masks)
+        bvr_rows = [json.loads(line) for line in bvr_audit_path.read_text(encoding="utf-8").splitlines()]
+
+        assert torch.allclose(grid["center"][0, :2], torch.tensor([6.0, 30.0]))
+        assert bvr_rows[0]["route_label"] == "DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3"
+        assert bvr_rows[0]["audit_type"] == "bvr_twb_detector_temporal_grid"
+        assert not rba_audit_path.exists()
+    finally:
+        for key, value in (
+            ("RBA_RBR_GRID_AUDIT", old_rba_enabled),
+            ("RBA_RBR_GRID_AUDIT_PATH", old_rba_path),
+            ("BVR_TWB_GRID_AUDIT", old_bvr_enabled),
+            ("BVR_TWB_GRID_AUDIT_PATH", old_bvr_path),
+        ):
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
