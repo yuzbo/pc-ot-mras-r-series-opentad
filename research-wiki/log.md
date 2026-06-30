@@ -236,3 +236,31 @@ recorded.
 - Next decision: QC V2 PRECHECK gate passed; bounded smoke/diagnostic may be
   considered only on GPU1 after current GPU1 run ownership is checked. Fulltrain
   and official metric claims remain locked.
+
+## 2026-06-30 14:32:56 +08:00
+
+PQR backend-control completion and current GPU1 blocker recorded from read-only
+subagent evidence.
+
+- Parent hold `1118197 pcot_dbg2g` remains `RUNNING` on `g0030`; it was not
+  released, cancelled, or modified.
+- GPU0 is occupied by `1118197.467 bvr_twb_g0_r4` and remains reserved for the
+  divergent-innovation side. C3/PQR/CADF must not use it as fallback.
+- GPU1 is occupied by `1118197.433 cadf_formal_g1`; latest CADF formal evidence
+  reached epoch `[005][00040/00099]` around `2026-06-30 14:30:14 +08:00` with
+  finite loss and no NaN/OOM/Traceback/RuntimeError/Killed/No space. No
+  validation mAP or `Training Over` exists yet.
+- PQR backend-control child `1118197.459 pqr_ctrl_g0_r5` completed
+  `COMPLETED 0:0`. It is diagnostic-only/short training, not a final route
+  result. Evidence: interim Average-mAP `15.15%`, final diagnostic Average-mAP
+  `24.95%`, `Training Over`, `result_detection.json`, and diagnostic JSON files.
+- Local analysis synthesis: current evidence most strongly supports
+  proposal/ranking/cap overload: high-IoU proposals can exist, but classification
+  score, quality/rank calibration, and per-video cap behavior are weak. This does
+  not prove proposal learning is healthy; it only says the clearest observed
+  bottleneck is calibration/overload rather than total proposal absence.
+- Next decision: do not start new PQR/QC V2 smoke or training while GPU1 is held
+  by CADF formal. When GPU1 is free, the most informative next step is QC V2
+  bounded proposal-dump diagnostics on GPU1 only; short diagnostics remain
+  non-final unless they reveal NaN, persistent non-finite behavior, OOM, or a
+  protocol error.

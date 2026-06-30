@@ -102,3 +102,7 @@ From `2026-06-30 14:19:26 +08:00`, all future C3/PQR/CADF mainline training, dia
 ## Updated Next Action
 
 QC V2 now has a passing remote PRECHECK_ONLY gate. This still does not unlock full training, official evaluation, paper/deploy claims, or route-quality judgment. The next possible execution step is a bounded smoke/diagnostic run on GPU1 only after confirming GPU1 is free or route-owned.
+
+## 2026-06-30 Execution Status
+
+Read-only remote monitoring at `2026-06-30 14:32:56 +08:00` found GPU1 occupied by CADF formal child `1118197.433 cadf_formal_g1`, still running with finite loss and no validation result. GPU0 is occupied by `1118197.467 bvr_twb_g0_r4` and is reserved for divergent innovation. Therefore QC V2 bounded smoke/diagnostic is queued, not started. The next action remains GPU1-only after CADF formal completes, fails, or otherwise releases GPU1.

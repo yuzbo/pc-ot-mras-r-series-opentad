@@ -176,3 +176,37 @@ the broader source for cross-route orchestration.
   and current child-run status. Fulltrain, official eval, paper/deploy claim, and
   route-quality judgment remain locked until the required diagnostic gates unlock
   them explicitly.
+
+## 2026-06-30 14:32:56 +08:00 PQR Backend-Control Complete And GPU1 Blocked By CADF Formal
+
+- Read-only remote monitor evidence: protected parent hold `1118197 pcot_dbg2g`
+  remains `RUNNING` on `g0030`; it was not released, cancelled, or modified.
+- GPU ownership evidence: GPU0 is occupied by `1118197.467 bvr_twb_g0_r4`
+  (`DIVERGENT`/innovation-side ownership) and remains unavailable for C3/PQR/CADF
+  fallback. GPU1 is occupied by `1118197.433 cadf_formal_g1`, so no new
+  C3/PQR/CADF bounded smoke, diagnostic training, or long training may be
+  started right now.
+- CADF formal status: child `1118197.433` is still running on GPU1. Latest
+  read-only evidence reached epoch `[005][00040/00099]` around
+  `2026-06-30 14:30:14 +08:00` with finite loss. No `Loss=nan`, non-finite
+  marker, OOM, Traceback, RuntimeError, Killed, No space, validation mAP,
+  `Training Over`, or result JSON was found.
+- PQR backend-control diagnostic status: child `1118197.459 pqr_ctrl_g0_r5`
+  completed with `COMPLETED 0:0`. It was diagnostic-only/short training, not a
+  final route metric. Logged validation evidence: interim Average-mAP `15.15%`
+  and final diagnostic Average-mAP `24.95%`, with `Training Over`,
+  `result_detection.json`, and diagnostic JSON files present.
+- Interpretation boundary: the `24.95%` short diagnostic is not a final PQR,
+  QC V2, sparse-head, or paper/deploy result. It supports the existing mechanism
+  diagnosis only: high-IoU proposals can exist, but score/rank calibration and
+  proposal-cap overload remain weak under selected-axis/backend-control
+  diagnostics.
+- Local read-only analysis synthesis: keep PVR-QC, PQR V1, and QC V2 distinct.
+  PVR-QC is proposal/ranking/cap diagnosis; PQR V1 is max-IoU quality/ranking
+  calibration control; QC V2 is a default-off sparse/irregular geometry
+  diagnostic quality path with deploy-visible proposal dump fields. Do not treat
+  QC V2 as a cap-only postprocess patch or as unlocked full training.
+- Next launch decision: wait for GPU1 to be released by CADF formal, fail, or
+  complete before launching any PQR/QC V2 bounded smoke/diagnostic. The next
+  most informative PQR/QC step remains GPU1-only QC V2 bounded proposal dump
+  diagnostics, not a short-run route-quality judgment.

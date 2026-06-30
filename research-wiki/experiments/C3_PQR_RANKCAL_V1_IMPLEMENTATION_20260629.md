@@ -260,3 +260,39 @@ Result: pass, with only LF-to-CRLF warnings from Git on Windows.
   remote PRECHECK_ONLY.
 - This is a ranking-calibration diagnostic, not an mAP-gain claim.
 - Remote sync, Slurm, training, Pro, and Gemini were not started.
+
+## 2026-06-30 Status Update
+
+Remote/Linux gate status has advanced beyond the original local-only state:
+
+- PQR QC V2 remote PRECHECK R3 passed at commit
+  `f827c50538c6cda68756c3d37cd11a53c5b3e314` in fresh clone
+  `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQR_QCV2_Precheck_f827c50_20260630_20260630_141515_+0800`.
+  The R3 focused Linux pytest result was `45 passed in 27.89s`, with validator,
+  py_compile, and `git diff --check` also passing. No Slurm, GPU, training, or
+  evaluation was run for R3.
+- Matched PQR backend-control diagnostic child `1118197.459 pqr_ctrl_g0_r5`
+  completed with `COMPLETED 0:0`. It produced interim Average-mAP `15.15%`,
+  final diagnostic Average-mAP `24.95%`, `Training Over`, `result_detection.json`,
+  and diagnostic JSON files. This is a short diagnostic result only and must not
+  be used as final route-quality evidence.
+- Current GPU ownership blocks immediate follow-up: GPU0 is occupied by
+  `1118197.467 bvr_twb_g0_r4` and remains reserved for divergent innovation;
+  GPU1 is occupied by CADF formal child `1118197.433 cadf_formal_g1`, which was
+  still running with finite loss and no validation result at the latest
+  read-only check.
+
+Current mechanism interpretation:
+
+- PVR-QC, PQR V1, and QC V2 are separate. PVR-QC diagnoses proposal/ranking/cap
+  overload; PQR V1 is a max-IoU quality/ranking calibration control; QC V2 adds
+  sparse/irregular geometry-aware quality target and proposal diagnostics.
+- Existing evidence more strongly supports the failure mode "high-IoU proposals
+  can exist but are poorly ranked/calibrated and buried under cap overload" than
+  "the model produces no usable proposals at all". This is not proof that the
+  proposal generator is healthy; it only identifies the most visible bottleneck.
+- The next high-information step is QC V2 bounded proposal-dump diagnostics on
+  GPU1 only after CADF releases GPU1. The purpose is to verify `quality_score`,
+  `cls_score`, selected/physical segments, gap, coverage, and endpoint-support
+  dumps for score-vs-quality-vs-IoU analysis. It is not a final mAP route
+  judgment.
