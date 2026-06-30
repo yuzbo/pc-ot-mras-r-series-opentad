@@ -485,3 +485,39 @@ Interpretation:
 - The repaired RBA-RBR pipeline can train through the configured two-epoch `SHORT_DIAGNOSTIC_ONLY` run with finite loss.
 - This run intentionally has no evaluation, checkpoint, mAP, runtime/FLOPs, deploy, or paper claim.
 - Formal full training remains locked pending a separate formal-train gate/decision.
+
+## Bounded Eval Diagnostic Config - 2026-07-01 04:29:33 +08:00
+
+Purpose:
+
+- The completed raw-scout short diagnostic proved launchability and finite loss only, because eval/checkpoint were intentionally disabled.
+- Added a bounded eval diagnostic config so RBA-RBR can produce a quick detector-health signal without pretending to be a formal train or paper metric.
+
+Changed files:
+
+- `configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag.py`
+  - Inherits the RBA-RBR formal config.
+  - Sets `diagnostic_eval_only=True`.
+  - Keeps `full_train_unlocked=False`, `no_metric_claim=True`, `no_runtime_claim=True`, `no_deploy_claim=True`, and `no_paper_claim=True`.
+  - Runs `workflow.end_epoch=4`, `val_start_epoch=1`, `val_eval_interval=2`, `checkpoint_interval=2`, `disable_checkpoint=False`.
+- `tests/test_rba_rbr_integration.py`
+  - Added config-resolution coverage for the eval diagnostic schedule, N16R4 annotation path, checkpoint behavior, and claim locks.
+
+Verification:
+
+- `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q`
+  - Result: `18 passed, 2 skipped in 10.86s`.
+- `python tools/rba_rbr/validate_rba_rbr_launch_gate.py --config configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py`
+  - Result: `gate_pass=true`, `full_train_unlocked=false`, `deploy_claim_unlocked=false`, `paper_claim_unlocked=false`, `remote_sync_unlocked_by_local_gate=false`, `sparse_compute_claim=false`.
+- Config parse check:
+  - Evaldiag: `end_epoch=4`, `val_start_epoch=1`, `val_eval_interval=2`, `disable_checkpoint=False`, `full_train_unlocked=False`, `no_metric_claim=True`.
+  - Shortdiag remains `end_epoch=2`, `val_eval_interval=-1`, `disable_checkpoint=True`.
+- `git diff --check`
+  - Result: pass with Windows line-ending warning only for `tests/test_rba_rbr_integration.py`.
+
+Review/deployment note:
+
+- Required subagent tooling limitation in this continuation: the available multi-agent interface exposes spawn/close but no usable wait/harvest tool, so no new read-only review result can be collected in this turn.
+- This is a bounded config-only diagnostic progression after the previous raw-scout repair already received `PASS_SUBAGENT_FINAL_REVIEW_ONLY`.
+- The next launch remains diagnostic-only. Any mAP printed by the evaldiag run is an interim detector-health signal, not a final metric claim.
+- Formal full training, runtime/FLOPs, deploy, and paper claims remain locked.
