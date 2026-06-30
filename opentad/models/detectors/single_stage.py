@@ -59,12 +59,14 @@ class SingleStageDetector(BaseDetector):
             x, masks = self.neck(x, masks)
 
         if self.with_rpn_head:
+            rpn_kwargs = dict(kwargs)
+            rpn_kwargs.setdefault("metas", metas)
             rpn_losses = self.rpn_head.forward_train(
                 x,
                 masks,
                 gt_segments=gt_segments,
                 gt_labels=gt_labels,
-                **kwargs,
+                **rpn_kwargs,
             )
             losses.update(rpn_losses)
 
