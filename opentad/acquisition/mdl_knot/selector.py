@@ -1,12 +1,21 @@
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Sequence, Tuple
+import time
+from typing import Callable, Dict, Iterable, List, Sequence, Tuple
 
 import numpy as np
 
 from .objective import estimate_islands, estimate_transition_bands, mdl_objective, piecewise_linear_reconstruct
 from .types import MDL_KNOT_ROUTE_LABEL, MDLKnotConfig, KnotLedger, ScoutCurve
 from .validators import validate_knot_ledger, validate_no_forbidden_sources
+
+
+ProfileCallback = Callable[[str, float, dict | None], None]
+
+
+def _profile_elapsed(callback: ProfileCallback | None, stage: str, start: float, extra: dict | None = None) -> None:
+    if callback is not None:
+        callback(stage, time.perf_counter() - start, extra)
 
 
 def _unique_sorted(values: Iterable[int], dense_t: int) -> List[int]:
@@ -179,9 +188,11 @@ def greedy_mdl_knot_select(
     video_id: str = "synthetic",
     window_id: int = 0,
     control_name: str = "mdl_plus_transition_gap_duration",
+    profile_callback: ProfileCallback | None = None,
 ) -> KnotLedger:
     if curve.dense_t < 2:
         raise ValueError("MDL-Knot requires at least two dense cells")
+    start = time.perf_counter()
     initial_k = min(max(cfg.min_k, cfg.min_anchor_k, 2), curve.dense_t, cfg.max_k)
     selected = set(_uniform_anchor_positions(curve.dense_t, initial_k))
     selected.add(0)
@@ -189,23 +200,36 @@ def greedy_mdl_knot_select(
     roles: Dict[int, str] = {0: "endpoint_anchor", curve.dense_t - 1: "endpoint_anchor"}
     for pos in selected:
         roles.setdefault(pos, "scaffold_anchor")
+    _profile_elapsed(profile_callback, "selector_initialization", start, {"dense_T": int(curve.dense_t)})
 
     history: List[Dict[str, object]] = []
     stop_reason = "no_positive_gain"
 
     while True:
         current = sorted(selected)
+        start = time.perf_counter()
         terms = mdl_objective(curve, current, cfg)
+        _profile_elapsed(profile_callback, "selector_objective_loop", start, {"selected_len": int(len(current))})
+        start = time.perf_counter()
         safe_by_residual = terms.weighted_reconstruction_error <= cfg.target_weighted_error
         safe_by_gap = terms.max_gap <= cfg.max_gap
-        if len(selected) >= cfg.min_k and safe_by_residual and safe_by_gap and not _risk_uncovered(current, curve, cfg):
+        risk_uncovered = _risk_uncovered(current, curve, cfg)
+        _profile_elapsed(
+            profile_callback,
+            "gap_guard",
+            start,
+            {"max_gap": int(terms.max_gap), "risk_uncovered": bool(risk_uncovered)},
+        )
+        if len(selected) >= cfg.min_k and safe_by_residual and safe_by_gap and not risk_uncovered:
             stop_reason = "residual_and_gap_safe"
             break
         if len(selected) >= min(cfg.max_k, curve.dense_t):
             stop_reason = "cap_reached"
             break
 
+        start = time.perf_counter()
         candidates = _candidate_pool(curve, current, cfg)
+        _profile_elapsed(profile_callback, "selector_candidate_pool", start, {"candidate_count": int(len(candidates))})
         best_gain = -np.inf
         best_pos = None
         best_role = None
@@ -213,7 +237,9 @@ def greedy_mdl_knot_select(
             if pos in selected:
                 continue
             trial = sorted(selected | {pos})
+            start = time.perf_counter()
             trial_terms = mdl_objective(curve, trial, cfg)
+            _profile_elapsed(profile_callback, "selector_objective_loop", start, {"selected_len": int(len(trial))})
             gain = terms.total_cost - trial_terms.total_cost + _role_bonus(role, cfg)
             if gain > best_gain:
                 best_gain = float(gain)
@@ -223,7 +249,10 @@ def greedy_mdl_knot_select(
         if best_pos is None:
             stop_reason = "no_positive_gain"
             break
-        if best_gain < cfg.min_marginal_gain and safe_by_gap and not _risk_uncovered(current, curve, cfg):
+        start = time.perf_counter()
+        risk_uncovered = _risk_uncovered(current, curve, cfg)
+        _profile_elapsed(profile_callback, "gap_guard", start, {"risk_uncovered": bool(risk_uncovered)})
+        if best_gain < cfg.min_marginal_gain and safe_by_gap and not risk_uncovered:
             stop_reason = "marginal_gain_low"
             break
 
@@ -231,7 +260,10 @@ def greedy_mdl_knot_select(
         roles[best_pos] = best_role or "mdl_knot"
         history.append({"t": best_pos, "gain": float(best_gain), "role": roles[best_pos]})
 
-    return _build_ledger(curve, sorted(selected), roles, history, stop_reason, cfg, video_id, window_id, control_name)
+    start = time.perf_counter()
+    ledger = _build_ledger(curve, sorted(selected), roles, history, stop_reason, cfg, video_id, window_id, control_name)
+    _profile_elapsed(profile_callback, "metadata_build", start, {"valid_k": int(ledger.valid_k)})
+    return ledger
 
 
 def build_ledger_from_positions(
