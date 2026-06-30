@@ -144,6 +144,8 @@ dataset = dict(
     ),
 )
 
+evaluation = dict(ground_truth_filename=annotation_path)
+
 model = dict(
     backbone=dict(
         backbone=dict(

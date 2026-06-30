@@ -67,6 +67,10 @@ def _config_text_is_clean(config_path):
         raise ValueError("BVR-TWB formal config must not request diagnostic deterministic preview")
     if "learned_packet_value" in text:
         raise ValueError("BVR-TWB formal local/precheck config must not silently require an unloaded learned value model")
+    if "/root/autodl-tmp" in text:
+        raise ValueError("BVR-TWB formal config must not contain legacy /root/autodl-tmp paths")
+    if "evaluation = dict(ground_truth_filename=annotation_path)" not in text:
+        raise ValueError("BVR-TWB formal config must override evaluation.ground_truth_filename with annotation_path")
     return True
 
 
