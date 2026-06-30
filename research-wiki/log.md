@@ -319,3 +319,32 @@ worktree.
   fallback.
 - Evidence boundary: no SSH, Slurm, GPU use, training launch, parent-hold
   action, BH-SDC action, or DIVERGENT route action occurred for this update.
+
+## 2026-06-30 15:07:48 +08:00
+
+PQR QC V2 shortdiagnostic gate reached read-only review PASS and remote Linux
+PRECHECK_ONLY PASS, but GPU1 is still occupied by CADF formal.
+
+- Local branch/upstream: `codex/c3-pqr-rankcal-v1-20260629` at
+  `e619533126f9045fe3e66e7d4a64d92910ccbf72`.
+- Local read-only route consistency review:
+  `PASS_READ_ONLY_ROUTE_CONSISTENCY_REVIEW`; no blocker, no GPU0 fallback, no
+  BH-SDC/DIVERGENT mixing, and short diagnostic remains non-final evidence.
+- Remote PRECHECK_ONLY directory:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQR_QCV2_Shortdiag_Precheck_e619533_20260630_20260630_150003`.
+- Remote PRECHECK evidence: checkout `e619533126f9045fe3e66e7d4a64d92910ccbf72`;
+  Linux `bash -n` PASS; QC V2 validator PASS; py_compile PASS; focused pytest
+  `28 passed in 3.33s`; `git diff --check` PASS.
+- Remote PRECHECK boundary: no `tools/train.py`, `tools/test.py`, `srun`,
+  `sbatch`, `scancel`, GPU use, parent-hold modification, BH-SDC action, or
+  DIVERGENT route action.
+- Remote monitor: parent hold `1118197 pcot_dbg2g` still running on `g0030`.
+  GPU1 remains occupied by CADF formal child `1118197.433 cadf_formal_g1`,
+  PID `3449750`, `CUDA_VISIBLE_DEVICES=1`, epoch 6 with finite loss and no
+  validation/final result yet. GPU0 remains occupied by innovation-side child
+  `1118197.467 bvr_twb_g0_r4` and is not available for C3/PQR/CADF fallback.
+- Next decision: wait/queue/report until GPU1 is free. QC V2 bounded
+  proposal-dump diagnostic is prechecked but not launched, and any short
+  diagnostic metric remains non-final route-quality evidence unless it reveals
+  a hard failure such as NaN, persistent non-finite behavior, OOM, or protocol
+  error.

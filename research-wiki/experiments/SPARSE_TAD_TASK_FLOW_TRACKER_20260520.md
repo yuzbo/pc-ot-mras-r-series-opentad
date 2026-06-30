@@ -8,8 +8,9 @@ the broader source for cross-route orchestration.
 
 | Time (+08:00) | Experiment / Config | Changed Surface | Status | Review / Gate State | Deployment / Result State | Next Action |
 | --- | --- | --- | --- | --- | --- | --- |
+| 2026-06-30 15:07:48 | `C3_PQR_RankCalV1_SparseIrregularQCV2` / remote PRECHECK_ONLY for commit `e619533` | No model/config/evaluator/sampler change beyond already-committed QC V2 shortdiag launcher/config; evidence update only | Local read-only route consistency review PASS; remote Linux PRECHECK_ONLY PASS in fresh clone; GPU1 still occupied by CADF formal `.433` | Local branch/upstream both at `e619533126f9045fe3e66e7d4a64d92910ccbf72`; remote PRECHECK dir `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQR_QCV2_Shortdiag_Precheck_e619533_20260630_20260630_150003`; `bash -n`, validator, py_compile, focused pytest `28 passed`, `git diff --check` all PASS | No `tools/train.py`, `tools/test.py`, `srun`, `sbatch`, `scancel`, GPU use, or result JSON from QC V2; CADF `.433` continues on GPU1 at epoch 6 with finite loss and no eval/final result; GPU0 remains reserved for innovation | Wait/queue/report until GPU1 is free; then GPU1-only bounded QC V2 proposal-dump diagnostic may start. Do not use GPU0 and do not treat short diagnostic mAP as final route-quality evidence |
 | 2026-06-30 14:52:34 | C3/PQR/CADF mainline GPU ownership rule | Route-operation rule only; no model/config/evaluator/sampler change | User reaffirmed GPU1-only training for C3/PQR/CADF mainline; GPU0 remains reserved for innovation/divergent experiments | Rule is recorded in this tracker, `research-wiki/log.md`, and the QC V2 route report; QC V2 launcher already fails closed unless `CUDA_VISIBLE_DEVICES=1` | No remote action, Slurm action, SSH, GPU use, or training launch occurred for this rule update | Continue all C3/PQR/CADF training/diagnostic/smoke launches on GPU1 only; if GPU1 is busy, wait/queue/report instead of using GPU0 |
-| 2026-06-30 14:42:58 | `C3_PQR_RankCalV1_SparseIrregularQCV2` / `c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_sparse_irregular_qc_v2_shortdiag.py` plus `run_c3_pqr_qc_v2_shortdiag_hold_child.sh` | Added QC V2 diagnostic-only shortdiag config and GPU1-only hold-child launcher for bounded proposal/result dumps; no CADF, BH-SDC, DIVERGENT, evaluator, GT/teacher/cache, postprocess scoring/NMS, Adapter internals, or input sampler changes | Local implementation complete; no deployment, no SSH, no Slurm, no `tools/train.py` real run | Local TDD RED captured missing config/launcher and bad runtime-config base path; main-process review fixed nested `gpu*_id*/result_detection.json` discovery before missing-artifact failure; py_compile PASS; QC V2 shortdiag validator PASS; focused pytest PASS; `git diff --check` exit 0 with LF/CRLF warnings only; commit still pending | No remote sync, no diagnostic run, no result JSON, no mAP evidence; GPU1 execution still waits for resource ownership and post-review sync | After review/commit/sync, GPU1-only bounded diagnostic may run when GPU1 is free; short diagnostic remains non-final route-quality evidence |
+| 2026-06-30 14:42:58 | `C3_PQR_RankCalV1_SparseIrregularQCV2` / `c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_sparse_irregular_qc_v2_shortdiag.py` plus `run_c3_pqr_qc_v2_shortdiag_hold_child.sh` | Added QC V2 diagnostic-only shortdiag config and GPU1-only hold-child launcher for bounded proposal/result dumps; no CADF, BH-SDC, DIVERGENT, evaluator, GT/teacher/cache, postprocess scoring/NMS, Adapter internals, or input sampler changes | Local implementation complete and GitHub synced at `e619533126f9045fe3e66e7d4a64d92910ccbf72`; no diagnostic training started | Local TDD RED captured missing config/launcher and bad runtime-config base path; main-process review fixed nested `gpu*_id*/result_detection.json` discovery before missing-artifact failure; py_compile PASS; QC V2 shortdiag validator PASS; focused pytest PASS; `git diff --check` exit 0 with LF/CRLF warnings only | No QC V2 diagnostic run, no result JSON, no mAP evidence; GPU1 execution still waits for resource ownership | GPU1-only bounded diagnostic may run when GPU1 is free; short diagnostic remains non-final route-quality evidence |
 | 2026-06-30 04:28:44 | `C3_PQR_RankCalV1_MaxIoU` / pseudo-boundary clean-clone dependency fix | Added missing transform helper dependency `opentad/datasets/transforms/pseudo_boundary.py`; added PQR validator/test dependency guard; updated PQR config metadata only; no PQR scoring math, CADF selector, BH-SDC, sampler, evaluator, postprocess, launcher, or runtime-gate behavior change | Remote clean clone 2-iter smoke import blocker addressed locally; no remote/runtime training launched | Local RED/GREEN dependency test; py_compile PASS; focused PQR pytest `17 passed, 3 skipped` with Windows torch-backed tests skipped due local torch DLL failure; 3 validators PASS; pseudo-boundary pure module behavior `5 passed`; review tool attempts failed and are not counted as PASS | No deployment, no SSH, no Slurm, no `tools/train.py` real run, no `tools/test.py`, no mAP evidence; N16R4 untouched | Commit/push this dependency completeness fix, then allow separate remote agent to rerun Linux PRECHECK and 2-iter smoke; keep 8-epoch shortdiag/formal training/eval/claims locked |
 | 2026-06-30 04:08:38 | `C3_PQR_RankCalV1_MaxIoU` / clean-clone dependency completeness fix | Added missing backbone dependency module `opentad/models/backbones/time_aligned_rasterizer.py` only; no PQR scoring math, CADF selector, BH-SDC, sampler, evaluator, postprocess, or launch logic change | Remote clean clone PRECHECK import blocker addressed locally; no remote/runtime training launched | Local py_compile PASS; focused PQR pytest `16 passed, 3 skipped` with Windows torch-backed tests skipped due local torch DLL failure; 3 validators PASS; Linux clean clone must rerun failed torch-backed PRECHECK | No deployment, no SSH, no Slurm, no `tools/train.py` real run, no `tools/test.py`, no mAP evidence; N16R4 untouched | Commit/push this dependency completeness fix, then allow separate remote PRECHECK agent to rerun PRECHECK; keep smoke/training/eval locked here |
 | 2026-06-30 03:48:16 | `C3_PQR_RankCalV1_MaxIoU` / `workflow.max_train_iters` runtime gate | Standard local training launcher and train loop only; PQR validator/tests/docs; no CADF selector, no BH-SDC, no evaluator/postprocess change | Pro blocker fixed at local implementation layer; no remote/runtime training launched | Local focused runtime gate tests PASS (`3 passed`); full focused PQR pytest PASS (`16 passed, 3 skipped`); py_compile PASS; 3 validators PASS; still needs read-only subagent final review | No deployment, no Slurm, no SSH, no `tools/train.py` real run, no `tools/test.py`, no mAP evidence; N16R4 `1118197 pcot_dbg2g` untouched | Run required read-only subagent final review, then remote PRECHECK/2-iter smoke only if review passes; keep 8-epoch shortdiag and formal/full train locked |
@@ -228,3 +229,35 @@ the broader source for cross-route orchestration.
 - Evidence boundary: this was a rule/tracker update only. No SSH, Slurm, GPU
   use, training launch, parent-hold action, BH-SDC action, or DIVERGENT route
   action occurred.
+
+## 2026-06-30 15:07:48 +08:00 QC V2 Remote PRECHECK PASS And GPU1 Still Occupied
+
+- Local read-only route consistency review returned
+  `PASS_READ_ONLY_ROUTE_CONSISTENCY_REVIEW`: worktree clean, branch/upstream
+  both at `e619533126f9045fe3e66e7d4a64d92910ccbf72`, GPU1-only launcher guard
+  present, no GPU0 fallback, short diagnostic remains non-final evidence, and
+  no BH-SDC/DIVERGENT attribution mixing was found.
+- Remote Linux PRECHECK_ONLY passed in fresh clone
+  `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQR_QCV2_Shortdiag_Precheck_e619533_20260630_20260630_150003`.
+  Evidence: checkout `e619533126f9045fe3e66e7d4a64d92910ccbf72`; symlinks
+  `data -> ../OpenTAD_Back_check/data` and `pretrained -> ../pretrained`;
+  `bash -n scripts/run_c3_pqr_qc_v2_shortdiag_hold_child.sh` PASS; QC V2
+  validator PASS; py_compile PASS; focused Linux pytest
+  `28 passed in 3.33s`; `git diff --check` PASS.
+- Remote boundary: the PRECHECK task did not run `tools/train.py`,
+  `tools/test.py`, `srun`, `sbatch`, or `scancel`; it did not use GPU; it did
+  not release/cancel/modify parent hold `1118197 pcot_dbg2g`; it did not touch
+  BH-SDC or any `DIVERGENT_INNOVATION_*` route.
+- Remote status monitor: parent hold `1118197 pcot_dbg2g` remains running on
+  `g0030`. GPU1 is occupied by CADF formal child `1118197.433
+  cadf_formal_g1`, PID `3449750`, `CUDA_VISIBLE_DEVICES=1`, running
+  `c3_cadf_densitymesh_original_adatad_32px_formal_selector_candidate_locked.py`.
+  CADF has entered epoch 6 with finite loss (e.g. epoch 5 tail `Loss=0.8151`);
+  no OOM, Traceback, RuntimeError, Killed, No space, real non-finite marker,
+  `Evaluation starts`, Average-mAP, `Training Over`, or `result_detection.json`
+  was found.
+- GPU0 remains occupied by innovation-side child `1118197.467 bvr_twb_g0_r4`
+  and is not available as fallback for C3/PQR/CADF.
+- Next launch decision: QC V2 bounded proposal-dump diagnostic is technically
+  prechecked but must wait for GPU1. Do not start it on GPU0. Do not treat any
+  short diagnostic metric as a final route-quality result.

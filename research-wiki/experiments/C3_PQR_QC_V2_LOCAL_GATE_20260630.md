@@ -186,8 +186,9 @@ Boundary:
   judgment was produced by this local implementation.
 - No CADF, BH-SDC, DIVERGENT, evaluator, GT/teacher/cache, postprocess
   scoring/NMS, Adapter internals, or input sampler files were edited.
-- Main-process review/commit/sync remains pending before any GPU1 diagnostic
-  launch.
+- This local implementation was later committed and pushed as
+  `e619533126f9045fe3e66e7d4a64d92910ccbf72`; GPU1 diagnostic launch remains
+  separate and was not started by this implementation gate.
 
 ## 2026-06-30 14:52:34 +08:00 User-Reaffirmed GPU1-Only Training Rule
 
@@ -203,3 +204,52 @@ experiment owner. This is now treated as a hard route-ownership rule:
 - the QC V2 launcher already implements this by requiring
   `CUDA_VISIBLE_DEVICES=1` and failing closed with
   `PQR_QCV2_GPU_GUARD_FAIL`.
+
+## 2026-06-30 15:07:48 +08:00 Read-Only Review And Remote PRECHECK Status
+
+Local read-only route consistency review passed:
+
+- branch/upstream and HEAD are both
+  `e619533126f9045fe3e66e7d4a64d92910ccbf72`;
+- worktree was clean at review time;
+- launcher requires `CUDA_VISIBLE_DEVICES=1`, emits
+  `PQR_QCV2_GPU_GUARD_FAIL`, and has no GPU0 fallback;
+- tests cover the GPU guard and reject `CUDA_VISIBLE_DEVICES=0`;
+- shortdiagnostic config remains `diagnostic_only=True`,
+  `formal_fulltrain=False`, `official_map_claim=False`, and disables teacher,
+  test-GT, and raw prediction cache;
+- no QC V2/BH-SDC/DIVERGENT attribution mixing was found.
+
+Remote Linux PRECHECK_ONLY passed in:
+
+`/data/home/sczc063/run/yuzibo/OpenTAD_C3PQR_QCV2_Shortdiag_Precheck_e619533_20260630_20260630_150003`
+
+Remote evidence:
+
+- checkout `e619533126f9045fe3e66e7d4a64d92910ccbf72`;
+- `bash -n scripts/run_c3_pqr_qc_v2_shortdiag_hold_child.sh` PASS;
+- QC V2 config validator PASS;
+- py_compile PASS;
+- focused Linux pytest returned `28 passed in 3.33s`;
+- `git diff --check` PASS.
+
+Remote boundary:
+
+- no `tools/train.py`, `tools/test.py`, `srun`, `sbatch`, `scancel`, GPU use,
+  parent-hold modification, BH-SDC action, or DIVERGENT route action occurred.
+
+Current GPU status:
+
+- protected parent hold `1118197 pcot_dbg2g` remains running on `g0030`;
+- GPU1 is occupied by CADF formal child `1118197.433 cadf_formal_g1`, PID
+  `3449750`, `CUDA_VISIBLE_DEVICES=1`, currently training at epoch 6 with
+  finite loss and no validation/final result yet;
+- GPU0 is occupied by innovation-side child `1118197.467 bvr_twb_g0_r4` and
+  must not be used as fallback.
+
+Launch decision:
+
+QC V2 bounded proposal-dump diagnostic is prechecked but not launched. It must
+wait for GPU1 to be free. Any future short diagnostic remains non-final
+route-quality evidence unless it reveals a hard failure such as NaN,
+persistent non-finite behavior, OOM, or protocol error.
