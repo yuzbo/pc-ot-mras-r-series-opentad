@@ -1,0 +1,82 @@
+MDL-Knot short diagnostic local non-GPU verification rerun
+Timestamp: 2026-06-30 09:23:07 +08:00 Asia/Shanghai
+Route label: DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3
+Owned worktree: E:\DeskTop\TAD\temrefuse-tad\OpenTAD_MDLKnot_ShortDiagGate_Worktree_20260630
+Owned branch: codex/divergent-mdl-knot-shortdiag-gate-20260630
+
+Scope boundary:
+- Local non-GPU verification only.
+- No training.
+- No tools/test.py.
+- No evaluation.
+- No remote sync.
+- No Slurm.
+- No Pro.
+- No shared main worktree writes.
+
+Verification count: 5/5 commands completed with exit code 0.
+
+1. Command:
+   python -m pytest tests/test_mdl_knot_shortdiag.py tests/test_mdl_knot_core.py tests/test_mdl_knot_tools_and_integration.py -q
+   Exit code: 0
+   Output:
+   ....................s.......                                             [100%]
+   27 passed, 1 skipped in 18.12s
+
+2. Command:
+   python tools/mdl_knot/validate_mdl_knot_shortdiag.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py
+   Exit code: 0
+   Output summary:
+   SHORT_DIAGNOSTIC_ONLY_REQUEST_ALLOWED
+   diagnostic_only=true
+   full_train_unlocked=false
+   metric_claim=false
+   sparse_compute_claim=false
+   max_epochs=1
+   workflow=[["train", 1]]
+   deploy_scout_source=raw_frame_motion_scout_with_metadata_fallback
+   synthetic_fallback_allowed=false
+   Still locked: full training, evaluation, checkpoints, tools/test.py, mAP and sparse-compute claims remain locked
+
+3. Command:
+   python tools/mdl_knot/validate_mdl_knot_launch_gate.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py
+   Exit code: 0
+   Output summary:
+   PRECHECK_ONLY_REQUEST_ALLOWED
+   dataset_pipelines_use_mdl=true
+   deploy_scout_source=raw_frame_motion_scout_with_metadata_fallback
+   synthetic_fallback_allowed=false
+   changed_surface.input_sampling=true
+   changed_surface.dynamic_budget_policy=true
+   changed_surface.adapter_backbone_internals=false
+   changed_surface.detector_head_logic=false
+   changed_surface.losses_assignment=false
+   changed_surface.test_time_postprocessing=false
+   changed_surface.token_compression=false
+   Still locked: remote_sync, Slurm, training, evaluation, tools/test.py, mAP/runtime/FLOPs/deploy/paper claims
+
+4. Bash availability and syntax check:
+   where.exe bash
+   Output:
+   C:\Windows\System32\bash.exe
+   C:\Users\skywalker\AppData\Local\Microsoft\WindowsApps\bash.exe
+
+   Command:
+   C:\Windows\System32\bash.exe -lc "cd /mnt/e/DeskTop/TAD/temrefuse-tad/OpenTAD_MDLKnot_ShortDiagGate_Worktree_20260630 && bash -n logs/run_mdl_knot_shortdiag_n16r4.sh"
+   Exit code: 0
+   Output: none
+   Note: local syntax-only check; no SSH, SCP, rsync, dataset sync, remote control, Slurm, or training was run.
+
+5. Command:
+   git diff --check
+   Exit code: 0
+   Output: none
+
+Final allowed action:
+- SHORT_DIAGNOSTIC_ONLY only.
+
+Still locked:
+- Formal full training.
+- Evaluation and tools/test.py.
+- mAP, metric, runtime/FLOPs, deployment, paper, and sparse-compute claims.
+- Remote sync and Slurm for this task.
