@@ -114,8 +114,9 @@ def test_output_schema_claim_locks_and_recall_math_on_deploy_visible_scout(tmp_p
         "min_first_round_bracket_recall": 0.95,
         "min_first_round_transition_coverage": 0.95,
         "max_first_round_temporal_coverage_fraction": 0.70,
+        "max_first_round_bracket_width_fraction": 0.30,
     }
-    assert payload["formal_gate_passed"] is True
+    assert payload["formal_gate_passed"] is False
     assert payload["video_count"] == 1
     assert payload["window_count"] == 1
     assert payload["transition_count"] == 4
@@ -131,7 +132,10 @@ def test_output_schema_claim_locks_and_recall_math_on_deploy_visible_scout(tmp_p
     assert payload["short_action_stratified_recall"]["short_le_1s"]["recall"] == pytest.approx(1.0)
     assert payload["class_misses"] == {}
     assert payload["window_misses"] == []
-    assert payload["allowed_next_action"] == "FORMAL_REVIEW_PACKET_ONLY_WITH_REAL_SCOUT_RECALL_EVIDENCE"
+    assert (
+        payload["allowed_next_action"]
+        == "LOCKED_REAL_SCOUT_RECALL_BELOW_FORMAL_GATE_REVISE_BRACKET_POLICY_OR_SCOUT"
+    )
     for key in (
         "formal_full_train_unlocked",
         "tools_test_allowed",
@@ -241,6 +245,7 @@ def test_zero_transition_pseudo_perfect_is_rejected(tmp_path):
         "min_first_round_bracket_recall": 0.95,
         "min_first_round_transition_coverage": 0.95,
         "max_first_round_temporal_coverage_fraction": 0.70,
+        "max_first_round_bracket_width_fraction": 0.30,
     }
     assert payload["formal_gate_passed"] is False
     assert payload["allowed_next_action"] == "LOCKED_ZERO_TRANSITION_NO_REAL_RECALL_EVIDENCE"
@@ -356,9 +361,9 @@ def test_cli_outputs_json_schema_and_never_claims_detector_training_or_test_py(t
         text=True,
         capture_output=True,
     )
-    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert proc.returncode == 1, proc.stderr + proc.stdout
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert payload["status"] == "PASS_DIAGNOSTIC_ONLY_REAL_SCOUT_RECALL_EVIDENCE"
+    assert payload["status"] == "LOCKED"
     assert payload["method"] == "abr_first_round_bracket_recall_diagnostic"
     assert payload["no_detector"] is True
     assert payload["no_training"] is True
@@ -382,7 +387,7 @@ def test_bom_annotation_and_scout_json_are_accepted(tmp_path):
 
     assert payload["real_deploy_visible_recall_evidence"] is True
     assert payload["transition_count"] == 2
-    assert payload["formal_gate_passed"] is True
+    assert payload["formal_gate_passed"] is False
 
 
 def test_bom_scout_jsonl_is_accepted(tmp_path):
@@ -425,6 +430,7 @@ def test_low_recall_real_scout_stays_locked_below_formal_gate(tmp_path):
     assert payload["real_deploy_visible_recall_evidence"] is True
     assert payload["formal_thresholds"]["min_first_round_bracket_recall"] == pytest.approx(0.95)
     assert payload["formal_thresholds"]["min_first_round_transition_coverage"] == pytest.approx(0.95)
+    assert payload["formal_thresholds"]["max_first_round_bracket_width_fraction"] == pytest.approx(0.30)
     assert payload["first_round_bracket_recall"] < 0.95
     assert payload["first_round_transition_coverage"] < 0.95
     assert payload["missed_transition_count"] > 0
@@ -511,9 +517,73 @@ def test_low_amplitude_repeated_short_actions_get_first_round_brackets_without_b
         "min_first_round_bracket_recall": 0.95,
         "min_first_round_transition_coverage": 0.95,
         "max_first_round_temporal_coverage_fraction": 0.70,
+        "max_first_round_bracket_width_fraction": 0.30,
     }
     assert payload["transition_count"] == 12
     assert payload["first_round_bracket_recall"] == pytest.approx(1.0)
     assert payload["first_round_transition_coverage"] == pytest.approx(1.0)
     assert payload["temporal_coverage_fraction"] <= 0.70
+    assert payload["max_bracket_width_fraction"] <= 0.30
     assert payload["formal_gate_passed"] is True
+
+
+def test_event_train_risk_envelope_covers_dense_short_action_train_without_overwide_shortcut(tmp_path):
+    ann_segments = []
+    curve = [0.12] * 160
+    for peak in [34, 54, 73, 91, 109, 128, 145]:
+        curve[peak - 1] = 0.38
+        curve[peak] = 0.90
+        curve[peak + 1] = 0.42
+    for start in [38, 45, 52, 60, 68, 78, 88, 98, 108, 118, 129, 140]:
+        ann_segments.append({"segment": [float(start), float(start + 3)], "label": "TennisSwing"})
+
+    ann = _write_json(
+        tmp_path / "ann.json",
+        {
+            "database": {
+                "video_0001": {
+                    "subset": "validation",
+                    "duration": 160.0,
+                    "frame": 160,
+                    "annotations": ann_segments,
+                }
+            }
+        },
+    )
+    scout = _write_json(
+        tmp_path / "scout.json",
+        _scout_payload(curve, scout_source="unit_deploy_visible_event_train_graydiff"),
+    )
+
+    weak_payload = run_audit(
+        ann,
+        scout,
+        abr_config=ABRConfig(
+            k0=12,
+            k1_cap=0,
+            k2_cap=0,
+            max_total_k=12,
+            max_gap=8,
+            round2_enabled=False,
+            bracket_policy="legacy_scaffold_pair",
+        ),
+    )
+    payload = run_audit(
+        ann,
+        scout,
+        abr_config=ABRConfig(k0=12, k1_cap=0, k2_cap=0, max_total_k=12, max_gap=8, round2_enabled=False),
+    )
+
+    assert payload["real_deploy_visible_recall_evidence"] is True
+    assert payload["diagnostic_fallback_used"] is False
+    assert payload["selector_gt_visible"] is False
+    assert payload["first_round_bracket_recall"] > weak_payload["first_round_bracket_recall"]
+    assert payload["first_round_transition_coverage"] > weak_payload["first_round_transition_coverage"]
+    assert payload["first_round_bracket_recall"] >= 0.75
+    assert payload["temporal_coverage_fraction"] <= 0.70
+    assert payload["max_bracket_width_fraction"] <= 0.30
+    assert payload["formal_gate_passed"] is False
+    assert (
+        payload["allowed_next_action"]
+        == "LOCKED_REAL_SCOUT_RECALL_BELOW_FORMAL_GATE_REVISE_BRACKET_POLICY_OR_SCOUT"
+    )

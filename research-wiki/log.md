@@ -51,3 +51,12 @@
 - Required fields passed: `detector_forward_count=1`, `dynamic_k_nonconstant=true`, `nonzero_window_ok=true`, `val_test_gt_rejection_ok=true`, `real_sparse_handoff_ok=true`, `forbidden_inputs_ok=true`, `pipeline_valid_k=24`, `easy_valid_k=13`, `rich_valid_k=24`.
 - Gate output: `allowed_next_action=REMOTE_PRECHECK_ONLY_REQUEST`, `still_locked=TRAIN_EVAL_SYNC_STAGE_COMMIT_PUSH`.
 - Interpretation: Linux/N16R4 `PRECHECK_ONLY` passed after the clean-clone dependency fix, but full train, evaluation, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper claims, and sparse-compute claims remain locked.
+
+## 2026-06-30T18:24:34+08:00 - ABR scout policy repair remains formal-locked
+
+- Worktree `OpenTAD_ABR_ScoutPolicyRepair_Worktree_20260630`, branch `codex/divergent-abr-scout-policy-repair-20260630`, route `DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3`.
+- Fixed first-round audit scoring to use the saved round-0 bracket snapshot and added deploy-visible event-train envelopes, risk-gap micro bridges, silent-gap sentinels, start-edge guards, and max single-bracket width validation.
+- Final real 5-video deploy-visible audit improved from the reproduced `first_round_bracket_recall=0.16129032258064516` to `0.7661290322580645`, with `first_round_transition_coverage=0.7258064516129032`, `temporal_coverage_fraction=0.6567708333333333`, `max_bracket_width_fraction=0.296875`, `fallback=false`, and `selector_gt_visible=false`.
+- The audit still failed closed with `status=LOCKED`, `missed_transition_count=29`, and `allowed_next_action=LOCKED_REAL_SCOUT_RECALL_BELOW_FORMAL_GATE_REVISE_BRACKET_POLICY_OR_SCOUT`.
+- Verification passed: `34 passed` for ABR pytest, py_compile passed, and formal config validator returned `formal_config_ok=true`, `full_train_unlocked=false`.
+- No remote sync, Slurm, training, evaluation, `tools/test.py`, or mAP/runtime/deploy/paper claim was performed. ABR formal/full train remains locked; only further local precheck/short diagnostic policy work is justified.

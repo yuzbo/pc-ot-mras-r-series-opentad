@@ -58,7 +58,9 @@ def select_active_bracket_refinement(
         selected_meta[pos] = (0, "scaffold", -1)
     scout_ms += len(r0_positions) * cfg.scout_cost_ms_per_position
     brackets = build_initial_brackets(curve, r0_positions, cfg)
+    initial_bracket_snapshot = [bracket.to_dict(fps) for bracket in brackets]
     first_round_diagnostics = _first_round_bracket_diagnostics(curve, brackets, cfg, scout_source_detail, fallback_used)
+    first_round_diagnostics["first_round_brackets"] = initial_bracket_snapshot
     stop_reason = "no_brackets" if not brackets else "round0_complete"
     round_ledgers.append(
         _make_ledger(
@@ -308,13 +310,23 @@ def _first_round_bracket_diagnostics(
             "full_curve_transition_brackets",
             "gradient_spike_brackets",
             "percentile_adaptive_low_amplitude_activity_brackets",
+            "bounded_event_train_risk_envelopes",
+            "risk_gap_micro_bridges",
+            "silent_gap_sentinels",
+            "temporal_edge_risk_guards",
             "uncertainty_widening",
             "short_action_boundary_protection",
             "max_gap_span_expansion",
             "first_round_temporal_coverage_guard",
+            "first_round_single_bracket_width_guard",
         ],
         "bracket_source_counts": dict(sorted(source_counts.items())),
         "first_round_max_temporal_coverage_fraction": float(config.first_round_max_temporal_coverage_fraction),
+        "first_round_max_bracket_width_fraction": float(config.first_round_max_bracket_width_fraction),
+        "max_bracket_width": int(max((bracket.width for bracket in brackets), default=0)),
+        "max_bracket_width_fraction": float(
+            0.0 if dense_t <= 0 else max((bracket.width for bracket in brackets), default=0) / float(dense_t)
+        ),
         "dense_T": int(dense_t),
         "round_id": 0,
         "transition_count": int(transition_count),

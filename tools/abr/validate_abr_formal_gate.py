@@ -78,6 +78,8 @@ def validate_formal_config(config_path: Path) -> dict[str, Any]:
         raise ABRValidationError("formal gate min_first_round_transition_coverage must be >= 0.95")
     if float(gate.get("max_first_round_temporal_coverage_fraction", 1.0)) > 0.70:
         raise ABRValidationError("formal gate max_first_round_temporal_coverage_fraction must be <= 0.70")
+    if float(gate.get("max_first_round_bracket_width_fraction", 1.0)) > 0.30:
+        raise ABRValidationError("formal gate max_first_round_bracket_width_fraction must be <= 0.30")
 
     if loader.get("method") != "abr_active_bracket_refinement":
         raise ABRValidationError("abr_loader.method must be abr_active_bracket_refinement")
@@ -91,6 +93,8 @@ def validate_formal_config(config_path: Path) -> dict[str, Any]:
         raise ABRValidationError("formal abr_config must use deploy_visible_multiscale_graydiff_bracket_v2")
     if float(loader_cfg.get("first_round_max_temporal_coverage_fraction", 1.0)) > 0.70:
         raise ABRValidationError("formal abr_config first_round_max_temporal_coverage_fraction must be <= 0.70")
+    if float(loader_cfg.get("first_round_max_bracket_width_fraction", 1.0)) > 0.30:
+        raise ABRValidationError("formal abr_config first_round_max_bracket_width_fraction must be <= 0.30")
 
     for split_name in ("train", "val", "test"):
         pipeline = dataset.get(split_name, {}).get("pipeline", [])

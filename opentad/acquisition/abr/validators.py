@@ -141,6 +141,7 @@ def validate_first_round_bracket_diagnostics(
     min_recall: float = 0.95,
     min_transition_coverage: float = 0.95,
     max_temporal_coverage_fraction: float = 0.70,
+    max_bracket_width_fraction: float = 0.30,
     require_deploy_visible_scout: bool = False,
 ) -> Dict[str, Any]:
     if not isinstance(diagnostics, Mapping):
@@ -199,6 +200,15 @@ def validate_first_round_bracket_diagnostics(
                 f"{temporal_coverage:.4f} exceeds allowed {float(max_temporal_coverage_fraction):.4f}; "
                 "temporal_coverage guard rejects overwide bracket evidence"
             )
+    width_fraction = None
+    if "max_bracket_width_fraction" in diagnostics:
+        width_fraction = _require_fraction(diagnostics, "max_bracket_width_fraction")
+        if width_fraction > float(max_bracket_width_fraction):
+            raise ABRValidationError(
+                "LOCKED: max_bracket_width_fraction "
+                f"{width_fraction:.4f} exceeds allowed {float(max_bracket_width_fraction):.4f}; "
+                "single-bracket width guard rejects overwide shortcut evidence"
+            )
     return {
         "transition_count": int(transition_count),
         "bracketed_transition_count": int(bracketed_transition_count),
@@ -208,6 +218,7 @@ def validate_first_round_bracket_diagnostics(
         "first_round_temporal_coverage_fraction": None
         if temporal_coverage is None
         else float(temporal_coverage),
+        "max_bracket_width_fraction": None if width_fraction is None else float(width_fraction),
     }
 
 
@@ -240,6 +251,7 @@ def validate_formal_readiness_payload(payload: Mapping[str, Any]) -> Dict[str, A
         min_recall=float(thresholds.get("min_first_round_bracket_recall", 0.95)),
         min_transition_coverage=float(thresholds.get("min_first_round_transition_coverage", 0.95)),
         max_temporal_coverage_fraction=float(thresholds.get("max_first_round_temporal_coverage_fraction", 0.70)),
+        max_bracket_width_fraction=float(thresholds.get("max_first_round_bracket_width_fraction", 0.30)),
         require_deploy_visible_scout=True,
     )
     return {

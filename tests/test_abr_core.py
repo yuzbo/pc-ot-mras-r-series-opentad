@@ -69,6 +69,9 @@ def test_selection_outputs_sorted_unique_original_positions_and_no_leakage():
         "uses_detector_feedback": False,
     }
     assert "multiscale_peak_brackets" in round0["bracket_policy_mechanisms"]
+    assert "bounded_event_train_risk_envelopes" in round0["bracket_policy_mechanisms"]
+    assert round0["first_round_max_bracket_width_fraction"] == pytest.approx(0.30)
+    assert 0.0 <= round0["max_bracket_width_fraction"] <= 0.30
     assert all(bracket.left <= bracket.right for bracket in result.brackets)
     assert [(bracket.left, bracket.right, bracket.bracket_id) for bracket in result.brackets] == sorted(
         (bracket.left, bracket.right, bracket.bracket_id) for bracket in result.brackets

@@ -105,6 +105,7 @@ def run_audit(
     min_first_round_bracket_recall: float = 0.95,
     min_first_round_transition_coverage: float = 0.95,
     max_first_round_temporal_coverage_fraction: float = 0.70,
+    max_first_round_bracket_width_fraction: float = 0.30,
     abr_config: ABRConfig | None = None,
 ) -> dict[str, Any]:
     ann = _load_json(annotation_json)
@@ -142,6 +143,7 @@ def run_audit(
     totals = _empty_totals()
     window_summaries = []
     all_widths = []
+    all_width_fractions = []
     all_width_seconds = []
     scout_sources = set()
     fallback_used = False
@@ -167,13 +169,14 @@ def run_audit(
         fallback_used = fallback_used or bool(selection.diagnostic_fallback_used)
         scout_sources.add(str(selection.scout_source))
         video_ids.add(case.video_id)
-        round0 = _round0_brackets(selection.brackets)
+        round0 = _round0_brackets_from_selection(selection)
         gt_instances, ambiguous_transition_count = _gt_instances_for_window(
             case.video_id, case.video_info, case.window_start_seconds, case.window_end_seconds
         )
         score = _score_window(case, round0, gt_instances, ambiguous_transition_count)
         _accumulate(totals, score, case, round0, gt_instances)
         all_widths.extend([bracket.width for bracket in round0])
+        all_width_fractions.extend([bracket.width / float(max(case.dense_t, 1)) for bracket in round0])
         all_width_seconds.extend([bracket.width_seconds(case.fps) for bracket in round0])
         if score["missed_transition_count"] > 0:
             window_summaries.append(
@@ -206,7 +209,9 @@ def run_audit(
         "min_first_round_bracket_recall": float(min_first_round_bracket_recall),
         "min_first_round_transition_coverage": float(min_first_round_transition_coverage),
         "max_first_round_temporal_coverage_fraction": float(max_first_round_temporal_coverage_fraction),
+        "max_first_round_bracket_width_fraction": float(max_first_round_bracket_width_fraction),
     }
+    max_width_fraction = max(all_width_fractions, default=0.0)
     real_evidence = (
         not fallback_used
         and not selector_gt_visible
@@ -220,6 +225,7 @@ def run_audit(
         and first_round_bracket_recall >= formal_thresholds["min_first_round_bracket_recall"]
         and first_round_transition_coverage >= formal_thresholds["min_first_round_transition_coverage"]
         and temporal_coverage_fraction <= formal_thresholds["max_first_round_temporal_coverage_fraction"]
+        and max_width_fraction <= formal_thresholds["max_first_round_bracket_width_fraction"]
     )
     allowed_next_action = (
         "FORMAL_REVIEW_PACKET_ONLY_WITH_REAL_SCOUT_RECALL_EVIDENCE"
@@ -252,6 +258,7 @@ def run_audit(
         "first_round_bracket_recall": first_round_bracket_recall,
         "first_round_transition_coverage": first_round_transition_coverage,
         "temporal_coverage_fraction": float(temporal_coverage_fraction),
+        "max_bracket_width_fraction": float(max_width_fraction),
         "bracket_width_stats": _stats(all_widths),
         "bracket_width_seconds_stats": _stats(all_width_seconds),
         "false_positive_bracket_density": float(false_positive_bracket_density),
@@ -589,8 +596,43 @@ def _empty_totals() -> dict[str, Any]:
     }
 
 
+def _round0_brackets_from_selection(selection: Any) -> list[BracketState]:
+    if getattr(selection, "round_ledgers", None):
+        diagnostics = getattr(selection.round_ledgers[0], "diagnostics", {})
+        snapshot = diagnostics.get("first_round_brackets", []) if isinstance(diagnostics, Mapping) else []
+        if isinstance(snapshot, Sequence) and not isinstance(snapshot, (str, bytes)):
+            restored = [_bracket_from_snapshot(item) for item in snapshot if isinstance(item, Mapping)]
+            if restored:
+                return restored
+    return _round0_brackets(selection.brackets)
+
+
 def _round0_brackets(brackets: Sequence[BracketState]) -> list[BracketState]:
     return [bracket for bracket in brackets if int(bracket.round_created) == 0]
+
+
+def _bracket_from_snapshot(item: Mapping[str, Any]) -> BracketState:
+    bracket = BracketState(
+        bracket_id=int(item.get("bracket_id", 0)),
+        kind=str(item.get("kind", "unknown")),
+        left=int(item.get("left", 0)),
+        right=int(item.get("right", 0)),
+        parent_id=item.get("parent_id"),
+        round_created=int(item.get("round_created", 0)),
+        last_updated_round=int(item.get("last_updated_round", 0)),
+        confidence=float(item.get("confidence", 0.0)),
+        uncertainty=float(item.get("uncertainty", 0.0)),
+        state_left=item.get("state_left"),
+        state_right=item.get("state_right"),
+        has_pre_background_witness=bool(item.get("has_pre_background_witness", False)),
+        has_action_core_witness=bool(item.get("has_action_core_witness", False)),
+        has_post_background_witness=bool(item.get("has_post_background_witness", False)),
+        priority=float(item.get("priority", 0.0)),
+        status=str(item.get("status", "active")),
+        evidence_source=str(item.get("evidence_source", "first_round_snapshot")),
+        score_components=dict(item.get("score_components", {})),
+    )
+    return bracket
 
 
 def _covered_by_any_bracket(position: int, brackets: Sequence[BracketState]) -> bool:
@@ -783,6 +825,7 @@ def main(argv=None) -> int:
     parser.add_argument("--min-first-round-bracket-recall", type=float, default=0.95)
     parser.add_argument("--min-first-round-transition-coverage", type=float, default=0.95)
     parser.add_argument("--max-first-round-temporal-coverage-fraction", type=float, default=0.70)
+    parser.add_argument("--max-first-round-bracket-width-fraction", type=float, default=0.30)
     args = parser.parse_args(argv)
 
     cfg = ABRConfig(
@@ -810,6 +853,7 @@ def main(argv=None) -> int:
             min_first_round_bracket_recall=float(args.min_first_round_bracket_recall),
             min_first_round_transition_coverage=float(args.min_first_round_transition_coverage),
             max_first_round_temporal_coverage_fraction=float(args.max_first_round_temporal_coverage_fraction),
+            max_first_round_bracket_width_fraction=float(args.max_first_round_bracket_width_fraction),
             abr_config=cfg,
         )
     except Exception as exc:

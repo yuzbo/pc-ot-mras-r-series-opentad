@@ -30,6 +30,7 @@ def _formal_payload_from_diagnostics(diagnostics):
                 "min_first_round_bracket_recall": 0.95,
                 "min_first_round_transition_coverage": 0.95,
                 "max_first_round_temporal_coverage_fraction": 0.70,
+                "max_first_round_bracket_width_fraction": 0.30,
             },
         },
     }
@@ -134,6 +135,7 @@ def test_formal_payload_rejects_precheck_fallback_and_low_first_round_recall():
         "first_round_bracket_recall": 1.0,
         "first_round_transition_coverage": 1.0,
         "first_round_temporal_coverage_fraction": 0.25,
+        "max_bracket_width_fraction": 0.20,
     }
     decision = validate_formal_readiness_payload(_formal_payload_from_diagnostics(good_diag))
     assert decision["formal_readiness_evidence_ok"] is True
@@ -165,9 +167,27 @@ def test_formal_payload_rejects_overwide_first_round_coverage_even_with_full_rec
         "first_round_bracket_recall": 1.0,
         "first_round_transition_coverage": 1.0,
         "first_round_temporal_coverage_fraction": 0.95,
+        "max_bracket_width_fraction": 0.20,
     }
 
     with pytest.raises(ABRValidationError, match="temporal_coverage"):
+        validate_formal_readiness_payload(_formal_payload_from_diagnostics(overwide_diag))
+
+
+def test_formal_payload_rejects_single_overwide_bracket_even_with_full_recall():
+    overwide_diag = {
+        "scout_source": "abr_scout_curve:deploy_visible",
+        "diagnostic_fallback_used": False,
+        "transition_count": 2,
+        "bracketed_transition_count": 2,
+        "missed_transition_count": 0,
+        "first_round_bracket_recall": 1.0,
+        "first_round_transition_coverage": 1.0,
+        "first_round_temporal_coverage_fraction": 0.55,
+        "max_bracket_width_fraction": 0.45,
+    }
+
+    with pytest.raises(ABRValidationError, match="max_bracket_width_fraction"):
         validate_formal_readiness_payload(_formal_payload_from_diagnostics(overwide_diag))
 
 

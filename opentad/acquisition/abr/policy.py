@@ -209,6 +209,43 @@ def _multiscale_curve_brackets(curve: Sequence[float], config: ABRConfig, start_
         brackets.append(bracket)
         next_id += 1
 
+    for left, right, score, anchor_count in _event_train_risk_windows(values, composite, gradients, config):
+        bracket = _make_curve_bracket(
+            next_id,
+            "event_train",
+            left,
+            right,
+            values,
+            composite,
+            gradients,
+            config,
+            "event_train_risk_envelope",
+        )
+        bracket.score_components["event_train_score"] = float(score)
+        bracket.score_components["event_train_anchor_count"] = float(anchor_count)
+        bracket.confidence = max(bracket.confidence, min(1.0, 0.30 + 0.55 * float(score)))
+        bracket.priority = score_bracket_priority(bracket, config) + 0.60 + min(0.60, 0.08 * float(anchor_count))
+        brackets.append(bracket)
+        next_id += 1
+
+    for left, right, source, score in _risk_gap_probe_windows(brackets, len(values), config):
+        bracket = _make_curve_bracket(
+            next_id,
+            "risk_gap",
+            left,
+            right,
+            values,
+            composite,
+            gradients,
+            config,
+            source,
+        )
+        bracket.score_components["risk_gap_probe_score"] = float(score)
+        bracket.confidence = max(bracket.confidence, min(1.0, 0.45 + 0.40 * float(score)))
+        bracket.priority = score_bracket_priority(bracket, config) + 0.45 + 0.35 * float(score)
+        brackets.append(bracket)
+        next_id += 1
+
     return brackets
 
 
@@ -227,6 +264,7 @@ def _make_curve_bracket(
 ) -> BracketState:
     left = clamp_position(left, len(values))
     right = clamp_position(max(int(right), int(left)), len(values))
+    left, right = _clamp_window_width(left, right, len(values), config)
     local_values = values[left : right + 1]
     local_composite = composite[left : right + 1]
     local_gradients = gradients[left : right + 1]
@@ -343,6 +381,211 @@ def _adaptive_low_amplitude_activity_segments(
     return sorted(scored[:max_segments], key=lambda item: (item[0], item[1]))
 
 
+def _event_train_risk_windows(
+    values: Sequence[float],
+    composite: Sequence[float],
+    gradients: Sequence[float],
+    config: ABRConfig,
+) -> List[Tuple[int, int, float, int]]:
+    if len(values) < 8:
+        return []
+
+    salience = [
+        max(float(values[idx]), float(composite[idx]), float(gradients[idx]) * 1.35)
+        for idx in range(len(values))
+    ]
+    sorted_salience = sorted(salience)
+    sorted_gradients = sorted(float(value) for value in gradients)
+    low = _percentile(sorted_salience, 0.20)
+    high = _percentile(sorted_salience, 0.95)
+    dynamic_range = max(high - low, 0.0)
+    if dynamic_range < 0.04:
+        return []
+
+    peak_floor = max(
+        _percentile(sorted_salience, float(config.event_train_peak_quantile)),
+        low + 0.40 * dynamic_range,
+        0.18,
+    )
+    gradient_floor = max(
+        _percentile(sorted_gradients, float(config.event_train_gradient_quantile)),
+        0.08,
+    )
+    anchors = []
+    for idx in range(1, len(values) - 1):
+        is_local_peak = salience[idx] >= salience[idx - 1] and salience[idx] >= salience[idx + 1]
+        high_salience = salience[idx] >= peak_floor
+        high_gradient = float(gradients[idx]) >= gradient_floor and salience[idx] >= low + 0.18 * dynamic_range
+        if is_local_peak and (high_salience or high_gradient):
+            anchors.append(idx)
+    anchors = sorted_unique_in_range(anchors, len(values))
+    if len(anchors) < max(int(config.event_train_min_anchors), 2):
+        return []
+
+    max_gap = max(int(round(len(values) * float(config.event_train_max_gap_fraction))), 2 * max(int(config.max_gap), 1), 8)
+    groups: List[List[int]] = []
+    current = [anchors[0]]
+    for anchor in anchors[1:]:
+        if int(anchor) - int(current[-1]) <= max_gap:
+            current.append(anchor)
+            continue
+        groups.append(current)
+        current = [anchor]
+    groups.append(current)
+
+    windows: List[Tuple[int, int, float, int]] = []
+    for group in groups:
+        if len(group) < max(int(config.event_train_min_anchors), 2):
+            continue
+        windows.extend(_bounded_event_train_group_windows(group, salience, dynamic_range, config, len(values)))
+
+    windows.sort(key=lambda item: (-item[2], item[0], item[1], -item[3]))
+    max_windows = max(3, min(24, len(values) // max(max(int(config.max_gap), 1), 12) + 3))
+    selected = sorted(windows[:max_windows], key=lambda item: (item[0], item[1]))
+    return selected
+
+
+def _bounded_event_train_group_windows(
+    anchors: Sequence[int],
+    salience: Sequence[float],
+    dynamic_range: float,
+    config: ABRConfig,
+    dense_t: int,
+) -> List[Tuple[int, int, float, int]]:
+    max_width = max(1, int(math.floor(dense_t * float(config.first_round_max_bracket_width_fraction))))
+    max_width = min(max_width, dense_t)
+    context = max(
+        int(round(dense_t * float(config.event_train_context_fraction))),
+        max(int(config.max_gap), 1),
+        3,
+    )
+    context = min(context, max(max_width // 3, 1))
+
+    chunks: List[List[int]] = []
+    current: List[int] = []
+    for anchor in anchors:
+        proposed = current + [int(anchor)]
+        if current and proposed[-1] - proposed[0] + 2 * context + 1 > max_width:
+            chunks.append(current)
+            current = [int(anchor)]
+        else:
+            current = proposed
+    if current:
+        chunks.append(current)
+
+    windows: List[Tuple[int, int, float, int]] = []
+    for chunk in chunks:
+        if len(chunk) < max(int(config.event_train_min_anchors), 2) and len(anchors) < 3:
+            continue
+        left = clamp_position(min(chunk) - context, dense_t)
+        right = clamp_position(max(chunk) + context, dense_t)
+        if right - left + 1 > max_width:
+            center = int(round((min(chunk) + max(chunk)) / 2.0))
+            half = max_width // 2
+            left = clamp_position(center - half, dense_t)
+            right = clamp_position(left + max_width - 1, dense_t)
+            left = clamp_position(right - max_width + 1, dense_t)
+        local_peak = max((float(salience[pos]) for pos in chunk), default=0.0)
+        score = min(1.0, 0.45 + 0.10 * len(chunk) + 0.45 * (local_peak / max(dynamic_range, 1e-6)))
+        windows.append((int(left), int(right), float(score), int(len(chunk))))
+    return windows
+
+
+def _clamp_window_width(left: int, right: int, dense_t: int, config: ABRConfig) -> Tuple[int, int]:
+    if dense_t <= 0:
+        return 0, 0
+    max_width = max(1, int(math.floor(dense_t * float(config.first_round_max_bracket_width_fraction))))
+    if int(right) - int(left) <= max_width:
+        return int(left), int(right)
+    center = int(round((int(left) + int(right)) / 2.0))
+    half = max_width // 2
+    new_left = clamp_position(center - half, dense_t)
+    new_right = clamp_position(new_left + max_width, dense_t)
+    new_left = clamp_position(new_right - max_width, dense_t)
+    return int(new_left), int(new_right)
+
+
+def _risk_gap_probe_windows(
+    brackets: Sequence[BracketState],
+    dense_t: int,
+    config: ABRConfig,
+) -> List[Tuple[int, int, str, float]]:
+    if dense_t <= 0 or not brackets or int(config.max_gap) <= 0:
+        return []
+    intervals = _merged_intervals(
+        (bracket.left, bracket.right)
+        for bracket in brackets
+        if bracket.evidence_source
+        in {
+            "adaptive_low_amplitude_activity",
+            "event_train_risk_envelope",
+            "multiscale_gradient",
+            "multiscale_peak",
+            "multiscale_transition",
+        }
+    )
+    if not intervals:
+        return []
+
+    windows: List[Tuple[int, int, str, float]] = []
+    bridge_limit = max(int(config.max_gap), 4)
+    sentinel_stride = max(2 * max(int(config.max_gap), 1), 8)
+    sentinel_radius = max(max(int(config.max_gap), 1) // 6, 2)
+    edge_radius = max(max(int(config.max_gap), 1) // 2, 4)
+
+    first_left = int(intervals[0][0])
+    if first_left > 0:
+        right = min(first_left - 1, edge_radius)
+        if right >= 0:
+            windows.append((0, right, "temporal_edge_risk_guard", 0.75))
+
+    for (prev_left, prev_right), (next_left, next_right) in zip(intervals[:-1], intervals[1:]):
+        gap_left = int(prev_right) + 1
+        gap_right = int(next_left) - 1
+        if gap_right < gap_left:
+            continue
+        gap_width = gap_right - gap_left + 1
+        if gap_width <= bridge_limit:
+            windows.append((gap_left, gap_right, "risk_gap_micro_bridge", 0.90))
+            continue
+
+        boundary_center = clamp_position(gap_left + max(int(config.max_gap), 1) // 4, dense_t)
+        windows.append(
+            (
+                boundary_center - sentinel_radius,
+                boundary_center + sentinel_radius,
+                "silent_gap_sentinel",
+                0.65,
+            )
+        )
+        center = gap_left + sentinel_stride
+        while center <= gap_right:
+            windows.append((center - sentinel_radius, center + sentinel_radius, "silent_gap_sentinel", 0.60))
+            center += sentinel_stride
+
+    bounded = []
+    for left, right, source, score in windows:
+        clamped_left = clamp_position(left, dense_t)
+        clamped_right = clamp_position(max(int(right), int(left)), dense_t)
+        clamped_left, clamped_right = _clamp_window_width(clamped_left, clamped_right, dense_t, config)
+        bounded.append((clamped_left, clamped_right, source, float(score)))
+    return bounded
+
+
+def _merged_intervals(intervals: Iterable[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    ordered = sorted((int(left), int(right)) for left, right in intervals if int(right) >= int(left))
+    if not ordered:
+        return []
+    merged: List[Tuple[int, int]] = [ordered[0]]
+    for left, right in ordered[1:]:
+        prev_left, prev_right = merged[-1]
+        if left <= prev_right + 1:
+            merged[-1] = (prev_left, max(prev_right, right))
+            continue
+        merged.append((left, right))
+    return merged
+
+
 def _percentile(values: Sequence[float], q: float) -> float:
     if not values:
         return 0.0
@@ -416,9 +659,22 @@ def _enforce_round0_coverage_guard(
             bracket.bracket_id = idx
         return kept
     max_fraction = max(0.05, min(float(config.first_round_max_temporal_coverage_fraction), 1.0))
-    kept = list(sorted(brackets, key=lambda b: (-b.priority, b.left, b.right)))
-    while kept and _covered_fraction(kept, dense_t) > max_fraction:
-        kept.pop()
+    kept: List[BracketState] = []
+    covered: set[int] = set()
+    max_positions = max(1, int(math.ceil(dense_t * max_fraction)))
+    for bracket in sorted(brackets, key=_round0_guard_rank):
+        left = clamp_position(bracket.left, dense_t)
+        right = clamp_position(bracket.right, dense_t)
+        if right < left:
+            continue
+        proposed = set(range(left, right + 1))
+        marginal = proposed - covered
+        if not marginal:
+            continue
+        if len(covered) + len(marginal) > max_positions:
+            continue
+        kept.append(bracket)
+        covered.update(marginal)
     kept = sorted(kept, key=lambda b: (b.left, b.right, -b.priority))
     for idx, bracket in enumerate(kept, start=1):
         bracket.bracket_id = idx
@@ -433,6 +689,21 @@ def _covered_fraction(brackets: Sequence[BracketState], dense_t: int) -> float:
         if right >= left:
             covered.update(range(left, right + 1))
     return len(covered) / float(dense_t)
+
+
+def _round0_guard_rank(bracket: BracketState) -> Tuple[float, float, int, int]:
+    width = max(int(bracket.width) + 1, 1)
+    risk_density = float(bracket.priority) / math.sqrt(float(width))
+    source_bonus = 0.0
+    if bracket.evidence_source in {"adaptive_low_amplitude_activity", "multiscale_gradient", "multiscale_transition"}:
+        source_bonus += 0.15
+    if bracket.evidence_source in {"risk_gap_micro_bridge", "silent_gap_sentinel", "temporal_edge_risk_guard"}:
+        source_bonus += 0.25
+    if bracket.evidence_source == "event_train_risk_envelope":
+        source_bonus += 0.45
+    if bracket.evidence_source == "scaffold_pair":
+        source_bonus -= 0.35
+    return (-(risk_density + source_bonus), -float(bracket.priority), int(bracket.left), int(bracket.right))
 
 
 def _dedupe_overlapping_brackets(brackets: Sequence[BracketState]) -> List[BracketState]:

@@ -44,6 +44,12 @@ class ABRConfig:
     fallback_stage: str = "FORMAL_LOCKED"
     bracket_policy: str = ABR_BRACKET_POLICY_NAME
     first_round_max_temporal_coverage_fraction: float = 0.70
+    first_round_max_bracket_width_fraction: float = 0.30
+    event_train_peak_quantile: float = 0.88
+    event_train_gradient_quantile: float = 0.90
+    event_train_max_gap_fraction: float = 0.16
+    event_train_context_fraction: float = 0.04
+    event_train_min_anchors: int = 2
 
 
 @dataclass
