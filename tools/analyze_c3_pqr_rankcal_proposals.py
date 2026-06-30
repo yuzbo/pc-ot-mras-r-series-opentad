@@ -8,6 +8,15 @@ from pathlib import Path
 
 DEFAULT_TIOU_THRESHOLDS = (0.3, 0.5, 0.7)
 DEFAULT_TOPK = (1, 5, 10, 50, 100)
+SWEEP_TIOU_THRESHOLDS = (0.5, 0.7)
+SWEEP_MAX_PER_VIDEO = (1, 2, 5, 10, 50, 100, 200, 500)
+SWEEP_PER_CLASS_CAP = (1, 2, 5, 10, 20, 50, 100)
+SWEEP_MIN_SCORE = (0.0, 0.001, 0.01, 0.05, 0.10, 0.20, 0.30, 0.50)
+SWEEP_NMS_THRESHOLDS = (0.3, 0.5, 0.7, 0.9)
+SWEEP_SCORE_ALPHA = (0.0, 0.05, 0.10, 0.20, 0.30)
+QUALITY_KEYS = ("quality_score", "quality")
+CLS_SCORE_KEYS = ("cls_score", "class_score", "model_score")
+SELECTED_SEGMENT_KEYS = ("selected_segment", "segment_selected")
 
 
 def _segment_iou(segment, candidates):
@@ -66,6 +75,42 @@ def _quantile(values, q):
     return ordered[idx]
 
 
+def _first_present(mapping, keys):
+    for key in keys:
+        if key in mapping and mapping[key] is not None:
+            return mapping[key]
+    return None
+
+
+def _as_float_or_none(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _segment_or_none(value):
+    if not isinstance(value, (list, tuple)) or len(value) < 2:
+        return None
+    start = _as_float_or_none(value[0])
+    end = _as_float_or_none(value[1])
+    if start is None or end is None:
+        return None
+    return [start, end]
+
+
+def _count_summary(counts):
+    return {
+        "mean": None if not counts else sum(counts) / len(counts),
+        "p50": _quantile(counts, 0.50),
+        "p90": _quantile(counts, 0.90),
+        "p99": _quantile(counts, 0.99),
+        "max": None if not counts else max(counts),
+    }
+
+
 def _load_annotations(annotation_path, subset):
     data = json.loads(Path(annotation_path).read_text(encoding="utf-8"))
     gt_by_video = {}
@@ -113,26 +158,55 @@ def _prediction_records(predictions, gt_by_video):
 
         for rank, pred in enumerate(sorted_predictions, start=1):
             label = pred.get("label")
-            segment = pred.get("segment", [0.0, 0.0])
+            segment = _segment_or_none(pred.get("segment")) or [0.0, 0.0]
+            selected_segment = _segment_or_none(_first_present(pred, SELECTED_SEGMENT_KEYS))
             score = float(pred.get("score", 0.0))
+            quality_score = _as_float_or_none(_first_present(pred, QUALITY_KEYS))
+            cls_score = _as_float_or_none(_first_present(pred, CLS_SCORE_KEYS))
             same_label_iou = _segment_iou(segment, gt_by_label.get(label, []))
             any_label_iou = _segment_iou(segment, any_gt)
             per_video_label_counts[video_id][label] += 1
-            records.append(
-                {
-                    "video_id": video_id,
-                    "rank": rank,
-                    "label": label,
-                    "score": score,
-                    "start": float(segment[0]),
-                    "end": float(segment[1]),
-                    "max_iou_same_label": same_label_iou,
-                    "max_iou_any_label": any_label_iou,
-                    "has_same_label_gt": bool(gt_by_label.get(label, [])),
-                    "video_prediction_count": len(sorted_predictions),
-                }
-            )
+            record = {
+                "video_id": video_id,
+                "rank": rank,
+                "label": label,
+                "score": score,
+                "start": float(segment[0]),
+                "end": float(segment[1]),
+                "max_iou_same_label": same_label_iou,
+                "max_iou_any_label": any_label_iou,
+                "has_same_label_gt": bool(gt_by_label.get(label, [])),
+                "video_prediction_count": len(sorted_predictions),
+                "quality_score": quality_score,
+                "cls_score": cls_score,
+                "selected_start": None if selected_segment is None else selected_segment[0],
+                "selected_end": None if selected_segment is None else selected_segment[1],
+            }
+            records.append(record)
     return records, per_video_counts, per_video_label_counts
+
+
+def _count_records(records):
+    per_video_counts = defaultdict(int)
+    per_video_label_counts = defaultdict(lambda: defaultdict(int))
+    for record in records:
+        per_video_counts[record["video_id"]] += 1
+        per_video_label_counts[record["video_id"]][record["label"]] += 1
+    return per_video_counts, per_video_label_counts
+
+
+def _rerank_records(records):
+    by_video = defaultdict(list)
+    for record in records:
+        by_video[record["video_id"]].append(dict(record))
+    reranked = []
+    for video_id, video_records in by_video.items():
+        sorted_records = sorted(video_records, key=lambda item: float(item.get("score", 0.0)), reverse=True)
+        for rank, record in enumerate(sorted_records, start=1):
+            record["rank"] = rank
+            record["video_prediction_count"] = len(sorted_records)
+            reranked.append(record)
+    return reranked
 
 
 def _topk_recall(records, gt_by_video, topk_values, thresholds):
@@ -188,23 +262,32 @@ def _score_bins(records, bins=10):
     return result
 
 
-def analyze(prediction_path, annotation_path, subset="validation", topk_values=DEFAULT_TOPK, thresholds=DEFAULT_TIOU_THRESHOLDS):
-    predictions = _load_predictions(prediction_path)
-    gt_by_video = _load_annotations(annotation_path, subset)
-    records, per_video_counts, per_video_label_counts = _prediction_records(predictions, gt_by_video)
+def _top_score_decile_mean_iou(records, iou_key):
+    if not records:
+        return None
+    ordered = sorted(records, key=lambda item: item["score"], reverse=True)
+    decile_count = max(1, int(math.ceil(len(ordered) / 10.0)))
+    top_decile = ordered[:decile_count]
+    if not top_decile:
+        return None
+    return sum(item[iou_key] for item in top_decile) / len(top_decile)
+
+
+def _analysis_summary_from_records(
+    records,
+    gt_by_video,
+    per_video_counts,
+    per_video_label_counts,
+    topk_values,
+    thresholds,
+):
     same_label_ious = [record["max_iou_same_label"] for record in records]
     any_label_ious = [record["max_iou_any_label"] for record in records]
     scores = [record["score"] for record in records]
     counts = list(per_video_counts.values())
     class_counts = [count for label_counts in per_video_label_counts.values() for count in label_counts.values()]
 
-    summary = {
-        "status": "PASS_DIAGNOSTIC_ANALYSIS",
-        "diagnostic_only": True,
-        "official_map_claim": False,
-        "prediction_path": str(prediction_path),
-        "annotation_path": str(annotation_path),
-        "subset": subset,
+    return {
         "videos_with_predictions": len(per_video_counts),
         "videos_with_ground_truth": len(gt_by_video),
         "total_predictions": len(records),
@@ -213,21 +296,317 @@ def analyze(prediction_path, annotation_path, subset="validation", topk_values=D
         "score_iou_same_label_spearman": _spearman(scores, same_label_ious),
         "score_iou_any_label_pearson": _pearson(scores, any_label_ious),
         "score_iou_any_label_spearman": _spearman(scores, any_label_ious),
-        "proposal_count_per_video": {
-            "mean": None if not counts else sum(counts) / len(counts),
-            "p50": _quantile(counts, 0.50),
-            "p90": _quantile(counts, 0.90),
-            "p99": _quantile(counts, 0.99),
-            "max": None if not counts else max(counts),
-        },
-        "proposal_count_per_video_label": {
-            "p90": _quantile(class_counts, 0.90),
-            "p99": _quantile(class_counts, 0.99),
-            "max": None if not class_counts else max(class_counts),
-        },
+        "proposal_count_per_video": _count_summary(counts),
+        "proposal_count_per_video_label": _count_summary(class_counts),
         "rank_recall": _topk_recall(records, gt_by_video, topk_values, thresholds),
         "score_rank_bins": _score_bins(records),
     }
+
+
+def _nms_coordinate(record, coordinate_space):
+    if coordinate_space == "selected":
+        if record.get("selected_start") is None or record.get("selected_end") is None:
+            return None
+        return [record["selected_start"], record["selected_end"]]
+    return [record["start"], record["end"]]
+
+
+def _hard_nms(records, threshold, coordinate_space="physical"):
+    if threshold is None:
+        return list(records)
+    kept = []
+    by_video_label = defaultdict(list)
+    for record in sorted(records, key=lambda item: float(item.get("score", 0.0)), reverse=True):
+        coord = _nms_coordinate(record, coordinate_space)
+        if coord is None:
+            kept.append(record)
+            continue
+        key = (record["video_id"], record["label"])
+        overlaps = []
+        for kept_record in by_video_label[key]:
+            kept_coord = _nms_coordinate(kept_record, coordinate_space)
+            if kept_coord is not None:
+                overlaps.append(kept_coord)
+        if _segment_iou(coord, overlaps) <= threshold:
+            kept.append(record)
+            by_video_label[key].append(record)
+    return kept
+
+
+def _apply_offline_filters(
+    records,
+    max_per_video=None,
+    per_class_cap=None,
+    min_score=None,
+    nms_iou_threshold=None,
+    nms_coordinate_space="physical",
+):
+    filtered = [record for record in records if min_score is None or record["score"] >= min_score]
+    filtered = _hard_nms(filtered, nms_iou_threshold, coordinate_space=nms_coordinate_space)
+
+    by_video = defaultdict(list)
+    for record in filtered:
+        by_video[record["video_id"]].append(record)
+
+    capped = []
+    for video_id, video_records in by_video.items():
+        sorted_records = sorted(video_records, key=lambda item: float(item.get("score", 0.0)), reverse=True)
+        if per_class_cap is not None:
+            label_counts = defaultdict(int)
+            class_capped = []
+            for record in sorted_records:
+                if label_counts[record["label"]] >= per_class_cap:
+                    continue
+                label_counts[record["label"]] += 1
+                class_capped.append(record)
+            sorted_records = class_capped
+        if max_per_video is not None:
+            sorted_records = sorted_records[:max_per_video]
+        capped.extend(sorted_records)
+    return _rerank_records(capped)
+
+
+def _candidate_diagnostic(records, gt_by_video, total_input_predictions, source_per_video_counts, parameters):
+    per_video_counts, per_video_label_counts = _count_records(records)
+    summary = _analysis_summary_from_records(
+        records,
+        gt_by_video,
+        per_video_counts,
+        per_video_label_counts,
+        DEFAULT_TOPK,
+        SWEEP_TIOU_THRESHOLDS,
+    )
+    videos_seen = len(source_per_video_counts)
+    reduced_videos = sum(
+        1
+        for video_id, input_count in source_per_video_counts.items()
+        if per_video_counts.get(video_id, 0) < input_count
+    )
+    return {
+        "status": "PASS_CANDIDATE_DIAGNOSTIC",
+        "diagnostic_only": True,
+        "official_map_claim": False,
+        "parameters": parameters,
+        "retained_predictions": len(records),
+        "retained_fraction": None if total_input_predictions == 0 else len(records) / total_input_predictions,
+        "videos_capped_ratio": None if videos_seen == 0 else reduced_videos / videos_seen,
+        "proposal_count_per_video": summary["proposal_count_per_video"],
+        "proposal_count_per_video_label": summary["proposal_count_per_video_label"],
+        "score_iou_same_label_pearson": summary["score_iou_same_label_pearson"],
+        "score_iou_same_label_spearman": summary["score_iou_same_label_spearman"],
+        "score_iou_any_label_pearson": summary["score_iou_any_label_pearson"],
+        "score_iou_any_label_spearman": summary["score_iou_any_label_spearman"],
+        "rank_recall": summary["rank_recall"],
+        "top_score_decile_mean_iou_same_label": _top_score_decile_mean_iou(records, "max_iou_same_label"),
+        "top_score_decile_mean_iou_any_label": _top_score_decile_mean_iou(records, "max_iou_any_label"),
+    }
+
+
+def _build_filter_candidate(records, gt_by_video, total_input_predictions, source_per_video_counts, parameters):
+    retained = _apply_offline_filters(
+        records,
+        max_per_video=parameters.get("max_per_video"),
+        per_class_cap=parameters.get("per_class_cap"),
+        min_score=parameters.get("min_score"),
+        nms_iou_threshold=parameters.get("nms_iou_threshold"),
+        nms_coordinate_space=parameters.get("nms_coordinate_space", "physical"),
+    )
+    return _candidate_diagnostic(retained, gt_by_video, total_input_predictions, source_per_video_counts, parameters)
+
+
+def _quality_fusion_sweep(records, gt_by_video, source_per_video_counts):
+    records_with_quality = sum(1 for record in records if record.get("quality_score") is not None)
+    records_with_cls = sum(1 for record in records if record.get("cls_score") is not None)
+    records_with_both = sum(
+        1 for record in records if record.get("quality_score") is not None and record.get("cls_score") is not None
+    )
+    has_quality = records_with_quality > 0
+    has_cls = records_with_cls > 0
+    coverage = {
+        "records_total": len(records),
+        "records_with_quality_score": records_with_quality,
+        "records_with_cls_score": records_with_cls,
+        "records_with_both_quality_and_cls_score": records_with_both,
+    }
+    missing = []
+    if not has_quality:
+        missing.append("quality_score")
+    if not has_cls:
+        missing.append("cls_score")
+    if missing:
+        return {
+            "status": "UNAVAILABLE_MISSING_QUALITY_OR_CLASS_SCORE",
+            "quality_fusion_available": False,
+            "missing_quality_fields": missing,
+            "field_coverage": coverage,
+            "alpha_sweep": [],
+        }
+
+    alpha_sweep = []
+    for alpha in SWEEP_SCORE_ALPHA:
+        fused_records = []
+        for record in records:
+            fused = dict(record)
+            quality_score = fused.get("quality_score")
+            cls_score = fused.get("cls_score")
+            if quality_score is not None and cls_score is not None:
+                fused["score"] = cls_score * max(quality_score, 0.0) ** alpha
+            fused_records.append(fused)
+        reranked = _rerank_records(fused_records)
+        alpha_sweep.append(
+            _candidate_diagnostic(
+                reranked,
+                gt_by_video,
+                len(records),
+                source_per_video_counts,
+                {"score_alpha": alpha, "score_formula": "cls_score * max(quality_score, 0)^alpha"},
+            )
+        )
+    return {
+        "status": "PASS_QUALITY_FUSION_DIAGNOSTIC",
+        "quality_fusion_available": True,
+        "missing_quality_fields": [],
+        "field_coverage": coverage,
+        "alpha_sweep": alpha_sweep,
+    }
+
+
+def _selected_coordinate_nms_sweep(records, gt_by_video, source_per_video_counts):
+    records_with_selected = sum(
+        1 for record in records if record.get("selected_start") is not None and record.get("selected_end") is not None
+    )
+    has_selected = records_with_selected > 0
+    coverage = {
+        "records_total": len(records),
+        "records_with_selected_coordinates": records_with_selected,
+    }
+    if not has_selected:
+        return {
+            "status": "UNAVAILABLE_MISSING_SELECTED_COORDINATES",
+            "selected_coordinate_nms_available": False,
+            "field_coverage": coverage,
+            "nms_comparison": [],
+        }
+    comparison = []
+    for threshold in SWEEP_NMS_THRESHOLDS:
+        comparison.append(
+            {
+                "nms_iou_threshold": threshold,
+                "physical": _build_filter_candidate(
+                    records,
+                    gt_by_video,
+                    len(records),
+                    source_per_video_counts,
+                    {"nms_iou_threshold": threshold, "nms_coordinate_space": "physical"},
+                ),
+                "selected": _build_filter_candidate(
+                    records,
+                    gt_by_video,
+                    len(records),
+                    source_per_video_counts,
+                    {"nms_iou_threshold": threshold, "nms_coordinate_space": "selected"},
+                ),
+            }
+        )
+    return {
+        "status": "PASS_SELECTED_COORDINATE_NMS_DIAGNOSTIC",
+        "selected_coordinate_nms_available": True,
+        "field_coverage": coverage,
+        "nms_comparison": comparison,
+    }
+
+
+def _diagnostic_sweep(prediction_path, annotation_path, subset, records, gt_by_video, per_video_counts):
+    total_input_predictions = len(records)
+    sweeps = {
+        "max_per_video_sweep": [
+            _build_filter_candidate(
+                records,
+                gt_by_video,
+                total_input_predictions,
+                per_video_counts,
+                {"max_per_video": cap, "nms_coordinate_space": "physical"},
+            )
+            for cap in SWEEP_MAX_PER_VIDEO
+        ],
+        "per_class_cap_sweep": [
+            _build_filter_candidate(
+                records,
+                gt_by_video,
+                total_input_predictions,
+                per_video_counts,
+                {"per_class_cap": cap, "nms_coordinate_space": "physical"},
+            )
+            for cap in SWEEP_PER_CLASS_CAP
+        ],
+        "min_score_sweep": [
+            _build_filter_candidate(
+                records,
+                gt_by_video,
+                total_input_predictions,
+                per_video_counts,
+                {"min_score": min_score, "nms_coordinate_space": "physical"},
+            )
+            for min_score in SWEEP_MIN_SCORE
+        ],
+        "hard_nms_sweep": [
+            _build_filter_candidate(
+                records,
+                gt_by_video,
+                total_input_predictions,
+                per_video_counts,
+                {"nms_iou_threshold": threshold, "nms_coordinate_space": "physical"},
+            )
+            for threshold in SWEEP_NMS_THRESHOLDS
+        ],
+    }
+    return {
+        "status": "PASS_DIAGNOSTIC_SWEEP",
+        "diagnostic_only": True,
+        "official_map_claim": False,
+        "prediction_path": str(prediction_path),
+        "annotation_path": str(annotation_path),
+        "subset": subset,
+        "total_input_predictions": total_input_predictions,
+        "sweep_note": "Offline proposal filtering diagnostics on result_detection only; not official mAP.",
+        "sweeps": sweeps,
+        "quality_fusion": _quality_fusion_sweep(records, gt_by_video, per_video_counts),
+        "selected_coordinate_nms": _selected_coordinate_nms_sweep(records, gt_by_video, per_video_counts),
+    }
+
+
+def analyze(
+    prediction_path,
+    annotation_path,
+    subset="validation",
+    topk_values=DEFAULT_TOPK,
+    thresholds=DEFAULT_TIOU_THRESHOLDS,
+    include_sweep=False,
+):
+    predictions = _load_predictions(prediction_path)
+    gt_by_video = _load_annotations(annotation_path, subset)
+    records, per_video_counts, per_video_label_counts = _prediction_records(predictions, gt_by_video)
+
+    summary = {
+        "status": "PASS_DIAGNOSTIC_ANALYSIS",
+        "diagnostic_only": True,
+        "official_map_claim": False,
+        "prediction_path": str(prediction_path),
+        "annotation_path": str(annotation_path),
+        "subset": subset,
+    }
+    summary.update(
+        _analysis_summary_from_records(
+            records,
+            gt_by_video,
+            per_video_counts,
+            per_video_label_counts,
+            topk_values,
+            thresholds,
+        )
+    )
+    if include_sweep:
+        return summary, records, _diagnostic_sweep(prediction_path, annotation_path, subset, records, gt_by_video, per_video_counts)
     return summary, records
 
 
@@ -311,6 +690,10 @@ def _write_records_csv(records, csv_path):
         "max_iou_any_label",
         "has_same_label_gt",
         "video_prediction_count",
+        "quality_score",
+        "cls_score",
+        "selected_start",
+        "selected_end",
     ]
     with Path(csv_path).open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -324,6 +707,7 @@ def main(argv=None):
     parser.add_argument("--annotation", required=True, help="Path to thumos_14_anno.json")
     parser.add_argument("--subset", default="validation")
     parser.add_argument("--output", help="Path for JSON summary")
+    parser.add_argument("--sweep-output", help="Optional diagnostic-only offline sweep JSON path")
     parser.add_argument("--records-csv", help="Optional per-proposal CSV path")
     args = parser.parse_args(argv)
 
@@ -336,11 +720,19 @@ def main(argv=None):
         _write_missing_artifact(args.output, args.prediction, args.annotation)
         return 2
 
-    summary, records = analyze(prediction_path, args.annotation, subset=args.subset)
+    if args.sweep_output:
+        summary, records, sweep_summary = analyze(prediction_path, args.annotation, subset=args.subset, include_sweep=True)
+    else:
+        summary, records = analyze(prediction_path, args.annotation, subset=args.subset)
+        sweep_summary = None
     if prediction_discovery is not None:
         summary["prediction_discovery"] = prediction_discovery
+        if sweep_summary is not None:
+            sweep_summary["prediction_discovery"] = prediction_discovery
     if args.output:
         Path(args.output).write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    if args.sweep_output:
+        Path(args.sweep_output).write_text(json.dumps(sweep_summary, indent=2, sort_keys=True), encoding="utf-8")
     _write_records_csv(records, args.records_csv)
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0

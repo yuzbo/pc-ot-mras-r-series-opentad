@@ -195,3 +195,223 @@ def test_pqr_proposal_diagnostic_fails_closed_for_multiple_nested_predictions(tm
     assert exit_code == 2
     assert summary["status"] == "AMBIGUOUS_PREDICTION_ARTIFACT"
     assert len(summary["candidate_prediction_paths"]) == 2
+
+
+def test_pqr_proposal_diagnostic_writes_sweep_output_and_keeps_summary_output(tmp_path):
+    annotation = tmp_path / "thumos_14_anno.json"
+    prediction = tmp_path / "result_detection.json"
+    output = tmp_path / "summary.json"
+    sweep_output = tmp_path / "sweep.json"
+    _write_json(
+        annotation,
+        {
+            "database": {
+                "video_a": {
+                    "subset": "validation",
+                    "annotations": [{"segment": [1.0, 3.0], "label": "Diving"}],
+                }
+            }
+        },
+    )
+    _write_json(
+        prediction,
+        {
+            "results": {
+                "video_a": [
+                    {"segment": [1.0, 3.0], "label": "Diving", "score": 0.95},
+                    {"segment": [1.1, 3.1], "label": "Diving", "score": 0.90},
+                    {"segment": [7.0, 8.0], "label": "Diving", "score": 0.10},
+                ]
+            }
+        },
+    )
+
+    exit_code = main(
+        [
+            "--prediction",
+            str(prediction),
+            "--annotation",
+            str(annotation),
+            "--output",
+            str(output),
+            "--sweep-output",
+            str(sweep_output),
+        ]
+    )
+
+    summary = json.loads(output.read_text(encoding="utf-8"))
+    sweep = json.loads(sweep_output.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert summary["status"] == "PASS_DIAGNOSTIC_ANALYSIS"
+    assert sweep["status"] == "PASS_DIAGNOSTIC_SWEEP"
+    assert sweep["diagnostic_only"] is True
+    assert sweep["official_map_claim"] is False
+    assert sweep["total_input_predictions"] == 3
+    assert {"max_per_video_sweep", "per_class_cap_sweep", "min_score_sweep", "hard_nms_sweep"} <= set(sweep["sweeps"])
+
+
+def test_pqr_proposal_diagnostic_sweep_caps_and_nms_can_change_retained_counts(tmp_path):
+    annotation = tmp_path / "thumos_14_anno.json"
+    prediction = tmp_path / "result_detection.json"
+    _write_json(
+        annotation,
+        {
+            "database": {
+                "video_a": {
+                    "subset": "validation",
+                    "annotations": [{"segment": [1.0, 3.0], "label": "Diving"}],
+                }
+            }
+        },
+    )
+    _write_json(
+        prediction,
+        {
+            "results": {
+                "video_a": [
+                    {"segment": [1.0, 3.0], "label": "Diving", "score": 0.95},
+                    {"segment": [1.1, 3.1], "label": "Diving", "score": 0.90},
+                    {"segment": [5.0, 6.0], "label": "Diving", "score": 0.80},
+                    {"segment": [9.0, 10.0], "label": "BaseballPitch", "score": 0.70},
+                ]
+            }
+        },
+    )
+
+    summary, _records, sweep = analyze(prediction, annotation, subset="validation", include_sweep=True)
+
+    assert summary["total_predictions"] == 4
+    per_video_one = next(item for item in sweep["sweeps"]["max_per_video_sweep"] if item["parameters"]["max_per_video"] == 1)
+    per_class_one = next(item for item in sweep["sweeps"]["per_class_cap_sweep"] if item["parameters"]["per_class_cap"] == 1)
+    nms_05 = next(item for item in sweep["sweeps"]["hard_nms_sweep"] if item["parameters"]["nms_iou_threshold"] == 0.5)
+    assert per_video_one["retained_predictions"] == 1
+    assert per_video_one["videos_capped_ratio"] == 1.0
+    assert per_class_one["retained_predictions"] == 2
+    assert nms_05["retained_predictions"] < summary["total_predictions"]
+    assert per_video_one["retained_fraction"] == 0.25
+    assert "top1_same_label_recall@0.5" in per_video_one["rank_recall"]
+    assert "top_score_decile_mean_iou_same_label" in per_video_one
+
+
+def test_pqr_proposal_diagnostic_quality_fusion_reports_missing_fields_without_faking(tmp_path):
+    annotation = tmp_path / "thumos_14_anno.json"
+    prediction = tmp_path / "result_detection.json"
+    _write_json(annotation, {"database": {"video_a": {"subset": "validation", "annotations": []}}})
+    _write_json(
+        prediction,
+        {"results": {"video_a": [{"segment": [0.0, 1.0], "label": "Diving", "score": 0.8}]}},
+    )
+
+    _summary, _records, sweep = analyze(prediction, annotation, subset="validation", include_sweep=True)
+
+    quality = sweep["quality_fusion"]
+    assert quality["quality_fusion_available"] is False
+    assert "quality_score" in quality["missing_quality_fields"]
+    assert "cls_score" in quality["missing_quality_fields"]
+    assert quality["field_coverage"]["records_total"] == 1
+    assert quality["field_coverage"]["records_with_both_quality_and_cls_score"] == 0
+    assert quality["alpha_sweep"] == []
+
+
+def test_pqr_proposal_diagnostic_quality_fusion_alpha_sweep_uses_available_fields(tmp_path):
+    annotation = tmp_path / "thumos_14_anno.json"
+    prediction = tmp_path / "result_detection.json"
+    _write_json(
+        annotation,
+        {
+            "database": {
+                "video_a": {
+                    "subset": "validation",
+                    "annotations": [{"segment": [1.0, 3.0], "label": "Diving"}],
+                }
+            }
+        },
+    )
+    _write_json(
+        prediction,
+        {
+            "results": {
+                "video_a": [
+                    {"segment": [1.0, 3.0], "label": "Diving", "score": 0.30, "quality_score": 1.0, "cls_score": 0.20},
+                    {"segment": [8.0, 9.0], "label": "Diving", "score": 0.90, "quality": 0.1, "class_score": 0.30},
+                ]
+            }
+        },
+    )
+
+    _summary, records, sweep = analyze(prediction, annotation, subset="validation", include_sweep=True)
+
+    quality = sweep["quality_fusion"]
+    alpha_zero = next(item for item in quality["alpha_sweep"] if item["parameters"]["score_alpha"] == 0.0)
+    alpha_030 = next(item for item in quality["alpha_sweep"] if item["parameters"]["score_alpha"] == 0.3)
+    perfect_record = next(item for item in records if item["start"] == 1.0 and item["end"] == 3.0)
+    assert quality["quality_fusion_available"] is True
+    assert quality["field_coverage"]["records_with_both_quality_and_cls_score"] == 2
+    assert alpha_030["parameters"]["score_formula"] == "cls_score * max(quality_score, 0)^alpha"
+    assert perfect_record["quality_score"] == 1.0
+    assert perfect_record["cls_score"] == 0.20
+    assert alpha_zero["retained_predictions"] == 2
+    assert alpha_030["rank_recall"]["top1_same_label_recall@0.5"] == 1.0
+
+
+def test_pqr_proposal_diagnostic_selected_nms_reports_unavailable_without_selected_coords(tmp_path):
+    annotation = tmp_path / "thumos_14_anno.json"
+    prediction = tmp_path / "result_detection.json"
+    _write_json(annotation, {"database": {"video_a": {"subset": "validation", "annotations": []}}})
+    _write_json(
+        prediction,
+        {"results": {"video_a": [{"segment": [0.0, 1.0], "label": "Diving", "score": 0.8}]}},
+    )
+
+    _summary, _records, sweep = analyze(prediction, annotation, subset="validation", include_sweep=True)
+
+    selected_nms = sweep["selected_coordinate_nms"]
+    assert selected_nms["selected_coordinate_nms_available"] is False
+    assert selected_nms["status"] == "UNAVAILABLE_MISSING_SELECTED_COORDINATES"
+    assert selected_nms["field_coverage"]["records_with_selected_coordinates"] == 0
+
+
+def test_pqr_proposal_diagnostic_records_csv_preserves_optional_quality_and_selected_coords(tmp_path):
+    annotation = tmp_path / "thumos_14_anno.json"
+    prediction = tmp_path / "result_detection.json"
+    records_csv = tmp_path / "records.csv"
+    _write_json(annotation, {"database": {"video_a": {"subset": "validation", "annotations": []}}})
+    _write_json(
+        prediction,
+        {
+            "results": {
+                "video_a": [
+                    {
+                        "segment": [0.0, 1.0],
+                        "selected_segment": [2.0, 4.0],
+                        "label": "Diving",
+                        "score": 0.8,
+                        "quality_score": 0.5,
+                        "model_score": 0.7,
+                    }
+                ]
+            }
+        },
+    )
+
+    exit_code = main(
+        [
+            "--prediction",
+            str(prediction),
+            "--annotation",
+            str(annotation),
+            "--records-csv",
+            str(records_csv),
+        ]
+    )
+
+    header, row = records_csv.read_text(encoding="utf-8").splitlines()
+    assert exit_code == 0
+    assert "quality_score" in header
+    assert "cls_score" in header
+    assert "selected_start" in header
+    assert "selected_end" in header
+    assert "0.5" in row
+    assert "0.7" in row
+    assert "2.0" in row
+    assert "4.0" in row
