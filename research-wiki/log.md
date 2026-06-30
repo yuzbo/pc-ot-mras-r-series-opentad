@@ -1,5 +1,15 @@
 # Research Log
 
+## 2026-07-01 07:39:58 +08:00 - RBA-RBR grid-audit GitHub API branch synced
+
+- Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Ordinary `git push` to `codex/divergent-rba-rbr-20260701` was rejected because GitHub currently points that branch at remote-only commit `1b26de8a7c606d9305cfa228b7f87e920529aa6a`; ordinary HTTPS fetch/push also hit local GitHub connectivity failures.
+- To avoid force push or overwriting that remote-only evidence branch, created a new GitHub branch from `1b26de8`: `codex/divergent-rba-rbr-grid-audit-aadf9708-20260701`.
+- Synced the five grid-audit files from local commit `aadf9708` using the GitHub Contents API: detector grid audit, RBA integration tests, severe-low diagnosis packet, route-owned tracker mirror, and route-owned log.
+- Confirmed branch ref after sync: `0a4bf5747de24f822ae23183e89f5cce234e69a8`.
+- GitHub URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-grid-audit-aadf9708-20260701`.
+- This is evidence synchronization only. It does not constitute a Pro verdict, remote precheck, Slurm launch, training, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper claim, or full-train unlock.
+
 ## 2026-07-01 01:22:40 +08:00 - RBA-RBR local implementation
 
 - Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
