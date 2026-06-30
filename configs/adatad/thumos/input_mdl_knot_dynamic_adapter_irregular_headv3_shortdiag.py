@@ -73,6 +73,11 @@ total_epochs = 1
 max_epochs = 1
 evaluation = dict(shortdiag_disabled=True)
 checkpoint = dict(shortdiag_disabled=True, save_last=False, max_keep_ckpts=0)
+solver = dict(
+    train=dict(batch_size=1, num_workers=0),
+    val=dict(batch_size=1, num_workers=0),
+    test=dict(batch_size=1, num_workers=0),
+)
 dataset = dict(
     train=dict(
         ann_file=annotation_path,
