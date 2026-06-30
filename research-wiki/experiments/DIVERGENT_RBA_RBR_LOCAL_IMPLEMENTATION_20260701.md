@@ -254,3 +254,36 @@ Current allowed next action:
 - `REMOTE_SYNC_PRECHECK_ONLY` is complete.
 - RBA-RBR is ready for Pro/GitHub review or later short diagnostic scheduling when GPU0 is free.
 - Full training remains locked by the route gate; there is still no mAP, runtime/FLOPs, deployment, paper, or formal long-training claim.
+
+## Pro Review Transport Attempt - 2026-07-01 02:40:43 +08:00
+
+Pro review requested:
+
+- GPT-5.5 Pro / Rosetta Pro code-grounded route review using GitHub branch `codex/divergent-rba-rbr-20260701` at commit `87eae60`.
+- Prompt path: `research-wiki/experiments/DIVERGENT_RBA_RBR_PRO_REVIEW_PROMPT_20260701.md`.
+- Transport evidence path: `research-wiki/experiments/DIVERGENT_RBA_RBR_PRO_REVIEW_TRANSPORT_20260701.md`.
+
+Transport outcome:
+
+- Rosetta Pro inline prompt: invalid; ChatGPT send pipeline did not issue conversation request within 120 seconds.
+- Oracle browser attach: invalid; no attach metadata matched Chrome `9333`.
+- Oracle attach retry: invalid; Oracle rejects `--browser-attach-running` combined with `--browser-port`.
+- Oracle copied-profile browser: invalid; Oracle rejects `--copy-profile` combined with manual-login mode.
+- Rosetta Pro attachment prompt: invalid; could not bring tab to front, OS focus poll timed out.
+- Oracle persistent browser: invalid; browser profile not logged in / model selector not found.
+- Oracle explicit cookie path: invalid; cookies were not applied / model selector not found.
+
+Pro-gate decision:
+
+- `INCOMPLETE_PRO_DECISION`.
+- No valid GPT-5.5 Pro answer was harvested.
+- No Pro answer inspected GitHub.
+- No Pro blocker or approval exists.
+- This is a transport failure, not a technical rejection.
+
+Current route state after Pro transport failure:
+
+- Remote sync and non-GPU precheck remain complete.
+- `SHORT_DIAGNOSTIC_ONLY` remains the next practical experimental tier once GPU0 is free, subject to coordinator/project decision.
+- Formal full training remains locked.
+- No mAP/runtime/FLOPs/deploy/paper claim is unlocked.

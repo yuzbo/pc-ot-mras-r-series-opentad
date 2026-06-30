@@ -41,3 +41,11 @@
 - Remote audit summary path: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Precheck_20260701_4072d43/logs/rba_rbr_precheck_4072d43/rba_rbr_audit/summary.json`; gate result path: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Precheck_20260701_4072d43/logs/rba_rbr_precheck_4072d43/gate_result.json`.
 - Resource boundary: BVR child `1118197.519` was still running on GPU0 and C3 child `1118197.528` was still running on GPU1; RBA-RBR did not occupy either GPU and did not modify/release/cancel protected parent hold `1118197 pcot_dbg2g`.
 - Current next action: RBA-RBR may proceed to Pro/GitHub review or later short diagnostic scheduling when GPU0 is free; full training and all mAP/runtime/deploy/paper claims remain locked.
+
+## 2026-07-01 02:40:43 +08:00 - RBA-RBR Pro review transport incomplete
+
+- Created Pro review prompt `research-wiki/experiments/DIVERGENT_RBA_RBR_PRO_REVIEW_PROMPT_20260701.md` for GitHub branch `codex/divergent-rba-rbr-20260701` at commit `87eae60`.
+- Rosetta/Oracle transport attempts are recorded in `research-wiki/experiments/DIVERGENT_RBA_RBR_PRO_REVIEW_TRANSPORT_20260701.md`.
+- No valid GPT-5.5 Pro answer was harvested: Rosetta inline failed with stuck send pipeline; Rosetta attachment failed with focus timeout; Oracle attach/copy-profile/persistent/cookie attempts all failed before submission or model selection.
+- Pro state is `INCOMPLETE_PRO_DECISION`: no GitHub inspection, no code-grounded Pro blocker, and no Pro approval exists.
+- This is transport failure only, not a technical rejection of RBA-RBR. Remote sync and non-GPU precheck remain valid; full training and all mAP/runtime/deploy/paper claims remain locked.
