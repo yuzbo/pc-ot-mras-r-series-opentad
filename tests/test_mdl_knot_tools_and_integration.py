@@ -478,7 +478,24 @@ def test_launch_gate_rejects_missing_tools_test_lock_random_fixed_and_combo(tmp_
     assert "C3 drift" in proc.stdout
 
 
-def _formal_readiness_summary() -> dict:
+def _write_valid_shortdiag_log(tmp_path: Path) -> Path:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "mdl_knot_shortdiag_one_epoch.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "Epoch [1][1/2] lr: 1.0e-04 Loss 2.0 loss_cls: 0.5",
+                "Epoch [1][2/2] loss_bbox=0.1 finite diagnostic train step complete",
+                "Training short diagnostic stopped after one epoch without evaluation",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return log_path
+
+
+def _formal_readiness_summary(train_log: str = "logs/mdl_knot_shortdiag_one_epoch.log") -> dict:
     return {
         "route_label": ROUTE_LABEL,
         "validated": True,
@@ -527,7 +544,7 @@ def _formal_readiness_summary() -> dict:
             "no_sparse_compute_claim": True,
             "evidence_scope": "one_epoch_train_log",
             "log_evidence": {
-                "train_log": "logs/mdl_knot_shortdiag_one_epoch.log",
+                "train_log": train_log,
                 "finite_loss_count": 3,
                 "loss_min": 0.1,
                 "loss_max": 2.0,
@@ -537,61 +554,64 @@ def _formal_readiness_summary() -> dict:
     }
 
 
-def test_formal_readiness_evidence_rejects_unlocked_actions_claims_and_config_only_shortdiag():
+def test_formal_readiness_evidence_rejects_unlocked_actions_claims_and_config_only_shortdiag(tmp_path):
+    _write_valid_shortdiag_log(tmp_path)
     valid = _formal_readiness_summary()
-    validate_formal_readiness_evidence(valid)
+    validate_formal_readiness_evidence(valid, evidence_roots=[tmp_path])
 
     bad = _formal_readiness_summary()
     bad["formal_train_unlocked"] = True
     with pytest.raises(FormalReadinessLocked, match="formal_train_unlocked"):
-        validate_formal_readiness_evidence(bad)
+        validate_formal_readiness_evidence(bad, evidence_roots=[tmp_path])
 
     bad = _formal_readiness_summary()
     bad["locked_actions"]["training"] = False
     with pytest.raises(FormalReadinessLocked, match="training"):
-        validate_formal_readiness_evidence(bad)
+        validate_formal_readiness_evidence(bad, evidence_roots=[tmp_path])
 
     bad = _formal_readiness_summary()
     bad["no_claims"]["mAP"] = False
     with pytest.raises(FormalReadinessLocked, match="mAP"):
-        validate_formal_readiness_evidence(bad)
+        validate_formal_readiness_evidence(bad, evidence_roots=[tmp_path])
 
     bad = _formal_readiness_summary()
     bad["no_claims"]["runtime"] = False
     with pytest.raises(FormalReadinessLocked, match="runtime"):
-        validate_formal_readiness_evidence(bad)
+        validate_formal_readiness_evidence(bad, evidence_roots=[tmp_path])
 
     bad = _formal_readiness_summary()
     bad["no_claims"]["paper"] = False
     with pytest.raises(FormalReadinessLocked, match="paper"):
-        validate_formal_readiness_evidence(bad)
+        validate_formal_readiness_evidence(bad, evidence_roots=[tmp_path])
 
     bad = _formal_readiness_summary()
     bad["no_claims"]["sparse_compute"] = False
     with pytest.raises(FormalReadinessLocked, match="sparse_compute"):
-        validate_formal_readiness_evidence(bad)
+        validate_formal_readiness_evidence(bad, evidence_roots=[tmp_path])
 
     bad = _formal_readiness_summary()
     bad["shortdiag_evidence"]["validated"] = False
     bad["shortdiag_evidence"]["log_evidence"] = None
     bad["shortdiag_evidence"]["evidence_scope"] = "static_config_only"
     with pytest.raises(FormalReadinessLocked, match="shortdiag execution"):
-        validate_formal_readiness_evidence(bad)
+        validate_formal_readiness_evidence(bad, evidence_roots=[tmp_path])
 
 
-def test_formal_readiness_evidence_rejects_uncovered_short_or_transition_guards():
+def test_formal_readiness_evidence_rejects_uncovered_short_or_transition_guards(tmp_path):
+    _write_valid_shortdiag_log(tmp_path)
     bad = _formal_readiness_summary()
     bad["real_video_pipeline_diagnostics"]["short_boundary_risk_monitoring"]["short_island_uncovered_count"] = 1
     with pytest.raises(FormalReadinessLocked, match="short-island guard"):
-        validate_formal_readiness_evidence(bad)
+        validate_formal_readiness_evidence(bad, evidence_roots=[tmp_path])
 
     bad = _formal_readiness_summary()
     bad["real_video_pipeline_diagnostics"]["short_boundary_risk_monitoring"]["transition_band_uncovered_count"] = 1
     with pytest.raises(FormalReadinessLocked, match="transition guard"):
-        validate_formal_readiness_evidence(bad)
+        validate_formal_readiness_evidence(bad, evidence_roots=[tmp_path])
 
 
 def test_formal_readiness_launch_gate_requires_shortdiag_execution_evidence(tmp_path):
+    _write_valid_shortdiag_log(tmp_path)
     summary = _formal_readiness_summary()
     summary["shortdiag_evidence"]["validated"] = False
     summary["shortdiag_evidence"]["log_evidence"] = None
@@ -641,8 +661,16 @@ def test_formal_readiness_launch_gate_cannot_use_globalrank_drift_log_evidence(t
     assert "route drift" in shortdiag_proc.stdout
     assert "SHORTDIAG_EVIDENCE=" not in shortdiag_proc.stdout
 
-    summary = _formal_readiness_summary()
-    summary["shortdiag_evidence"] = None
+    summary = _formal_readiness_summary(train_log=log_path.name)
+    summary["shortdiag_evidence"]["log_evidence"].update(
+        {
+            "train_log": log_path.name,
+            "finite_loss_count": 1,
+            "loss_min": 1.25,
+            "loss_max": 1.25,
+            "epoch_max": 1,
+        }
+    )
     summary_path = tmp_path / "globalrank_drift_formal_summary.json"
     summary_path.write_text(json.dumps(summary), encoding="utf-8")
 
@@ -662,7 +690,7 @@ def test_formal_readiness_launch_gate_cannot_use_globalrank_drift_log_evidence(t
 
     assert proc.returncode != 0
     assert "formal training remains locked" in proc.stdout
-    assert "shortdiag execution" in proc.stdout
+    assert "route drift" in proc.stdout
 
 
 def test_formal_readiness_gate_rejects_missing_or_synthetic_only_diagnostics(tmp_path):

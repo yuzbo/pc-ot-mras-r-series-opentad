@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+import re
+from pathlib import Path
 from statistics import mean
 from typing import Iterable, Mapping, Sequence
 
@@ -9,6 +12,58 @@ from .validators import validate_knot_ledger
 
 class FormalReadinessLocked(ValueError):
     """Raised when MDL-Knot evidence is not enough for formal train readiness."""
+
+
+FORBIDDEN_ROUTE_DRIFT = (
+    "C3",
+    "C3_PRO",
+    "C3-PRO",
+    "C3 PRO",
+    "C3_ORIGINAL",
+    "C3_MAINLINE",
+    "EVENT_SURPRISE",
+    "GLOBALRANK",
+    "GLOBAL_RANK",
+    "GLOBAL-RANK",
+    "GLOBAL RANK",
+    "INTERVAL",
+    "ORACLE",
+    "BVR",
+    "ABR",
+    "COMBO",
+)
+
+FATAL_LOG_PATTERNS = (
+    r"\btraceback\b",
+    r"\bruntimeerror\b",
+    r"\bcuda\s+out\s+of\s+memory\b",
+    r"\bout\s+of\s+memory\b",
+    r"\boom\b",
+    r"\bkilled\b",
+    r"\bno\s+space\s+left\b",
+    r"\bno\s+gpu\b",
+    r"\bno\s+cuda\b",
+)
+
+EVAL_OR_CLAIM_PATTERNS = (
+    r"\btools/test\.py\b",
+    r"\bresult_detection\.json\b",
+    r"\bmap(@|\b)",
+    r"\beval(?:uate|uation)?\b(?!\s*(?:locked|disabled|off|false|not|no|without))",
+    r"\bcheckpoint\b(?!\s*(?:locked|disabled|off|false|not|no|without))",
+    r"\bfull[_ -]?train[_ -]?unlocked\s*[:=]\s*true\b",
+    r"\bformal[_ -]?full[_ -]?train\b",
+    r"\bdeploy(?:ment)?\s+claim\b",
+    r"\bpaper\s+claim\b",
+    r"\bruntime\s+claim\b",
+    r"\bsparse[_ -]?compute[_ -]?claim\s*[:=]\s*true\b",
+    r"\bmetric[_ -]?claim\s*[:=]\s*true\b",
+)
+
+LOSS_RE = re.compile(
+    r"(?<![a-z0-9_])(?:loss|loss_[a-z0-9_]*|cost)(?![a-z0-9_])\s*[:=]?\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?)",
+    re.IGNORECASE,
+)
 
 
 def _ledger_dict(ledger) -> dict:
@@ -63,6 +118,88 @@ def _is_metadata_fallback(source: str, provenance: Mapping[str, object]) -> bool
 
 def _is_synthetic(source: str, provenance: Mapping[str, object]) -> bool:
     return bool(provenance.get("synthetic_precheck_only", False)) or "synthetic" in source.lower()
+
+
+def _has_pattern(patterns: tuple[str, ...], text: str) -> str | None:
+    for pattern in patterns:
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            return pattern
+    return None
+
+
+def _resolve_evidence_path(path_arg: object, evidence_roots: Sequence[Path | str] | None = None) -> Path:
+    raw = str(path_arg or "").strip()
+    if not raw:
+        raise FormalReadinessLocked("validated shortdiag evidence is missing train_log path")
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    roots = [Path(root) for root in (evidence_roots or ()) if root]
+    roots.append(Path.cwd())
+    for root in roots:
+        candidate = (root / path).resolve()
+        if candidate.exists():
+            return candidate
+    return (roots[0] / path).resolve()
+
+
+def validate_shortdiag_train_log_content(
+    train_log: object,
+    *,
+    evidence_roots: Sequence[Path | str] | None = None,
+) -> dict:
+    """Revalidate one-epoch MDL-Knot short diagnostic train-log content."""
+
+    log_path = _resolve_evidence_path(train_log, evidence_roots)
+    if not log_path.exists():
+        raise FormalReadinessLocked(f"missing train log: {log_path}")
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    normalized = text.replace(MDL_KNOT_ROUTE_LABEL, "")
+    lower = normalized.lower()
+
+    fatal = _has_pattern(FATAL_LOG_PATTERNS, lower)
+    if fatal:
+        raise FormalReadinessLocked(f"fatal train-log marker: {fatal}")
+    if re.search(r"(?<![a-z0-9_])(?:nan|\+?inf|-inf|infinity)(?![a-z0-9_])", lower):
+        raise FormalReadinessLocked("non-finite train-log numeric marker")
+    route_hits = [token for token in FORBIDDEN_ROUTE_DRIFT if token in normalized.upper()]
+    if route_hits:
+        raise FormalReadinessLocked(f"route drift tokens in train log: {route_hits}")
+
+    marker_text = lower
+    for allowed_phrase in (
+        "without evaluation",
+        "no evaluation",
+        "evaluation locked",
+        "evaluation disabled",
+        "without checkpoint",
+        "no checkpoint",
+        "checkpoint locked",
+        "checkpoint disabled",
+    ):
+        marker_text = marker_text.replace(allowed_phrase, "")
+    marker = _has_pattern(EVAL_OR_CLAIM_PATTERNS, marker_text)
+    if marker:
+        raise FormalReadinessLocked(f"evaluation/checkpoint/claim marker in train log: {marker}")
+
+    losses = [float(match.group(1)) for match in LOSS_RE.finditer(text)]
+    finite_losses = [value for value in losses if math.isfinite(value)]
+    if not finite_losses:
+        raise FormalReadinessLocked("train log provided but no finite Loss value was found")
+    if len(finite_losses) != len(losses):
+        raise FormalReadinessLocked("train log contains non-finite loss values")
+
+    epoch_numbers = [int(value) for value in re.findall(r"epoch\s*\[?(\d+)", lower)]
+    if epoch_numbers and max(epoch_numbers) > 1:
+        raise FormalReadinessLocked(f"short diagnostic log exceeds one epoch: {max(epoch_numbers)}")
+
+    return {
+        "train_log": str(log_path),
+        "finite_loss_count": len(finite_losses),
+        "loss_min": min(finite_losses),
+        "loss_max": max(finite_losses),
+        "epoch_max": max(epoch_numbers) if epoch_numbers else 1,
+    }
 
 
 def _guard_coverage(ledger_data: Mapping[str, object]) -> dict:
@@ -223,7 +360,11 @@ def summarize_pipeline_diagnostics(diagnostics: Sequence[Mapping[str, object]]) 
     }
 
 
-def validate_formal_readiness_evidence(summary: Mapping[str, object]) -> None:
+def validate_formal_readiness_evidence(
+    summary: Mapping[str, object],
+    *,
+    evidence_roots: Sequence[Path | str] | None = None,
+) -> None:
     if summary.get("route_label") != MDL_KNOT_ROUTE_LABEL:
         raise FormalReadinessLocked("formal readiness route_label mismatch")
     if summary.get("formal_train_unlocked") is not False:
@@ -274,7 +415,17 @@ def validate_formal_readiness_evidence(summary: Mapping[str, object]) -> None:
         raise FormalReadinessLocked("validated shortdiag evidence requires real train-log evidence")
     if not str(log_evidence.get("train_log", "")).strip():
         raise FormalReadinessLocked("validated shortdiag evidence is missing train_log path")
-    if int(log_evidence.get("finite_loss_count", 0)) <= 0:
+    revalidated_log = validate_shortdiag_train_log_content(
+        log_evidence.get("train_log"),
+        evidence_roots=evidence_roots,
+    )
+    for key in ("finite_loss_count", "epoch_max"):
+        if int(log_evidence.get(key, revalidated_log[key])) != int(revalidated_log[key]):
+            raise FormalReadinessLocked(f"shortdiag log_evidence {key} does not match revalidated train log")
+    for key in ("loss_min", "loss_max"):
+        if key in log_evidence and abs(float(log_evidence[key]) - float(revalidated_log[key])) > 1e-8:
+            raise FormalReadinessLocked(f"shortdiag log_evidence {key} does not match revalidated train log")
+    if int(revalidated_log.get("finite_loss_count", 0)) <= 0:
         raise FormalReadinessLocked("validated shortdiag evidence has no finite train loss")
     risk = dict(diag.get("short_boundary_risk_monitoring", {}))
     if risk.get("vanilla_mdl_smoothing_risk_measurable") is not True:

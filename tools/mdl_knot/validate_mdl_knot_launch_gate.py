@@ -234,7 +234,7 @@ def _validate_formal_readiness_summary(summary_arg: str) -> int:
     except Exception as exc:
         return _locked(f"cannot read formal readiness summary: {exc}")
     try:
-        validate_formal_readiness_evidence(summary)
+        validate_formal_readiness_evidence(summary, evidence_roots=[summary_path.parent, ROOT])
     except FormalReadinessLocked as exc:
         return _locked(f"formal training remains locked: {exc}")
     print("FORMAL_READINESS_DIAGNOSTICS_PRESENT")

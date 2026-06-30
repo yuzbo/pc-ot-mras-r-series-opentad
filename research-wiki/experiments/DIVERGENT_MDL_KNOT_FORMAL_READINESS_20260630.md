@@ -68,6 +68,13 @@ This stage fixes that blocker in the owned worktree only:
 - Shortdiag config text and train logs now reject `GLOBALRANK`, `GLOBAL_RANK`, `GLOBAL-RANK`, and `GLOBAL RANK`, along with the existing C3/BVR/ABR/combo drift tokens.
 - Regression tests confirm a GlobalRank drift log exits `LOCKED`, emits no `SHORTDIAG_EVIDENCE`, and therefore cannot be assembled into a formal-readiness summary as validated shortdiag evidence.
 
+The follow-up final read-only review found a deeper stale-summary risk: even if the current shortdiag validator refuses GlobalRank drift, an external or stale formal-readiness JSON could still set `shortdiag_evidence.validated=true` and point `log_evidence.train_log` at a route-drift log. This stage closes that evidence-chain gap:
+
+- `opentad/acquisition/mdl_knot/diagnostics.py` now revalidates the referenced shortdiag train log before accepting formal-readiness evidence.
+- The revalidation checks the same route-drift family, fatal markers, non-finite loss markers, evaluation/checkpoint/claim markers, finite loss count, and one-epoch limit.
+- `tools/mdl_knot/validate_mdl_knot_launch_gate.py` resolves relative train-log paths against the formal-readiness summary directory before falling back to the repo root.
+- Regression tests now construct a stale/forged formal summary pointing at a `GlobalRank` train log and require the formal-readiness gate to stay `LOCKED`.
+
 State after this fix remains locked: `full_train_unlocked=false`. No remote sync, GPU, Slurm, `tools/test.py`, training, evaluation, mAP, runtime/FLOPs, deployment, paper, or sparse-compute claim is made or unlocked.
 
 ## Fixed-Pad Compute Boundary
