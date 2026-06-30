@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 from opentad.acquisition.mdl_knot import MDL_KNOT_ROUTE_LABEL  # noqa: E402
 from tools.mdl_knot.validate_mdl_knot_launch_gate import (  # noqa: E402
     FORBIDDEN_ROUTE_DRIFT,
+    _ALLOWED_WORKFLOW_FIELD_TOKENS,
     _validate_config as _validate_precheck_config,
 )
 
@@ -113,8 +114,10 @@ def _validate_shortdiag_config(config_path: Path, cfg: dict[str, Any], raw_cfg: 
     if cfg.get("route_label") != MDL_KNOT_ROUTE_LABEL:
         return _locked(f"route_label mismatch: {cfg.get('route_label')}"), None
 
-    config_text = config_path.read_text(encoding="utf-8").replace(MDL_KNOT_ROUTE_LABEL, "")
-    route_hits = [token for token in FORBIDDEN_ROUTE_DRIFT if token in config_text.upper()]
+    config_text = config_path.read_text(encoding="utf-8").replace(MDL_KNOT_ROUTE_LABEL, "").upper()
+    for allowed_token in _ALLOWED_WORKFLOW_FIELD_TOKENS:
+        config_text = config_text.replace(allowed_token, "")
+    route_hits = [token for token in FORBIDDEN_ROUTE_DRIFT if token in config_text]
     if route_hits:
         return _locked(f"route drift tokens in shortdiag config: {route_hits}"), None
 
@@ -150,8 +153,17 @@ def _validate_shortdiag_config(config_path: Path, cfg: dict[str, Any], raw_cfg: 
         return _locked("top-level diagnostic_only must be true"), None
     if gate.get("max_epochs") != 1 or cfg.get("total_epochs") != 1 or cfg.get("max_epochs") != 1:
         return _locked("shortdiag must be exactly one epoch"), None
-    if cfg.get("workflow") != [("train", 1)]:
-        return _locked("shortdiag workflow must be train-only for one epoch"), None
+    workflow = cfg.get("workflow", {})
+    if not isinstance(workflow, dict):
+        return _locked("shortdiag top-level workflow must use the train.py dict contract"), None
+    if workflow.get("end_epoch") != 1:
+        return _locked("shortdiag workflow.end_epoch must be exactly 1"), None
+    if workflow.get("disable_checkpoint") is not True:
+        return _locked("shortdiag workflow.disable_checkpoint must be true"), None
+    if workflow.get("val_loss_interval", -1) > 0 or workflow.get("val_eval_interval", -1) > 0:
+        return _locked("shortdiag workflow must disable val/eval intervals"), None
+    if workflow.get("val_start_epoch", 0) <= 1:
+        return _locked("shortdiag workflow must keep validation/evaluation unreachable"), None
 
     acq = cfg.get("mdl_knot_acquisition", {})
     if acq.get("deploy_scout_source") != "raw_frame_motion_scout_with_metadata_fallback":
@@ -182,6 +194,7 @@ def _validate_shortdiag_config(config_path: Path, cfg: dict[str, Any], raw_cfg: 
         "sparse_compute_claim": cfg.get("sparse_compute_claim"),
         "max_epochs": cfg.get("max_epochs"),
         "workflow": cfg.get("workflow"),
+        "shortdiag_gate_workflow": gate.get("workflow"),
         "deploy_scout_source": acq.get("deploy_scout_source"),
         "synthetic_fallback_allowed": acq.get("synthetic_fallback_allowed"),
         "base_precheck_evidence": precheck_evidence,

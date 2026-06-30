@@ -42,6 +42,14 @@ ALLOWED_DEPLOY_SCOUT_SOURCES = {
     "frame_metadata_scout",
 }
 
+_ALLOWED_WORKFLOW_FIELD_TOKENS = (
+    "LOGGING_INTERVAL",
+    "CHECKPOINT_INTERVAL",
+    "VAL_LOSS_INTERVAL",
+    "VAL_EVAL_INTERVAL",
+    "RUNTIME_DEBUG_INTERVAL",
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fail-closed MDL-Knot local/precheck launch gate.")
@@ -86,6 +94,8 @@ def _validate_config(config_path: Path, cfg: dict) -> tuple[int, dict | None]:
     if "LOCAL_FINAL_CODE_CANDIDATE" not in route_status:
         return _locked(f"route_status is not a local final-code candidate: {route_status}"), None
     upper_text = config_path.read_text(encoding="utf-8").replace(MDL_KNOT_ROUTE_LABEL, "").upper()
+    for allowed_token in _ALLOWED_WORKFLOW_FIELD_TOKENS:
+        upper_text = upper_text.replace(allowed_token, "")
     hits = [token for token in FORBIDDEN_ROUTE_DRIFT if token in upper_text]
     if hits:
         return _locked(f"forbidden route drift tokens in config text: {hits}"), None

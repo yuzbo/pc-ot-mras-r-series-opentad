@@ -60,7 +60,15 @@ mdl_knot_acquisition = dict(
     no_paper_claims=True,
 )
 
-workflow = [("train", 1)]
+workflow = dict(
+    logging_interval=1,
+    checkpoint_interval=1000,
+    val_loss_interval=-1,
+    val_eval_interval=-1,
+    val_start_epoch=999,
+    end_epoch=1,
+    disable_checkpoint=True,
+)
 total_epochs = 1
 max_epochs = 1
 evaluation = dict(shortdiag_disabled=True)

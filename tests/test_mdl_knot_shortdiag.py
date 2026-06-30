@@ -49,7 +49,12 @@ def test_shortdiag_config_extends_mdl_route_and_keeps_all_locks():
     assert acq["sparse_compute_claim"] is False
     assert acq["route_label"] == ROUTE_LABEL
 
-    assert cfg["workflow"] == [("train", 1)]
+    assert cfg["shortdiag_gate"]["workflow"] == [("train", 1)]
+    assert cfg["workflow"]["end_epoch"] == 1
+    assert cfg["workflow"]["disable_checkpoint"] is True
+    assert cfg["workflow"]["val_loss_interval"] == -1
+    assert cfg["workflow"]["val_eval_interval"] == -1
+    assert cfg["workflow"]["val_start_epoch"] > 1
     assert cfg["work_dir"].endswith("input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag")
 
 
