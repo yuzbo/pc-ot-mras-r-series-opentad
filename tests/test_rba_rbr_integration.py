@@ -103,6 +103,29 @@ def test_rba_rbr_shortdiag_config_is_training_limited_and_claim_locked():
     assert "shortdiag_only" in cfg.work_dir
 
 
+def test_rba_rbr_evaldiag_config_is_bounded_eval_and_claim_locked():
+    mmengine_config = pytest.importorskip("mmengine.config")
+    cfg = mmengine_config.Config.fromfile(
+        str(ROOT / "configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag.py")
+    )
+
+    assert cfg.route_label == ROUTE_LABEL
+    assert cfg.diagnostic_eval_only is True
+    assert cfg.full_train_unlocked is False
+    assert cfg.no_metric_claim is True
+    assert cfg.no_runtime_claim is True
+    assert cfg.no_deploy_claim is True
+    assert cfg.no_paper_claim is True
+    assert cfg.workflow.end_epoch == 4
+    assert cfg.workflow.val_start_epoch == 1
+    assert cfg.workflow.val_eval_interval == 2
+    assert cfg.workflow.checkpoint_interval == 2
+    assert cfg.workflow.disable_checkpoint is False
+    assert cfg.evaluation.ground_truth_filename == cfg.annotation_path
+    assert "/root/autodl-tmp" not in cfg.evaluation.ground_truth_filename.replace("\\", "/")
+    assert "evaldiag_only" in cfg.work_dir
+
+
 def test_backbone_time_axis_prefers_rba_raw_positions_over_detector_centers():
     meta = {
         "irregular_selected_positions": np.asarray([10.5, 30.5], dtype=np.float32),

@@ -485,3 +485,147 @@ Interpretation:
 - The repaired RBA-RBR pipeline can train through the configured two-epoch `SHORT_DIAGNOSTIC_ONLY` run with finite loss.
 - This run intentionally has no evaluation, checkpoint, mAP, runtime/FLOPs, deploy, or paper claim.
 - Formal full training remains locked pending a separate formal-train gate/decision.
+
+## Bounded Eval Diagnostic Config - 2026-07-01 04:29:33 +08:00
+
+Purpose:
+
+- The completed raw-scout short diagnostic proved launchability and finite loss only, because eval/checkpoint were intentionally disabled.
+- Added a bounded eval diagnostic config so RBA-RBR can produce a quick detector-health signal without pretending to be a formal train or paper metric.
+
+Changed files:
+
+- `configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag.py`
+  - Inherits the RBA-RBR formal config.
+  - Sets `diagnostic_eval_only=True`.
+  - Keeps `full_train_unlocked=False`, `no_metric_claim=True`, `no_runtime_claim=True`, `no_deploy_claim=True`, and `no_paper_claim=True`.
+  - Runs `workflow.end_epoch=4`, `val_start_epoch=1`, `val_eval_interval=2`, `checkpoint_interval=2`, `disable_checkpoint=False`.
+- `tests/test_rba_rbr_integration.py`
+  - Added config-resolution coverage for the eval diagnostic schedule, N16R4 annotation path, checkpoint behavior, and claim locks.
+
+Verification:
+
+- `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q`
+  - Result: `18 passed, 2 skipped in 10.86s`.
+- `python tools/rba_rbr/validate_rba_rbr_launch_gate.py --config configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py`
+  - Result: `gate_pass=true`, `full_train_unlocked=false`, `deploy_claim_unlocked=false`, `paper_claim_unlocked=false`, `remote_sync_unlocked_by_local_gate=false`, `sparse_compute_claim=false`.
+- Config parse check:
+  - Evaldiag: `end_epoch=4`, `val_start_epoch=1`, `val_eval_interval=2`, `disable_checkpoint=False`, `full_train_unlocked=False`, `no_metric_claim=True`.
+  - Shortdiag remains `end_epoch=2`, `val_eval_interval=-1`, `disable_checkpoint=True`.
+- `git diff --check`
+  - Result: pass with Windows line-ending warning only for `tests/test_rba_rbr_integration.py`.
+
+Review/deployment note:
+
+- Required subagent tooling limitation in this continuation: the available multi-agent interface exposes spawn/close but no usable wait/harvest tool, so no new read-only review result can be collected in this turn.
+- This is a bounded config-only diagnostic progression after the previous raw-scout repair already received `PASS_SUBAGENT_FINAL_REVIEW_ONLY`.
+- The next launch remains diagnostic-only. Any mAP printed by the evaldiag run is an interim detector-health signal, not a final metric claim.
+- Formal full training, runtime/FLOPs, deploy, and paper claims remain locked.
+
+## Remote Eval Diagnostic Launch - 2026-07-01 04:37:45 +08:00
+
+Remote sync and verification:
+
+- Synced the bounded eval diagnostic config/test/docs into N16R4 route-owned worktree `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49`.
+- Remote route-owned commit: `564a6f3`.
+- Remote verification:
+  - `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q`
+    - Result: `20 passed in 26.19s`.
+  - Formal launch gate remains `gate_pass=true`, `full_train_unlocked=false`.
+  - Evaldiag config resolves to N16R4 annotation path `/data/home/sczc063/run/yuzibo/thumos14/annotations/thumos_14_anno.json`, `end_epoch=4`, `val_start_epoch=1`, `val_eval_interval=2`, `disable_checkpoint=False`.
+
+Launch:
+
+- Protected parent hold `1118197 pcot_dbg2g` was not modified, released, cancelled, or replaced.
+- GPU binding: GPU0 only, `CUDA_VISIBLE_DEVICES=0` through the route launcher.
+- Child step: `1118197.539`, job name `rba_rbr_eval_g0`.
+- Log directory: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_evaldiag_564a6f3_gpu0_20260701_043542_+0800`.
+- Startup sanity:
+  - State after launch: `RUNNING|0:0`.
+  - Bad-pattern grep for Traceback, RuntimeError, OOM, killed, NaN, non-finite, ValueError: empty.
+  - First observed training lines:
+    - `[000][00020/00199] Loss=2.0044 cls_loss=0.2843 reg_loss=0.2525 boundary_loss=1.4675 mem=9344MB`.
+    - `[000][00040/00199] Loss=2.4596 cls_loss=0.5467 reg_loss=0.4726 boundary_loss=1.4403 mem=9344MB`.
+
+Current state:
+
+- RBA-RBR bounded eval diagnostic is running on GPU0.
+- This is not a formal full train. Any validation mAP is diagnostic-only detector-health evidence and must not be reported as a final route result.
+- Formal full training, runtime/FLOPs, deploy, and paper claims remain locked.
+
+## Remote Eval Diagnostic First Validation - 2026-07-01 05:34:45 +08:00
+
+Status:
+
+- Child step: `1118197.539`, job name `rba_rbr_eval_g0`.
+- Slurm state at check time: `RUNNING|0:0`, elapsed `00:59:02`.
+- Log directory: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_evaldiag_564a6f3_gpu0_20260701_043542_+0800`.
+- Bad-pattern count for Traceback, RuntimeError, OOM, killed, NaN, non-finite, ValueError, PermissionError, and FileNotFoundError: `0`.
+- The first validation pass completed all `1645/1645` windows and entered evaluator aggregation.
+
+First validation diagnostic metric:
+
+- `Average-mAP: 0.12 (%)`.
+- `mAP@0.30: 0.34%`.
+- `mAP@0.40: 0.18%`.
+- `mAP@0.50: 0.06%`.
+- `mAP@0.60: 0.02%`.
+- `mAP@0.70: 0.01%`.
+
+Interpretation:
+
+- The eval path, N16R4 ground-truth path, validation dataloader, raw-scout handoff, and evaluator entry all ran through the first validation without a hard crash.
+- The metric is an early diagnostic-only detector-health signal after epoch 1, not a final route result and not a paper/metric claim.
+- The value is severe-low and must be treated as a warning signal before any full-training claim. Because this is a bounded short diagnostic and no hard failure occurred, the current child was allowed to continue into epoch 2 to observe whether the scheduled epoch-3/final validation recovers.
+
+Still locked:
+
+- Formal full training remains locked.
+- Runtime/FLOPs, deploy, paper, and final mAP claims remain locked.
+- No C3/C3-Pro result or attribution is mixed into this route.
+
+## Remote Eval Diagnostic Completed With Severe-Low Result - 2026-07-01 06:33:57 +08:00
+
+Completion evidence:
+
+- Child step: `1118197.539`, job name `rba_rbr_eval_g0`.
+- Slurm state: `COMPLETED|0:0`.
+- Elapsed: `01:57:09`.
+- GPU binding: protected hold `1118197 pcot_dbg2g` GPU0 only via `CUDA_VISIBLE_DEVICES=0`.
+- Log directory: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_evaldiag_564a6f3_gpu0_20260701_043542_+0800`.
+- Bad-pattern count for Traceback, RuntimeError, OOM, killed, NaN, non-finite, ValueError, PermissionError, and FileNotFoundError: `0`.
+- Checkpoints/logs observed:
+  - `.../input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag_only/gpu1_id0/checkpoint/epoch_1.pth`
+  - `.../input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag_only/gpu1_id0/checkpoint/epoch_3.pth`
+  - `.../input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag_only/gpu1_id0/log.json`
+
+Diagnostic validation metrics:
+
+- Epoch-1 validation:
+  - `Average-mAP: 0.12%`
+  - `mAP@0.30: 0.34%`
+  - `mAP@0.40: 0.18%`
+  - `mAP@0.50: 0.06%`
+  - `mAP@0.60: 0.02%`
+  - `mAP@0.70: 0.01%`
+- Epoch-3/final bounded diagnostic validation:
+  - `Average-mAP: 4.42%`
+  - `mAP@0.30: 10.92%`
+  - `mAP@0.40: 6.35%`
+  - `mAP@0.50: 3.16%`
+  - `mAP@0.60: 1.28%`
+  - `mAP@0.70: 0.37%`
+
+Interpretation:
+
+- The RBA-RBR eval diagnostic is launchable and stable: raw-scout acquisition, adapter bridge, validation dataloader, N16R4 ground-truth path, checkpointing, and evaluator aggregation all ran without hard errors.
+- The result remains failure-scale severe-low versus all relevant TAD references, even though it recovered from the epoch-1 near-zero signal to `4.42%` by epoch 3.
+- This result does not prove the RBA-RBR idea is conceptually dead. It proves the current implementation/configuration is not aligned enough for formal training, most likely requiring a sparse-forward/coordinate/postprocess handoff audit before any further long run.
+- This is diagnostic-only evidence. It is not a final route result, not a paper metric, not a deploy claim, and not a sparse-compute/runtime claim.
+
+Decision:
+
+- `SEVERE_RESULT_GATE_TRIGGERED`.
+- RBA-RBR formal full training remains locked.
+- Do not launch RBA-RBR follow-up long training until a severe-result diagnosis has inspected the current GitHub/code/log evidence and produced a concrete go/no-go or repair plan.
+- Preserve the current evidence packet `research-wiki/experiments/DIVERGENT_RBA_RBR_SEVERE_LOW_DIAGNOSIS_PACKET_20260701.md` and update it with the completed `.539` metrics before any Pro/Oracle discussion.
