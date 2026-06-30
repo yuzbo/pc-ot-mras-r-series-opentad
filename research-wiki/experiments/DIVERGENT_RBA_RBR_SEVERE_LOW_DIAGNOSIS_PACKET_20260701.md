@@ -164,3 +164,15 @@ Still locked:
 - Formal full training remains locked.
 - Pro transport remains `INCOMPLETE`; no valid Pro severe-result diagnosis has been harvested.
 - No final mAP, runtime/FLOPs, deployment, or paper claim is unlocked.
+
+## Grid-Audit GitHub Evidence Branch - 2026-07-01 07:39:58 +08:00
+
+Because ordinary `git push` could not safely update the existing GitHub branch, the grid-audit evidence was synchronized without force-pushing:
+
+- Existing GitHub branch `codex/divergent-rba-rbr-20260701` currently points to remote-only commit `1b26de8a7c606d9305cfa228b7f87e920529aa6a`.
+- A new branch was created from that remote commit: `codex/divergent-rba-rbr-grid-audit-aadf9708-20260701`.
+- The branch was updated with the five local grid-audit files from commit `aadf9708`.
+- Confirmed GitHub ref after Contents API sync: `0a4bf5747de24f822ae23183e89f5cce234e69a8`.
+- Review URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-grid-audit-aadf9708-20260701`.
+
+This branch is intended for Pro/Oracle severe-result diagnosis and remote sparse-forward precheck context only. It does not unlock full training or any metric/runtime/FLOPs/deploy/paper claim.
