@@ -17,6 +17,7 @@ COMMON_FORBIDDEN_CONFIG_TOKENS = [
     "pvrqc",
     "pqr",
     "pqr_ranking",
+    "bvr",
     "p2head",
     "teacher",
     "oracle",
@@ -93,6 +94,27 @@ def _validate_cadf_densitymesh_route(cfg, cfg_text):
         raise AssertionError("CADF physical-time selector path must remain default-off diagnostic contract")
     if bool(selector.get("selected_index_aware_postprocess_enabled", False)):
         raise AssertionError("CADF selected-index-aware postprocess is metadata-only/default-off for this route gate")
+    density_loss_v2_weights = {
+        "density_window_mass_loss_weight": float(selector.get("density_window_mass_loss_weight", 0.0)),
+        "density_max_gap_loss_weight": float(selector.get("density_max_gap_loss_weight", 0.0)),
+        "density_blue_noise_loss_weight": float(selector.get("density_blue_noise_loss_weight", 0.0)),
+        "density_weak_target_loss_weight": float(selector.get("density_weak_target_loss_weight", 0.0)),
+    }
+    for name, value in density_loss_v2_weights.items():
+        if value < 0.0:
+            raise AssertionError(f"CADF Density-Loss V2 weight must be non-negative: {name}={value}")
+    density_loss_v2_enabled = any(value > 0.0 for value in density_loss_v2_weights.values())
+    if density_loss_v2_enabled:
+        if claim_status == "formal_selector_candidate_locked" or bool(cfg.get("c3_formal_selector_candidate", False)):
+            raise AssertionError("Density-Loss V2 must remain default-off for formal selector candidates")
+        if cfg.get("c3_claim_status", None) != "diagnostic_only":
+            raise AssertionError("Density-Loss V2 may only be enabled by diagnostic_only configs")
+        if cfg.get("c3_density_loss_v2_diagnostic_only", None) is not True:
+            raise AssertionError("Density-Loss V2 enabled config must be marked c3_density_loss_v2_diagnostic_only=True")
+        if cfg.get("c3_density_loss_v2_claim_unlocked", None) is not False:
+            raise AssertionError("Density-Loss V2 diagnostic config must keep c3_density_loss_v2_claim_unlocked=False")
+        if bool(cfg.get("c3_full_train_claim_unlocked", False)):
+            raise AssertionError("Density-Loss V2 diagnostic config must not unlock full-train or paper claims")
     if cfg.get("c3_alpha0_combo_gate", None) == "st_soft_path_plus_actionness_fp32_no_amp_no_ema":
         if bool(cfg.solver.get("amp", False)) or bool(cfg.solver.get("fp16_compress", False)) or bool(cfg.solver.get("ema", False)):
             raise AssertionError("CADF ST+actionness combo gate must keep AMP/fp16/EMA disabled")

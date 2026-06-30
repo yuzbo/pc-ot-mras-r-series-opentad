@@ -29,34 +29,36 @@ class StaticCADFScout(nn.Module):
         return outputs
 
 
-def _make_cadf_selector(target_len=4, dense_window_size=8, scout_spatial_size=4):
+def _make_cadf_selector(target_len=4, dense_window_size=8, scout_spatial_size=4, **selector_overrides):
+    selector_cfg = dict(
+        type="PCOTMRASIndirectPreBackboneFrameSelector",
+        target_len=target_len,
+        dense_window_size=dense_window_size,
+        selection_unit=1,
+        scout_spatial_size=scout_spatial_size,
+        strategy="cadf_density_mesh_st",
+        density_alpha=1.0,
+        density_temperature=1.0,
+        density_weights=dict(action=0.0, uncertainty=0.0, change=0.0, utility=1.0, boundary=0.0),
+        max_gap_guard_count=0,
+        st_local_radius=1,
+        st_scale=0.5,
+        actionness_loss_weight=0.2,
+        boundary_loss_weight=0.0,
+        density_entropy_loss_weight=0.0,
+        density_repulsion_loss_weight=0.0,
+        scout=dict(
+            type="PCOTMRASCADFDensityFrameScout",
+            in_channels=3 * scout_spatial_size * scout_spatial_size,
+            hidden_channels=8,
+            num_layers=1,
+            kernel_size=3,
+            with_boundary_head=False,
+        ),
+    )
+    selector_cfg.update(selector_overrides)
     return build_selector(
-        dict(
-            type="PCOTMRASIndirectPreBackboneFrameSelector",
-            target_len=target_len,
-            dense_window_size=dense_window_size,
-            selection_unit=1,
-            scout_spatial_size=scout_spatial_size,
-            strategy="cadf_density_mesh_st",
-            density_alpha=1.0,
-            density_temperature=1.0,
-            density_weights=dict(action=0.0, uncertainty=0.0, change=0.0, utility=1.0, boundary=0.0),
-            max_gap_guard_count=0,
-            st_local_radius=1,
-            st_scale=0.5,
-            actionness_loss_weight=0.2,
-            boundary_loss_weight=0.0,
-            density_entropy_loss_weight=0.0,
-            density_repulsion_loss_weight=0.0,
-            scout=dict(
-                type="PCOTMRASCADFDensityFrameScout",
-                in_channels=3 * scout_spatial_size * scout_spatial_size,
-                hidden_channels=8,
-                num_layers=1,
-                kernel_size=3,
-                with_boundary_head=False,
-            ),
-        )
+        selector_cfg
     )
 
 
@@ -110,6 +112,73 @@ def test_cadf_density_mesh_selects_inverse_cdf_real_frames_without_quotas():
     assert outputs["metas"][0]["c3_density_mesh_alpha"] == 1.0
     assert outputs["metas"][0]["c3_density_mesh_max_gap"] == 1
     assert outputs["metas"][0]["c3_density_mesh_repair_fraction"] == 0.0
+
+
+def test_density_window_mass_and_gap_v2_loss_is_differentiable_on_continuous_density():
+    selector = _make_cadf_selector(
+        density_window_mass_loss_weight=0.0,
+        density_max_gap_loss_weight=0.0,
+    )
+    density = torch.tensor(
+        [[0.02, 0.03, 0.05, 0.70, 0.10, 0.10, 0.0, 0.0]],
+        dtype=torch.float32,
+        requires_grad=True,
+    )
+    masks = torch.tensor([[True, True, True, True, True, True, False, False]])
+
+    loss = selector._density_window_mass_gap_loss(density, masks)
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert density.grad is not None
+    assert torch.isfinite(density.grad).all()
+    assert density.grad[0, :6].abs().sum().item() > 0.0
+    assert density.grad[0, 6:].abs().sum().item() == pytest.approx(0.0)
+
+
+def test_density_blue_noise_v2_loss_is_finite_and_uses_continuous_density():
+    selector = _make_cadf_selector(density_blue_noise_loss_weight=0.0)
+    density = torch.tensor(
+        [[0.32, 0.30, 0.28, 0.04, 0.03, 0.03, 0.0, 0.0]],
+        dtype=torch.float32,
+        requires_grad=True,
+    )
+    masks = torch.tensor([[True, True, True, True, True, True, False, False]])
+
+    loss = selector._density_blue_noise_repulsion_loss(density, masks)
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert density.grad is not None
+    assert torch.isfinite(density.grad).all()
+    assert density.grad[0, :6].abs().sum().item() > 0.0
+    assert density.grad[0, 6:].abs().sum().item() == pytest.approx(0.0)
+
+
+def test_density_weak_target_v2_loss_is_train_only_and_gt_derived():
+    selector = _make_cadf_selector(
+        density_alpha=1.0,
+        actionness_loss_weight=0.0,
+        density_weak_target_loss_weight=0.5,
+    )
+    selector.scout = StaticCADFScout(
+        action_logits=[0, 0, 0, 0, 0, 0, 0, 0],
+        utility_logits=[0, 0, 0, 0, 0, 0, 0, 0],
+    )
+    inputs = _make_inputs()
+    masks = torch.ones(1, 8, dtype=torch.bool)
+    metas = [dict(video_name="video_0", window_size=8, snippet_stride=4)]
+    gt_segments = [torch.tensor([[2.0, 5.0]], dtype=torch.float32)]
+    gt_labels = [torch.tensor([1], dtype=torch.long)]
+
+    train_outputs = selector.forward_train(inputs, masks, metas, gt_segments, gt_labels)
+    test_outputs = selector.forward_test(inputs, masks, metas)
+
+    assert "loss_c3_density_weak_target" in train_outputs["losses"]
+    assert torch.isfinite(train_outputs["losses"]["loss_c3_density_weak_target"])
+    assert "losses" not in test_outputs
+    assert "c3_density_weak_target_loss_enabled" in train_outputs["metas"][0]
+    assert "c3_density_weak_target_loss_enabled" not in test_outputs["metas"][0]
 
 
 def test_cadf_train_and_test_selection_use_same_hard_policy():
@@ -183,6 +252,35 @@ def test_cadf_max_gap_guard_handles_compact_scores_on_nonzero_valid_indices():
     assert selected.numel() == selector.target_len
     assert set(selected.tolist()).issubset(set(valid_idx.tolist()))
     assert repair_mask.float().sum().item() > 0.0
+    assert repair_mask.float().mean().item() < 1.0
+
+
+def test_cadf_repair_diagnostics_split_dedupe_guard_add_prune_and_row_fraction():
+    selector = _make_cadf_selector(target_len=4, dense_window_size=10)
+    selector.max_gap_guard_count = 2
+    valid_idx = torch.tensor([2, 3, 5, 7, 9], dtype=torch.long)
+    density = torch.zeros(10, dtype=torch.float32)
+    density[valid_idx] = torch.tensor([0.35, 0.05, 0.05, 0.05, 0.50])
+    density = density / density.sum()
+
+    selected, repair_mask, repair_stats = selector._inverse_cdf_select_one(
+        density,
+        valid_idx,
+        return_diagnostics=True,
+    )
+    diagnostics = selector._selection_diagnostics(
+        selected[None],
+        torch.ones(1, 10, dtype=torch.bool),
+        density[None],
+        repair_mask[None],
+        repair_stats=[repair_stats],
+    )
+
+    assert repair_stats["dedupe_repair_count"] >= 0
+    assert repair_stats["gap_guard_add_count"] > 0
+    assert repair_stats["gap_guard_prune_count"] > 0
+    assert diagnostics[0]["row_repair_fraction"] == pytest.approx(repair_mask.float().mean().item())
+    assert diagnostics[0]["row_repair_fraction"] < 1.0
 
 
 def test_cadf_max_gap_guard_reduces_real_gap_for_two_peak_density():

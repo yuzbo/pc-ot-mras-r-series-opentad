@@ -30,6 +30,9 @@ CANDIDATE32 = ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_
 FORMAL32 = (
     ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_32px_formal_selector_candidate_locked.py"
 )
+DENSITY_LOSS_V2_DIAG32 = (
+    ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_32px_density_loss_v2_diagnostic.py"
+)
 FORMAL_LAUNCHER = ROOT / "logs/run_c3_cadf_formal_selector_candidate_locked_n16r4.sh"
 SMOKE64 = ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_64px_short_smoke.py"
 FULL64 = ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_64px_full_train.py"
@@ -50,6 +53,14 @@ def _assert_cadf_config(cfg, scout_size):
     assert "quota" not in selector_text
     assert "category" not in selector_text
     assert cfg.model.frame_selector.density_repulsion_loss_weight == 0.0
+    if bool(cfg.get("c3_density_loss_v2_diagnostic_only", False)):
+        assert cfg.c3_claim_status == "diagnostic_only"
+        assert cfg.get("c3_density_loss_v2_claim_unlocked", None) is False
+    else:
+        assert cfg.model.frame_selector.get("density_blue_noise_loss_weight", 0.0) == 0.0
+        assert cfg.model.frame_selector.get("density_window_mass_loss_weight", 0.0) == 0.0
+        assert cfg.model.frame_selector.get("density_max_gap_loss_weight", 0.0) == 0.0
+        assert cfg.model.frame_selector.get("density_weak_target_loss_weight", 0.0) == 0.0
     assert cfg.model.frame_selector.scout.type == "PCOTMRASCADFDensityFrameScout"
     assert cfg.model.frame_selector.scout_spatial_size == scout_size
     assert cfg.model.frame_selector.scout.in_channels == 3 * scout_size * scout_size
@@ -288,6 +299,37 @@ def test_cadf_densitymesh_formal_selector_candidate_is_locked_and_matches_combo_
     assert cfg.model.frame_selector.max_gap_guard_count == 12
 
 
+def test_cadf_density_loss_v2_diagnostic_config_is_default_closed_for_claims():
+    cfg = Config.fromfile(DENSITY_LOSS_V2_DIAG32)
+
+    _assert_cadf_config(cfg, 32)
+    assert cfg.c3_claim_status == "diagnostic_only"
+    assert cfg.c3_density_loss_v2_diagnostic_only is True
+    assert cfg.c3_density_loss_v2_claim_unlocked is False
+    assert cfg.c3_full_train_claim_unlocked is False
+    assert cfg.model.frame_selector.density_window_mass_loss_weight > 0.0
+    assert cfg.model.frame_selector.density_max_gap_loss_weight > 0.0
+    assert cfg.model.frame_selector.density_blue_noise_loss_weight > 0.0
+    assert cfg.model.frame_selector.density_weak_target_loss_weight == 0.0
+    assert cfg.model.frame_selector.density_repulsion_loss_weight == 0.0
+    assert cfg.model.frame_selector.physical_time_postprocess_enabled is False
+    validate_config(DENSITY_LOSS_V2_DIAG32)
+
+
+def test_shared_precheck_validator_rejects_formal_selector_candidate_with_density_loss_v2(tmp_path):
+    cfg = Config.fromfile(FORMAL32)
+    cfg.model.frame_selector.density_window_mass_loss_weight = 0.01
+    cfg.model.frame_selector.density_max_gap_loss_weight = 0.01
+    cfg.model.frame_selector.density_blue_noise_loss_weight = 0.01
+    cfg.c3_density_loss_v2_diagnostic_only = True
+    cfg.c3_density_loss_v2_claim_unlocked = False
+    bad_config = tmp_path / "bad_cadf_formal_density_loss_v2.py"
+    cfg.dump(bad_config)
+
+    with pytest.raises(AssertionError, match="Density-Loss V2.*formal"):
+        validate_config(bad_config)
+
+
 def test_cadf_densitymesh_formal_selector_launcher_is_fail_closed_until_combo_pass():
     launcher = FORMAL_LAUNCHER.read_text(encoding="utf-8")
 
@@ -324,6 +366,7 @@ def test_cadf_densitymesh_64px_configs_only_change_scout_resolution():
         STAGED32,
         CANDIDATE32,
         FORMAL32,
+        DENSITY_LOSS_V2_DIAG32,
         SMOKE64,
         FULL64,
     ],
@@ -461,7 +504,7 @@ def test_shared_precheck_validator_rejects_physical_time_postprocess_claim_witho
         validate_config(bad_config)
 
 
-@pytest.mark.parametrize("route_token", ["divergent", "pvr_qc", "pvr-qc", "pvrqc", "pqr", "pqr_ranking"])
+@pytest.mark.parametrize("route_token", ["divergent", "pvr_qc", "pvr-qc", "pvrqc", "pqr", "pqr_ranking", "bvr"])
 def test_shared_precheck_validator_rejects_cadf_route_mix_tokens(tmp_path, route_token):
     cfg = Config.fromfile(SMOKE32)
     cfg.c3_route_mixed_note = f"forbidden {route_token} route mix"
