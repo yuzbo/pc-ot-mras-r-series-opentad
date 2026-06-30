@@ -205,3 +205,52 @@ Locks after third-round fix:
 
 - No remote sync, SSH, Slurm, training, evaluation, `tools/test.py`, Pro, stage, commit, or push was run.
 - No mAP, runtime/FLOPs, deploy, paper, or full-train claim is unlocked.
+
+## Remote Sync And Non-GPU Precheck - 2026-07-01 02:27:37 +08:00
+
+Route label:
+
+- `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+
+GitHub source:
+
+- Repository: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad.git`.
+- Branch: `codex/divergent-rba-rbr-20260701`.
+- Commit: `4072d43`.
+
+N16R4 remote worktree:
+
+- Source object store: `/data/run01/sczc063/yuzibo/OpenTAD_Back_clean_20260629_588b272`.
+- Route-owned precheck worktree: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Precheck_20260701_4072d43`.
+- Remote branch in worktree: `codex/divergent-rba-rbr-20260701-precheck`.
+- Runtime resource links: `data -> ../OpenTAD_Back_check/data`, `pretrained -> ../pretrained`.
+
+Remote resource boundary:
+
+- No Slurm training/evaluation was launched for RBA-RBR.
+- No GPU was occupied by RBA-RBR.
+- BVR was still running on protected hold child `1118197.519` / GPU0 during this check.
+- C3 was still running on protected hold child `1118197.528` / GPU1 during this check.
+- Parent hold `1118197 pcot_dbg2g` was not modified, released, cancelled, or replaced.
+
+Remote precheck evidence:
+
+- `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q`
+  - Result: `15 passed in 19.55s`.
+- `python -m py_compile opentad/acquisition/rba_rbr/*.py tools/rba_rbr/*.py`
+  - Result: pass.
+- `python tools/rba_rbr/validate_rba_rbr_launch_gate.py --config configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py --audit-out-dir logs/rba_rbr_precheck_4072d43/rba_rbr_audit`
+  - Result: pass.
+  - Gate output: `gate_pass=true`, `full_train_unlocked=false`, `deploy_claim_unlocked=false`, `paper_claim_unlocked=false`, `remote_sync_unlocked_by_local_gate=false`, `sparse_compute_claim=false`.
+  - Audit summary: `cases=4`, `k=[9, 9, 10, 6]`, `stop_reasons={'risk_satisfied': 3, 'regret_saturation': 1}`, `recovered_boundary_by_rescue=true`, `hard_bracket_would_miss_boundary=true`.
+
+Remote precheck artifact paths:
+
+- `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Precheck_20260701_4072d43/logs/rba_rbr_precheck_4072d43/gate_result.json`.
+- `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Precheck_20260701_4072d43/logs/rba_rbr_precheck_4072d43/rba_rbr_audit/summary.json`.
+
+Current allowed next action:
+
+- `REMOTE_SYNC_PRECHECK_ONLY` is complete.
+- RBA-RBR is ready for Pro/GitHub review or later short diagnostic scheduling when GPU0 is free.
+- Full training remains locked by the route gate; there is still no mAP, runtime/FLOPs, deployment, paper, or formal long-training claim.
