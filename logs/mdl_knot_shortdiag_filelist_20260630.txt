@@ -1,0 +1,6 @@
+configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py
+tools/mdl_knot/validate_mdl_knot_shortdiag.py
+tests/test_mdl_knot_shortdiag.py
+logs/run_mdl_knot_shortdiag_n16r4.sh
+logs/mdl_knot_shortdiag_filelist_20260630.txt
+research-wiki/experiments/DIVERGENT_MDL_KNOT_SHORT_DIAGNOSTIC_GATE_20260630.md
