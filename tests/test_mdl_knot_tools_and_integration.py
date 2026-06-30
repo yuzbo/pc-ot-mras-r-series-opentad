@@ -239,6 +239,72 @@ def test_real_loadframes_mdl_knot_branch_sets_sparse_frame_inds_before_decode():
     assert meta["mdl_knot_pipeline_diagnostic"]["frame_handoff_alignment"]["all_aligned"] is True
 
 
+def test_real_loadframes_sampled_raw_short_dense_window_degrades_full_observation_profiled(monkeypatch):
+    torch_probe = subprocess.run(
+        [sys.executable, "-c", "import torch"],
+        text=True,
+        capture_output=True,
+    )
+    if torch_probe.returncode != 0:
+        pytest.skip(f"real OpenTAD LoadFrames smoke skipped because torch import fails: {torch_probe.stderr[-240:]}")
+
+    from opentad.datasets.transforms.end_to_end import LoadFrames
+
+    monkeypatch.setenv("MDL_KNOT_PROFILE", "1")
+    reader = _InMemoryVideoReader(4)
+    loader = LoadFrames(
+        method="mdl_knot_dynamic_subsample",
+        method_base="sliding_window",
+        scale_factor=1,
+        target_len=4,
+        mdl_knot_min_k=4,
+        mdl_knot_max_k=384,
+        mdl_knot_deploy_scout_source="frame_metadata_scout",
+        mdl_knot_allow_synthetic_fallback=False,
+        mdl_knot_handoff_audit_mode="sampled_raw",
+    )
+
+    out = loader(
+        {
+            "video_name": "video_test_full_observation",
+            "total_frames": 4,
+            "avg_fps": 30.0,
+            "snippet_stride": 1,
+            "window_size": 4,
+            "feature_start_idx": 0,
+            "feature_end_idx": 3,
+            "video_reader": reader,
+        }
+    )
+
+    audit = out["mdl_knot_handoff_audit"]
+    assert out["mdl_knot_valid_k"] == 4
+    assert out["mdl_knot_selected_positions"] == [0, 1, 2, 3]
+    assert audit["audit_mode"] == "sampled_raw_full_observation"
+    assert audit["full_observation_no_compression"] is True
+    assert audit["sampled_raw_sparse_compute_evidence"] is False
+    assert audit["selected_inputs_is_gathered"] is False
+    assert audit["sparse_compute_claim"] is False
+    assert out["mdl_knot_real_sparse_handoff_validated"] is False
+    diagnostic = out["mdl_knot_pipeline_diagnostic"]
+    assert diagnostic["frame_handoff_alignment"]["full_observation_no_compression"] is True
+    assert diagnostic["frame_handoff_alignment"]["sampled_raw_sparse_compute_evidence"] is False
+    assert diagnostic["fixed_pad_bridge_compute_boundary"]["sparse_compute_claim"] is False
+    for stage in (
+        "scout_build",
+        "selector_objective_loop",
+        "gap_guard",
+        "metadata_build",
+        "handoff_metadata_build",
+        "handoff_validator",
+        "handoff_audit_sampled_raw",
+        "handoff_audit_sampled_raw_decode",
+    ):
+        assert stage in out["mdl_knot_profile"]
+        assert out["mdl_knot_profile"][stage]["count"] >= 1
+        assert out["mdl_knot_profile"][stage]["total_ms"] >= 0.0
+
+
 def test_real_loadframes_structural_audit_does_not_read_dense_raw_inputs():
     torch_probe = subprocess.run(
         [sys.executable, "-c", "import torch"],
