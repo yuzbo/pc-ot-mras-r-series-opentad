@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROUTE_LABEL="DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3"
-EXPECTED_HEAD="478325af8da10646f747f955a54378d53fffd3ef"
+EXPECTED_BASE_COMMIT="478325af8da10646f747f955a54378d53fffd3ef"
 CONFIG="configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3_shortdiag.py"
 LOG_DIR="logs/bvr_twb_478325a_shortdiag"
 TRAIN_LOG="${LOG_DIR}/train_shortdiag_$(date +%Y%m%d_%H%M%S).log"
@@ -10,16 +10,33 @@ PRETRAIN="pretrained/vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth"
 
 mkdir -p "${LOG_DIR}"
 
-echo "[shortdiag] route=${ROUTE_LABEL}"
-echo "[shortdiag] cwd=$(pwd)"
-echo "[shortdiag] config=${CONFIG}"
-echo "[shortdiag] diagnostic_only=true full_train_unlocked=false metric_claim=false sparse_compute_claim=false"
+log_shortdiag() {
+  echo "$*" | tee -a "${TRAIN_LOG}"
+}
 
-HEAD="$(git rev-parse HEAD)"
-if [[ "${BVR_TWB_SHORTDIAG_ALLOW_HEAD_OVERRIDE:-0}" != "1" && "${HEAD}" != "${EXPECTED_HEAD}" ]]; then
-  echo "[shortdiag][fatal] HEAD mismatch: got ${HEAD}, expected ${EXPECTED_HEAD}" >&2
+log_shortdiag "[shortdiag] route=${ROUTE_LABEL}"
+log_shortdiag "[shortdiag] cwd=$(pwd)"
+log_shortdiag "[shortdiag] config=${CONFIG}"
+log_shortdiag "[shortdiag] diagnostic_only=true full_train_unlocked=false metric_claim=false sparse_compute_claim=false"
+
+PACKAGE_HEAD="$(git rev-parse HEAD)"
+if [[ "${BVR_TWB_SHORTDIAG_PURE_478325A_OVERLAY:-0}" == "1" ]]; then
+  if [[ "${PACKAGE_HEAD}" != "${EXPECTED_BASE_COMMIT}" ]]; then
+    echo "[shortdiag][fatal] pure overlay mode requires exact HEAD: package_head=${PACKAGE_HEAD}, expected_base_commit=${EXPECTED_BASE_COMMIT}" | tee -a "${TRAIN_LOG}" >&2
+    exit 2
+  fi
+  EXECUTION_MODE="exact_base_overlay"
+elif [[ "${PACKAGE_HEAD}" == "${EXPECTED_BASE_COMMIT}" ]]; then
+  EXECUTION_MODE="exact_base_overlay"
+elif git merge-base --is-ancestor "${EXPECTED_BASE_COMMIT}" "${PACKAGE_HEAD}"; then
+  EXECUTION_MODE="descendant_shortdiag_package"
+else
+  echo "[shortdiag][fatal] package HEAD does not descend from expected base: package_head=${PACKAGE_HEAD}, expected_base_commit=${EXPECTED_BASE_COMMIT}" | tee -a "${TRAIN_LOG}" >&2
   exit 2
 fi
+log_shortdiag "[shortdiag] expected_base_commit=${EXPECTED_BASE_COMMIT}"
+log_shortdiag "[shortdiag] package_head=${PACKAGE_HEAD}"
+log_shortdiag "[shortdiag] execution_mode=${EXECUTION_MODE}"
 
 if [[ ! -e data ]]; then
   echo "[shortdiag][fatal] data link/directory is missing" >&2
@@ -61,12 +78,12 @@ python -m py_compile "${CONFIG}" tools/bvr_twb/validate_bvr_twb_shortdiag.py tes
 python -m pytest -q tests/test_bvr_twb_shortdiag.py
 python tools/bvr_twb/validate_bvr_twb_geometry_contracts.py --require-torch
 python tools/bvr_twb/validate_bvr_twb_launch_gate.py --config configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py --audit-out-dir "${LOG_DIR}/launch_gate_precheck"
-python tools/bvr_twb/validate_bvr_twb_shortdiag.py --config "${CONFIG}" --expected-commit "${EXPECTED_HEAD}"
+python tools/bvr_twb/validate_bvr_twb_shortdiag.py --config "${CONFIG}" --expected-base-commit "${EXPECTED_BASE_COMMIT}"
 
-echo "[shortdiag] starting one-epoch diagnostic-only torchrun"
+log_shortdiag "[shortdiag] starting one-epoch diagnostic-only torchrun"
 set +e
 torchrun --nnodes=1 --nproc_per_node=1 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 \
-  tools/train.py "${CONFIG}" --id 0 2>&1 | tee "${TRAIN_LOG}"
+  tools/train.py "${CONFIG}" --id 0 2>&1 | tee -a "${TRAIN_LOG}"
 TRAIN_RC=${PIPESTATUS[0]}
 set -e
 
@@ -75,7 +92,7 @@ if grep -Eiq 'no pretrain path is provided|(^|[^A-Za-z])NaN([^A-Za-z]|$)|cost[=:
   exit 5
 fi
 
-python tools/bvr_twb/validate_bvr_twb_shortdiag.py --config "${CONFIG}" --train-log "${TRAIN_LOG}" --expected-commit "${EXPECTED_HEAD}"
+python tools/bvr_twb/validate_bvr_twb_shortdiag.py --config "${CONFIG}" --train-log "${TRAIN_LOG}" --expected-base-commit "${EXPECTED_BASE_COMMIT}"
 
 if [[ "${TRAIN_RC}" -ne 0 ]]; then
   echo "[shortdiag][fatal] torchrun exited with ${TRAIN_RC}" >&2

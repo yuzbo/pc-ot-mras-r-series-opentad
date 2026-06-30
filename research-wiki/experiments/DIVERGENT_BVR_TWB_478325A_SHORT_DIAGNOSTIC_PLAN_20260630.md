@@ -20,6 +20,19 @@ Status: diagnostic-only setup implemented for the BVR-TWB route. This is not a l
 - Contamination handling: one writable worker accidentally created the six short-diagnostic files in the shared root. The coordinator copied the exact files into this route-owned worktree, verified matching content, removed only those exact shared-root copies, and did not stage/commit/push from the shared root.
 - Resource state: formal/diagnostic BVR launch remains blocked. Protected parent hold `1118197 pcot_dbg2g` must not be released. Current C3 child step `1118197.376 cadf_combo_g0` is still running with `AllocTRES=gres/gpu=2`, so GPU1 is not Slurm-safe for BVR even if it appears physically idle.
 
+## 2026-06-30 Execution Boundary Fix
+
+- Fix branch: `codex/divergent-bvr-twb-shortdiag-execfix-20260630`.
+- Fix worktree: `OpenTAD_BVR_TWB_ShortDiagExecFix_Worktree_20260630`.
+- Audit-triggered ambiguity: the package HEAD is `2b4d48be7b6b44c8e4f20946005b508bb9e62587`, while the expected code base remains `478325af8da10646f747f955a54378d53fffd3ef`. A strict `HEAD == 478325a` check is ambiguous for a committed shortdiag package branch and should only be used for pure overlay mode.
+- Approved execution modes:
+  - `exact_base_overlay`: run the shortdiag files as an overlay on a clean tree whose current HEAD is exactly `478325af8da10646f747f955a54378d53fffd3ef`.
+  - `descendant_shortdiag_package`: run a committed package branch whose current package HEAD descends from `478325af8da10646f747f955a54378d53fffd3ef`.
+- Rejected execution mode: any package HEAD that neither equals nor descends from `478325af8da10646f747f955a54378d53fffd3ef`.
+- Wrapper behavior: records both `expected_base_commit` and `package_head` in the train log before torchrun. It requires exact HEAD only when `BVR_TWB_SHORTDIAG_PURE_478325A_OVERLAY=1`; otherwise it accepts exact-base overlay or descendant shortdiag package mode.
+- Validator behavior: reports `expected_base_commit`, `package_head`, `package_descends_from_expected_base`, and `shortdiag_execution_mode`. The backward-compatible `--expected-commit` argument is treated as an expected base commit, not an impossible package HEAD equality requirement.
+- Claim state after this fix: still diagnostic-only; formal full training, validation/test evaluation, sparse-compute claims, deployment claims, paper claims, and metric claims remain locked.
+
 ## Decision Context
 
 - Valid Pro verdict: `REQUIRE_SHORT_DIAGNOSTIC_SMOKE_FIRST`.
@@ -45,18 +58,21 @@ This package is bounded to one epoch and is meant to verify:
   - Extends the formal BVR-TWB HeadV3 config.
   - Keeps the route label and BVR method unchanged.
   - Sets `diagnostic_only=True`, `full_train_unlocked=False`, `metric_claim=False`, `sparse_compute_claim=False`.
+  - Records `shortdiag_expected_base_commit=478325af8da10646f747f955a54378d53fffd3ef`, `shortdiag_execution_boundary=expected_base_or_descendant_shortdiag_package`, and the audit package HEAD `2b4d48be7b6b44c8e4f20946005b508bb9e62587`.
   - Sets one-epoch workflow, checkpoint disabled, validation loss/eval disabled, and small logging/runtime debug intervals.
   - Preserves AMP off, fp16 compression off, required VideoMAE-S pretrain, and HeadV3 stability flags.
 - `tools/bvr_twb/validate_bvr_twb_shortdiag.py`
   - Validates resolved config and optional train log.
-  - Fails closed on wrong commit marker/HEAD, missing pretrain file, resolved pretrain mismatch, no-pretrain warning, NaN/Inf/non-finite/cost nan, Python/runtime/CUDA/storage/resource failures, missing finite `Loss=...`, route drift tokens, eval/mAP markers, and full-train/deploy/paper claim words.
+  - Fails closed on wrong base commit marker, wrong package ancestry, missing pretrain file, resolved pretrain mismatch, no-pretrain warning, NaN/Inf/non-finite/cost nan, Python/runtime/CUDA/storage/resource failures, missing finite `Loss=...`, route drift tokens, eval/mAP markers, and full-train/deploy/paper claim words.
+  - Accepts either exact-base overlay mode or descendant shortdiag package mode, and reports both current package HEAD and expected base commit.
   - Always reports `full_train_unlocked=false`, `metric_claim=false`, and `sparse_compute_claim=false`.
 - `tests/test_bvr_twb_shortdiag.py`
-  - Covers config inheritance, pretrain, HeadV3 stability flags, one-epoch/checkpoint/eval locks, and validator rejection of missing finite loss, no-pretrain warning, and NaN.
+  - Covers config inheritance, pretrain, HeadV3 stability flags, one-epoch/checkpoint/eval locks, exact-base mode, descendant package mode, wrong-base rejection, exact-only overlay rejection, and validator rejection of missing finite loss, no-pretrain warning, and NaN.
 - `logs/run_bvr_twb_478325a_shortdiag_n16r4.sh`
   - Intended for an already allocated child GPU context inside a route clean tree.
   - Does not call `sbatch`, `srun`, `scancel`, SSH, `tools/test.py`, or any hold release/cancel action.
-  - Asserts exact HEAD unless `BVR_TWB_SHORTDIAG_ALLOW_HEAD_OVERRIDE=1`.
+  - Asserts either exact-base overlay or descendant package ancestry. It asserts exact HEAD only when `BVR_TWB_SHORTDIAG_PURE_478325A_OVERLAY=1`.
+  - Writes `expected_base_commit`, `package_head`, and `execution_mode` to the shortdiag train log.
   - Asserts `data`, `pretrained`, required pretrain file, and `CUDA_VISIBLE_DEVICES`.
   - Runs py_compile, focused pytest, geometry contract validator, formal launch gate precheck, shortdiag config validator, one-epoch torchrun, stop-condition grep, and post-run log validator.
 
@@ -80,7 +96,8 @@ Still locked:
 
 The remote run must preserve:
 
-- exact HEAD `478325af8da10646f747f955a54378d53fffd3ef`, unless the coordinator explicitly records an override;
+- either exact HEAD `478325af8da10646f747f955a54378d53fffd3ef` in pure overlay mode, or a package HEAD that descends from `478325af8da10646f747f955a54378d53fffd3ef` in descendant shortdiag package mode;
+- train log lines recording both `expected_base_commit` and current `package_head`;
 - real pretrain file present at `pretrained/vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth`;
 - train log containing the required pretrain path and a checkpoint load marker;
 - at least one finite `Loss=...` line;

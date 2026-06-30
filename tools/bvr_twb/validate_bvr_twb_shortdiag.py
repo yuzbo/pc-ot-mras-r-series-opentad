@@ -14,7 +14,8 @@ from opentad.acquisition.bvr_twb.adapter_bridge import ADAPTER_FIXED_LENGTH_PADD
 from opentad.acquisition.bvr_twb.types import ROUTE_LABEL  # noqa: E402
 
 
-EXPECTED_COMMIT = "478325af8da10646f747f955a54378d53fffd3ef"
+EXPECTED_BASE_COMMIT = "478325af8da10646f747f955a54378d53fffd3ef"
+EXPECTED_COMMIT = EXPECTED_BASE_COMMIT
 REQUIRED_PRETRAIN_PATH = "pretrained/vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth"
 SHORTDIAG_CONFIG = "configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3_shortdiag.py"
 
@@ -67,6 +68,56 @@ def _git_head(repo_root):
     return proc.stdout.strip()
 
 
+def _git_is_ancestor(repo_root, ancestor_commit, descendant_commit="HEAD"):
+    proc = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor_commit, descendant_commit],
+        cwd=str(repo_root),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if proc.returncode == 0:
+        return True
+    if proc.returncode == 1:
+        return False
+    raise ShortDiagValidationError(
+        f"cannot validate git ancestry {ancestor_commit}..{descendant_commit}: "
+        f"{(proc.stderr or proc.stdout).strip()}"
+    )
+
+
+def validate_git_execution_boundary(repo_root, expected_base_commit=EXPECTED_BASE_COMMIT, require_exact_base=False):
+    repo_root = Path(repo_root)
+    package_head = _git_head(repo_root)
+    if require_exact_base:
+        if package_head != expected_base_commit:
+            raise ShortDiagValidationError(
+                "git HEAD must exactly match expected base commit in pure 478325a overlay mode: "
+                f"package_head={package_head}, expected_base_commit={expected_base_commit}"
+            )
+        execution_mode = "exact_base_overlay"
+        descends_from_base = True
+    elif package_head == expected_base_commit:
+        execution_mode = "exact_base_overlay"
+        descends_from_base = True
+    else:
+        descends_from_base = _git_is_ancestor(repo_root, expected_base_commit, package_head)
+        if not descends_from_base:
+            raise ShortDiagValidationError(
+                "git package HEAD does not descend from expected base commit: "
+                f"package_head={package_head}, expected_base_commit={expected_base_commit}"
+            )
+        execution_mode = "descendant_shortdiag_package"
+    return {
+        "git_head": package_head,
+        "package_head": package_head,
+        "expected_base_commit": expected_base_commit,
+        "package_descends_from_expected_base": descends_from_base,
+        "shortdiag_execution_mode": execution_mode,
+    }
+
+
 def _load_config(config_path):
     try:
         from mmengine.config import Config
@@ -97,23 +148,42 @@ def _require_no_forbidden_route_tokens(text, source):
             raise ShortDiagValidationError(f"{source} contains forbidden route token: {token}")
 
 
-def validate_shortdiag_config(config_path, repo_root=ROOT, expected_commit=None, require_pretrain_file=True):
+def validate_shortdiag_config(
+    config_path,
+    repo_root=ROOT,
+    expected_base_commit=None,
+    expected_commit=None,
+    require_exact_base=False,
+    require_pretrain_file=True,
+):
     config_path = Path(config_path)
     repo_root = Path(repo_root)
     text = _read_text(config_path)
     _require_no_forbidden_route_tokens(text, "config")
 
     cfg = _load_config(config_path)
-    if expected_commit is not None:
-        head = _git_head(repo_root)
-        if head != expected_commit:
-            raise ShortDiagValidationError(f"git HEAD mismatch: got {head}, expected {expected_commit}")
+    if expected_commit is not None and expected_base_commit is None:
+        expected_base_commit = expected_commit
+    if expected_base_commit is not None:
+        git_boundary = validate_git_execution_boundary(
+            repo_root,
+            expected_base_commit=expected_base_commit,
+            require_exact_base=require_exact_base,
+        )
     else:
-        head = None
+        git_boundary = {
+            "git_head": None,
+            "package_head": None,
+            "expected_base_commit": EXPECTED_BASE_COMMIT,
+            "package_descends_from_expected_base": None,
+            "shortdiag_execution_mode": "not_checked",
+        }
 
     marker = _get_nested(cfg, "shortdiag_expected_base_commit")
-    if marker != EXPECTED_COMMIT:
-        raise ShortDiagValidationError(f"config commit marker mismatch: got {marker!r}, expected {EXPECTED_COMMIT!r}")
+    if marker != EXPECTED_BASE_COMMIT:
+        raise ShortDiagValidationError(
+            f"config base commit marker mismatch: got {marker!r}, expected {EXPECTED_BASE_COMMIT!r}"
+        )
     if _get_nested(cfg, "route_label") != ROUTE_LABEL:
         raise ShortDiagValidationError("shortdiag config must preserve the BVR-TWB route label")
     if not bool(_get_nested(cfg, "diagnostic_only")):
@@ -183,7 +253,7 @@ def validate_shortdiag_config(config_path, repo_root=ROOT, expected_commit=None,
 
     return {
         "config_valid": True,
-        "git_head": head,
+        **git_boundary,
         "resolved_pretrain": pretrain,
         "pretrain_exists": pretrain_path.is_file(),
         "workflow_end_epoch": int(workflow.end_epoch),
@@ -236,11 +306,20 @@ def validate_train_log(train_log):
     }
 
 
-def validate_shortdiag(config_path, train_log=None, repo_root=ROOT, expected_commit=None, require_pretrain_file=True):
+def validate_shortdiag(
+    config_path,
+    train_log=None,
+    repo_root=ROOT,
+    expected_base_commit=None,
+    expected_commit=None,
+    require_exact_base=False,
+    require_pretrain_file=True,
+):
     result = {
         "validator": "bvr_twb_shortdiag",
         "route_label": ROUTE_LABEL,
-        "expected_commit": EXPECTED_COMMIT,
+        "expected_base_commit": EXPECTED_BASE_COMMIT,
+        "expected_commit": EXPECTED_BASE_COMMIT,
         "full_train_unlocked": False,
         "metric_claim": False,
         "sparse_compute_claim": False,
@@ -250,7 +329,9 @@ def validate_shortdiag(config_path, train_log=None, repo_root=ROOT, expected_com
         validate_shortdiag_config(
             config_path,
             repo_root=repo_root,
+            expected_base_commit=expected_base_commit,
             expected_commit=expected_commit,
+            require_exact_base=require_exact_base,
             require_pretrain_file=require_pretrain_file,
         )
     )
@@ -264,15 +345,27 @@ def main():
     parser.add_argument("--config", default=SHORTDIAG_CONFIG)
     parser.add_argument("--train-log")
     parser.add_argument("--repo-root", default=str(ROOT))
-    parser.add_argument("--expected-commit")
+    parser.add_argument("--expected-base-commit", default=EXPECTED_BASE_COMMIT)
+    parser.add_argument(
+        "--expected-commit",
+        dest="expected_commit_alias",
+        help="Backward-compatible alias for --expected-base-commit.",
+    )
+    parser.add_argument(
+        "--require-exact-base",
+        action="store_true",
+        help="Require current HEAD to equal the expected base commit; use only for pure 478325a overlay mode.",
+    )
     parser.add_argument("--allow-missing-pretrain", action="store_true")
     args = parser.parse_args()
+    expected_base_commit = args.expected_commit_alias or args.expected_base_commit
     try:
         result = validate_shortdiag(
             args.config,
             train_log=args.train_log,
             repo_root=args.repo_root,
-            expected_commit=args.expected_commit,
+            expected_base_commit=expected_base_commit,
+            require_exact_base=args.require_exact_base,
             require_pretrain_file=not args.allow_missing_pretrain,
         )
     except Exception as exc:

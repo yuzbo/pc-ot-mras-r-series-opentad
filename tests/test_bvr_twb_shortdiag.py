@@ -7,6 +7,7 @@ from tools.bvr_twb.validate_bvr_twb_shortdiag import (
     EXPECTED_COMMIT,
     REQUIRED_PRETRAIN_PATH,
     ShortDiagValidationError,
+    validate_git_execution_boundary,
     validate_shortdiag,
     validate_train_log,
 )
@@ -66,6 +67,67 @@ def test_shortdiag_config_one_epoch_no_checkpoint_no_eval():
     assert int(cfg.workflow.logging_interval) <= 5
     assert int(cfg.workflow.runtime_debug_interval) <= 5
     assert "diagnostic_only" in cfg.work_dir
+
+
+def test_git_boundary_accepts_exact_base_mode(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "tools.bvr_twb.validate_bvr_twb_shortdiag._git_head",
+        lambda repo_root: EXPECTED_COMMIT,
+    )
+
+    result = validate_git_execution_boundary(tmp_path, expected_base_commit=EXPECTED_COMMIT, require_exact_base=True)
+
+    assert result["package_head"] == EXPECTED_COMMIT
+    assert result["expected_base_commit"] == EXPECTED_COMMIT
+    assert result["shortdiag_execution_mode"] == "exact_base_overlay"
+    assert result["package_descends_from_expected_base"] is True
+
+
+def test_git_boundary_accepts_descendant_package_mode(monkeypatch, tmp_path):
+    package_head = "2b4d48be7b6b44c8e4f20946005b508bb9e62587"
+    monkeypatch.setattr(
+        "tools.bvr_twb.validate_bvr_twb_shortdiag._git_head",
+        lambda repo_root: package_head,
+    )
+    monkeypatch.setattr(
+        "tools.bvr_twb.validate_bvr_twb_shortdiag._git_is_ancestor",
+        lambda repo_root, ancestor_commit, descendant_commit: (
+            ancestor_commit == EXPECTED_COMMIT and descendant_commit == package_head
+        ),
+    )
+
+    result = validate_git_execution_boundary(tmp_path, expected_base_commit=EXPECTED_COMMIT)
+
+    assert result["package_head"] == package_head
+    assert result["expected_base_commit"] == EXPECTED_COMMIT
+    assert result["shortdiag_execution_mode"] == "descendant_shortdiag_package"
+    assert result["package_descends_from_expected_base"] is True
+
+
+def test_git_boundary_rejects_wrong_base(monkeypatch, tmp_path):
+    package_head = "1111111111111111111111111111111111111111"
+    monkeypatch.setattr(
+        "tools.bvr_twb.validate_bvr_twb_shortdiag._git_head",
+        lambda repo_root: package_head,
+    )
+    monkeypatch.setattr(
+        "tools.bvr_twb.validate_bvr_twb_shortdiag._git_is_ancestor",
+        lambda repo_root, ancestor_commit, descendant_commit: False,
+    )
+
+    with pytest.raises(ShortDiagValidationError, match="does not descend from expected base commit"):
+        validate_git_execution_boundary(tmp_path, expected_base_commit=EXPECTED_COMMIT)
+
+
+def test_git_boundary_rejects_descendant_when_exact_base_required(monkeypatch, tmp_path):
+    package_head = "2b4d48be7b6b44c8e4f20946005b508bb9e62587"
+    monkeypatch.setattr(
+        "tools.bvr_twb.validate_bvr_twb_shortdiag._git_head",
+        lambda repo_root: package_head,
+    )
+
+    with pytest.raises(ShortDiagValidationError, match="pure 478325a overlay mode"):
+        validate_git_execution_boundary(tmp_path, expected_base_commit=EXPECTED_COMMIT, require_exact_base=True)
 
 
 def test_validator_catches_missing_finite_loss(tmp_path):
@@ -145,5 +207,7 @@ def test_validator_json_contract_stays_claim_locked(tmp_path):
     assert result["full_train_unlocked"] is False
     assert result["metric_claim"] is False
     assert result["sparse_compute_claim"] is False
+    assert result["expected_base_commit"] == EXPECTED_COMMIT
+    assert result["shortdiag_execution_mode"] == "not_checked"
     assert result["train_log_valid"] is True
     json.dumps(result)
