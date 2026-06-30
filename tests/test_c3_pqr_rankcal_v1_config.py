@@ -21,6 +21,7 @@ EXACT_UNIFORM_CONFIG = (
     ROOT
     / "configs/adatad/thumos/c3_indirect_original_adatad_32px_a_exact_uniform_backend_control_pqr_rankcal_v1_shortdiag.py"
 )
+FULLTRAIN_CONFIG = ROOT / "configs/adatad/thumos/c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_fulltrain.py"
 
 
 def _load(config_path):
@@ -190,12 +191,12 @@ def _make_runtime_gate_fixtures():
     return model, optimizer, scheduler
 
 
-@pytest.mark.parametrize("config_path", [PRECHECK_CONFIG, SHORTDIAG_CONFIG, EXACT_UNIFORM_CONFIG])
+@pytest.mark.parametrize("config_path", [PRECHECK_CONFIG, SHORTDIAG_CONFIG, EXACT_UNIFORM_CONFIG, FULLTRAIN_CONFIG])
 def test_pqr_rankcal_configs_pass_fail_closed_validator(config_path):
     validate_config(config_path)
 
 
-@pytest.mark.parametrize("config_path", [PRECHECK_CONFIG, SHORTDIAG_CONFIG, EXACT_UNIFORM_CONFIG])
+@pytest.mark.parametrize("config_path", [PRECHECK_CONFIG, SHORTDIAG_CONFIG, EXACT_UNIFORM_CONFIG, FULLTRAIN_CONFIG])
 def test_pqr_rankcal_configs_do_not_define_unconsumed_frame_selector(config_path):
     cfg = _load(config_path)
 
@@ -247,6 +248,29 @@ def test_pqr_rankcal_precheck_is_short_fail_closed_gate():
     assert "pseudo_boundary" in cfg.pqr_rankcal_v1.build_only_blockers
     assert "restoration" in cfg.pqr_rankcal_v1.build_only_blockers
     assert "remote PRECHECK" in cfg.pqr_rankcal_v1.build_only_blockers
+
+
+def test_pqr_rankcal_fulltrain_requires_explicit_user_override_and_no_claims():
+    cfg = _load(FULLTRAIN_CONFIG)
+
+    assert cfg.pqr_rankcal_v1.diagnostic_only is False
+    assert cfg.pqr_rankcal_v1.formal_fulltrain is True
+    assert cfg.pqr_rankcal_v1.user_override_fulltrain is True
+    assert cfg.pqr_rankcal_v1.remote_launch_locked is False
+    assert cfg.pqr_rankcal_v1.official_map_claim is False
+    assert cfg.pqr_rankcal_v1.claim_map_improvement is False
+    assert cfg.pqr_rankcal_v1.use_teacher is False
+    assert cfg.pqr_rankcal_v1.use_test_gt is False
+    assert cfg.pqr_rankcal_v1.use_raw_prediction_cache is False
+    assert cfg.pqr_rankcal_v1.fulltrain_scope == "user_unlocked_pqr_formal_training_after_diagnostic_controls"
+    assert cfg.workflow.end_epoch == 60
+    assert cfg.workflow.max_train_iters is None
+    assert cfg.workflow.val_start_epoch == 40
+    assert cfg.workflow.val_eval_interval == 2
+    assert cfg.workflow.disable_checkpoint is False
+    assert cfg.scheduler.max_epoch == 60
+    assert cfg.scheduler.warmup_epoch == 5
+    assert cfg.post_processing.save_dict is True
 
 
 def test_clean_clone_transform_dependencies_are_present_for_runtime_imports():

@@ -15,6 +15,7 @@ ALLOWED_ROUTE_VARIANTS = {
 FORBIDDEN_ROUTE_TOKENS = ("BH", "BH-SDC", "BH_SDC", "DIVERGENT", "CADF")
 EXPECTED_PRECHECK_SCOPE = "config_validator_plus_quality_head_unit"
 EXPECTED_BUILD_ONLY_STATUS = "pseudo_boundary_dependency_restored_pending_remote_runtime_smoke"
+EXPECTED_FULLTRAIN_SCOPE = "user_unlocked_pqr_formal_training_after_diagnostic_controls"
 SUPPORTED_QUALITY_HEAD_KEYS = {
     "enabled",
     "kernel_size",
@@ -133,6 +134,48 @@ def _validate_quality_head(cfg):
     assert quality.loss_normalizer in {"valid", "weighted"}
 
 
+def _validate_route_contract(cfg):
+    _assert_false(cfg, "inference.load_from_raw_predictions")
+    _assert_false(cfg, "inference.save_raw_prediction")
+    _assert_false(cfg, "pqr_rankcal_v1.use_teacher")
+    _assert_false(cfg, "pqr_rankcal_v1.use_test_gt")
+    _assert_false(cfg, "pqr_rankcal_v1.use_raw_prediction_cache")
+    _assert_false(cfg, "pqr_rankcal_v1.physical_time_postprocess_claim")
+    assert cfg.pqr_rankcal_v1.claim_map_improvement is False
+    assert cfg.pqr_rankcal_v1.official_map_claim is False
+    assert cfg.pqr_rankcal_v1.experiment_boundary == "adapter_actionformer_backend_ranking_calibration_only"
+    assert cfg.pqr_rankcal_v1.c3_selector_input_experiment is False
+    assert cfg.pqr_rankcal_v1.requires_c3_selector_tree_for_input_experiment is True
+
+
+def _validate_diagnostic_gate(cfg):
+    assert cfg.pqr_rankcal_v1.diagnostic_only is True
+    assert cfg.pqr_rankcal_v1.get("formal_fulltrain", False) is False
+    assert cfg.pqr_rankcal_v1.get("user_override_fulltrain", False) is False
+    assert cfg.pqr_rankcal_v1.remote_launch_locked is True
+    assert cfg.pqr_rankcal_v1.precheck_scope == EXPECTED_PRECHECK_SCOPE
+    assert cfg.pqr_rankcal_v1.build_only_status == EXPECTED_BUILD_ONLY_STATUS
+    assert "pseudo_boundary" in cfg.pqr_rankcal_v1.build_only_blockers
+    assert "restoration" in cfg.pqr_rankcal_v1.build_only_blockers
+    assert "remote PRECHECK" in cfg.pqr_rankcal_v1.build_only_blockers
+
+
+def _validate_formal_fulltrain_gate(cfg):
+    assert cfg.pqr_rankcal_v1.diagnostic_only is False
+    assert cfg.pqr_rankcal_v1.formal_fulltrain is True
+    assert cfg.pqr_rankcal_v1.user_override_fulltrain is True
+    assert cfg.pqr_rankcal_v1.remote_launch_locked is False
+    assert cfg.pqr_rankcal_v1.fulltrain_scope == EXPECTED_FULLTRAIN_SCOPE
+    assert cfg.workflow.end_epoch == 60
+    assert cfg.workflow.max_train_iters is None
+    assert cfg.workflow.val_eval_interval == 2
+    assert cfg.workflow.val_start_epoch == 40
+    assert cfg.workflow.disable_checkpoint is False
+    assert cfg.scheduler.max_epoch == 60
+    assert cfg.scheduler.warmup_epoch == 5
+    assert cfg.post_processing.save_dict is True
+
+
 def _validate_random_fixed_backend(cfg):
     assert cfg.pqr_rankcal_v1.backend_control == "random_fixed_adapter_50pct"
     assert cfg.dense_window_size == 768
@@ -176,23 +219,11 @@ def validate_config(config_path):
     assert cfg.window_size == 384
     assert cfg.chunk_num == 24
 
-    _assert_false(cfg, "inference.load_from_raw_predictions")
-    _assert_false(cfg, "inference.save_raw_prediction")
-    _assert_false(cfg, "pqr_rankcal_v1.use_teacher")
-    _assert_false(cfg, "pqr_rankcal_v1.use_test_gt")
-    _assert_false(cfg, "pqr_rankcal_v1.use_raw_prediction_cache")
-    _assert_false(cfg, "pqr_rankcal_v1.physical_time_postprocess_claim")
-    assert cfg.pqr_rankcal_v1.diagnostic_only is True
-    assert cfg.pqr_rankcal_v1.claim_map_improvement is False
-    assert cfg.pqr_rankcal_v1.official_map_claim is False
-    assert cfg.pqr_rankcal_v1.experiment_boundary == "adapter_actionformer_backend_ranking_calibration_only"
-    assert cfg.pqr_rankcal_v1.c3_selector_input_experiment is False
-    assert cfg.pqr_rankcal_v1.requires_c3_selector_tree_for_input_experiment is True
-    assert cfg.pqr_rankcal_v1.precheck_scope == EXPECTED_PRECHECK_SCOPE
-    assert cfg.pqr_rankcal_v1.build_only_status == EXPECTED_BUILD_ONLY_STATUS
-    assert "pseudo_boundary" in cfg.pqr_rankcal_v1.build_only_blockers
-    assert "restoration" in cfg.pqr_rankcal_v1.build_only_blockers
-    assert "remote PRECHECK" in cfg.pqr_rankcal_v1.build_only_blockers
+    _validate_route_contract(cfg)
+    if cfg.pqr_rankcal_v1.get("formal_fulltrain", False):
+        _validate_formal_fulltrain_gate(cfg)
+    else:
+        _validate_diagnostic_gate(cfg)
 
     if cfg.route_variant == "C3_PQR_RankCalV1_MaxIoU_Stride2UniformBackendControl":
         _validate_stride2_uniform_backend(cfg)
