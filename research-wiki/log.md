@@ -51,3 +51,13 @@
 - Required fields passed: `detector_forward_count=1`, `dynamic_k_nonconstant=true`, `nonzero_window_ok=true`, `val_test_gt_rejection_ok=true`, `real_sparse_handoff_ok=true`, `forbidden_inputs_ok=true`, `pipeline_valid_k=24`, `easy_valid_k=13`, `rich_valid_k=24`.
 - Gate output: `allowed_next_action=REMOTE_PRECHECK_ONLY_REQUEST`, `still_locked=TRAIN_EVAL_SYNC_STAGE_COMMIT_PUSH`.
 - Interpretation: Linux/N16R4 `PRECHECK_ONLY` passed after the clean-clone dependency fix, but full train, evaluation, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper claims, and sparse-compute claims remain locked.
+
+## 2026-06-30T22:48:47+08:00 - ABR real deploy-visible scout recall diagnostic launched
+
+- Remote ABR clone `/data/home/sczc063/run/yuzibo/OpenTAD_ABR_FormalGate_20260630_fee07c1` is at commit `fee07c1`, branch `codex/divergent-abr-formal-gate-20260630`, with `data -> /data/home/sczc063/run/yuzibo/thumos14`.
+- Plain remote `python` is system Python 2.7, so ABR diagnostics use explicit conda Python `/data/home/sczc063/run/yuzibo/conda_envs/opentad/bin/python` with Python 3.10.20, `cv2 4.11.0`, and `numpy 1.23.5`.
+- Small validation probe exported real deploy-visible raw-video scout curves for 8 validation videos with `success_count=8`, `missing_count=0`, `scout_source=deploy_visible_raw_video_graydiff_v1`.
+- Small probe recall audit returned `LOCKED_REAL_SCOUT_RECALL_BELOW_FORMAL_GATE_REVISE_BRACKET_POLICY_OR_SCOUT`: `transition_count=226`, `bracketed_transition_count=57`, `missed_transition_count=169`, first-round bracket recall `0.252212389380531`, first-round transition coverage `0.07079646017699115`, `real_deploy_visible_recall_evidence=true`, `diagnostic_fallback_used=false`, `selector_gt_visible=false`.
+- Full validation no-detector/no-training recall diagnostic was launched under protected hold `1118197` as child step `1118197.527 abr_reca`, log dir `/data/home/sczc063/run/yuzibo/OpenTAD_ABR_FormalGate_20260630_fee07c1/logs/abr_real_scout_recall_full_validation_gpu0safe_20260630_224835_+0800`.
+- The full diagnostic runs with `CUDA_VISIBLE_DEVICES=EMPTY`, `cpus-per-task=2`, `mem=12G`, and does not occupy GPU memory. Parent hold `1118197` was not released, cancelled, requeued, or replaced.
+- This is ABR mechanism evidence only: no formal full train, no detector training, no `tools/test.py`, no mAP/runtime/FLOPs/sparse-compute/deploy/paper claim.

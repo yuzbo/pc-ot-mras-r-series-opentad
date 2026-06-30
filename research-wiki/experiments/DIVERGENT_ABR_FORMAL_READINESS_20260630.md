@@ -535,3 +535,92 @@ git diff --check
 Locks remain unchanged: no commit/push, no remote, no Slurm, no training, no
 `tools/test.py`, no detector evaluation, no Pro/Gemini/Claude, no C3/BVR/MDL
 file writes, and no mAP/runtime/FLOPs/sparse-compute/deploy/paper claim.
+
+## Remote Real-Scout Recall Probe And Full Diagnostic Launch
+
+Timestamp: `2026-06-30T22:48:47+08:00`
+
+After BVR-TWB was already running on GPU0 and MDL-Knot was queued as the next
+GPU0 relay, ABR was advanced only through the Pro-approved no-detector,
+no-training first-round bracket recall diagnostic path. This does not compete
+for GPU memory and does not unlock ABR formal full training.
+
+Remote source:
+
+- `/data/home/sczc063/run/yuzibo/OpenTAD_ABR_FormalGate_20260630_fee07c1`
+- Branch: `codex/divergent-abr-formal-gate-20260630`
+- Commit: `fee07c1`
+- `data -> /data/home/sczc063/run/yuzibo/thumos14`
+- Python: `/data/home/sczc063/run/yuzibo/conda_envs/opentad/bin/python`
+- Runtime dependencies checked: Python 3.10.20, `cv2 4.11.0`, `numpy 1.23.5`
+
+An initial remote environment check found that plain `python` is system Python
+2.7 and cannot run the ABR Python 3 code. Subsequent commands therefore use the
+explicit N16R4 OpenTAD conda Python above.
+
+Small real-scout validation probe:
+
+```bash
+tools/abr/export_abr_deploy_visible_scout.py \
+  --annotation-json data/annotations/thumos_14_anno.json \
+  --video-root data/test \
+  --subset validation \
+  --out-json logs/abr_real_scout_recall_20260630_fee07c1/abr_deploy_visible_scout_validation_max8_curve384_resize64.json \
+  --curve-len 384 \
+  --resize 64 \
+  --max-videos 8
+
+tools/abr/audit_abr_first_round_bracket_recall.py \
+  --annotation-json data/annotations/thumos_14_anno.json \
+  --scout-json logs/abr_real_scout_recall_20260630_fee07c1/abr_deploy_visible_scout_validation_max8_curve384_resize64.json \
+  --subset validation \
+  --out-json logs/abr_real_scout_recall_20260630_fee07c1/abr_first_round_recall_validation_max8_curve384_resize64.json \
+  --max-videos 8
+```
+
+Small-probe result:
+
+- Scout export: `PASS_DEPLOY_VISIBLE_SCOUT_EXPORT`
+- Scout success count: `8`, missing count: `0`
+- Scout source: `deploy_visible_raw_video_graydiff_v1`
+- Audit status: `LOCKED`
+- Allowed next action:
+  `LOCKED_REAL_SCOUT_RECALL_BELOW_FORMAL_GATE_REVISE_BRACKET_POLICY_OR_SCOUT`
+- Real deploy-visible recall evidence: `true`
+- Diagnostic fallback used: `false`
+- Selector GT visible: `false`
+- Videos/windows: `8 / 8`
+- Transition count: `226`
+- Bracketed transitions: `57`
+- Missed transitions: `169`
+- First-round bracket recall: `0.252212389380531`
+- First-round transition coverage: `0.07079646017699115`
+- Formal gate passed: `false`
+
+Interpretation:
+
+This is not mAP and not route success/failure as a detector. It is a direct
+ABR mechanism diagnostic. On this small validation sample, the current
+deploy-visible raw-video graydiff scout does not provide enough first-round
+bracket recall to justify ABR formal full training. This supports the accepted
+Pro decision that ABR must first improve scout/bracket policy or remain a
+second-stage expansion route.
+
+Full validation diagnostic:
+
+The full validation no-detector/no-training recall diagnostic was launched as a
+low-thread compute-node child under protected hold `1118197`:
+
+- Slurm step: `1118197.527 abr_reca`
+- Log dir:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_ABR_FormalGate_20260630_fee07c1/logs/abr_real_scout_recall_full_validation_gpu0safe_20260630_224835_+0800`
+- `CUDA_VISIBLE_DEVICES=EMPTY`
+- `OMP_NUM_THREADS=2`, `OPENBLAS_NUM_THREADS=2`, `MKL_NUM_THREADS=2`
+- `cpus-per-task=2`, `mem=12G`
+- Parent hold `1118197 pcot_dbg2g` was not released, cancelled, requeued, or
+  replaced.
+
+The full diagnostic is expected to exit infrastructure-successfully even if the
+scientific result remains `LOCKED_*` due low recall. It remains claim-locked:
+no formal full train, no detector training, no `tools/test.py`, no mAP, no
+runtime/FLOPs/sparse-compute/deploy/paper claim.
