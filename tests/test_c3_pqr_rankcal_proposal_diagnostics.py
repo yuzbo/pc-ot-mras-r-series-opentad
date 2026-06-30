@@ -896,7 +896,25 @@ def test_single_stage_post_processing_dumps_pre_nms_qc_v2_survival_fields(monkey
     assert record["rank_semantics"] == "score_sorted_after_threshold_topk"
     assert record["post_nms_rank"] == 1
     assert record["post_nms_score"] == pytest.approx(0.9)
-    assert len(candidates) == 2
+    assert len(candidates) == 4
+    assert [candidate["class_index"] for candidate in candidates] == [0, 0, 1, 1]
+    assert [candidate["label"] for candidate in candidates] == [
+        "Diving",
+        "Diving",
+        "BaseballPitch",
+        "BaseballPitch",
+    ]
+    assert [candidate["pre_nms_rank"] for candidate in candidates] == [1, 2, 3, 4]
+    assert [candidate["post_topk_rank"] for candidate in candidates] == [1, 2, 3, 4]
+    assert [candidate["rank_semantics"] for candidate in candidates] == [
+        "score_sorted_after_threshold_topk",
+        "score_sorted_after_threshold_topk",
+        "score_sorted_after_threshold_topk",
+        "score_sorted_after_threshold_topk",
+    ]
+    assert [candidate["survived_after_topk"] for candidate in candidates] == [True, True, True, True]
+    assert [candidate["survived_after_nms"] for candidate in candidates] == [True, False, False, False]
+    assert [candidate["post_nms_rank"] for candidate in candidates] == [1, None, None, None]
     assert candidates[0]["selected_segment"] == [0.0, 2.0]
     assert candidates[0]["physical_segment"] == [0.0, 4.0]
     assert candidates[0]["cls_score"] == pytest.approx(0.9)
@@ -914,11 +932,43 @@ def test_single_stage_post_processing_dumps_pre_nms_qc_v2_survival_fields(monkey
     assert candidates[0]["post_nms_rank"] == 1
     assert candidates[0]["post_nms_score"] == pytest.approx(0.9)
     assert candidates[1]["selected_segment"] == [0.2, 2.2]
+    assert candidates[1]["physical_segment"] == [0.4, 4.4]
+    assert candidates[1]["cls_score"] == pytest.approx(0.8)
+    assert candidates[1]["quality_score"] == pytest.approx(0.4)
+    assert candidates[1]["fused_score"] == pytest.approx(0.32)
+    assert candidates[1]["level_id"] == 1
+    assert candidates[1]["point_index"] == 10
+    assert candidates[1]["pre_nms_rank"] == 2
+    assert candidates[1]["pre_nms_score"] == pytest.approx(0.8)
+    assert candidates[1]["rank_semantics"] == "score_sorted_after_threshold_topk"
     assert candidates[1]["survived_after_topk"] is True
     assert candidates[1]["post_topk_rank"] == 2
+    assert candidates[1]["post_topk_score"] == pytest.approx(0.8)
     assert candidates[1]["survived_after_nms"] is False
     assert candidates[1]["post_nms_rank"] is None
     assert candidates[1]["post_nms_score"] is None
+    assert candidates[2]["selected_segment"] == [0.0, 2.0]
+    assert candidates[2]["physical_segment"] == [0.0, 4.0]
+    assert candidates[2]["cls_score"] == pytest.approx(0.1)
+    assert candidates[2]["quality_score"] == pytest.approx(0.5)
+    assert candidates[2]["fused_score"] == pytest.approx(0.05)
+    assert candidates[2]["level_id"] == 1
+    assert candidates[2]["point_index"] == 9
+    assert candidates[2]["pre_nms_score"] == pytest.approx(0.1)
+    assert candidates[2]["post_topk_score"] == pytest.approx(0.1)
+    assert candidates[2]["survived_after_nms"] is False
+    assert candidates[2]["post_nms_score"] is None
+    assert candidates[3]["selected_segment"] == [0.2, 2.2]
+    assert candidates[3]["physical_segment"] == [0.4, 4.4]
+    assert candidates[3]["cls_score"] == pytest.approx(0.05)
+    assert candidates[3]["quality_score"] == pytest.approx(0.4)
+    assert candidates[3]["fused_score"] == pytest.approx(0.02)
+    assert candidates[3]["level_id"] == 1
+    assert candidates[3]["point_index"] == 10
+    assert candidates[3]["pre_nms_score"] == pytest.approx(0.05)
+    assert candidates[3]["post_topk_score"] == pytest.approx(0.05)
+    assert candidates[3]["survived_after_nms"] is False
+    assert candidates[3]["post_nms_score"] is None
 
 
 def test_test_engine_nms_match_preserves_qc_v2_diagnostic_fields():

@@ -39,3 +39,17 @@
   - `python -m pytest tests/test_c3_pqr_rankcal_v1_quality_head.py -q` -> PASS, `1 passed, 9 skipped, 1 warning`.
 - Windows limitation: skipped tests are torch/OpenTAD extension dependent because local torch import prints Windows DLL access-violation traces. They must be covered by remote Linux/conda PRECHECK before any GPU shortdiag.
 - Launch decision: commit/push is allowed; remote Linux PRECHECK is the next gate. No GPU, Slurm child, training/evaluation, official mAP, runtime/FLOPs, deploy, or paper claim is unlocked by this review.
+
+## Linux PRECHECK fix: QC V2 pre-NMS candidate semantics, 2026-07-01 06:26:19 +08:00
+
+- Remote Linux PRECHECK evidence: commit `96d982bfd416138fd802bd435295e604b6287974`, `pytest tests/test_c3_pqr_rankcal_proposal_diagnostics.py` failed with `1 failed, 18 passed`; failing case was `test_single_stage_post_processing_dumps_pre_nms_qc_v2_survival_fields`, where the test expected `len(qc_v2_pre_nms_candidates) == 2` but Linux produced `4`.
+- Root cause: the implementation uses the existing multi-class post-processing contract. For `num_classes > 1`, `rpn_scores` with shape `[N, C]` is flattened to proposal-class candidates, then thresholded and score-sorted before NMS. With the test fixture's 2 proposals and 2 classes plus `pre_nms_thresh=0.0`, the correct pre-NMS diagnostic dump contains `2 * 2 = 4` class-specific candidates.
+- Semantic decision: keep the detector/analyzer code unchanged. `qc_v2_pre_nms_candidates` means post-threshold/top-k, class-specific, pre-NMS candidates, not proposal-level candidates. Filtering this dump back down to 2 proposal-level entries would hide class-specific false positives and make `rank_semantics="score_sorted_after_threshold_topk"` misleading.
+- Changed files for this fix: `tests/test_c3_pqr_rankcal_proposal_diagnostics.py` and this evidence report only.
+- Test update: `test_single_stage_post_processing_dumps_pre_nms_qc_v2_survival_fields` now expects 4 candidates and asserts class order `[Diving, Diving, BaseballPitch, BaseballPitch]`, class indices `[0, 0, 1, 1]`, pre-NMS/post-top-k ranks `[1, 2, 3, 4]`, shared `rank_semantics`, all candidates surviving threshold/top-k, and only the first candidate surviving the mocked NMS.
+- Protocol status: diagnostic-only test/evidence fix; no input sampling, dynamic policy, token compression, Adapter/backbone/neck/head internals, detector score logic, losses/assignment, post-processing behavior, configs, launcher, sync, training, Slurm, GPU, official evaluation, or GT/teacher path changed.
+- Local verification in this owner task:
+  - `git diff --check` -> PASS, only Windows LF/CRLF warnings for the changed files.
+  - `python -m py_compile tests/test_c3_pqr_rankcal_proposal_diagnostics.py` -> PASS.
+  - `python -m pytest tests/test_c3_pqr_rankcal_proposal_diagnostics.py -q` -> PASS, `16 passed, 3 skipped`; skipped tests are torch/OpenTAD-extension dependent in this Windows environment, where torch import prints access-violation traces before the existing skip path.
+- Required next gate: main process may commit/push and retry remote Linux PRECHECK. No remote action is performed in this owner task.
