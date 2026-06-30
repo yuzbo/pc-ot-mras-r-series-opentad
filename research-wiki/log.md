@@ -264,3 +264,58 @@ subagent evidence.
   bounded proposal-dump diagnostics on GPU1 only; short diagnostics remain
   non-final unless they reveal NaN, persistent non-finite behavior, OOM, or a
   protocol error.
+
+## 2026-06-30 14:42:58 +08:00
+
+QC V2 GPU1-only shortdiag local launch capability implemented in the PQR-owned
+worktree only.
+
+- Route: `C3_MAINLINE_OPTIMIZATION` / `C3_ORIGINAL_OPTIMIZATION_ROUTE`.
+- Added config:
+  `configs/adatad/thumos/c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_sparse_irregular_qc_v2_shortdiag.py`.
+- Added launcher: `scripts/run_c3_pqr_qc_v2_shortdiag_hold_child.sh`.
+- Updated focused config/launcher contract tests in
+  `tests/test_c3_pqr_rankcal_v1_config.py`.
+- Config remains diagnostic-only, no formal fulltrain, no official mAP claim, no
+  teacher/test-GT/raw-prediction-cache route, and it enables
+  `quality_head_cfg.mode="sparse_irregular_qc_v2"`,
+  `diagnostic_dump=True`, `post_processing.save_dict=True`, and
+  `post_processing.qc_v2_diagnostic_dump=True`.
+- Shortdiag workflow uses `end_epoch=2`, `val_eval_interval=1`,
+  `val_start_epoch=0`, `max_train_iters=None`, and checkpointing disabled, so
+  evaluation/dump is not skipped by the smoke iteration gate.
+- Launcher writes a unique runtime config/log dir, requires
+  `CUDA_VISIBLE_DEVICES=1`, prints `PQR_QCV2_GPU_GUARD_FAIL` on guard failure,
+  has no GPU0 fallback, runs validator/train/analyzer, and writes a missing
+  diagnostic JSON plus exits non-zero if `result_detection.json` is absent.
+- Main-process review fixed result-artifact discovery: the launcher now accepts
+  exactly one nested `gpu*_id*/result_detection.json` before declaring the
+  artifact missing, matching observed OpenTAD single-GPU output layout.
+- Local verification so far: TDD RED failures for missing config/launcher and
+  wrong nested runtime-config base path; QC V2 shortdiag validator PASS;
+  py_compile PASS; focused config pytest PASS. The local Windows `bash` command
+  resolves to a WSL shim and is not counted as a reliable launcher syntax gate;
+  Linux syntax/execution remains a remote PRECHECK/diagnostic responsibility.
+  `git diff --check` exited 0 with LF/CRLF warnings only.
+- Boundary: no SSH, remote sync, Slurm, `srun`, `tools/train.py` real run,
+  `tools/test.py`, checkpoint, result JSON, mAP evidence, CADF/BH-SDC/DIVERGENT
+  edit, evaluator edit, GT/teacher/cache edit, postprocess scoring/NMS edit, or
+  route-quality judgment occurred.
+- Next decision: after main-process review/commit/sync and only when GPU1 is
+  free, this launcher can support a bounded QC V2 proposal-dump diagnostic. The
+  short diagnostic remains non-final route-quality evidence.
+
+## 2026-06-30 14:52:34 +08:00
+
+User reaffirmed the C3/PQR/CADF mainline GPU ownership rule in the PQR-owned
+worktree.
+
+- Rule: all future C3/PQR/CADF mainline training, diagnostic training, short
+  smoke, bounded `tools/train.py`, and Slurm child launches must use GPU1 only.
+- GPU0 is reserved for innovation/divergent experiments and must not be used as
+  a fallback. If GPU1 is busy, wait, queue, or report the blocker.
+- Current implementation support: QC V2 shortdiag launcher requires
+  `CUDA_VISIBLE_DEVICES=1`, prints `PQR_QCV2_GPU_GUARD_FAIL`, and has no GPU0
+  fallback.
+- Evidence boundary: no SSH, Slurm, GPU use, training launch, parent-hold
+  action, BH-SDC action, or DIVERGENT route action occurred for this update.

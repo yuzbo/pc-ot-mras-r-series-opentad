@@ -26,6 +26,11 @@ QC_V2_PRECHECK_CONFIG = (
     ROOT
     / "configs/adatad/thumos/c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_sparse_irregular_qc_v2_precheck.py"
 )
+QC_V2_SHORTDIAG_CONFIG = (
+    ROOT
+    / "configs/adatad/thumos/c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_sparse_irregular_qc_v2_shortdiag.py"
+)
+QC_V2_SHORTDIAG_LAUNCHER = ROOT / "scripts/run_c3_pqr_qc_v2_shortdiag_hold_child.sh"
 
 
 def _load(config_path):
@@ -197,7 +202,14 @@ def _make_runtime_gate_fixtures():
 
 @pytest.mark.parametrize(
     "config_path",
-    [PRECHECK_CONFIG, SHORTDIAG_CONFIG, EXACT_UNIFORM_CONFIG, FULLTRAIN_CONFIG, QC_V2_PRECHECK_CONFIG],
+    [
+        PRECHECK_CONFIG,
+        SHORTDIAG_CONFIG,
+        EXACT_UNIFORM_CONFIG,
+        FULLTRAIN_CONFIG,
+        QC_V2_PRECHECK_CONFIG,
+        QC_V2_SHORTDIAG_CONFIG,
+    ],
 )
 def test_pqr_rankcal_configs_pass_fail_closed_validator(config_path):
     validate_config(config_path)
@@ -205,7 +217,14 @@ def test_pqr_rankcal_configs_pass_fail_closed_validator(config_path):
 
 @pytest.mark.parametrize(
     "config_path",
-    [PRECHECK_CONFIG, SHORTDIAG_CONFIG, EXACT_UNIFORM_CONFIG, FULLTRAIN_CONFIG, QC_V2_PRECHECK_CONFIG],
+    [
+        PRECHECK_CONFIG,
+        SHORTDIAG_CONFIG,
+        EXACT_UNIFORM_CONFIG,
+        FULLTRAIN_CONFIG,
+        QC_V2_PRECHECK_CONFIG,
+        QC_V2_SHORTDIAG_CONFIG,
+    ],
 )
 def test_pqr_rankcal_configs_do_not_define_unconsumed_frame_selector(config_path):
     cfg = _load(config_path)
@@ -387,6 +406,49 @@ def test_sparse_irregular_qc_v2_precheck_is_diagnostic_only_and_fail_closed():
     assert cfg.post_processing.qc_v2_diagnostic_dump is True
     assert cfg.workflow.max_train_iters == 2
     assert cfg.workflow.disable_checkpoint is True
+
+
+def test_sparse_irregular_qc_v2_shortdiag_generates_eval_dumps_without_iter_skip():
+    cfg = _load(QC_V2_SHORTDIAG_CONFIG)
+    quality = cfg.model.rpn_head.quality_head_cfg
+
+    assert cfg.route_variant == "C3_PQR_RankCalV1_SparseIrregularQCV2"
+    assert cfg.pqr_rankcal_v1.diagnostic_only is True
+    assert cfg.pqr_rankcal_v1.formal_fulltrain is False
+    assert cfg.pqr_rankcal_v1.official_map_claim is False
+    assert cfg.pqr_rankcal_v1.claim_map_improvement is False
+    assert cfg.pqr_rankcal_v1.use_teacher is False
+    assert cfg.pqr_rankcal_v1.use_test_gt is False
+    assert cfg.pqr_rankcal_v1.use_raw_prediction_cache is False
+    assert quality.mode == "sparse_irregular_qc_v2"
+    assert quality.diagnostic_dump is True
+    assert cfg.post_processing.save_dict is True
+    assert cfg.post_processing.qc_v2_diagnostic_dump is True
+    assert cfg.workflow.end_epoch <= 3
+    assert cfg.workflow.val_eval_interval == 1
+    assert cfg.workflow.val_start_epoch == 0
+    assert cfg.workflow.max_train_iters is None
+    assert cfg.workflow.disable_checkpoint is True or cfg.workflow.checkpoint_interval >= 100
+
+
+def test_sparse_irregular_qc_v2_shortdiag_launcher_is_gpu1_guarded_and_runs_analyzer():
+    source = QC_V2_SHORTDIAG_LAUNCHER.read_text(encoding="utf-8")
+
+    assert "CUDA_VISIBLE_DEVICES" in source
+    assert '[[ "${CUDA_VISIBLE_DEVICES:-}" != "1" ]]' in source
+    assert "PQR_QCV2_GPU_GUARD_FAIL" in source
+    assert "tools/train.py" in source
+    assert "tools/analyze_c3_pqr_rankcal_proposals.py" in source
+    assert "result_detection.json" in source
+    assert 'find "$RUN_DIR" -path "*/gpu*_id*/result_detection.json"' in source
+    assert "PQR_QCV2_RESULT_DISCOVERED" in source
+    assert '_base_ = ["../../$CONFIG_REL"]' in source
+    assert "pqr_qc_v2_proposal_diagnostic" in source
+    assert "pqr_qc_v2_proposal_diagnostic_missing.json" in source
+    assert "PQR_QCV2_RESULT_MISSING" in source
+    assert "PQR_QCV2_RESULT_AMBIGUOUS" in source
+    assert "CUDA_VISIBLE_DEVICES=0" not in source
+    assert "CUDA_VISIBLE_DEVICES:-0" not in source
 
 
 def test_sparse_irregular_qc_v2_validator_rejects_unlocked_fulltrain(tmp_path):
