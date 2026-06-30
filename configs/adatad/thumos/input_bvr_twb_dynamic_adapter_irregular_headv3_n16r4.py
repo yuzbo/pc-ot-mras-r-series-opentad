@@ -2,8 +2,8 @@ _base_ = ["./input_bvr_twb_dynamic_adapter_irregular_headv3.py"]
 
 annotation_path = "data/thumos-14/annotations/thumos_14_anno.json"
 class_map = "data/thumos-14/annotations/category_idx.txt"
-train_data_path = "data/thumos-14/train"
-test_data_path = "data/thumos-14/test"
+train_data_path = "data/thumos-14/raw_data/train"
+test_data_path = "data/thumos-14/raw_data/test"
 
 dataset = dict(
     train=dict(
