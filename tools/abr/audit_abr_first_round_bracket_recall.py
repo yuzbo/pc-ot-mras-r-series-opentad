@@ -104,6 +104,7 @@ def run_audit(
     fallback_stage: str = "DIAGNOSTIC_ONLY",
     min_first_round_bracket_recall: float = 0.95,
     min_first_round_transition_coverage: float = 0.95,
+    max_first_round_temporal_coverage_fraction: float = 0.70,
     abr_config: ABRConfig | None = None,
 ) -> dict[str, Any]:
     ann = _load_json(annotation_json)
@@ -204,6 +205,7 @@ def run_audit(
     formal_thresholds = {
         "min_first_round_bracket_recall": float(min_first_round_bracket_recall),
         "min_first_round_transition_coverage": float(min_first_round_transition_coverage),
+        "max_first_round_temporal_coverage_fraction": float(max_first_round_temporal_coverage_fraction),
     }
     real_evidence = (
         not fallback_used
@@ -217,6 +219,7 @@ def run_audit(
         and missed_transition_count == 0
         and first_round_bracket_recall >= formal_thresholds["min_first_round_bracket_recall"]
         and first_round_transition_coverage >= formal_thresholds["min_first_round_transition_coverage"]
+        and temporal_coverage_fraction <= formal_thresholds["max_first_round_temporal_coverage_fraction"]
     )
     allowed_next_action = (
         "FORMAL_REVIEW_PACKET_ONLY_WITH_REAL_SCOUT_RECALL_EVIDENCE"
@@ -779,6 +782,7 @@ def main(argv=None) -> int:
     parser.add_argument("--max-gap", type=int, default=24)
     parser.add_argument("--min-first-round-bracket-recall", type=float, default=0.95)
     parser.add_argument("--min-first-round-transition-coverage", type=float, default=0.95)
+    parser.add_argument("--max-first-round-temporal-coverage-fraction", type=float, default=0.70)
     args = parser.parse_args(argv)
 
     cfg = ABRConfig(
@@ -805,6 +809,7 @@ def main(argv=None) -> int:
             fallback_stage=str(args.fallback_stage),
             min_first_round_bracket_recall=float(args.min_first_round_bracket_recall),
             min_first_round_transition_coverage=float(args.min_first_round_transition_coverage),
+            max_first_round_temporal_coverage_fraction=float(args.max_first_round_temporal_coverage_fraction),
             abr_config=cfg,
         )
     except Exception as exc:

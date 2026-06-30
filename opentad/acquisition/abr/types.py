@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 
 ABR_ROUTE_LABEL = "DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3"
+ABR_BRACKET_POLICY_NAME = "deploy_visible_multiscale_graydiff_bracket_v2"
 
 DEFAULT_PROVENANCE = {
     "uses_gt": False,
@@ -41,6 +42,8 @@ class ABRConfig:
     route_label: str = ABR_ROUTE_LABEL
     allow_diagnostic_fallback_scout: bool = False
     fallback_stage: str = "FORMAL_LOCKED"
+    bracket_policy: str = ABR_BRACKET_POLICY_NAME
+    first_round_max_temporal_coverage_fraction: float = 0.70
 
 
 @dataclass
@@ -61,6 +64,8 @@ class BracketState:
     has_post_background_witness: bool = False
     priority: float = 0.0
     status: str = "active"
+    evidence_source: str = "scaffold_pair"
+    score_components: Dict[str, float] = field(default_factory=dict)
 
     @property
     def width(self) -> int:

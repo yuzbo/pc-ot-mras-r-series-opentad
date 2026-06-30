@@ -113,6 +113,7 @@ def test_output_schema_claim_locks_and_recall_math_on_deploy_visible_scout(tmp_p
     assert payload["formal_thresholds"] == {
         "min_first_round_bracket_recall": 0.95,
         "min_first_round_transition_coverage": 0.95,
+        "max_first_round_temporal_coverage_fraction": 0.70,
     }
     assert payload["formal_gate_passed"] is True
     assert payload["video_count"] == 1
@@ -202,7 +203,8 @@ def test_recall_math_records_missed_class_video_and_window_entries(tmp_path):
         tmp_path / "ann.json",
         _annotation_payload([{"segment": [2.0, 4.0], "label": "BaseballPitch"}]),
     )
-    scout = _write_json(tmp_path / "scout.json", _scout_payload())
+    mismatched_curve = [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.9, 0.9, 0.05, 0.05, 0.05, 0.05]
+    scout = _write_json(tmp_path / "scout.json", _scout_payload(mismatched_curve))
 
     payload = run_audit(
         ann,
@@ -238,6 +240,7 @@ def test_zero_transition_pseudo_perfect_is_rejected(tmp_path):
     assert payload["formal_thresholds"] == {
         "min_first_round_bracket_recall": 0.95,
         "min_first_round_transition_coverage": 0.95,
+        "max_first_round_temporal_coverage_fraction": 0.70,
     }
     assert payload["formal_gate_passed"] is False
     assert payload["allowed_next_action"] == "LOCKED_ZERO_TRANSITION_NO_REAL_RECALL_EVIDENCE"
@@ -410,7 +413,8 @@ def test_low_recall_real_scout_stays_locked_below_formal_gate(tmp_path):
         tmp_path / "ann.json",
         _annotation_payload([{"segment": [2.0, 4.0], "label": "BaseballPitch"}]),
     )
-    scout = _write_json(tmp_path / "scout.json", _scout_payload())
+    mismatched_curve = [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.9, 0.9, 0.05, 0.05, 0.05, 0.05]
+    scout = _write_json(tmp_path / "scout.json", _scout_payload(mismatched_curve))
 
     payload = run_audit(
         ann,
@@ -429,3 +433,40 @@ def test_low_recall_real_scout_stays_locked_below_formal_gate(tmp_path):
         payload["allowed_next_action"]
         == "LOCKED_REAL_SCOUT_RECALL_BELOW_FORMAL_GATE_REVISE_BRACKET_POLICY_OR_SCOUT"
     )
+
+
+def test_multiscale_policy_brackets_short_peak_between_sparse_scaffold_points(tmp_path):
+    ann = _write_json(
+        tmp_path / "ann.json",
+        {
+            "database": {
+                "video_0001": {
+                    "subset": "validation",
+                    "duration": 64.0,
+                    "frame": 64,
+                    "annotations": [{"segment": [31.0, 33.0], "label": "GolfSwing"}],
+                }
+            }
+        },
+    )
+    curve = [0.05] * 64
+    curve[29] = 0.38
+    curve[30] = 0.52
+    curve[31] = 0.92
+    curve[32] = 0.96
+    curve[33] = 0.90
+    curve[34] = 0.50
+    curve[35] = 0.34
+    scout = _write_json(tmp_path / "scout.json", _scout_payload(curve))
+
+    payload = run_audit(
+        ann,
+        scout,
+        abr_config=ABRConfig(k0=4, k1_cap=0, k2_cap=0, max_total_k=4, max_gap=0, round2_enabled=False),
+    )
+
+    assert payload["real_deploy_visible_recall_evidence"] is True
+    assert payload["first_round_bracket_recall"] == pytest.approx(1.0)
+    assert payload["first_round_transition_coverage"] == pytest.approx(1.0)
+    assert payload["temporal_coverage_fraction"] <= 0.35
+    assert payload["formal_gate_passed"] is True

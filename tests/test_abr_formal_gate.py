@@ -29,6 +29,7 @@ def _formal_payload_from_diagnostics(diagnostics):
             "formal_thresholds": {
                 "min_first_round_bracket_recall": 0.95,
                 "min_first_round_transition_coverage": 0.95,
+                "max_first_round_temporal_coverage_fraction": 0.70,
             },
         },
     }
@@ -65,7 +66,15 @@ def test_ambiguous_mediated_dense_transition_blocks_formal_readiness(curve, expe
         dense_t=len(curve),
         scout_curve=curve,
         scout_source="abr_scout_curve:deploy_visible",
-        config=ABRConfig(k0=1, k1_cap=0, k2_cap=0, max_total_k=1, max_gap=0, round2_enabled=False),
+        config=ABRConfig(
+            k0=1,
+            k1_cap=0,
+            k2_cap=0,
+            max_total_k=1,
+            max_gap=0,
+            round2_enabled=False,
+            bracket_policy="legacy_scaffold_pair",
+        ),
     )
 
     diagnostics = result.round_ledgers[0].diagnostics
@@ -87,7 +96,7 @@ def test_ambiguous_mediated_dense_transition_blocks_formal_readiness(curve, expe
         ([0.90, 0.45, 0.05], "end"),
     ],
 )
-def test_ambiguous_mediated_transition_passes_when_bracketed_and_nonzero(curve, expected_kind):
+def test_ambiguous_mediated_transition_is_bracketed_but_tiny_overwide_formal_gate_stays_locked(curve, expected_kind):
     result = select_active_bracket_refinement(
         dense_t=len(curve),
         scout_curve=curve,
@@ -103,10 +112,8 @@ def test_ambiguous_mediated_transition_passes_when_bracketed_and_nonzero(curve, 
     assert diagnostics["first_round_transition_coverage"] == pytest.approx(1.0)
     assert diagnostics["covered_transitions"] == [{"left": 0, "right": 2, "kind": expected_kind}]
 
-    decision = validate_formal_readiness_payload(_formal_payload_from_diagnostics(diagnostics))
-    assert decision["formal_readiness_evidence_ok"] is True
-    assert decision["full_train_unlocked"] is False
-    assert decision["metrics"]["transition_count"] == 1
+    with pytest.raises(ABRValidationError, match="temporal_coverage"):
+        validate_formal_readiness_payload(_formal_payload_from_diagnostics(diagnostics))
 
 
 def test_formal_config_disables_diagnostic_fallback_and_stays_locked():
@@ -126,6 +133,7 @@ def test_formal_payload_rejects_precheck_fallback_and_low_first_round_recall():
         "missed_transition_count": 0,
         "first_round_bracket_recall": 1.0,
         "first_round_transition_coverage": 1.0,
+        "first_round_temporal_coverage_fraction": 0.25,
     }
     decision = validate_formal_readiness_payload(_formal_payload_from_diagnostics(good_diag))
     assert decision["formal_readiness_evidence_ok"] is True
@@ -145,6 +153,22 @@ def test_formal_payload_rejects_precheck_fallback_and_low_first_round_recall():
     low_payload["summary"]["first_round_bracket_diagnostics"]["missed_transition_count"] = 1
     with pytest.raises(ABRValidationError):
         validate_formal_readiness_payload(low_payload)
+
+
+def test_formal_payload_rejects_overwide_first_round_coverage_even_with_full_recall():
+    overwide_diag = {
+        "scout_source": "abr_scout_curve:deploy_visible",
+        "diagnostic_fallback_used": False,
+        "transition_count": 2,
+        "bracketed_transition_count": 2,
+        "missed_transition_count": 0,
+        "first_round_bracket_recall": 1.0,
+        "first_round_transition_coverage": 1.0,
+        "first_round_temporal_coverage_fraction": 0.95,
+    }
+
+    with pytest.raises(ABRValidationError, match="temporal_coverage"):
+        validate_formal_readiness_payload(_formal_payload_from_diagnostics(overwide_diag))
 
 
 def test_formal_payload_rejects_zero_transition_perfect_score_pseudo_evidence():

@@ -29,6 +29,8 @@ abr_loader = dict(
         round2_min_width=8,
         outside_witness_offset=2,
         route_label="DIVERGENT_INNOVATION_ABR_DO_NOT_MERGE_WITH_C3",
+        bracket_policy="deploy_visible_multiscale_graydiff_bracket_v2",
+        first_round_max_temporal_coverage_fraction=0.70,
         allow_diagnostic_fallback_scout=True,
         fallback_stage="PRECHECK_ONLY",
     ),

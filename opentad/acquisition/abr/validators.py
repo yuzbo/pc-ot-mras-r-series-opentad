@@ -140,6 +140,7 @@ def validate_first_round_bracket_diagnostics(
     diagnostics: Mapping[str, Any],
     min_recall: float = 0.95,
     min_transition_coverage: float = 0.95,
+    max_temporal_coverage_fraction: float = 0.70,
     require_deploy_visible_scout: bool = False,
 ) -> Dict[str, Any]:
     if not isinstance(diagnostics, Mapping):
@@ -189,12 +190,24 @@ def validate_first_round_bracket_diagnostics(
         raise ABRValidationError(
             "LOCKED: first_round_transition_coverage is inconsistent with fully bracketed transitions"
         )
+    temporal_coverage = None
+    if "first_round_temporal_coverage_fraction" in diagnostics:
+        temporal_coverage = _require_fraction(diagnostics, "first_round_temporal_coverage_fraction")
+        if temporal_coverage > float(max_temporal_coverage_fraction):
+            raise ABRValidationError(
+                "LOCKED: first_round_temporal_coverage_fraction "
+                f"{temporal_coverage:.4f} exceeds allowed {float(max_temporal_coverage_fraction):.4f}; "
+                "temporal_coverage guard rejects overwide bracket evidence"
+            )
     return {
         "transition_count": int(transition_count),
         "bracketed_transition_count": int(bracketed_transition_count),
         "missed_transition_count": int(missed),
         "first_round_bracket_recall": float(recall),
         "first_round_transition_coverage": float(coverage),
+        "first_round_temporal_coverage_fraction": None
+        if temporal_coverage is None
+        else float(temporal_coverage),
     }
 
 
@@ -226,6 +239,7 @@ def validate_formal_readiness_payload(payload: Mapping[str, Any]) -> Dict[str, A
         diagnostics,
         min_recall=float(thresholds.get("min_first_round_bracket_recall", 0.95)),
         min_transition_coverage=float(thresholds.get("min_first_round_transition_coverage", 0.95)),
+        max_temporal_coverage_fraction=float(thresholds.get("max_first_round_temporal_coverage_fraction", 0.70)),
         require_deploy_visible_scout=True,
     )
     return {

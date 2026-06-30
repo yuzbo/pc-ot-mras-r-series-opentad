@@ -59,6 +59,20 @@ def test_selection_outputs_sorted_unique_original_positions_and_no_leakage():
     assert result.cost.selected_k == result.valid_k
     assert len({ledger.round_id for ledger in result.round_ledgers}) >= 2
     assert all(ledger.cumulative_k <= result.config.max_total_k for ledger in result.round_ledgers)
+    round0 = result.round_ledgers[0].diagnostics
+    assert round0["bracket_policy"] == "deploy_visible_multiscale_graydiff_bracket_v2"
+    assert round0["bracket_policy_inputs"] == {
+        "deploy_visible_scout_curve": True,
+        "uses_gt": False,
+        "uses_teacher": False,
+        "uses_prediction_cache": False,
+        "uses_detector_feedback": False,
+    }
+    assert "multiscale_peak_brackets" in round0["bracket_policy_mechanisms"]
+    assert all(bracket.left <= bracket.right for bracket in result.brackets)
+    assert [(bracket.left, bracket.right, bracket.bracket_id) for bracket in result.brackets] == sorted(
+        (bracket.left, bracket.right, bracket.bracket_id) for bracket in result.brackets
+    )
 
 
 def test_dynamic_k_is_nonconstant_on_synthetic_easy_and_boundary_cases():

@@ -76,6 +76,8 @@ def validate_formal_config(config_path: Path) -> dict[str, Any]:
         raise ABRValidationError("formal gate min_first_round_bracket_recall must be >= 0.95")
     if float(gate.get("min_first_round_transition_coverage", 0.0)) < 0.95:
         raise ABRValidationError("formal gate min_first_round_transition_coverage must be >= 0.95")
+    if float(gate.get("max_first_round_temporal_coverage_fraction", 1.0)) > 0.70:
+        raise ABRValidationError("formal gate max_first_round_temporal_coverage_fraction must be <= 0.70")
 
     if loader.get("method") != "abr_active_bracket_refinement":
         raise ABRValidationError("abr_loader.method must be abr_active_bracket_refinement")
@@ -85,6 +87,10 @@ def validate_formal_config(config_path: Path) -> dict[str, Any]:
         raise ABRValidationError("formal abr_config must disable diagnostic fallback scout")
     if str(loader_cfg.get("fallback_stage", "")).upper() == "PRECHECK_ONLY":
         raise ABRValidationError("formal abr_config must not use PRECHECK_ONLY fallback_stage")
+    if loader_cfg.get("bracket_policy") != "deploy_visible_multiscale_graydiff_bracket_v2":
+        raise ABRValidationError("formal abr_config must use deploy_visible_multiscale_graydiff_bracket_v2")
+    if float(loader_cfg.get("first_round_max_temporal_coverage_fraction", 1.0)) > 0.70:
+        raise ABRValidationError("formal abr_config first_round_max_temporal_coverage_fraction must be <= 0.70")
 
     for split_name in ("train", "val", "test"):
         pipeline = dataset.get(split_name, {}).get("pipeline", [])

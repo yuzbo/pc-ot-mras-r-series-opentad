@@ -13,6 +13,7 @@ from .policy import (
     state_at_position,
 )
 from .types import (
+    ABR_BRACKET_POLICY_NAME,
     ABRConfig,
     ABRCostSummary,
     ABRRoundLedger,
@@ -285,10 +286,34 @@ def _first_round_bracket_diagnostics(
     bracketed_count = len(covered_pairs)
     endpoint_total = max(2 * transition_count, 1)
     union_coverage = _bracket_union_coverage(brackets, dense_t)
+    source_counts: Dict[str, int] = {}
+    for bracket in brackets:
+        source = str(getattr(bracket, "evidence_source", "unspecified"))
+        source_counts[source] = source_counts.get(source, 0) + 1
     return {
         "scope": "first_round_bracket_recall_from_deploy_visible_scout",
         "scout_source": str(scout_source),
         "diagnostic_fallback_used": bool(diagnostic_fallback_used),
+        "bracket_policy": str(config.bracket_policy or ABR_BRACKET_POLICY_NAME),
+        "bracket_policy_inputs": {
+            "deploy_visible_scout_curve": not bool(diagnostic_fallback_used),
+            "uses_gt": False,
+            "uses_teacher": False,
+            "uses_prediction_cache": False,
+            "uses_detector_feedback": False,
+        },
+        "bracket_policy_mechanisms": [
+            "scaffold_pair_baseline",
+            "multiscale_peak_brackets",
+            "full_curve_transition_brackets",
+            "gradient_spike_brackets",
+            "uncertainty_widening",
+            "short_action_boundary_protection",
+            "max_gap_span_expansion",
+            "first_round_temporal_coverage_guard",
+        ],
+        "bracket_source_counts": dict(sorted(source_counts.items())),
+        "first_round_max_temporal_coverage_fraction": float(config.first_round_max_temporal_coverage_fraction),
         "dense_T": int(dense_t),
         "round_id": 0,
         "transition_count": int(transition_count),
