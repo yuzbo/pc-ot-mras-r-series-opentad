@@ -253,3 +253,143 @@ QC V2 bounded proposal-dump diagnostic is prechecked but not launched. It must
 wait for GPU1 to be free. Any future short diagnostic remains non-final
 route-quality evidence unless it reveals a hard failure such as NaN,
 persistent non-finite behavior, OOM, or protocol error.
+
+## 2026-06-30 20:42:02 +08:00 Full Geometry-Aware QC V2 Local Implementation
+
+This update completes the local code-side QC V2 mechanism in the route-owned
+worktree `OpenTAD_C3PQRQCV2_Worktree_20260630` on branch
+`codex/c3-pqr-qcv2-full-20260630`.
+
+Changed files:
+
+- `opentad/models/dense_heads/anchor_free_head.py`
+- `opentad/models/detectors/single_stage.py`
+- `tools/analyze_c3_pqr_rankcal_proposals.py`
+- `tools/validate_c3_pqr_rankcal_v1_config.py`
+- `configs/adatad/thumos/c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_sparse_irregular_qc_v2_precheck.py`
+- `configs/adatad/thumos/c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_sparse_irregular_qc_v2_shortdiag.py`
+- `configs/adatad/thumos/c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_sparse_irregular_qc_v2_fulltrain_candidate.py`
+- `tests/test_c3_pqr_rankcal_v1_quality_head.py`
+- `tests/test_c3_pqr_rankcal_v1_config.py`
+- `tests/test_c3_pqr_rankcal_proposal_diagnostics.py`
+- this route report, `research-wiki/log.md`, and
+  `research-wiki/experiments/SPARSE_TAD_TASK_FLOW_TRACKER_20260520.md`
+
+Implementation details:
+
+- QC V2 quality head now explicitly consumes deploy-visible sparse/irregular
+  geometry by concatenating point-level features to `reg_feat.detach()`:
+  selected time, physical time, left/right gap, local density,
+  visibility support, and endpoint support.
+- QC V2 quality head input channels are expanded only when
+  `mode="sparse_irregular_qc_v2"` and `geometry_conditioning=True`. Standard
+  quality/rank calibration keeps the old input shape.
+- Geometry-side quality-head weights are explicitly initialized with
+  `geometry_weight_init=0.0`, keeping initial behavior close to the existing
+  RankCal/ActionFormer path.
+- The train quality target remains train-only GT supervision and still uses
+  physical-time IoU multiplied by deploy-visible visibility support. Test-time
+  `gt_segments`, `gt_labels`, teacher outputs, and raw prediction cache remain
+  rejected.
+- Test diagnostics now carry richer fields: selected segment, physical segment
+  after post-processing conversion, class score, quality score, fused score,
+  selected/physical/proposal widths, gap mean, visibility support,
+  endpoint support, level id, and point index.
+- Analyzer records now parse these fields and add `qc_v2_diagnostic_state` to
+  distinguish missing/partial/full localization geometry, classification
+  calibration evidence, ranking-geometry evidence, and proposal-cap overload
+  availability.
+- Added a locked fulltrain-candidate config. It records the intended full
+  schedule but remains `diagnostic_only=True`, `formal_fulltrain=False`,
+  `user_override_fulltrain=False`, and `remote_launch_locked=True`.
+
+Local verification:
+
+- `python -m pytest tests/test_c3_pqr_rankcal_v1_config.py -q`: `32 passed`.
+- `python -m pytest tests/test_c3_pqr_rankcal_proposal_diagnostics.py -q`:
+  `13 passed, 2 skipped`; skipped torch-backed tests are due the default
+  Windows torch DLL issue.
+- `python -m pytest tests/test_c3_pqr_rankcal_v1_quality_head.py -q -rs`:
+  `1 passed, 7 skipped`; skipped tests report Windows torch DLL load failure.
+- `conda run -n torch_1 python -m pytest tests/test_c3_pqr_rankcal_v1_quality_head.py -q -rs`:
+  `1 passed, 7 skipped`; skipped tests report missing local `nms_1d_cpu`.
+- QC V2 validator passed for precheck, shortdiag, and fulltrain-candidate
+  configs.
+- `python -m py_compile` passed for changed model/tool/config files.
+- `git diff --check` passed with LF/CRLF warnings only.
+
+Review gate status:
+
+- GPT-5 Pro / Oracle API gate is incomplete: `OPENAI_API_KEY` is missing.
+- Rosetta/browser Pro gate is incomplete: CDP at `127.0.0.1:9222` refused
+  connection.
+- Required read-only subagent final review is incomplete: two
+  `claude_review` attempts failed with `Claude CLI did not return JSON output`.
+- These incomplete review gates do not change the local implementation, but
+  they keep deployment, remote sync, remote PRECHECK, diagnostic training,
+  long training, and any metric/paper/deploy claim locked.
+
+Boundary:
+
+- No SSH, remote sync, Slurm, `srun`, `sbatch`, `scancel`, GPU use,
+  `tools/train.py`, `tools/test.py`, checkpoint, result JSON, mAP evidence,
+  parent-hold action, or route-quality judgment occurred.
+- No BH-SDC, DIVERGENT, CADF selector, evaluator scoring/NMS, Adapter
+  internals, or input sampler files were modified.
+
+Next decision:
+
+Main process may inspect and commit the local code. Before any deployment,
+sync, remote PRECHECK, smoke/diagnostic training, long run, or claim, rerun the
+required GPT-5 Pro and read-only subagent review gates in a functioning review
+channel.
+
+## 2026-06-30 20:59:37 +08:00 Final Review Blocker Fix: Directional Gaps
+
+Final read-only review reported one blocker: `_sparse_irregular_qc_v2_point_geometry`
+used the same adjacent interval for both `left_gap` and `right_gap`, making QC
+V2 unable to distinguish left-sparse/right-dense from left-dense/right-sparse
+selected geometry.
+
+Fix:
+
+- `left_gap` now uses `(floor(coord) - 1).clamp(...)`, corresponding to the
+  previous selected-position interval.
+- `right_gap` now uses `floor(coord).clamp(...)`, corresponding to the next
+  selected-position interval.
+- Boundary points use clamp fallback, so tensors remain finite and keep the
+  original device/dtype/mask behavior.
+- Added direct test
+  `test_sparse_irregular_qc_v2_point_geometry_keeps_left_and_right_gap_directional`
+  with non-uniform positions `[0, 1, 4, 8]`. The interior selected point checks
+  `left_gap == 1 / (10 / 4)`, `right_gap == 3 / (10 / 4)`, and
+  `left_gap != right_gap`.
+
+Verification:
+
+- `python -m pytest tests/test_c3_pqr_rankcal_v1_config.py -q`:
+  `32 passed, 1 warning`.
+- `python -m pytest tests/test_c3_pqr_rankcal_v1_quality_head.py -q -rs`:
+  `1 passed, 8 skipped, 1 warning`; skipped tests report the existing Windows
+  torch DLL load failure.
+- `conda run -n torch_1 python -m pytest tests/test_c3_pqr_rankcal_v1_quality_head.py -q -rs`:
+  `1 passed, 8 skipped`; skipped tests report missing local `nms_1d_cpu`.
+- `python -m pytest tests/test_c3_pqr_rankcal_proposal_diagnostics.py -q`:
+  `13 passed, 2 skipped`.
+- QC V2 precheck and shortdiag config validators: PASS.
+- `python -m py_compile` for changed model/test/tool files: PASS.
+- `git diff --check`: PASS with LF/CRLF warnings only.
+
+Boundary:
+
+- No SSH, remote sync, Slurm, `tools/train.py`, `tools/test.py`, GPU use,
+  checkpoint, result JSON, mAP, parent-hold action, or route-quality claim.
+- No BH-SDC, DIVERGENT, CADF selector, evaluator scoring/NMS, Adapter
+  internals, or input sampler files were modified.
+
+Remaining risk:
+
+- The new direct torch-backed unit test is present but skipped in the available
+  local Windows environments because OpenTAD cannot import with the local torch
+  DLL / missing `nms_1d_cpu`. It should run in Linux review/CI where the NMS
+  extension is available before deployment, sync, or training.

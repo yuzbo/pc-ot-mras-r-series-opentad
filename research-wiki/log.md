@@ -348,3 +348,70 @@ PRECHECK_ONLY PASS, but GPU1 is still occupied by CADF formal.
   diagnostic metric remains non-final route-quality evidence unless it reveals
   a hard failure such as NaN, persistent non-finite behavior, OOM, or protocol
   error.
+
+## 2026-06-30 20:42:02 +08:00
+
+Sparse/Irregular-Aware QC V2 full local implementation completed in the
+route-owned worktree `OpenTAD_C3PQRQCV2_Worktree_20260630` on branch
+`codex/c3-pqr-qcv2-full-20260630`.
+
+- Route: `C3_MAINLINE_OPTIMIZATION` / `C3_ORIGINAL_OPTIMIZATION_ROUTE`.
+- Changed surface: detector-head sparse/irregular quality calibration V2,
+  richer proposal diagnostics, analyzer status JSON, QC V2 validator/config
+  gates, and focused tests. No input sampler, Adapter internals, evaluator
+  scoring/NMS, BH-SDC, DIVERGENT, GT/teacher/cache, remote, or Slurm change.
+- Head implementation: QC V2 quality branch now concatenates deploy-visible
+  geometry features to `reg_feat.detach()` before the quality/rank calibration
+  conv: selected time, physical time, left/right gap, local density, visibility
+  support, and endpoint support. Geometry-side weights are explicitly
+  zero-initialized through `geometry_weight_init=0.0`.
+- Target/diagnostic boundary: train-only GT quality target remains physical-IoU
+  plus visibility supervision; test-time GT/teacher/raw-cache inputs remain
+  rejected. Diagnostics now include selected/physical coords, class/quality/
+  fused scores, gap/support, proposal width, level id, and point index.
+- Configs: QC V2 precheck and shortdiag retain diagnostic-only gates; a locked
+  fulltrain-candidate config was added but remains `formal_fulltrain=False`,
+  `user_override_fulltrain=False`, and `remote_launch_locked=True`.
+- Local verification: config pytest `32 passed`; proposal/analyzer pytest
+  `13 passed, 2 skipped`; default quality-head pytest `1 passed, 7 skipped`
+  due Windows torch DLL failure; `torch_1` quality-head pytest `1 passed,
+  7 skipped` due missing `nms_1d_cpu`; QC V2 validators PASS for precheck,
+  shortdiag, and fulltrain-candidate configs; py_compile PASS; `git diff
+  --check` PASS with LF/CRLF warnings only.
+- Review gates: GPT-5 Pro/Oracle incomplete because `OPENAI_API_KEY` is
+  missing; Rosetta/browser Pro incomplete because CDP `127.0.0.1:9222`
+  refused connection; read-only subagent final review incomplete because
+  `claude_review` twice returned `Claude CLI did not return JSON output`.
+- Boundary: no SSH, remote sync, Slurm, `tools/train.py`, `tools/test.py`, GPU
+  use, checkpoint, result JSON, mAP, parent-hold action, or route-quality claim.
+- Next decision: main process may inspect/commit local code. Deployment,
+  remote PRECHECK, smoke/diagnostic training, long training, and all metric or
+  paper/deploy claims remain locked until required Pro and subagent review
+  gates complete in a functioning review channel.
+
+## 2026-06-30 20:59:37 +08:00
+
+QC V2 final read-only review blocker fixed locally in the route-owned worktree
+`OpenTAD_C3PQRQCV2_Worktree_20260630`.
+
+- Blocker: `_sparse_irregular_qc_v2_point_geometry` used identical
+  `gap[gap_idx] / expected_gap` values for both `left_gap` and `right_gap`.
+- Fix: `left_gap` now uses the previous selected-position interval
+  `(floor(coord) - 1).clamp(...)`; `right_gap` uses the next selected-position
+  interval `floor(coord).clamp(...)`. Boundary clamp fallback keeps values
+  finite and preserves device/dtype/mask behavior.
+- Added test:
+  `test_sparse_irregular_qc_v2_point_geometry_keeps_left_and_right_gap_directional`
+  with non-uniform positions `[0, 1, 4, 8]`, checking the interior point has
+  `left_gap = 1 / (10 / 4)`, `right_gap = 3 / (10 / 4)`, and the two differ.
+- Verification: config pytest `32 passed`; quality-head pytest default
+  `1 passed, 8 skipped` due Windows torch DLL; `torch_1` quality-head pytest
+  `1 passed, 8 skipped` due missing `nms_1d_cpu`; proposal/analyzer pytest
+  `13 passed, 2 skipped`; QC V2 precheck/shortdiag validators PASS;
+  py_compile PASS; `git diff --check` PASS with LF/CRLF warnings only.
+- Boundary: no SSH, remote sync, Slurm, training, `tools/test.py`, GPU use,
+  checkpoint, result JSON, mAP, parent-hold action, BH-SDC, DIVERGENT,
+  evaluator scoring/NMS, Adapter internals, or input sampler change.
+- Remaining risk: the direct torch-backed test is present but skipped in this
+  local Windows environment; it should run in Linux review/CI with
+  `nms_1d_cpu` available before deployment/sync/training.

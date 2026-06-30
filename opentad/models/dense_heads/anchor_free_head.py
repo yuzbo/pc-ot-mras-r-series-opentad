@@ -54,6 +54,16 @@ class AnchorFreeHead(nn.Module):
             raise ValueError(f"Unsupported quality head mode: {self.quality_head_mode}")
         self.quality_qc_v2_enabled = self.quality_head_enabled and self.quality_head_mode == "sparse_irregular_qc_v2"
         self.quality_qc_v2_diagnostic_dump = bool(self.quality_head_cfg.get("diagnostic_dump", False))
+        self.quality_qc_v2_geometry_conditioning = bool(self.quality_head_cfg.get("geometry_conditioning", True))
+        self.quality_qc_v2_geometry_feature_names = (
+            "selected_time",
+            "physical_time",
+            "left_gap",
+            "right_gap",
+            "local_density",
+            "visibility_support",
+            "endpoint_support",
+        )
         self.quality_loss_weight = float(self.quality_head_cfg.get("loss_weight", 0.0))
         self.quality_score_alpha = float(self.quality_head_cfg.get("score_alpha", 0.0))
         self.quality_target_mode = self.quality_head_cfg.get("target_mode", "assigned_iou")
@@ -443,9 +453,17 @@ class AnchorFreeHead(nn.Module):
             self.reg_residual_scale = nn.Parameter(torch.tensor(float(reg_residual_cfg.get("init_scale", 0.0))))
         if self.quality_head_enabled:
             kernel_size = int(self.quality_head_cfg.get("kernel_size", 3))
-            self.quality_head = nn.Conv1d(self.feat_channels, 1, kernel_size=kernel_size, padding=kernel_size // 2)
+            quality_in_channels = self.feat_channels
+            if self.quality_qc_v2_enabled and self.quality_qc_v2_geometry_conditioning:
+                quality_in_channels += len(self.quality_qc_v2_geometry_feature_names)
+            self.quality_head = nn.Conv1d(quality_in_channels, 1, kernel_size=kernel_size, padding=kernel_size // 2)
             nn.init.constant_(self.quality_head.weight, float(self.quality_head_cfg.get("weight_init", 0.0)))
             nn.init.constant_(self.quality_head.bias, float(self.quality_head_cfg.get("bias_init", 0.0)))
+            if self.quality_qc_v2_enabled and self.quality_qc_v2_geometry_conditioning:
+                nn.init.constant_(
+                    self.quality_head.weight[:, self.feat_channels :, :],
+                    float(self.quality_head_cfg.get("geometry_weight_init", 0.0)),
+                )
 
         # use prior in model initialization to improve stability
         # this will overwrite other weight init
@@ -465,10 +483,92 @@ class AnchorFreeHead(nn.Module):
         reg_raw = reg_raw + self.reg_residual_scale.to(dtype=reg_raw.dtype) * self.reg_residual(reg_feat)
         return reg_raw
 
+    def _sparse_irregular_qc_v2_point_geometry(self, points, mask, metas, dtype, device):
+        batch = mask.shape[0]
+        length = points.shape[0]
+        if metas is None:
+            return torch.zeros(
+                batch,
+                len(self.quality_qc_v2_geometry_feature_names),
+                length,
+                dtype=dtype,
+                device=device,
+            )
+
+        selected_center = points[:, 0].to(device=device, dtype=dtype)
+        selected_center = selected_center.clamp(min=0.0)
+        selected_scale = max(float(length - 1), 1.0)
+        selected_time = selected_center / selected_scale
+        features = []
+        for batch_idx in range(batch):
+            meta = metas[batch_idx]
+            if not self._has_sparse_irregular_geometry(meta):
+                features.append(
+                    torch.zeros(
+                        len(self.quality_qc_v2_geometry_feature_names),
+                        length,
+                        dtype=dtype,
+                        device=device,
+                    )
+                )
+                continue
+
+            positions = torch.as_tensor(
+                meta["irregular_selected_positions"],
+                dtype=dtype,
+                device=device,
+            ).reshape(-1)
+            valid_len = max(float(meta["irregular_selected_valid_len"]), 1e-6)
+            fp = torch.cat([positions, positions.new_tensor([valid_len])], dim=0)
+            gap = (fp[1:] - fp[:-1]).clamp(min=1e-6)
+            expected_gap = max(valid_len / float(positions.numel()), 1e-6)
+            coord = selected_center.clamp(min=0.0, max=float(positions.numel()))
+            physical_time = self._selected_axis_to_dense_axis(coord, meta) / valid_len
+            gap_idx = torch.floor(coord).to(dtype=torch.long).clamp(min=0, max=gap.numel() - 1)
+            left_gap_idx = (gap_idx - 1).clamp(min=0, max=gap.numel() - 1)
+            right_gap_idx = gap_idx.clamp(min=0, max=gap.numel() - 1)
+            left_gap = gap[left_gap_idx] / expected_gap
+            right_gap = gap[right_gap_idx] / expected_gap
+            local_density = (expected_gap / gap[gap_idx]).clamp(min=0.0, max=1.0)
+            point_segments = torch.stack((coord, (coord + 1.0).clamp(max=float(positions.numel()))), dim=-1)
+            descriptor = self._sparse_visibility_descriptor(point_segments, meta)
+            features.append(
+                torch.stack(
+                    (
+                        selected_time,
+                        physical_time.clamp(min=0.0, max=1.0),
+                        left_gap.clamp(max=4.0),
+                        right_gap.clamp(max=4.0),
+                        local_density,
+                        descriptor["visibility_support"],
+                        descriptor["endpoint_support"],
+                    ),
+                    dim=0,
+                )
+            )
+        geometry = torch.stack(features, dim=0)
+        geometry = geometry * mask.to(device=device).bool().unsqueeze(1).to(dtype)
+        return geometry
+
+    def _quality_head_input(self, reg_feat, points, mask, metas):
+        quality_input = reg_feat.detach()
+        if not self.quality_qc_v2_enabled or not self.quality_qc_v2_geometry_conditioning:
+            return quality_input
+        geometry = self._sparse_irregular_qc_v2_point_geometry(
+            points,
+            mask,
+            metas,
+            dtype=quality_input.dtype,
+            device=quality_input.device,
+        )
+        return torch.cat([quality_input, geometry], dim=1)
+
     def forward_train(self, feat_list, mask_list, gt_segments, gt_labels, **kwargs):
         cls_pred = []
         reg_pred = []
         quality_pred = []
+        points = self.prior_generator(feat_list)
+        metas = kwargs.get("metas", None)
 
         for l, (feat, mask) in enumerate(zip(feat_list, mask_list)):
             cls_feat = feat
@@ -481,9 +581,7 @@ class AnchorFreeHead(nn.Module):
             cls_pred.append(self._apply_cls_residual(cls_feat, self.cls_head(cls_feat)))
             reg_pred.append(F.relu(self.scale[l](self._apply_reg_residual(reg_feat, self.reg_head(reg_feat)))))
             if self.quality_head_enabled:
-                quality_pred.append(self.quality_head(reg_feat.detach()))
-
-        points = self.prior_generator(feat_list)
+                quality_pred.append(self.quality_head(self._quality_head_input(reg_feat, points[l], mask, metas)))
 
         quality_pred = quality_pred if self.quality_head_enabled else None
         losses = self.losses(
@@ -506,6 +604,8 @@ class AnchorFreeHead(nn.Module):
         cls_pred = []
         reg_pred = []
         quality_pred = []
+        points = self.prior_generator(feat_list)
+        metas = kwargs.get("metas", None)
 
         for l, (feat, mask) in enumerate(zip(feat_list, mask_list)):
             cls_feat = feat
@@ -518,9 +618,7 @@ class AnchorFreeHead(nn.Module):
             cls_pred.append(self._apply_cls_residual(cls_feat, self.cls_head(cls_feat)))
             reg_pred.append(F.relu(self.scale[l](self._apply_reg_residual(reg_feat, self.reg_head(reg_feat)))))
             if self.quality_head_enabled:
-                quality_pred.append(self.quality_head(reg_feat.detach()))
-
-        points = self.prior_generator(feat_list)
+                quality_pred.append(self.quality_head(self._quality_head_input(reg_feat, points[l], mask, metas)))
 
         # get refined proposals and scores
         quality_pred = quality_pred if self.quality_head_enabled else None
@@ -530,7 +628,7 @@ class AnchorFreeHead(nn.Module):
             cls_pred,
             mask_list,
             quality_pred=quality_pred,
-            metas=kwargs.get("metas", None),
+            metas=metas,
         )  # list [T,2]
 
     def get_refined_proposals(self, points, reg_pred):
@@ -541,6 +639,14 @@ class AnchorFreeHead(nn.Module):
         end = points[:, 0][None] + reg_pred[:, :, 1] * points[:, 3][None]
         proposals = torch.stack((start, end), dim=-1)  # [B,T,2]
         return proposals
+
+    def _level_point_indices(self, points, device):
+        level_ids = []
+        point_indices = []
+        for level, point in enumerate(points):
+            level_ids.append(torch.full((point.shape[0],), level, dtype=torch.long, device=device))
+            point_indices.append(torch.arange(point.shape[0], dtype=torch.long, device=device))
+        return torch.cat(level_ids, dim=0), torch.cat(point_indices, dim=0)
 
     def get_valid_proposals_scores(self, points, reg_pred, cls_pred, mask_list, quality_pred=None, metas=None):
         # apply regression to get refined proposals
@@ -554,6 +660,7 @@ class AnchorFreeHead(nn.Module):
 
         # mask out invalid, and return a list with batch size
         masks = torch.cat(mask_list, dim=1)  # [B,T]
+        level_ids, point_indices = self._level_point_indices(points, masks.device)
         new_proposals, new_scores, diagnostics = [], [], []
         for batch_idx, (proposal, score, mask, quality_score) in enumerate(zip(proposals, scores, masks, quality_scores)):
             raw_score = score
@@ -564,7 +671,18 @@ class AnchorFreeHead(nn.Module):
             new_scores.append(score[mask])  # [T,num_classes]
             if self.quality_qc_v2_enabled and self.quality_qc_v2_diagnostic_dump:
                 meta = None if metas is None else metas[batch_idx]
-                diagnostics.append(self._build_sparse_irregular_qc_v2_diagnostics(proposal, raw_score, mask, quality_score, meta))
+                diagnostics.append(
+                    self._build_sparse_irregular_qc_v2_diagnostics(
+                        proposal,
+                        raw_score,
+                        score,
+                        mask,
+                        quality_score,
+                        meta,
+                        level_ids,
+                        point_indices,
+                    )
+                )
         if self.quality_qc_v2_enabled and self.quality_qc_v2_diagnostic_dump:
             return new_proposals, new_scores, diagnostics
         return new_proposals, new_scores
@@ -656,7 +774,17 @@ class AnchorFreeHead(nn.Module):
         )
         return descriptor
 
-    def _build_sparse_irregular_qc_v2_diagnostics(self, proposal, cls_score, mask, quality_score, meta):
+    def _build_sparse_irregular_qc_v2_diagnostics(
+        self,
+        proposal,
+        cls_score,
+        fused_score,
+        mask,
+        quality_score,
+        meta,
+        level_ids,
+        point_indices,
+    ):
         valid_proposal = proposal[mask]
         selected_lengths = (valid_proposal[:, 1] - valid_proposal[:, 0]).clamp(min=0.0)
         descriptor = self._sparse_visibility_descriptor(valid_proposal, meta)
@@ -664,15 +792,19 @@ class AnchorFreeHead(nn.Module):
             "diagnostic_available": True,
             "coverage_available": descriptor["coverage_available"],
             "cls_scores": cls_score[mask].detach(),
+            "fused_scores": fused_score[mask].detach(),
             "quality_scores": None if quality_score is None else quality_score[mask].squeeze(-1).detach(),
             "selected_segments": valid_proposal.detach(),
             "physical_segments": descriptor["physical_segments"].detach(),
             "selected_lengths": selected_lengths.detach(),
             "physical_lengths": descriptor["physical_lengths"].detach(),
+            "proposal_widths": descriptor["physical_lengths"].detach(),
             "gap_mean": descriptor["gap_mean"].detach(),
             "visibility_support": descriptor["visibility_support"].detach(),
             "coverage": descriptor["coverage"].detach(),
             "endpoint_support": descriptor["endpoint_support"].detach(),
+            "level_ids": level_ids[mask].detach(),
+            "point_indices": point_indices[mask].detach(),
         }
         return diagnostic
 

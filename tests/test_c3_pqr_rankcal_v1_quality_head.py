@@ -178,6 +178,95 @@ def test_sparse_irregular_qc_v2_returns_optional_deploy_visible_diagnostics():
     assert "visibility_support" in diagnostics[0]
     assert "endpoint_support" in diagnostics[0]
     assert "gap_mean" in diagnostics[0]
+    assert "fused_scores" in diagnostics[0]
+    assert "proposal_widths" in diagnostics[0]
+    assert "level_ids" in diagnostics[0]
+    assert "point_indices" in diagnostics[0]
+
+
+def test_sparse_irregular_qc_v2_quality_branch_consumes_point_geometry():
+    torch, _ = _torch_and_head()
+    head = _make_head(
+        dict(
+            enabled=True,
+            mode="sparse_irregular_qc_v2",
+            target_mode="sparse_physical_iou_visibility",
+            diagnostic_dump=True,
+            loss_weight=0.03,
+            score_alpha=0.10,
+            weight_init=0.0,
+            bias_init=0.0,
+        )
+    )
+    points = torch.tensor([[0.0, 0.0, 10000.0, 1.0], [1.0, 0.0, 10000.0, 1.0]])
+    mask = torch.tensor([[True, True]])
+    reg_feat = torch.zeros(1, 4, 2)
+    metas = [
+        dict(
+            irregular_selected_positions=[0.0, 4.0],
+            irregular_selected_valid_len=8.0,
+            irregular_native_axis=False,
+        )
+    ]
+
+    quality_input = head._quality_head_input(reg_feat, points, mask, metas)
+    geometry = head._sparse_irregular_qc_v2_point_geometry(points, mask, metas, reg_feat.dtype, reg_feat.device)
+
+    assert head.quality_head.in_channels == head.feat_channels + len(head.quality_qc_v2_geometry_feature_names)
+    assert geometry.shape == (1, len(head.quality_qc_v2_geometry_feature_names), 2)
+    assert torch.allclose(quality_input[:, : head.feat_channels], reg_feat.detach())
+    assert torch.allclose(quality_input[:, head.feat_channels :], geometry)
+    assert geometry.abs().sum().item() > 0
+
+    with torch.no_grad():
+        head.quality_head.weight.zero_()
+        head.quality_head.bias.zero_()
+        selected_channel = head.feat_channels + head.quality_qc_v2_geometry_feature_names.index("selected_time")
+        head.quality_head.weight[0, selected_channel, 1] = 1.0
+    logits = head.quality_head(quality_input)
+
+    assert logits[0, 0, 1] > logits[0, 0, 0]
+
+
+def test_sparse_irregular_qc_v2_point_geometry_keeps_left_and_right_gap_directional():
+    torch, _ = _torch_and_head()
+    head = _make_head(
+        dict(
+            enabled=True,
+            mode="sparse_irregular_qc_v2",
+            target_mode="sparse_physical_iou_visibility",
+            diagnostic_dump=True,
+            loss_weight=0.03,
+            score_alpha=0.10,
+            weight_init=0.0,
+            bias_init=0.0,
+        )
+    )
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 10000.0, 1.0],
+            [1.0, 0.0, 10000.0, 1.0],
+            [2.0, 0.0, 10000.0, 1.0],
+        ]
+    )
+    mask = torch.tensor([[True, True, True]])
+    metas = [
+        dict(
+            irregular_selected_positions=[0.0, 1.0, 4.0, 8.0],
+            irregular_selected_valid_len=10.0,
+            irregular_native_axis=False,
+        )
+    ]
+
+    geometry = head._sparse_irregular_qc_v2_point_geometry(points, mask, metas, torch.float32, points.device)
+    left_idx = head.quality_qc_v2_geometry_feature_names.index("left_gap")
+    right_idx = head.quality_qc_v2_geometry_feature_names.index("right_gap")
+
+    expected_gap = 10.0 / 4.0
+    assert geometry[0, left_idx, 1].item() == pytest.approx(1.0 / expected_gap)
+    assert geometry[0, right_idx, 1].item() == pytest.approx(3.0 / expected_gap)
+    assert geometry[0, left_idx, 1].item() != pytest.approx(geometry[0, right_idx, 1].item())
+    assert torch.isfinite(geometry).all()
 
 
 def test_sparse_irregular_qc_v2_test_path_rejects_gt_targets():

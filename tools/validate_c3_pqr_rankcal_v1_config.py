@@ -31,6 +31,8 @@ SUPPORTED_QUALITY_HEAD_KEYS = {
     "keep_loss_graph_when_weight_zero",
     "mode",
     "diagnostic_dump",
+    "geometry_conditioning",
+    "geometry_weight_init",
 }
 
 
@@ -134,6 +136,8 @@ def _validate_quality_head(cfg):
     if mode == "sparse_irregular_qc_v2":
         assert quality.target_mode == "sparse_physical_iou_visibility"
         assert quality.diagnostic_dump is True
+        assert quality.get("geometry_conditioning", True) is True
+        assert float(quality.get("geometry_weight_init", 0.0)) == 0.0
     else:
         assert quality.target_mode == "max_iou"
     assert quality.weight_init == 0.0

@@ -16,16 +16,19 @@ SWEEP_NMS_THRESHOLDS = (0.3, 0.5, 0.7, 0.9)
 SWEEP_SCORE_ALPHA = (0.0, 0.05, 0.10, 0.20, 0.30)
 QUALITY_KEYS = ("quality_score", "quality")
 CLS_SCORE_KEYS = ("cls_score", "class_score", "model_score")
+FUSED_SCORE_KEYS = ("fused_score", "score_fused")
 SELECTED_SEGMENT_KEYS = ("selected_segment", "segment_selected")
 PHYSICAL_SEGMENT_KEYS = ("physical_segment", "segment_physical")
 QC_V2_FLOAT_KEYS = (
     "selected_length",
     "physical_length",
+    "proposal_width",
     "gap_mean",
     "visibility_support",
     "coverage",
     "endpoint_support",
 )
+QC_V2_INT_KEYS = ("level_id", "point_index")
 
 
 def _segment_iou(segment, candidates):
@@ -173,6 +176,7 @@ def _prediction_records(predictions, gt_by_video):
             score = float(pred.get("score", 0.0))
             quality_score = _as_float_or_none(_first_present(pred, QUALITY_KEYS))
             cls_score = _as_float_or_none(_first_present(pred, CLS_SCORE_KEYS))
+            fused_score = _as_float_or_none(_first_present(pred, FUSED_SCORE_KEYS))
             same_label_iou = _segment_iou(segment, gt_by_label.get(label, []))
             any_label_iou = _segment_iou(segment, any_gt)
             per_video_label_counts[video_id][label] += 1
@@ -189,6 +193,7 @@ def _prediction_records(predictions, gt_by_video):
                 "video_prediction_count": len(sorted_predictions),
                 "quality_score": quality_score,
                 "cls_score": cls_score,
+                "fused_score": fused_score,
                 "selected_start": None if selected_segment is None else selected_segment[0],
                 "selected_end": None if selected_segment is None else selected_segment[1],
                 "physical_start": None if physical_segment is None else physical_segment[0],
@@ -197,6 +202,9 @@ def _prediction_records(predictions, gt_by_video):
             }
             for key in QC_V2_FLOAT_KEYS:
                 record[key] = _as_float_or_none(pred.get(key))
+            for key in QC_V2_INT_KEYS:
+                value = _as_float_or_none(pred.get(key))
+                record[key] = None if value is None else int(value)
             records.append(record)
     return records, per_video_counts, per_video_label_counts
 
@@ -315,6 +323,70 @@ def _analysis_summary_from_records(
         "proposal_count_per_video_label": _count_summary(class_counts),
         "rank_recall": _topk_recall(records, gt_by_video, topk_values, thresholds),
         "score_rank_bins": _score_bins(records),
+        "qc_v2_diagnostic_state": _qc_v2_diagnostic_state(records),
+    }
+
+
+def _availability(records, predicate):
+    if not records:
+        return "MISSING"
+    count = sum(1 for record in records if predicate(record))
+    if count == len(records):
+        return "AVAILABLE"
+    if count > 0:
+        return "PARTIAL"
+    return "MISSING"
+
+
+def _availability_any(records, predicate):
+    if not records:
+        return "MISSING"
+    return "AVAILABLE" if any(predicate(record) for record in records) else "MISSING"
+
+
+def _qc_v2_diagnostic_state(records):
+    total = len(records)
+    has_selected = lambda record: record.get("selected_start") is not None and record.get("selected_end") is not None
+    has_physical = lambda record: record.get("physical_start") is not None and record.get("physical_end") is not None
+    has_geometry = lambda record: all(record.get(key) is not None for key in QC_V2_FLOAT_KEYS if key != "coverage")
+    has_level_point = lambda record: record.get("level_id") is not None and record.get("point_index") is not None
+    full_geometry = lambda record: has_selected(record) and has_physical(record) and has_geometry(record) and has_level_point(record)
+
+    coverage = {
+        "records_total": total,
+        "records_with_quality_score": sum(1 for record in records if record.get("quality_score") is not None),
+        "records_with_cls_score": sum(1 for record in records if record.get("cls_score") is not None),
+        "records_with_fused_score": sum(1 for record in records if record.get("fused_score") is not None),
+        "records_with_selected_coordinates": sum(1 for record in records if has_selected(record)),
+        "records_with_physical_coordinates": sum(1 for record in records if has_physical(record)),
+        "records_with_geometry_support": sum(1 for record in records if has_geometry(record)),
+        "records_with_level_point_index": sum(1 for record in records if has_level_point(record)),
+        "records_with_full_qc_v2_geometry": sum(1 for record in records if full_geometry(record)),
+    }
+    if total == 0 or coverage["records_with_full_qc_v2_geometry"] == 0:
+        status = "MISSING_QC_V2_DIAGNOSTICS"
+    elif coverage["records_with_full_qc_v2_geometry"] == total:
+        status = "PASS_QC_V2_DIAGNOSTICS"
+    else:
+        status = "PARTIAL_QC_V2_DIAGNOSTICS"
+
+    return {
+        "status": status,
+        "diagnostic_only": True,
+        "official_map_claim": False,
+        "field_coverage": coverage,
+        "interpretation": {
+            "localization_geometry_check": _availability(records, full_geometry),
+            "classification_calibration_check": _availability_any(
+                records,
+                lambda record: record.get("cls_score") is not None and record.get("quality_score") is not None,
+            ),
+            "ranking_geometry_check": _availability_any(
+                records,
+                lambda record: record.get("fused_score") is not None and has_selected(record) and has_geometry(record),
+            ),
+            "proposal_cap_overload_check": "AVAILABLE",
+        },
     }
 
 
@@ -707,16 +779,20 @@ def _write_records_csv(records, csv_path):
         "video_prediction_count",
         "quality_score",
         "cls_score",
+        "fused_score",
         "selected_start",
         "selected_end",
         "physical_start",
         "physical_end",
         "selected_length",
         "physical_length",
+        "proposal_width",
         "gap_mean",
         "visibility_support",
         "coverage",
         "endpoint_support",
+        "level_id",
+        "point_index",
         "coverage_available",
     ]
     with Path(csv_path).open("w", encoding="utf-8", newline="") as handle:

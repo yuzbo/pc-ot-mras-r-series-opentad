@@ -205,6 +205,10 @@ class SingleStageDetector(BaseDetector):
 
         records = []
         quality_scores = diagnostics.get("quality_scores", None)
+        fused_scores = diagnostics.get("fused_scores", None)
+        proposal_widths = diagnostics.get("proposal_widths", None)
+        level_ids = diagnostics.get("level_ids", None)
+        diagnostic_point_indices = diagnostics.get("point_indices", None)
         for point_idx, class_idx in zip(point_indices, class_indices):
             point_idx = int(point_idx.item())
             class_idx = int(class_idx.item())
@@ -212,14 +216,18 @@ class SingleStageDetector(BaseDetector):
             record = {
                 "coverage_available": bool(diagnostics.get("coverage_available", False)),
                 "cls_score": cls_scores[class_idx],
+                "fused_score": None if fused_scores is None else fused_scores[point_idx][class_idx],
                 "quality_score": None if quality_scores is None else quality_scores[point_idx],
                 "selected_segment": diagnostics["selected_segments"][point_idx],
                 "selected_length": diagnostics["selected_lengths"][point_idx],
                 "physical_length": diagnostics["physical_lengths"][point_idx],
+                "proposal_width": None if proposal_widths is None else proposal_widths[point_idx],
                 "gap_mean": diagnostics["gap_mean"][point_idx],
                 "visibility_support": diagnostics["visibility_support"][point_idx],
                 "coverage": diagnostics["coverage"][point_idx],
                 "endpoint_support": diagnostics["endpoint_support"][point_idx],
+                "level_id": None if level_ids is None else level_ids[point_idx],
+                "point_index": None if diagnostic_point_indices is None else diagnostic_point_indices[point_idx],
             }
             records.append(record)
         return records
@@ -250,15 +258,23 @@ class SingleStageDetector(BaseDetector):
         output_record.update(
             {
                 "cls_score": self._tensor_scalar_or_none(diagnostic_record.get("cls_score")),
+                "fused_score": self._tensor_scalar_or_none(diagnostic_record.get("fused_score")),
                 "quality_score": self._tensor_scalar_or_none(diagnostic_record.get("quality_score")),
                 "selected_segment": self._tensor_row_to_list(diagnostic_record["selected_segment"]),
                 "physical_segment": self._tensor_row_to_list(physical_segment),
                 "selected_length": self._tensor_scalar_or_none(diagnostic_record["selected_length"]),
                 "physical_length": round((physical_segment[1] - physical_segment[0]).item(), 4),
+                "proposal_width": self._tensor_scalar_or_none(diagnostic_record.get("proposal_width")),
                 "gap_mean": self._tensor_scalar_or_none(diagnostic_record.get("gap_mean")),
                 "visibility_support": self._tensor_scalar_or_none(diagnostic_record.get("visibility_support")),
                 "coverage": self._tensor_scalar_or_none(diagnostic_record.get("coverage")),
                 "endpoint_support": self._tensor_scalar_or_none(diagnostic_record.get("endpoint_support")),
+                "level_id": None
+                if diagnostic_record.get("level_id") is None
+                else int(diagnostic_record["level_id"].item()),
+                "point_index": None
+                if diagnostic_record.get("point_index") is None
+                else int(diagnostic_record["point_index"].item()),
                 "coverage_available": bool(diagnostic_record.get("coverage_available", False)),
             }
         )

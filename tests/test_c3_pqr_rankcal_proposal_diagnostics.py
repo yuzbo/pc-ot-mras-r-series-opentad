@@ -436,13 +436,17 @@ def test_pqr_proposal_diagnostic_reads_qc_v2_geometry_fields(tmp_path):
                         "score": 0.8,
                         "quality_score": 0.5,
                         "cls_score": 0.7,
+                        "fused_score": 0.8,
                         "physical_segment": [0.0, 1.0],
                         "selected_length": 2.0,
                         "physical_length": 1.0,
+                        "proposal_width": 1.0,
                         "gap_mean": 2.0,
                         "visibility_support": 0.75,
                         "coverage": 0.5,
                         "endpoint_support": 0.8,
+                        "level_id": 2,
+                        "point_index": 17,
                         "coverage_available": True,
                     }
                 ]
@@ -453,15 +457,68 @@ def test_pqr_proposal_diagnostic_reads_qc_v2_geometry_fields(tmp_path):
     _summary, records = analyze(prediction, annotation, subset="validation")
 
     record = records[0]
+    assert record["fused_score"] == 0.8
     assert record["physical_start"] == 0.0
     assert record["physical_end"] == 1.0
     assert record["selected_length"] == 2.0
     assert record["physical_length"] == 1.0
+    assert record["proposal_width"] == 1.0
     assert record["gap_mean"] == 2.0
     assert record["visibility_support"] == 0.75
     assert record["coverage"] == 0.5
     assert record["endpoint_support"] == 0.8
+    assert record["level_id"] == 2
+    assert record["point_index"] == 17
     assert record["coverage_available"] is True
+
+
+def test_pqr_proposal_diagnostic_qc_v2_state_distinguishes_failure_modes(tmp_path):
+    annotation = tmp_path / "thumos_14_anno.json"
+    prediction = tmp_path / "result_detection.json"
+    _write_json(annotation, {"database": {"video_a": {"subset": "validation", "annotations": []}}})
+    _write_json(
+        prediction,
+        {
+            "results": {
+                "video_a": [
+                    {
+                        "segment": [0.0, 1.0],
+                        "selected_segment": [0.0, 2.0],
+                        "label": "Diving",
+                        "score": 0.8,
+                        "quality_score": 0.5,
+                        "cls_score": 0.7,
+                        "fused_score": 0.8,
+                        "physical_segment": [0.0, 1.0],
+                        "selected_length": 2.0,
+                        "physical_length": 1.0,
+                        "proposal_width": 1.0,
+                        "gap_mean": 2.0,
+                        "visibility_support": 0.75,
+                        "endpoint_support": 0.8,
+                        "level_id": 0,
+                        "point_index": 3,
+                        "coverage_available": True,
+                    },
+                    {
+                        "segment": [3.0, 4.0],
+                        "label": "Diving",
+                        "score": 0.6,
+                    },
+                ]
+            }
+        },
+    )
+
+    summary, _records = analyze(prediction, annotation, subset="validation")
+
+    state = summary["qc_v2_diagnostic_state"]
+    assert state["status"] == "PARTIAL_QC_V2_DIAGNOSTICS"
+    assert state["interpretation"]["classification_calibration_check"] == "AVAILABLE"
+    assert state["interpretation"]["ranking_geometry_check"] == "AVAILABLE"
+    assert state["interpretation"]["localization_geometry_check"] == "PARTIAL"
+    assert state["interpretation"]["proposal_cap_overload_check"] == "AVAILABLE"
+    assert state["field_coverage"]["records_with_full_qc_v2_geometry"] == 1
 
 
 def test_single_stage_post_processing_attaches_qc_v2_diagnostic_fields():
@@ -483,15 +540,19 @@ def test_single_stage_post_processing_attaches_qc_v2_diagnostic_fields():
                 diagnostic_available=True,
                 coverage_available=True,
                 cls_scores=torch.tensor([[0.8, 0.1]]),
+                fused_scores=torch.tensor([[0.4, 0.05]]),
                 quality_scores=torch.tensor([0.5]),
                 selected_segments=torch.tensor([[0.0, 2.0]]),
                 physical_segments=torch.tensor([[0.0, 4.0]]),
                 selected_lengths=torch.tensor([2.0]),
                 physical_lengths=torch.tensor([4.0]),
+                proposal_widths=torch.tensor([4.0]),
                 gap_mean=torch.tensor([2.0]),
                 visibility_support=torch.tensor([0.75]),
                 coverage=torch.tensor([0.5]),
                 endpoint_support=torch.tensor([0.8]),
+                level_ids=torch.tensor([1]),
+                point_indices=torch.tensor([9]),
             )
         ],
     )
@@ -520,15 +581,19 @@ def test_single_stage_post_processing_attaches_qc_v2_diagnostic_fields():
 
     record = results["video_a"][0]
     assert record["cls_score"] == 0.8
+    assert record["fused_score"] == 0.4
     assert record["quality_score"] == 0.5
     assert record["selected_segment"] == [0.0, 2.0]
     assert record["physical_segment"] == [0.0, 4.0]
     assert record["selected_length"] == 2.0
     assert record["physical_length"] == 4.0
+    assert record["proposal_width"] == 4.0
     assert record["gap_mean"] == 2.0
     assert record["visibility_support"] == 0.75
     assert record["coverage"] == 0.5
     assert record["endpoint_support"] == 0.8
+    assert record["level_id"] == 1
+    assert record["point_index"] == 9
     assert record["coverage_available"] is True
 
 
