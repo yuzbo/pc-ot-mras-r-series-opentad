@@ -59,6 +59,9 @@ LOSS_SELECT_V2_FORMAL_LAUNCHER = ROOT / "scripts/run_c3_cadf_loss_select_v2_form
 LOSS_SELECT_V2_FAST_SAFE_PROFILE_LAUNCHER = (
     ROOT / "scripts/run_c3_cadf_loss_select_v2_fast_safe_train_iter_profile_gpu1.sh"
 )
+LOSS_SELECT_V2_FAST_SAFE_CONTINUATION_LAUNCHER = (
+    ROOT / "scripts/run_c3_cadf_loss_select_v2_fast_safe_formal_continuation_gpu1.sh"
+)
 SMOKE64 = ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_64px_short_smoke.py"
 FULL64 = ROOT / "configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_64px_full_train.py"
 
@@ -483,6 +486,35 @@ def test_cadf_loss_select_v2_launcher_scripts_require_gpu1_and_fail_closed():
     profile = LOSS_SELECT_V2_FAST_SAFE_PROFILE_LAUNCHER.read_text(encoding="utf-8")
     assert "fast_safe_train_iter_profile.py" in profile
     assert "no eval" in profile.lower()
+
+
+def test_cadf_loss_select_v2_fast_safe_continuation_launcher_is_resume_only_gpu1_gate():
+    text = LOSS_SELECT_V2_FAST_SAFE_CONTINUATION_LAUNCHER.read_text(encoding="utf-8")
+
+    assert "CUDA_VISIBLE_DEVICES=1" in text
+    assert "GPU1" in text
+    assert "CUDA_VISIBLE_DEVICES=0" not in text
+    assert "GPU0" not in text
+    assert "CADF_LOSS_SELECT_V2_CONTINUATION_UNLOCK" in text
+    assert "CONFIRMED" in text
+    assert "CADF_LOSS_SELECT_V2_CONTINUATION_EVIDENCE" in text
+    assert "CADF_LOSS_SELECT_V2_RESUME_CHECKPOINT" in text
+    assert "CADF_LOSS_SELECT_V2_CONTINUATION_RUN_ID" in text
+    assert "CADF_LOSS_SELECT_V2_CONTINUATION_RUN_ID:-" in text
+    assert "must not be 0" in text
+    assert "^[1-9][0-9]*$" in text
+    assert "gpu1_id0" in text
+    assert "CADF_LOSS_SELECT_V2_RUN_ID:-0" not in text
+    assert "modified-validation-schedule continuation" in text
+    assert "not clean full train" in text
+    assert "tools/train.py" in text
+    assert "c3_cadf_densitymesh_original_adatad_32px_loss_select_v2_fast_safe_formal.py" in text
+    assert '--id "$CADF_LOSS_SELECT_V2_CONTINUATION_RUN_ID"' in text
+    assert '--resume "$CADF_LOSS_SELECT_V2_RESUME_CHECKPOINT"' in text
+    assert "DIVERGENT" not in text
+    assert "BH-SDC" not in text
+    assert "QC" not in text
+    assert "PQR" not in text
 
 
 def test_shared_precheck_validator_rejects_formal_selector_candidate_with_density_loss_v2(tmp_path):
