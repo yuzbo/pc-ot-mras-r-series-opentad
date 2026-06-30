@@ -74,3 +74,31 @@ R2 failure detail: `selected_segments` was `[[0, 1], [1, 2]]`, while the test ex
 Root cause: the first local fixture fix was accidentally applied to the earlier `test_quality_score_fusion_uses_low_alpha_model_score_only` fixture, not to the QC V2 diagnostics fixture. The QC V2 diagnostics fixture still contained the old regression layout at commit `43ef497`.
 
 Local fix after R2: restore the quality-fusion fixture to its original values, update the QC V2 diagnostics fixture to left `[0, 1]`, right `[0, 1]`, and keep the direct selected-segment assertion. Local verification returned `torch_1` focused pytest `37 passed, 8 skipped`, QC V2 validator PASS, py_compile PASS, and `git diff --check` PASS.
+
+## Remote PRECHECK R3
+
+R3 remote PRECHECK at commit `f827c50538c6cda68756c3d37cd11a53c5b3e314` used fresh clone `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQR_QCV2_Precheck_f827c50_20260630_20260630_141515_+0800`.
+
+Log path:
+
+`/data/home/sczc063/run/yuzibo/OpenTAD_C3PQR_QCV2_Precheck_f827c50_20260630_20260630_141515_+0800/logs/c3_pqr_qcv2_precheck_f827c50_20260630_141515_+0800.log`
+
+Evidence:
+
+- `git clone`: PASS.
+- `git checkout f827c50538c6cda68756c3d37cd11a53c5b3e314`: PASS.
+- `data` and `pretrained` symlinks: PASS.
+- `python -m py_compile ...`: PASS.
+- `python tools/validate_c3_pqr_rankcal_v1_config.py ...qc_v2_precheck.py`: PASS, printed `PASS_C3_PQR_RANKCAL_V1_CONFIG`.
+- Focused Linux pytest: PASS, `45 passed in 27.89s`.
+- `git diff --check`: PASS.
+
+Boundary: R3 did not run Slurm, `srun`, `tools/train.py`, `tools/test.py`, or any GPU job. It did not touch the parent hold, BH-SDC, or any divergent route.
+
+## Resource Ownership Rule
+
+From `2026-06-30 14:19:26 +08:00`, all future C3/PQR/CADF mainline training, diagnostic training, short smoke, and bounded `tools/train.py` runs must use GPU1 only. GPU0 is reserved for divergent innovation and must not be used as a fallback. If GPU1 is busy, the allowed action is to wait, queue, or report the blocker.
+
+## Updated Next Action
+
+QC V2 now has a passing remote PRECHECK_ONLY gate. This still does not unlock full training, official evaluation, paper/deploy claims, or route-quality judgment. The next possible execution step is a bounded smoke/diagnostic run on GPU1 only after confirming GPU1 is free or route-owned.

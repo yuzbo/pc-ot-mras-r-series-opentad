@@ -145,3 +145,34 @@ the broader source for cross-route orchestration.
 - Root cause: the first local fix accidentally patched the earlier quality-fusion fixture, not the QC V2 diagnostics fixture. The model code was still behaving correctly.
 - Local fix: restore the quality-fusion fixture and patch the QC V2 diagnostics fixture exactly. Local `torch_1` focused pytest returned `37 passed, 8 skipped`; QC V2 validator PASS; py_compile PASS; `git diff --check` PASS.
 - Next launch decision: commit/push the corrected fixture fix and rerun remote PRECHECK_ONLY R3 in a fresh clone. Fulltrain, official eval, paper/deploy claim, and route-quality judgment remain locked.
+
+## 2026-06-30 14:19:26 +08:00 C3/PQR/CADF GPU Ownership Rule And QC V2 Remote PRECHECK R3 PASS
+
+- Resource ownership rule: all future C3/PQR/CADF mainline training, diagnostic
+  training, short smoke, or bounded `tools/train.py` runs must use GPU1 only.
+  GPU0 is reserved for the divergent-innovation owner and must not be used as a
+  fallback. If GPU1 is busy, wait, queue, or report the blocker instead of
+  occupying GPU0. CPU-only/login-node static PRECHECK remains allowed when it
+  does not launch training or use GPU.
+- Route boundary: this applies to `C3_MAINLINE_OPTIMIZATION` /
+  `C3_ORIGINAL_OPTIMIZATION_ROUTE` work. Do not modify or cancel BH-SDC or any
+  `DIVERGENT_INNOVATION_*` route, and do not release/cancel/replace protected
+  parent hold `1118197 pcot_dbg2g`.
+- Remote PRECHECK R3 at commit
+  `f827c50538c6cda68756c3d37cd11a53c5b3e314` used fresh clone
+  `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQR_QCV2_Precheck_f827c50_20260630_20260630_141515_+0800`.
+- R3 log:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQR_QCV2_Precheck_f827c50_20260630_20260630_141515_+0800/logs/c3_pqr_qcv2_precheck_f827c50_20260630_141515_+0800.log`.
+- R3 evidence: `git clone` PASS; checkout `f827c50538c6cda68756c3d37cd11a53c5b3e314`
+  PASS; `data` and `pretrained` symlinks PASS; py_compile PASS; QC V2 validator
+  printed `PASS_C3_PQR_RANKCAL_V1_CONFIG`; focused Linux pytest returned
+  `45 passed in 27.89s`; `git diff --check` PASS.
+- R3 boundary: no Slurm, `srun`, `tools/train.py`, `tools/test.py`, GPU use,
+  parent-hold action, BH-SDC action, or DIVERGENT route action occurred.
+- Current mAP evidence: none. This is a PRECHECK_ONLY result, not a metric result
+  and not a route-quality judgment.
+- Next launch decision: QC V2 remote PRECHECK gate is passed. The next allowed
+  step is a bounded smoke/diagnostic only on GPU1 after checking GPU1 ownership
+  and current child-run status. Fulltrain, official eval, paper/deploy claim, and
+  route-quality judgment remain locked until the required diagnostic gates unlock
+  them explicitly.

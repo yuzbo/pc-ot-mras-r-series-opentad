@@ -208,3 +208,31 @@ worktree `OpenTAD_C3PQRRankCal_Worktree_20260629`.
 - Leakage boundary: no test-time GT, teacher, raw prediction cache, or official mAP claim; test diagnostics use only model predictions plus selected-coordinate metadata.
 - Local verification: py_compile PASS; validator PASS; focused config/diagnostics pytest `36 passed, 1 skipped`; focused quality-head pytest `1 passed, 6 skipped`; `git diff --check` exit 0 with line-ending warnings only.
 - Still locked: remote launch, Slurm, `tools/train.py`, `tools/test.py`, fulltrain, official mAP/checkpoint/paper/deploy claims, and Pro/subagent gates. No stage/commit/push was performed.
+
+## 2026-06-30 14:19:26 +08:00
+
+C3/PQR/CADF mainline GPU ownership rule and QC V2 remote PRECHECK R3 result
+recorded.
+
+- Resource rule: all future C3/PQR/CADF mainline training, diagnostic training,
+  short smoke, and bounded `tools/train.py` runs must use GPU1 only. GPU0 is
+  reserved for divergent innovation and must not be used as a fallback; if GPU1
+  is busy, wait, queue, or report instead.
+- Protected resources: do not modify/cancel BH-SDC or any
+  `DIVERGENT_INNOVATION_*` route, and do not release/cancel/replace parent hold
+  `1118197 pcot_dbg2g`.
+- Remote PRECHECK R3 commit:
+  `f827c50538c6cda68756c3d37cd11a53c5b3e314`.
+- Fresh remote clone:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQR_QCV2_Precheck_f827c50_20260630_20260630_141515_+0800`.
+- R3 log:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQR_QCV2_Precheck_f827c50_20260630_20260630_141515_+0800/logs/c3_pqr_qcv2_precheck_f827c50_20260630_141515_+0800.log`.
+- Evidence: clone/checkout/resource symlinks PASS; py_compile PASS; QC V2
+  validator PASS; focused Linux pytest `45 passed in 27.89s`; `git diff --check`
+  PASS.
+- Boundary: no Slurm, `srun`, `tools/train.py`, `tools/test.py`, GPU use,
+  parent-hold action, BH-SDC action, or DIVERGENT route action occurred.
+- Current mAP evidence: none. PRECHECK_ONLY is not a final route result.
+- Next decision: QC V2 PRECHECK gate passed; bounded smoke/diagnostic may be
+  considered only on GPU1 after current GPU1 run ownership is checked. Fulltrain
+  and official metric claims remain locked.
