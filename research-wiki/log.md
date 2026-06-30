@@ -64,3 +64,20 @@
 - Remote preflight passed: `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` -> `16 passed`; RBA launch gate -> `gate_pass=true`; shortdiag config parse -> `end_epoch=2`, `val_eval_interval=-1`, `disable_checkpoint=true`, local N16R4 annotation path.
 - Started watcher `/data/run01/sczc063/yuzibo/route_watchers/rba_rbr_after_mdl_1118197_535_20260701_0310_+0800`, PID `2477396`, waiting for MDL child step `1118197.535` to finish before launching `rba_rbr_short_g0` on GPU0 with `CUDA_VISIBLE_DEVICES=0`.
 - RBA-RBR is queued/staged only, not running yet. Protected parent hold `1118197 pcot_dbg2g` was not released/cancelled/replaced. Formal full training and all metric/runtime/deploy/paper claims remain locked.
+
+## 2026-07-01 03:47:32 +08:00 - RBA-RBR deploy-visible raw scout repair
+
+- RBA-RBR short diagnostic child `1118197.537` failed before training because the formal path required preview metadata while the real THUMOS pipeline only had `video_reader` after `DecordInit`.
+- Added a formal deploy-visible `raw_rgb_lowres_scout` path that samples a small number of raw frames from `video_reader` and derives actionness, uncertainty, and transition curves without GT, teacher, cache, detector predictions, or diagnostic fallback.
+- Updated LoadFrames/config/launch gate/tests for `rba_rbr_scout_sample_count=32`; formal path still fails closed if both explicit preview metadata and `video_reader` are absent.
+- Verification passed: `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` -> `17 passed, 2 skipped`; RBA launch gate -> `gate_pass=true`, `full_train_unlocked=false`, no metric/runtime/deploy/paper claim unlocked.
+- Next action: read-only final review, GitHub/remote sync, then relaunch RBA-RBR `SHORT_DIAGNOSTIC_ONLY` on GPU0 if memory is safe. Protected parent hold `1118197` remains untouched.
+
+## 2026-07-01 04:07:58 +08:00 - RBA-RBR short diagnostic relaunched with raw scout
+
+- Read-only final review returned `PASS_SUBAGENT_FINAL_REVIEW_ONLY`; no blocker found for the deploy-visible raw scout repair.
+- Synced repaired files to N16R4 route-owned worktree `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49` and created remote commit `c0574d58015dbe76f99a75644acfee654b45ff74`.
+- Remote verification passed: `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` -> `19 passed`; RBA launch gate -> `gate_pass=true`, `full_train_unlocked=false`.
+- Relaunched RBA-RBR `SHORT_DIAGNOSTIC_ONLY` on protected hold `1118197` GPU0 as child `1118197.538`, logdir `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_shortdiag_rawscout_c0574d5_gpu0_20260701_040627_+0800`.
+- Startup sanity passed: no preview/Traceback/OOM/NaN/non-finite pattern; first observed training line `[000][00020/00199] Loss=2.0044 cls_loss=0.2843 reg_loss=0.2525 boundary_loss=1.4675 mem=9344MB`.
+- Parent hold `1118197 pcot_dbg2g` remains protected and untouched. This is short diagnostic only; formal full training and all metric/runtime/deploy/paper claims remain locked.

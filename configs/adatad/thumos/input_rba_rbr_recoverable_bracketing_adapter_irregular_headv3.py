@@ -31,6 +31,7 @@ _rba_common = dict(
     rba_rbr_feature_stride=2,
     rba_rbr_adapter_bridge_mode="adapter_fixed_length_padded_bridge",
     rba_rbr_allow_diagnostic_preview_fallback=False,
+    rba_rbr_scout_sample_count=32,
 )
 
 _rba_meta_keys = [
