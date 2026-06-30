@@ -15,8 +15,10 @@
 - Local route-owned worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_RBA_RBR_Worktree_20260701`.
 - Local branch: `codex/divergent-rba-rbr-20260701`.
 - Local evidence commit after first validation: `a8d533d`.
+- Local severe-low packet commit before final eval completion: `769415d`.
 - Remote N16R4 route-owned worktree: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49`.
 - Remote evidence commit after first validation: `152ffed`.
+- Remote severe-low packet commit before final eval completion: `0704fd9`.
 - GitHub branch exists, but the local/remote route-owned worktrees are ahead of the tracked GitHub branch. Before asking Pro to inspect GitHub, the branch must be synchronized.
 
 ## Key Files For Review
@@ -76,6 +78,25 @@
   - `mAP@0.70=0.01%`.
 - The child continued into epoch 2; no hard failure was observed at the time of this packet draft.
 
+## Final Bounded Diagnostic Result
+
+- Child step `1118197.539` completed normally.
+- Slurm state: `COMPLETED|0:0`.
+- Elapsed: `01:57:09`.
+- Bad-pattern count for Traceback, RuntimeError, OOM, killed, NaN, non-finite, ValueError, PermissionError, and FileNotFoundError: `0`.
+- Checkpoints/logs observed:
+  - `.../input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag_only/gpu1_id0/checkpoint/epoch_1.pth`
+  - `.../input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag_only/gpu1_id0/checkpoint/epoch_3.pth`
+  - `.../input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag_only/gpu1_id0/log.json`
+- Final bounded diagnostic metric after epoch 3:
+  - `Average-mAP=4.42%`.
+  - `mAP@0.30=10.92%`.
+  - `mAP@0.40=6.35%`.
+  - `mAP@0.50=3.16%`.
+  - `mAP@0.60=1.28%`.
+  - `mAP@0.70=0.37%`.
+- Interpretation: execution is stable and pretraining is loaded, but the detector-health metric remains failure-scale severe-low. This triggers the repository severe-result gate before any RBA-RBR full train or route-level performance interpretation.
+
 ## Current Suspicion List
 
 This is a diagnosis checklist, not a conclusion.
@@ -89,7 +110,7 @@ This is a diagnosis checklist, not a conclusion.
   - RBA-specific `rba_rbr_raw_selected_positions` is used for backbone time-axis metadata.
   - `remap_gt_to_selected_axis=False`.
 - The adapter bridge is fixed-length padded back to `target_len=192`, so the method may currently behave more like a distorted sparse-to-fixed bridge than a clean recoverable detector input.
-- The first validation occurs very early; low score alone cannot prove final route failure, but `0.12%` with normal loss is severe enough to require diagnosis before any full-training claim.
+- The final bounded diagnostic recovered from `0.12%` to `4.42%`, but remains severe-low with normal loss and no hard runtime failure. This suggests a mechanism/geometry/protocol issue is more likely than simple launch failure.
 
 ## Questions For Pro / Severe Diagnosis
 
@@ -106,7 +127,7 @@ Ask GPT-5.5 Pro to inspect the synchronized GitHub branch and answer code-ground
 
 ## Launch Decision Before Pro
 
-- Continue the already-running bounded eval diagnostic to the scheduled next validation unless a hard failure occurs.
 - Do not launch RBA-RBR formal full training.
-- Do not interpret the current metric as a final route result.
-- If the bounded diagnostic stays severe-low, synchronize GitHub and send this packet plus current files/logs to Pro for severe-result diagnosis.
+- Do not interpret the bounded diagnostic metric as a final route result or paper claim.
+- Synchronize GitHub before any Pro request if using repository URLs, because local and N16R4 route-owned worktrees are ahead of the tracked GitHub branch.
+- Send this packet plus current files/logs to Pro/Oracle for severe-result diagnosis before any further RBA-RBR long run or route-level conclusion.

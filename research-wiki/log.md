@@ -112,3 +112,11 @@
 - First validation completed `1645/1645` windows with bad-pattern count `0`, then entered evaluator aggregation successfully.
 - First diagnostic validation metric after epoch 1: `Average-mAP=0.12%`, `mAP@0.30=0.34%`, `mAP@0.40=0.18%`, `mAP@0.50=0.06%`, `mAP@0.60=0.02%`, `mAP@0.70=0.01%`.
 - Interpretation: validation/evaluator chain is alive, but the early detector-health signal is severe-low. This is not a final route result and not a metric claim; formal full training, runtime/FLOPs, deploy, and paper claims remain locked. Because no hard failure occurred, the child was allowed to continue into epoch 2 for the scheduled bounded diagnostic follow-up.
+
+## 2026-07-01 06:33:57 +08:00 - RBA-RBR bounded eval diagnostic completed severe-low
+
+- RBA-RBR child `1118197.539 rba_rbr_eval_g0` completed normally on protected hold `1118197` GPU0: `COMPLETED|0:0`, elapsed `01:57:09`.
+- Logdir: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_evaldiag_564a6f3_gpu0_20260701_043542_+0800`.
+- Bad-pattern count remained `0`; no Traceback/OOM/NaN/non-finite/permission/path failure was found.
+- Final bounded diagnostic metric after epoch 3: `Average-mAP=4.42%`, `mAP@0.30=10.92%`, `mAP@0.40=6.35%`, `mAP@0.50=3.16%`, `mAP@0.60=1.28%`, `mAP@0.70=0.37%`.
+- Decision: `SEVERE_RESULT_GATE_TRIGGERED`. This is stable execution but failure-scale detector performance, so RBA-RBR formal training remains locked pending sparse-forward/coordinate/postprocess diagnosis and Pro/Oracle review. Parent hold was not modified or released.

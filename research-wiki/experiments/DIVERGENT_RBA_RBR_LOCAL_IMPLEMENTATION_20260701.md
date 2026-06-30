@@ -583,3 +583,49 @@ Still locked:
 - Formal full training remains locked.
 - Runtime/FLOPs, deploy, paper, and final mAP claims remain locked.
 - No C3/C3-Pro result or attribution is mixed into this route.
+
+## Remote Eval Diagnostic Completed With Severe-Low Result - 2026-07-01 06:33:57 +08:00
+
+Completion evidence:
+
+- Child step: `1118197.539`, job name `rba_rbr_eval_g0`.
+- Slurm state: `COMPLETED|0:0`.
+- Elapsed: `01:57:09`.
+- GPU binding: protected hold `1118197 pcot_dbg2g` GPU0 only via `CUDA_VISIBLE_DEVICES=0`.
+- Log directory: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_evaldiag_564a6f3_gpu0_20260701_043542_+0800`.
+- Bad-pattern count for Traceback, RuntimeError, OOM, killed, NaN, non-finite, ValueError, PermissionError, and FileNotFoundError: `0`.
+- Checkpoints/logs observed:
+  - `.../input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag_only/gpu1_id0/checkpoint/epoch_1.pth`
+  - `.../input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag_only/gpu1_id0/checkpoint/epoch_3.pth`
+  - `.../input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag_only/gpu1_id0/log.json`
+
+Diagnostic validation metrics:
+
+- Epoch-1 validation:
+  - `Average-mAP: 0.12%`
+  - `mAP@0.30: 0.34%`
+  - `mAP@0.40: 0.18%`
+  - `mAP@0.50: 0.06%`
+  - `mAP@0.60: 0.02%`
+  - `mAP@0.70: 0.01%`
+- Epoch-3/final bounded diagnostic validation:
+  - `Average-mAP: 4.42%`
+  - `mAP@0.30: 10.92%`
+  - `mAP@0.40: 6.35%`
+  - `mAP@0.50: 3.16%`
+  - `mAP@0.60: 1.28%`
+  - `mAP@0.70: 0.37%`
+
+Interpretation:
+
+- The RBA-RBR eval diagnostic is launchable and stable: raw-scout acquisition, adapter bridge, validation dataloader, N16R4 ground-truth path, checkpointing, and evaluator aggregation all ran without hard errors.
+- The result remains failure-scale severe-low versus all relevant TAD references, even though it recovered from the epoch-1 near-zero signal to `4.42%` by epoch 3.
+- This result does not prove the RBA-RBR idea is conceptually dead. It proves the current implementation/configuration is not aligned enough for formal training, most likely requiring a sparse-forward/coordinate/postprocess handoff audit before any further long run.
+- This is diagnostic-only evidence. It is not a final route result, not a paper metric, not a deploy claim, and not a sparse-compute/runtime claim.
+
+Decision:
+
+- `SEVERE_RESULT_GATE_TRIGGERED`.
+- RBA-RBR formal full training remains locked.
+- Do not launch RBA-RBR follow-up long training until a severe-result diagnosis has inspected the current GitHub/code/log evidence and produced a concrete go/no-go or repair plan.
+- Preserve the current evidence packet `research-wiki/experiments/DIVERGENT_RBA_RBR_SEVERE_LOW_DIAGNOSIS_PACKET_20260701.md` and update it with the completed `.539` metrics before any Pro/Oracle discussion.
