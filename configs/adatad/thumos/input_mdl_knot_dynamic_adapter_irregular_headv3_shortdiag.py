@@ -1,7 +1,15 @@
+import os
+
 _base_ = ["./input_mdl_knot_dynamic_adapter_irregular_headv3.py"]
 
 route_label = "DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3"
 route_status = "LOCAL_FINAL_CODE_CANDIDATE_SHORT_DIAGNOSTIC_ONLY_GATE_LOCKED_NO_EVAL_NO_CHECKPOINT_NO_METRIC_CLAIMS"
+
+thumos_root = os.environ.get("THUMOS_ROOT", "/data/home/sczc063/run/yuzibo/thumos14")
+annotation_path = os.path.join(thumos_root, "annotations", "thumos_14_anno.json")
+class_map = os.path.join(thumos_root, "annotations", "category_idx.txt")
+train_data_path = os.path.join(thumos_root, "train")
+test_data_path = os.path.join(thumos_root, "test")
 
 diagnostic_only = True
 full_train_unlocked = False
@@ -57,4 +65,21 @@ total_epochs = 1
 max_epochs = 1
 evaluation = dict(shortdiag_disabled=True)
 checkpoint = dict(shortdiag_disabled=True, save_last=False, max_keep_ckpts=0)
+dataset = dict(
+    train=dict(
+        ann_file=annotation_path,
+        class_map=class_map,
+        data_path=train_data_path,
+    ),
+    val=dict(
+        ann_file=annotation_path,
+        class_map=class_map,
+        data_path=test_data_path,
+    ),
+    test=dict(
+        ann_file=annotation_path,
+        class_map=class_map,
+        data_path=test_data_path,
+    ),
+)
 work_dir = "exps/thumos/adatad/input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag"
