@@ -60,6 +60,12 @@ def _make_cadf_selector(target_len=4, dense_window_size=8, scout_spatial_size=4)
     )
 
 
+def _make_inputs(dense_len=8, scout_spatial_size=4):
+    return torch.arange(1 * 1 * 3 * dense_len * scout_spatial_size * scout_spatial_size, dtype=torch.float32).reshape(
+        1, 1, 3, dense_len, scout_spatial_size, scout_spatial_size
+    )
+
+
 def test_cadf_scout_outputs_action_and_utility_without_detector_heads():
     scout = PCOTMRASCADFDensityFrameScout(
         in_channels=3,
@@ -164,6 +170,39 @@ def test_cadf_inverse_cdf_duplicate_repair_stays_local_instead_of_global_topk():
     assert repair_mask.float().mean().item() > 0.0
 
 
+def test_cadf_max_gap_guard_handles_compact_scores_on_nonzero_valid_indices():
+    selector = _make_cadf_selector(target_len=4, dense_window_size=10)
+    selector.max_gap_guard_count = 2
+    valid_idx = torch.tensor([2, 3, 5, 7, 9], dtype=torch.long)
+    density = torch.zeros(10, dtype=torch.float32)
+    density[valid_idx] = torch.tensor([0.35, 0.05, 0.05, 0.05, 0.50])
+    density = density / density.sum()
+
+    selected, repair_mask = selector._inverse_cdf_select_one(density, valid_idx)
+
+    assert selected.numel() == selector.target_len
+    assert set(selected.tolist()).issubset(set(valid_idx.tolist()))
+    assert repair_mask.float().sum().item() > 0.0
+
+
+def test_cadf_max_gap_guard_reduces_real_gap_for_two_peak_density():
+    selector = _make_cadf_selector(target_len=4, dense_window_size=16)
+    valid_idx = torch.arange(16)
+    density = torch.ones(16, dtype=torch.float32) * 0.001
+    density[0] = 1.0
+    density[15] = 1.0
+    density = density / density.sum()
+
+    selector.max_gap_guard_count = 0
+    without_guard, _ = selector._inverse_cdf_select_one(density, valid_idx)
+    selector.max_gap_guard_count = 2
+    with_guard, _ = selector._inverse_cdf_select_one(density, valid_idx)
+
+    gap_without = int((without_guard[1:] - without_guard[:-1]).max().item())
+    gap_with = int((with_guard[1:] - with_guard[:-1]).max().item())
+    assert gap_with < gap_without
+
+
 def test_cadf_density_is_row_robust_to_logit_scale_and_extreme_finite_values():
     selector = _make_cadf_selector(target_len=4, dense_window_size=8)
     selector.density_weights = dict(action=0.5, uncertainty=0.0, change=0.0, utility=0.5, boundary=0.0)
@@ -217,6 +256,122 @@ def test_cadf_alpha_zero_and_one_produce_finite_valid_density():
     assert learned_density[0, 5:].sum().item() == pytest.approx(0.0)
 
 
+def test_cadf_staged_alpha_schedule_advances_in_train_and_uses_explicit_test_policy():
+    selector = build_selector(
+        dict(
+            type="PCOTMRASIndirectPreBackboneFrameSelector",
+            target_len=4,
+            dense_window_size=8,
+            selection_unit=1,
+            scout_spatial_size=4,
+            strategy="cadf_density_mesh_st",
+            density_alpha=0.7,
+            density_alpha_schedule=dict(train_start_alpha=0.0, train_target_alpha=0.7, warmup_iters=2, test_alpha="target"),
+            density_weights=dict(action=0.0, uncertainty=0.55, change=0.35, utility=0.10, boundary=0.0),
+            scout=dict(type="PCOTMRASCADFDensityFrameScout", in_channels=48, hidden_channels=8, num_layers=1),
+        )
+    )
+    selector.scout = StaticCADFScout(
+        action_logits=[-4, -2, 0, 2, 4, 2, 0, -2],
+        utility_logits=[0, 0, 0, 0, 0, 0, 0, 0],
+    )
+    inputs = _make_inputs()
+    masks = torch.ones(1, 8, dtype=torch.bool)
+    metas = [dict(video_name="video_0", window_size=8, snippet_stride=4)]
+    gt_segments = [torch.tensor([[1.0, 7.0]], dtype=torch.float32)]
+    gt_labels = [torch.tensor([1], dtype=torch.long)]
+
+    first = selector.forward_train(inputs, masks, metas, gt_segments, gt_labels)
+    second = selector.forward_train(inputs, masks, metas, gt_segments, gt_labels)
+    test = selector.forward_test(inputs, masks, metas)
+
+    assert first["metas"][0]["c3_density_mesh_alpha"] == pytest.approx(0.0)
+    assert second["metas"][0]["c3_density_mesh_alpha"] == pytest.approx(0.35)
+    assert test["metas"][0]["c3_density_mesh_alpha"] == pytest.approx(0.7)
+    assert test["metas"][0]["c3_density_mesh_test_alpha_policy"] == "target"
+    assert test["metas"][0]["c3_density_mesh_alpha_schedule_scope"] == "diagnostic_short_smoke_not_resumable"
+    assert test["metas"][0]["c3_density_mesh_alpha_schedule_recoverable"] is False
+
+
+def test_cadf_default_density_weights_prioritize_uncertainty_and_transition_not_action():
+    selector = build_selector(
+        dict(
+            type="PCOTMRASIndirectPreBackboneFrameSelector",
+            target_len=4,
+            dense_window_size=8,
+            selection_unit=1,
+            scout_spatial_size=4,
+            strategy="cadf_density_mesh_st",
+            scout=dict(type="PCOTMRASCADFDensityFrameScout", in_channels=48, hidden_channels=8, num_layers=1),
+        )
+    )
+
+    assert selector.density_weights["action"] <= 0.05
+    assert selector.density_weights["uncertainty"] > selector.density_weights["action"]
+    assert selector.density_weights["change"] > selector.density_weights["action"]
+
+
+def test_cadf_high_entropy_background_does_not_monopolize_selection():
+    selector = _make_cadf_selector(target_len=4, dense_window_size=12)
+    selector.density_alpha = 1.0
+    selector.density_weights = dict(action=0.0, uncertainty=0.65, change=0.25, utility=0.10, boundary=0.0)
+    selector.max_gap_guard_count = 2
+    masks = torch.ones(1, 12, dtype=torch.bool)
+    # Frames 0-5 are uncertain but very low-action background; frames 7-10 form
+    # the weak action/context support that should keep CADF from selecting only noise.
+    scout_outputs = {
+        "action_logits": torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, 1.2, 1.5, 1.2, 0.8, -4.0]]),
+        "utility_logits": torch.zeros(1, 12),
+    }
+
+    density, _ = selector._cadf_density(scout_outputs, masks)
+    selected, _ = selector._inverse_cdf_select_one(density[0], masks[0].nonzero(as_tuple=True)[0])
+
+    background_count = sum(1 for idx in selected.tolist() if idx <= 5)
+    action_context_count = sum(1 for idx in selected.tolist() if 7 <= idx <= 10)
+    assert background_count < selector.target_len
+    assert action_context_count >= 1
+
+
+def test_cadf_transition_density_is_smoothed_and_keeps_action_neighborhood_support():
+    selector = _make_cadf_selector(target_len=5, dense_window_size=12)
+    selector.density_alpha = 1.0
+    selector.density_weights = dict(action=0.0, uncertainty=0.10, change=0.75, utility=0.15, boundary=0.0)
+    masks = torch.ones(1, 12, dtype=torch.bool)
+    scout_outputs = {
+        "action_logits": torch.tensor([[-5.0, -5.0, -4.0, -1.0, 1.0, 2.0, 2.2, 1.0, -1.0, -4.0, -5.0, -5.0]]),
+        "utility_logits": torch.zeros(1, 12),
+    }
+
+    density, _ = selector._cadf_density(scout_outputs, masks)
+    selected, _ = selector._inverse_cdf_select_one(density[0], masks[0].nonzero(as_tuple=True)[0])
+
+    assert torch.isfinite(density).all()
+    assert any(3 <= int(idx) <= 5 for idx in selected.tolist())
+    assert any(6 <= int(idx) <= 8 for idx in selected.tolist())
+    assert density[0, 5].item() > 0.0
+    assert density[0, 6].item() > 0.0
+
+
+def test_cadf_alpha_zero_backend_control_selects_exact_uniform_like_indices_and_contract():
+    selector = _make_cadf_selector(target_len=4, dense_window_size=8)
+    selector.density_alpha = 0.0
+    selector.scout = StaticCADFScout(
+        action_logits=[-4, 4, -4, 4, -4, 4, -4, 4],
+        utility_logits=[9, -9, 9, -9, 9, -9, 9, -9],
+    )
+    inputs = _make_inputs()
+    masks = torch.ones(1, 8, dtype=torch.bool)
+    metas = [dict(video_name="video_0", window_size=8, snippet_stride=4)]
+
+    outputs = selector.forward_test(inputs, masks, metas)
+
+    assert outputs["selected_dense_indices"][0].tolist() == [0, 2, 4, 6]
+    assert outputs["metas"][0]["c3_density_mesh_alpha"] == pytest.approx(0.0)
+    assert outputs["metas"][0]["c3_backend_uses_average_stride"] is True
+    assert outputs["metas"][0]["c3_physical_coords_unused_by_backend"] is True
+
+
 def test_cadf_remap_gt_clamps_to_selected_valid_length_when_tail_is_padding():
     selector = _make_cadf_selector(target_len=6, dense_window_size=8)
     selected = torch.tensor([[0, 1, 2, 2, 2, 2]], dtype=torch.long)
@@ -238,8 +393,45 @@ def test_cadf_remap_metas_marks_nonuniform_average_stride_backend_flags():
     dense_masks = torch.ones(1, 8, dtype=torch.bool)
     metas = [dict(video_name="video_0", window_size=8, snippet_stride=4)]
 
-    remapped = selector._remap_metas(metas, selected, dense_masks, selection_diagnostics=[dict(max_gap=3, mean_gap=2.0, repair_fraction=0.25)])
+    remapped = selector._remap_metas(
+        metas,
+        selected,
+        dense_masks,
+        selection_diagnostics=[
+            dict(
+                max_gap=3,
+                mean_gap=2.0,
+                repair_fraction=0.25,
+                repair_count=1,
+                density_entropy=0.75,
+                density_top_positions=[5, 7, 2],
+            )
+        ],
+    )
 
     assert remapped[0]["c3_density_mesh_nonuniform_selection"] is True
     assert remapped[0]["c3_backend_uses_average_stride"] is True
     assert remapped[0]["c3_physical_coords_unused_by_backend"] is True
+    assert remapped[0]["c3_indirect_selected_mask"] == [True, True, True, True]
+    assert remapped[0]["c3_density_mesh_repair_count"] == 1
+    assert remapped[0]["c3_density_mesh_density_top_positions"] == [5, 7, 2]
+    assert remapped[0]["c3_density_mesh_average_stride_restoration_error"] > 0.0
+
+
+def test_cadf_train_metas_include_gt_remap_ratio_without_test_gt_pollution():
+    selector = _make_cadf_selector(target_len=4, dense_window_size=8)
+    selector.scout = StaticCADFScout(
+        action_logits=[0, 2, 0, -2, 0, 2, 0, -2],
+        utility_logits=[0, 0, 0, 0, 0, 0, 0, 0],
+    )
+    inputs = _make_inputs()
+    masks = torch.ones(1, 8, dtype=torch.bool)
+    metas = [dict(video_name="video_0", window_size=8, snippet_stride=4)]
+    gt_segments = [torch.tensor([[1.0, 7.0], [3.0, 4.0]], dtype=torch.float32)]
+    gt_labels = [torch.tensor([1, 2], dtype=torch.long)]
+
+    train_outputs = selector.forward_train(inputs, masks, metas, gt_segments, gt_labels)
+    test_outputs = selector.forward_test(inputs, masks, metas)
+
+    assert "c3_train_gt_remap_length_ratio_mean" in train_outputs["metas"][0]
+    assert "c3_train_gt_remap_length_ratio_mean" not in test_outputs["metas"][0]

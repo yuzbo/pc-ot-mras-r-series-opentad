@@ -125,11 +125,20 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         strategy="coarse_actionness_uncertainty",
         quotas=None,
         density_alpha=0.65,
+        density_alpha_schedule=None,
         density_temperature=1.0,
         density_weights=None,
         density_entropy_floor=0.45,
         density_entropy_loss_weight=0.0,
         density_repulsion_loss_weight=0.0,
+        density_uniform_floor=0.08,
+        density_body_floor_weight=0.08,
+        density_context_floor_weight=0.04,
+        density_transition_smooth_radius=1,
+        diagnostic_prediction_cap=None,
+        diagnostic_proposal_cap=None,
+        selected_index_aware_postprocess_enabled=False,
+        physical_time_postprocess_enabled=False,
         boundary_loss_weight=0.0,
         boundary_target_radius=1,
         max_gap_guard_count=0,
@@ -161,12 +170,26 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         elif quotas is not None:
             raise ValueError("CADF/DensityMesh uses continuous acquisition density; category quotas are not allowed")
         self.density_alpha = float(density_alpha)
+        self.density_alpha_schedule = self._validate_alpha_schedule(density_alpha_schedule)
+        # Diagnostic/short-smoke only: this counter is intentionally not a
+        # checkpointed buffer, so resumable long training remains validator-locked.
+        self._density_alpha_train_step = 0
+        self._last_density_alpha = min(max(self.density_alpha, 0.0), 1.0)
+        self._last_density_alpha_policy = "static"
         self.density_temperature = float(density_temperature)
-        self.density_weights = density_weights or dict(action=0.35, uncertainty=0.25, change=0.25, utility=0.15, boundary=0.0)
+        self.density_weights = density_weights or dict(action=0.02, uncertainty=0.48, change=0.35, utility=0.15, boundary=0.0)
         self._validate_density_config(self.density_weights, scout)
         self.density_entropy_floor = float(density_entropy_floor)
         self.density_entropy_loss_weight = float(density_entropy_loss_weight)
         self.density_repulsion_loss_weight = float(density_repulsion_loss_weight)
+        self.density_uniform_floor = min(max(float(density_uniform_floor), 0.0), 0.95)
+        self.density_body_floor_weight = min(max(float(density_body_floor_weight), 0.0), 0.95)
+        self.density_context_floor_weight = min(max(float(density_context_floor_weight), 0.0), 0.95)
+        self.density_transition_smooth_radius = max(int(density_transition_smooth_radius), 0)
+        self.diagnostic_prediction_cap = None if diagnostic_prediction_cap is None else int(diagnostic_prediction_cap)
+        self.diagnostic_proposal_cap = None if diagnostic_proposal_cap is None else int(diagnostic_proposal_cap)
+        self.selected_index_aware_postprocess_enabled = bool(selected_index_aware_postprocess_enabled)
+        self.physical_time_postprocess_enabled = bool(physical_time_postprocess_enabled)
         self.boundary_loss_weight = float(boundary_loss_weight)
         self.boundary_target_radius = int(boundary_target_radius)
         self.max_gap_guard_count = int(max_gap_guard_count)
@@ -175,6 +198,66 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         self.actionness_loss_weight = float(actionness_loss_weight)
 
         self.scout = SELECTORS.build(scout)
+
+    def _validate_alpha_schedule(self, schedule):
+        if schedule is None:
+            return None
+        if not isinstance(schedule, dict):
+            raise ValueError("density_alpha_schedule must be a dict when provided")
+
+        allowed = {"train_start_alpha", "train_target_alpha", "warmup_iters", "test_alpha"}
+        unknown = set(schedule) - allowed
+        if unknown:
+            raise ValueError(f"density_alpha_schedule contains unsupported keys: {sorted(unknown)}")
+
+        parsed = dict(schedule)
+        parsed.setdefault("train_start_alpha", 0.0)
+        parsed.setdefault("train_target_alpha", self.density_alpha)
+        parsed.setdefault("warmup_iters", 1)
+        parsed.setdefault("test_alpha", "target")
+        for key in ["train_start_alpha", "train_target_alpha"]:
+            value = float(parsed[key])
+            if not math.isfinite(value):
+                raise ValueError(f"density_alpha_schedule {key} must be finite")
+            parsed[key] = min(max(value, 0.0), 1.0)
+        parsed["warmup_iters"] = max(int(parsed["warmup_iters"]), 1)
+        test_alpha = parsed["test_alpha"]
+        if isinstance(test_alpha, str):
+            if test_alpha not in {"target", "start", "base"}:
+                raise ValueError("density_alpha_schedule test_alpha must be 'target', 'start', 'base', or a numeric alpha")
+        elif isinstance(test_alpha, numbers.Real) and not isinstance(test_alpha, bool):
+            parsed["test_alpha"] = min(max(float(test_alpha), 0.0), 1.0)
+        else:
+            raise ValueError("density_alpha_schedule test_alpha must be 'target', 'start', 'base', or a numeric alpha")
+        return parsed
+
+    def _resolve_density_alpha(self, mode=None):
+        if self.density_alpha_schedule is None:
+            self._last_density_alpha_policy = "static"
+            return min(max(self.density_alpha, 0.0), 1.0)
+
+        schedule = self.density_alpha_schedule
+        start = float(schedule["train_start_alpha"])
+        target = float(schedule["train_target_alpha"])
+        if mode == "test":
+            policy = schedule["test_alpha"]
+            self._last_density_alpha_policy = str(policy)
+            if policy == "target":
+                return target
+            if policy == "start":
+                return start
+            if policy == "base":
+                return min(max(self.density_alpha, 0.0), 1.0)
+            return float(policy)
+
+        warmup_iters = int(schedule["warmup_iters"])
+        progress = min(max(float(self._density_alpha_train_step) / float(warmup_iters), 0.0), 1.0)
+        self._last_density_alpha_policy = f"train_linear_warmup_{warmup_iters}_iters"
+        return start + (target - start) * progress
+
+    def _advance_density_alpha_schedule(self):
+        if self.density_alpha_schedule is not None:
+            self._density_alpha_train_step += 1
 
     def _validate_density_config(self, density_weights, scout):
         allowed_keys = {"action", "uncertainty", "change", "utility", "boundary"}
@@ -211,13 +294,15 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         scout_inputs = self._build_scout_inputs(inputs)
         scout_outputs = self.scout(scout_inputs, dense_masks)
         action_logits = scout_outputs["action_logits"]
-        selection_outputs = self._select_indices(scout_outputs, dense_masks)
+        selection_outputs = self._select_indices(scout_outputs, dense_masks, mode="train")
+        self._advance_density_alpha_schedule()
         selected = selection_outputs["selected"]
         st_logits = selection_outputs.get("st_logits", action_logits)
         selection_diagnostics = selection_outputs.get("diagnostics")
         selected_inputs, selected_masks = self._gather_inputs(inputs, dense_masks, selected, st_logits)
         selected_gt_segments, selected_gt_labels = self._remap_gt(selected, dense_masks, gt_segments, gt_labels)
         selected_metas = self._remap_metas(metas, selected, dense_masks, selection_diagnostics)
+        self._attach_train_gt_diagnostics(selected_metas, gt_segments, selected_gt_segments)
 
         losses = {}
         if self.actionness_loss_weight > 0:
@@ -258,7 +343,7 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         with torch.no_grad():
             scout_outputs = self.scout(scout_inputs, dense_masks)
             action_logits = scout_outputs["action_logits"]
-            selection_outputs = self._select_indices(scout_outputs, dense_masks)
+            selection_outputs = self._select_indices(scout_outputs, dense_masks, mode="test")
             selected = selection_outputs["selected"]
             st_logits = selection_outputs.get("st_logits", action_logits)
             selection_diagnostics = selection_outputs.get("diagnostics")
@@ -303,9 +388,9 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         )
         return lowres.reshape(bsz, dense_len, -1)
 
-    def _select_indices(self, scout_outputs, dense_masks):
+    def _select_indices(self, scout_outputs, dense_masks, mode=None):
         if self.strategy == "cadf_density_mesh_st":
-            return self._select_cadf_density_mesh(scout_outputs, dense_masks)
+            return self._select_cadf_density_mesh(scout_outputs, dense_masks, mode=mode)
 
         action_logits = scout_outputs["action_logits"]
         scores = self._selection_scores(action_logits, dense_masks)
@@ -365,8 +450,8 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         unique = sorted(unique[: self.target_len])
         return valid_idx.new_tensor(unique)
 
-    def _select_cadf_density_mesh(self, scout_outputs, dense_masks):
-        density, acquisition_logits = self._cadf_density(scout_outputs, dense_masks)
+    def _select_cadf_density_mesh(self, scout_outputs, dense_masks, mode=None):
+        density, acquisition_logits = self._cadf_density(scout_outputs, dense_masks, mode=mode)
         selected_rows = []
         repair_rows = []
         for row_idx in range(density.shape[0]):
@@ -386,18 +471,21 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
             "diagnostics": diagnostics,
         }
 
-    def _cadf_density(self, scout_outputs, dense_masks):
+    def _cadf_density(self, scout_outputs, dense_masks, mode=None):
         action_logits = scout_outputs["action_logits"]
         p_action = action_logits.sigmoid()
         entropy = -(p_action * (p_action + 1e-6).log() + (1.0 - p_action) * (1.0 - p_action + 1e-6).log())
         change = torch.zeros_like(p_action)
         change[:, 1:] = (p_action[:, 1:] - p_action[:, :-1]).abs()
+        change = self._smooth_rows(change, dense_masks, self.density_transition_smooth_radius)
         utility_logits = scout_outputs.get("utility_logits", torch.zeros_like(action_logits))
         boundary_logits = scout_outputs.get("boundary_logits", torch.zeros_like(action_logits))
 
         action_score = self._robust_normalize_rows(action_logits, dense_masks)
-        entropy_score = self._robust_normalize_rows(entropy, dense_masks)
-        change_score = self._robust_normalize_rows(change, dense_masks)
+        action_floor_prob = action_score.sigmoid() * dense_masks.to(dtype=action_score.dtype)
+        action_context = self._smooth_rows(action_floor_prob, dense_masks, radius=2)
+        entropy_score = self._robust_normalize_rows(entropy * action_context.clamp_min(0.05), dense_masks)
+        change_score = self._robust_normalize_rows(change * action_context.clamp_min(0.05), dense_masks)
         utility_score = self._robust_normalize_rows(utility_logits, dense_masks)
         boundary_score = self._robust_normalize_rows(boundary_logits, dense_masks)
 
@@ -415,11 +503,49 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
         learned_density = learned_density / learned_density.sum(dim=1, keepdim=True).clamp_min(1e-6)
         uniform_density = dense_masks.to(dtype=acquisition_logits.dtype)
         uniform_density = uniform_density / uniform_density.sum(dim=1, keepdim=True).clamp_min(1.0)
-        alpha = min(max(self.density_alpha, 0.0), 1.0)
+        floor_mix = self._density_safety_floor(uniform_density, action_floor_prob, action_context, dense_masks)
+        learned_density = self._mix_density_with_safety_floor(learned_density, floor_mix)
+        alpha = self._resolve_density_alpha(mode=mode)
+        self._last_density_alpha = alpha
         density = (1.0 - alpha) * uniform_density + alpha * learned_density
         density = density * dense_masks.to(dtype=density.dtype)
         density = density / density.sum(dim=1, keepdim=True).clamp_min(1e-6)
         return density, acquisition_logits
+
+    def _smooth_rows(self, values, dense_masks, radius):
+        if radius <= 0:
+            return values * dense_masks.to(dtype=values.dtype)
+        kernel = 2 * radius + 1
+        row_values = values.masked_fill(~dense_masks, 0.0).unsqueeze(1)
+        row_masks = dense_masks.to(dtype=values.dtype).unsqueeze(1)
+        numerator = F.avg_pool1d(row_values, kernel_size=kernel, stride=1, padding=radius) * kernel
+        denominator = F.avg_pool1d(row_masks, kernel_size=kernel, stride=1, padding=radius) * kernel
+        return (numerator / denominator.clamp_min(1.0)).squeeze(1).masked_fill(~dense_masks, 0.0)
+
+    def _normalize_positive_rows(self, values, dense_masks):
+        positive = values.clamp_min(0.0) * dense_masks.to(dtype=values.dtype)
+        return positive / positive.sum(dim=1, keepdim=True).clamp_min(1e-6)
+
+    def _density_safety_floor(self, uniform_density, p_action, action_context, dense_masks):
+        body_floor = self._normalize_positive_rows(p_action, dense_masks)
+        context_floor = self._normalize_positive_rows(action_context, dense_masks)
+        total = self.density_uniform_floor + self.density_body_floor_weight + self.density_context_floor_weight
+        if total <= 0.0:
+            return uniform_density
+        mixed = (
+            self.density_uniform_floor * uniform_density
+            + self.density_body_floor_weight * body_floor
+            + self.density_context_floor_weight * context_floor
+        )
+        return mixed / mixed.sum(dim=1, keepdim=True).clamp_min(1e-6)
+
+    def _mix_density_with_safety_floor(self, learned_density, floor_density):
+        floor_weight = self.density_uniform_floor + self.density_body_floor_weight + self.density_context_floor_weight
+        floor_weight = min(max(float(floor_weight), 0.0), 0.95)
+        if floor_weight <= 0.0:
+            return learned_density
+        mixed = (1.0 - floor_weight) * learned_density + floor_weight * floor_density
+        return mixed / mixed.sum(dim=1, keepdim=True).clamp_min(1e-6)
 
     def _robust_normalize_rows(self, values, dense_masks, clamp_value=5.0):
         normalized = torch.zeros_like(values)
@@ -456,16 +582,7 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
             guarded = selected.tolist()
             guarded.extend(self._max_gap_guard(valid_idx, guarded, self.max_gap_guard_count).tolist())
             if len(guarded) > target_unique:
-                score = density[valid_idx]
-                keep = self._topk_unique(score, valid_idx, target_unique, []).tolist()
-                guarded_set = set(int(x) for x in guarded)
-                guarded = [int(x) for x in sorted(guarded_set & set(keep))]
-                if len(guarded) < target_unique:
-                    for idx in selected.tolist():
-                        if int(idx) not in guarded:
-                            guarded.append(int(idx))
-                        if len(guarded) == target_unique:
-                            break
+                guarded = self._prune_guarded_selection(guarded, density, target_unique)
             guarded = sorted(set(int(x) for x in guarded))[:target_unique]
             selected = valid_idx.new_tensor(guarded)
             repair_mask = torch.ones_like(selected, dtype=torch.float32)
@@ -475,6 +592,28 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
             selected = torch.cat([selected, pad], dim=0)
             repair_mask = torch.cat([repair_mask, torch.ones_like(pad, dtype=torch.float32)], dim=0)
         return selected[: self.target_len], repair_mask[: self.target_len]
+
+    def _prune_guarded_selection(self, picks, density, target_unique):
+        pruned = sorted(set(int(x) for x in picks))
+        while len(pruned) > target_unique:
+            best_remove = None
+            best_key = None
+            for candidate in pruned:
+                trial = [idx for idx in pruned if idx != candidate]
+                if len(trial) < 2:
+                    max_gap = 0
+                    mean_gap = 0.0
+                else:
+                    gaps = [right - left for left, right in zip(trial[:-1], trial[1:])]
+                    max_gap = max(gaps)
+                    mean_gap = sum(gaps) / float(len(gaps))
+                score = float(density[candidate].detach().item())
+                key = (max_gap, mean_gap, score)
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best_remove = candidate
+            pruned.remove(best_remove)
+        return pruned
 
     def _dedupe_inverse_cdf_selection(self, selected, valid_idx, valid_density, target_unique):
         used = set()
@@ -539,13 +678,22 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
                 "mean_gap": mean_gap,
                 "repair_fraction": float(repair_mask[row_idx].float().mean().item()) if repair_mask.numel() > 0 else 0.0,
                 "repair_count": int(repair_mask[row_idx].float().sum().item()) if repair_mask.numel() > 0 else 0,
+                "alpha": float(self._last_density_alpha),
+                "temperature": float(self.density_temperature),
             }
             if density is not None:
                 valid_density = density[row_idx][row_valid]
+                valid_positions = row_valid.nonzero(as_tuple=True)[0]
                 entropy = -(valid_density * (valid_density + 1e-6).log()).sum()
                 denom = torch.log(torch.tensor(float(max(valid_density.numel(), 2)), device=density.device, dtype=density.dtype))
                 row["density_entropy"] = float((entropy / denom.clamp_min(1e-6)).item())
                 row["selected_density_sum"] = float(density[row_idx].gather(0, row_selected).sum().item())
+                top_count = min(8, int(valid_density.numel()))
+                if top_count > 0:
+                    top_pos = valid_positions[valid_density.argsort(descending=True)[:top_count]]
+                    row["density_top_positions"] = [int(x) for x in top_pos.detach().cpu().tolist()]
+                else:
+                    row["density_top_positions"] = []
             rows.append(row)
         return rows
 
@@ -703,6 +851,31 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
             remapped_labels.append(labels[keep])
         return remapped_segments, remapped_labels
 
+    def _attach_train_gt_diagnostics(self, metas, gt_segments, selected_gt_segments):
+        for meta, before_segments, after_segments in zip(metas, gt_segments, selected_gt_segments):
+            if before_segments.numel() == 0:
+                meta["c3_train_gt_remap_length_ratio_mean"] = None
+                meta["c3_train_gt_remap_kept_count"] = 0
+                continue
+            before_lengths = (before_segments[:, 1] - before_segments[:, 0]).clamp_min(1e-6)
+            after_lengths = after_segments[:, 1] - after_segments[:, 0] if after_segments.numel() > 0 else before_lengths.new_zeros((0,))
+            ratio = float(after_lengths.sum().item() / before_lengths.sum().item())
+            meta["c3_train_gt_remap_length_ratio_mean"] = ratio
+            meta["c3_train_gt_remap_kept_count"] = int(after_segments.shape[0]) if after_segments.ndim > 1 else 0
+
+    def _average_stride_restoration_error(self, valid_selected, valid_len):
+        if valid_selected.numel() <= 1:
+            return 0.0
+        average_axis = torch.linspace(
+            0,
+            max(valid_len - 1, 0),
+            steps=int(valid_selected.numel()),
+            device=valid_selected.device,
+            dtype=torch.float32,
+        )
+        real_axis = valid_selected.to(dtype=torch.float32)
+        return float((real_axis - average_axis).abs().mean().item())
+
     def _remap_metas(self, metas, selected, dense_masks, selection_diagnostics=None):
         new_metas = []
         for batch_idx, meta in enumerate(metas):
@@ -711,6 +884,7 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
             valid_len = int(dense_masks[batch_idx].sum().item())
             selected_mask = self._selected_masks(dense_masks[batch_idx : batch_idx + 1], selected[batch_idx : batch_idx + 1])[0]
             selected_valid_len = int(selected_mask.sum().item())
+            valid_selected = selected[batch_idx][selected_mask]
             old_stride = float(new_meta.get("snippet_stride", 1.0))
             if selected_valid_len > 0:
                 new_meta["snippet_stride"] = old_stride * max(valid_len, 1) / float(selected_valid_len)
@@ -719,23 +893,42 @@ class PCOTMRASIndirectPreBackboneFrameSelector(nn.Module):
             new_meta["c3_indirect_irregular_axis"] = False
             new_meta["c3_indirect_original_dense_window_size"] = self.dense_window_size
             new_meta["c3_indirect_selected_dense_indices"] = selected_list
+            new_meta["c3_indirect_selected_mask"] = [bool(x) for x in selected_mask.detach().cpu().tolist()]
             new_meta["c3_indirect_valid_len"] = valid_len
             new_meta["c3_indirect_selected_valid_len"] = selected_valid_len
             new_meta["c3_indirect_strategy"] = self.strategy
             if self.strategy == "cadf_density_mesh_st":
-                new_meta["c3_density_mesh_alpha"] = min(max(self.density_alpha, 0.0), 1.0)
+                new_meta["c3_density_mesh_alpha"] = float(self._last_density_alpha)
+                new_meta["c3_density_mesh_alpha_schedule_enabled"] = self.density_alpha_schedule is not None
+                new_meta["c3_density_mesh_alpha_schedule_scope"] = (
+                    "diagnostic_short_smoke_not_resumable" if self.density_alpha_schedule is not None else "static"
+                )
+                new_meta["c3_density_mesh_alpha_schedule_recoverable"] = False if self.density_alpha_schedule is not None else None
+                new_meta["c3_density_mesh_test_alpha_policy"] = self._last_density_alpha_policy
                 new_meta["c3_density_mesh_temperature"] = self.density_temperature
+                new_meta["c3_density_mesh_weights"] = copy.deepcopy(self.density_weights)
+                new_meta["c3_density_mesh_action_support_hook"] = "low_res_scout_action_floor_only"
+                new_meta["c3_density_mesh_transition_support_hook"] = "low_res_scout_abs_delta_action"
+                new_meta["c3_density_mesh_boundary_support_hook"] = "disabled" if self.density_weights.get("boundary", 0.0) <= 0 else "low_res_scout_boundary_head"
                 new_meta["c3_density_mesh_nonuniform_selection"] = True
                 new_meta["c3_backend_uses_average_stride"] = True
                 new_meta["c3_physical_coords_unused_by_backend"] = True
+                new_meta["c3_selected_index_aware_postprocess_enabled"] = self.selected_index_aware_postprocess_enabled
+                new_meta["c3_physical_time_postprocess_enabled"] = self.physical_time_postprocess_enabled
+                new_meta["c3_diagnostic_prediction_cap"] = self.diagnostic_prediction_cap
+                new_meta["c3_diagnostic_proposal_cap"] = self.diagnostic_proposal_cap
+                new_meta["c3_density_mesh_average_stride_restoration_error"] = self._average_stride_restoration_error(valid_selected, valid_len)
                 if selection_diagnostics is not None:
                     diag = selection_diagnostics[batch_idx]
                     new_meta["c3_density_mesh_max_gap"] = diag["max_gap"]
                     new_meta["c3_density_mesh_mean_gap"] = diag["mean_gap"]
                     new_meta["c3_density_mesh_repair_fraction"] = diag["repair_fraction"]
+                    new_meta["c3_density_mesh_repair_count"] = diag["repair_count"]
                     if "density_entropy" in diag:
                         new_meta["c3_density_mesh_entropy"] = diag["density_entropy"]
-                        new_meta["c3_density_mesh_selected_density_sum"] = diag["selected_density_sum"]
+                        if "selected_density_sum" in diag:
+                            new_meta["c3_density_mesh_selected_density_sum"] = diag["selected_density_sum"]
+                        new_meta["c3_density_mesh_density_top_positions"] = diag.get("density_top_positions", [])
             returnable = new_meta
             new_metas.append(returnable)
         return new_metas

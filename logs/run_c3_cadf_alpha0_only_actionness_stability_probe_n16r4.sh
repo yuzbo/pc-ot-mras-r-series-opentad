@@ -1,0 +1,5 @@
+#!/bin/bash
+export CADF_PROBE_NAME=alpha0_only_actionness_stability_probe
+export CADF_PROBE_CONFIG=configs/adatad/thumos/c3_cadf_densitymesh_original_adatad_32px_alpha0_only_actionness_stability_probe.py
+export CADF_MASTER_PORT="${CADF_MASTER_PORT:-29852}"
+exec /data/home/sczc063/run/yuzibo/OpenTAD_C3CADFStageFix_Precheck_20260629/logs/run_c3_cadf_alpha0_single_factor_probe_n16r4.sh
