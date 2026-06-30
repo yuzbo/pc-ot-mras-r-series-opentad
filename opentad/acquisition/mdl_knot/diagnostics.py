@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import re
 from pathlib import Path
-from statistics import mean
+from statistics import mean, pstdev
 from typing import Iterable, Mapping, Sequence
 
 from .types import MDL_KNOT_ROUTE_LABEL, KnotLedger
@@ -90,12 +90,13 @@ def _percentile(values: Sequence[float], pct: float) -> float:
 def _stats(values: Iterable[float]) -> dict:
     vals = [float(v) for v in values]
     if not vals:
-        return {"count": 0, "min": 0.0, "max": 0.0, "mean": 0.0, "p50": 0.0, "p95": 0.0}
+        return {"count": 0, "min": 0.0, "max": 0.0, "mean": 0.0, "std": 0.0, "p50": 0.0, "p95": 0.0}
     return {
         "count": len(vals),
         "min": min(vals),
         "max": max(vals),
         "mean": float(mean(vals)),
+        "std": float(pstdev(vals)) if len(vals) > 1 else 0.0,
         "p50": _percentile(vals, 50.0),
         "p95": _percentile(vals, 95.0),
     }
@@ -248,6 +249,7 @@ def build_pipeline_diagnostic(
     mask_values = _mask_values(masks)
     valid_k = int(ledger_data["valid_k"])
     selected = [int(v) for v in ledger_data["selected_positions"]]
+    selected_gaps = [float(right - left) for left, right in zip(selected, selected[1:])]
     meta_selected = [int(v) for v in meta.get("selected_positions", [])]
     visible_count = sum(mask_values[:valid_k]) if mask_values else 0
     source = str(scout_source)
@@ -281,6 +283,8 @@ def build_pipeline_diagnostic(
         "dense_T": int(ledger_data["dense_T"]),
         "max_gap": int(ledger_data["max_gap"]),
         "gap_p95": float(ledger_data["gap_p95"]),
+        "selected_gaps": selected_gaps,
+        "selected_gap_stats": _stats(selected_gaps),
         "mask_metadata_alignment": mask_metadata_alignment,
         "short_boundary_risk": guard,
         "fixed_pad_bridge_compute_boundary": {
@@ -316,13 +320,25 @@ def summarize_pipeline_diagnostics(diagnostics: Sequence[Mapping[str, object]]) 
         int(dict(item.get("short_boundary_risk", {})).get("transition_band_uncovered_count", 0)) for item in items
     )
     count = len(items)
+    selected_gaps = []
+    for item in items:
+        if item.get("selected_gaps"):
+            selected_gaps.extend(float(value) for value in item.get("selected_gaps", []))
+            continue
+        gap_stats = dict(item.get("selected_gap_stats", {}))
+        if gap_stats.get("count", 0):
+            selected_gaps.extend([float(gap_stats.get("mean", 0.0))] * int(gap_stats.get("count", 0)))
     return {
         "route_label": MDL_KNOT_ROUTE_LABEL,
         "validation_scope": "real_video_pipeline_diagnostics_required_for_formal_train",
+        "synthetic": False,
         "window_count": count,
         "raw_frame_scout_windows": raw,
+        "raw_frame_scout_count": raw,
         "metadata_fallback_windows": metadata,
+        "metadata_fallback_count": metadata,
         "synthetic_fallback_windows": synthetic,
+        "synthetic_fallback_count": synthetic,
         "raw_frame_scout_ratio": raw / count if count else 0.0,
         "metadata_fallback_ratio": metadata / count if count else 0.0,
         "synthetic_fallback_ratio": synthetic / count if count else 0.0,
@@ -334,12 +350,14 @@ def summarize_pipeline_diagnostics(diagnostics: Sequence[Mapping[str, object]]) 
         },
         "max_gap_distribution": _stats([float(item.get("max_gap", 0)) for item in items]),
         "gap_p95_distribution": _stats([float(item.get("gap_p95", 0.0)) for item in items]),
+        "selected_gap_stats": _stats(selected_gaps),
         "mask_metadata_alignment": {
             "checked_windows": count,
             "failure_count": len(align_failures),
             "failed_video_ids": align_failures[:20],
             "all_aligned": count > 0 and not align_failures,
         },
+        "mask_meta_alignment_status": "aligned" if count > 0 and not align_failures else "failed",
         "short_boundary_risk_monitoring": {
             "short_island_total": short_total,
             "short_island_uncovered_count": short_uncovered,
@@ -352,10 +370,26 @@ def summarize_pipeline_diagnostics(diagnostics: Sequence[Mapping[str, object]]) 
                 for item in items
             ),
         },
+        "short_transition_guard_coverage": {
+            "placeholder_or_measured": "measured",
+            "short_island_uncovered_count": short_uncovered,
+            "transition_band_uncovered_count": transition_uncovered,
+            "short_guard_coverage_ratio": 1.0 - short_uncovered / short_total if short_total else 1.0,
+            "transition_guard_coverage_ratio": 1.0 - transition_uncovered / transition_total if transition_total else 1.0,
+        },
         "fixed_pad_bridge_compute_boundary": {
             "bridge": "fixed_pad",
             "sparse_compute_claim": False,
             "statement": "dynamic valid_k is padded to fixed Adapter length; report acquisition evidence only",
+        },
+        "fixed_pad_sparse_compute_claim_locked": True,
+        "route_drift_claim_lock": {
+            "locked": True,
+            "tokens": [],
+            "claim_markers": [],
+            "no_mAP": True,
+            "no_tools_test": True,
+            "no_train": True,
         },
     }
 
@@ -377,6 +411,30 @@ def validate_formal_readiness_evidence(
     for key in ("remote_sync", "slurm", "training", "evaluation", "tools_test_py"):
         if locked_actions.get(key) is not True:
             raise FormalReadinessLocked(f"formal readiness summary does not keep {key} locked")
+    for key in ("synthetic", "no_mAP", "no_tools_test", "no_train"):
+        if key in summary and summary.get(key) is not (False if key == "synthetic" else True):
+            raise FormalReadinessLocked(f"formal readiness summary has invalid {key} marker")
+    source_mode = summary.get("source_mode")
+    if source_mode != "real_video_pipeline":
+        raise FormalReadinessLocked(f"real-video formal readiness requires source_mode=real_video_pipeline, got {source_mode}")
+    if summary.get("dry_run_fixture") is not False:
+        raise FormalReadinessLocked("dry-run fixture summary cannot satisfy real-video formal readiness")
+    if int(summary.get("fixture_window_count", 0)) != 0:
+        raise FormalReadinessLocked("fixture windows cannot satisfy real-video formal readiness")
+    if int(summary.get("real_video_reader_window_count", 0)) <= 0:
+        raise FormalReadinessLocked("real-video formal readiness requires real video reader windows")
+    reader_backend = summary.get("reader_backend")
+    if not isinstance(reader_backend, Mapping):
+        raise FormalReadinessLocked("missing reader/backend provenance in real-video summary")
+    if reader_backend.get("mode") == "fixture":
+        raise FormalReadinessLocked("fixture reader backend cannot satisfy real-video formal readiness")
+    if reader_backend.get("real_video_reader_required_for_formal_readiness") is not True:
+        raise FormalReadinessLocked("reader backend provenance does not require real video reader evidence")
+    if not str(summary.get("annotation_path", "")).strip():
+        raise FormalReadinessLocked("missing annotation_path in real-video summary")
+    video_roots = summary.get("video_root")
+    if not isinstance(video_roots, Sequence) or isinstance(video_roots, (str, bytes)) or not video_roots:
+        raise FormalReadinessLocked("missing video_root in real-video summary")
     no_claims = summary.get("no_claims")
     if not isinstance(no_claims, Mapping):
         raise FormalReadinessLocked("missing no_claims in formal readiness summary")
@@ -387,19 +445,42 @@ def validate_formal_readiness_evidence(
     diag = summary.get("real_video_pipeline_diagnostics")
     if not isinstance(diag, Mapping):
         raise FormalReadinessLocked("missing real_video_pipeline_diagnostics")
+    if diag.get("synthetic", False) is not False:
+        raise FormalReadinessLocked("real diagnostics must be synthetic=false")
     if int(diag.get("window_count", 0)) <= 0:
         raise FormalReadinessLocked("real diagnostics must include at least one real pipeline window")
-    if int(diag.get("raw_frame_scout_windows", 0)) <= 0:
+    raw_count = int(diag.get("raw_frame_scout_count", diag.get("raw_frame_scout_windows", 0)))
+    if raw_count <= 0:
         raise FormalReadinessLocked("real diagnostics have no raw-frame scout usage")
-    if diag.get("synthetic_fallback_rejected") is not True or int(diag.get("synthetic_fallback_windows", 0)) != 0:
+    synthetic_count = int(diag.get("synthetic_fallback_count", diag.get("synthetic_fallback_windows", 0)))
+    if diag.get("synthetic_fallback_rejected") is not True or synthetic_count != 0:
         raise FormalReadinessLocked("formal diagnostics must reject synthetic fallback")
     valid_k = dict(diag.get("valid_k_distribution", {}))
     if valid_k.get("nonconstant") is not True or int(valid_k.get("unique_count", 0)) <= 1:
         raise FormalReadinessLocked("valid_k distribution is not dynamic in real diagnostics")
     if dict(diag.get("mask_metadata_alignment", {})).get("all_aligned") is not True:
         raise FormalReadinessLocked("mask/metadata alignment diagnostics did not pass")
+    if diag.get("mask_meta_alignment_status", "aligned") != "aligned":
+        raise FormalReadinessLocked("mask/meta alignment status is not aligned")
     if "max_gap_distribution" not in diag or "gap_p95_distribution" not in diag:
         raise FormalReadinessLocked("missing max_gap or gap_p95 diagnostic distributions")
+    if "selected_gap_stats" in diag:
+        selected_gap_stats = dict(diag.get("selected_gap_stats", {}))
+        if int(selected_gap_stats.get("count", 0)) <= 0:
+            raise FormalReadinessLocked("missing selected gap diagnostics")
+    drift_lock = diag.get("route_drift_claim_lock")
+    if isinstance(drift_lock, Mapping):
+        if drift_lock.get("locked") is not True:
+            raise FormalReadinessLocked("route drift/claim lock is not locked")
+        drift_tokens = [str(token) for token in drift_lock.get("tokens", [])]
+        if drift_tokens:
+            raise FormalReadinessLocked(f"route drift tokens in real diagnostics: {drift_tokens}")
+        claim_markers = [str(marker) for marker in drift_lock.get("claim_markers", [])]
+        if claim_markers:
+            raise FormalReadinessLocked(f"claim markers in real diagnostics: {claim_markers}")
+        for key in ("no_mAP", "no_tools_test", "no_train"):
+            if drift_lock.get(key) is not True:
+                raise FormalReadinessLocked(f"route drift/claim lock missing {key}")
     shortdiag = summary.get("shortdiag_evidence")
     if not isinstance(shortdiag, Mapping) or shortdiag.get("validated") is not True:
         raise FormalReadinessLocked("missing validated shortdiag execution evidence")
@@ -430,10 +511,25 @@ def validate_formal_readiness_evidence(
     risk = dict(diag.get("short_boundary_risk_monitoring", {}))
     if risk.get("vanilla_mdl_smoothing_risk_measurable") is not True:
         raise FormalReadinessLocked("short-action/boundary smoothing risk is not measurable")
-    if int(risk.get("short_island_uncovered_count", 0)) != 0:
-        raise FormalReadinessLocked("short-island guard has uncovered risky islands")
-    if int(risk.get("transition_band_uncovered_count", 0)) != 0:
-        raise FormalReadinessLocked("transition guard has uncovered transition bands")
+    guard_coverage = diag.get("short_transition_guard_coverage")
+    if isinstance(guard_coverage, Mapping):
+        coverage_scope = guard_coverage.get("placeholder_or_measured")
+        if coverage_scope not in ("placeholder", "measured"):
+            raise FormalReadinessLocked("short/transition guard coverage scope is missing")
+        for key in ("short_island_uncovered_count", "transition_band_uncovered_count"):
+            if key not in guard_coverage:
+                raise FormalReadinessLocked(f"short/transition guard coverage missing {key}")
+        if int(guard_coverage.get("short_island_uncovered_count", 0)) != 0:
+            raise FormalReadinessLocked("short-island guard has uncovered risky islands")
+        if int(guard_coverage.get("transition_band_uncovered_count", 0)) != 0:
+            raise FormalReadinessLocked("transition guard has uncovered transition bands")
+    else:
+        if int(risk.get("short_island_uncovered_count", 0)) != 0:
+            raise FormalReadinessLocked("short-island guard has uncovered risky islands")
+        if int(risk.get("transition_band_uncovered_count", 0)) != 0:
+            raise FormalReadinessLocked("transition guard has uncovered transition bands")
     boundary = dict(diag.get("fixed_pad_bridge_compute_boundary", {}))
     if boundary.get("sparse_compute_claim") is not False:
         raise FormalReadinessLocked("fixed_pad bridge must not make sparse-compute claims")
+    if diag.get("fixed_pad_sparse_compute_claim_locked", True) is not True:
+        raise FormalReadinessLocked("fixed_pad sparse-compute claim lock is open")

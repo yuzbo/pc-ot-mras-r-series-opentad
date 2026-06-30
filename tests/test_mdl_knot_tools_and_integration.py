@@ -499,6 +499,18 @@ def _formal_readiness_summary(train_log: str = "logs/mdl_knot_shortdiag_one_epoc
     return {
         "route_label": ROUTE_LABEL,
         "validated": True,
+        "source_mode": "real_video_pipeline",
+        "dry_run_fixture": False,
+        "annotation_path": "annotations/thumos_14_anno.json",
+        "video_root": ["thumos14/test"],
+        "reader_backend": {
+            "mode": "annotation_video_root",
+            "decord_available": True,
+            "real_video_reader_required_for_formal_readiness": True,
+        },
+        "real_video_reader_window_count": 2,
+        "real_video_raw_scout_count": 2,
+        "fixture_window_count": 0,
         "formal_train_unlocked": False,
         "full_train_unlocked": False,
         "locked_actions": {
@@ -606,6 +618,24 @@ def test_formal_readiness_evidence_rejects_uncovered_short_or_transition_guards(
 
     bad = _formal_readiness_summary()
     bad["real_video_pipeline_diagnostics"]["short_boundary_risk_monitoring"]["transition_band_uncovered_count"] = 1
+    with pytest.raises(FormalReadinessLocked, match="transition guard"):
+        validate_formal_readiness_evidence(bad, evidence_roots=[tmp_path])
+
+    bad = _formal_readiness_summary()
+    bad["real_video_pipeline_diagnostics"]["short_transition_guard_coverage"] = {
+        "placeholder_or_measured": "measured",
+        "short_island_uncovered_count": 1,
+        "transition_band_uncovered_count": 0,
+    }
+    with pytest.raises(FormalReadinessLocked, match="short-island guard"):
+        validate_formal_readiness_evidence(bad, evidence_roots=[tmp_path])
+
+    bad = _formal_readiness_summary()
+    bad["real_video_pipeline_diagnostics"]["short_transition_guard_coverage"] = {
+        "placeholder_or_measured": "measured",
+        "short_island_uncovered_count": 0,
+        "transition_band_uncovered_count": 1,
+    }
     with pytest.raises(FormalReadinessLocked, match="transition guard"):
         validate_formal_readiness_evidence(bad, evidence_roots=[tmp_path])
 
@@ -740,4 +770,4 @@ def test_formal_readiness_gate_rejects_missing_or_synthetic_only_diagnostics(tmp
     )
     assert proc.returncode != 0
     assert "formal training remains locked" in proc.stdout
-    assert "real_video_pipeline_diagnostics" in proc.stdout
+    assert "source_mode" in proc.stdout or "real_video_pipeline_diagnostics" in proc.stdout

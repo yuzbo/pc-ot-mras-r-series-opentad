@@ -277,6 +277,8 @@ def main() -> int:
     evidence["no_sparse_compute_claim"] = True
     evidence["log_evidence"] = log_evidence
     evidence["execution_evidence_required_for_formal_readiness"] = log_evidence is None
+    evidence["real_video_diagnostic_summary_required_for_formal_readiness"] = True
+    evidence["formal_readiness_summary_unlocks_training"] = False
     evidence["evidence_scope"] = "one_epoch_train_log" if log_evidence is not None else "static_config_only"
     if log_evidence is None:
         print("SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED")
