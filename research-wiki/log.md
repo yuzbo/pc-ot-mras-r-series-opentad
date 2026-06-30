@@ -1,12 +1,14 @@
 # Research Wiki Log - Compact Index
 
-Last updated: 2026-06-30T13:19:58+08:00
+Last updated: 2026-06-30T18:00:30+08:00
 
 The pre-dedup full chronological log was archived at `archives/record_dedup_20260604/log_pre_dedup_20260604.md`.
 
 This file is now a concise chronological index only. Detailed evidence belongs in one route-specific report under `research-wiki/experiments/`; raw artifacts belong in `logs/` or remote run directories; current state belongs in the relevant tracker. Do not paste long stdout, JSON, Pro/Gemini/external-review answers, or duplicate tracker rows here.
 
 ## 2026-06-30 - BVR-TWB Formal Relaunch And C3 PQR RankCal V1 Remote Precheck
+
+- `2026-06-30T18:00:30+08:00` - Reloaded divergent-route and run-experiment rules for the user's request to deploy or queue any other ready divergent model. Current decision: no additional long-train-ready model exists. MDL-Knot child `1118197.488 mdl_shortdiag_g0` is still running as the only active divergent GPU0 short diagnostic with finite loss progress and no recorded hard-error marker; wait for completion before validator. BVR-TWB / VOI-BBC remains formal/full-train locked after the severe-result Pro diagnosis, so a single bounded-diagnostic owner was assigned to collect no-GPU pretrain/ledger/bridge/geometry evidence in `OpenTAD_BVR_TWB_Final_Worktree_20260630`. ABR remains formal/full-train locked by low real first-round bracket recall, so a single repair owner was assigned in `OpenTAD_ABR_ScoutPolicyRepair_Worktree_20260630`. No new Slurm child, `tools/train.py`, `tools/test.py`, official eval, mAP/runtime/FLOPs/deploy/paper/sparse-compute claim, GPU1 use, C3 combo, or parent-hold action occurred.
 
 - `2026-06-30T13:19:58+08:00` - Divergent-route monitor and gate recheck completed. BVR-TWB child `1118197.467 bvr_twb_g0_r4` remains `RUNNING` on protected hold `1118197 pcot_dbg2g`; GPU0 shows BVR activity (`48%` util, `2439MiB` used) while GPU1 remains C3-owned (`100%` util, `4377MiB` used). BVR log reached Epoch 2 iter50 with finite `Loss=1.8238`, after Epoch 1 final `Loss=1.8257`; hard-error count stayed `0`, and no result JSON or final metric exists. Local focused gate retests in route-owned worktrees passed without dirtying them: ABR formal gate `44 passed, 1 skipped`, MDL-Knot formal gate `43 passed, 1 skipped`, and BVR formal gate `36 passed, 12 skipped`. Three read-only route-audit agents were started for ABR, MDL, and BVR design-alignment checks; no returned finding is accepted yet. No new GPU job, `tools/test.py`, evaluation, final mAP, runtime/FLOPs, deploy, paper, sparse-compute claim, or parent-hold action occurred.
 
