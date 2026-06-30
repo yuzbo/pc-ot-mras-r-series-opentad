@@ -3,7 +3,7 @@ import os
 _base_ = ["./input_random_fixed_50pct_adapter_irregular_headv3_x.py"]
 
 route_label = "DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3"
-route_status = "USER_OVERRIDE_FORMAL_TRAIN_QUEUED_AFTER_BVR_NO_METRIC_CLAIMS"
+route_status = "LOCAL_FINAL_CODE_CANDIDATE_USER_OVERRIDE_FORMAL_TRAIN_QUEUED_AFTER_PREVIOUS_RUN_NO_METRIC_CLAIMS"
 formal_train_unlocked = True
 sparse_compute_claim = False
 
@@ -178,8 +178,10 @@ dataset = dict(
     ),
 )
 
+evaluation = dict(ground_truth_filename=annotation_path)
+
 solver = dict(
-    amp=False,
+    amp=True,
     fp16_compress=False,
     train=dict(batch_size=1, num_workers=2),
     val=dict(batch_size=1, num_workers=2),

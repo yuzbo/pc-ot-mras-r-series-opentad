@@ -322,6 +322,76 @@ Current unlock state:
 
 Timestamp: `2026-06-30 21:47:33 +08:00`.
 
+## 2026-07-01 03:30 +08:00 formal-run path and AMP repair
+
+Route label: `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`
+
+Owned worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_MDLKnot_RealDiag_Worktree_20260630`
+
+Owned branch: `codex/divergent-mdl-knot-realdiag-20260630`
+
+Remote evidence motivating the repair:
+
+- Active child step `1118197.535` is running as `mdl_formal_g0` on GPU0.
+- Its log path is
+  `/data/home/sczc063/run/yuzibo/OpenTAD_MDLKnot_RealDiag_20260630_fd2977f/logs/mdl_knot_user_override_formal_after_bvr_db2f650_20260701_025709_+0800/srun-1118197.out`.
+- At `2026-07-01 03:26 +08:00`, the log had no `Loss=` line and had not
+  grown since `2026-07-01 02:58:31 +08:00`.
+- The active log also showed inherited evaluator pollution:
+  `ground_truth_filename='/root/autodl-tmp/annotations/thumos_14_anno.json'`.
+
+Code repair:
+
+- `configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py`
+  now has a route-status string that remains a local final-code candidate
+  without mentioning other divergent route names.
+- The same config explicitly sets
+  `evaluation = dict(ground_truth_filename=annotation_path)`.
+- `solver.amp` is now `True`. This changes numeric precision for training
+  speed/memory only; it does not change scout stride, scout max frames, dense
+  window size, selected-frame budget, or MDL-Knot acquisition logic.
+- `tools/mdl_knot/validate_mdl_knot_launch_gate.py` now fails closed unless
+  `evaluation.ground_truth_filename` and all split `ann_file` entries equal
+  `annotation_path`, and rejects legacy `/root/autodl-tmp` evaluator paths.
+- `tools/mdl_knot/audit_mdl_knot_pipeline_precheck.py` now applies the same
+  workflow-field drift whitelist as the launch gate so `*_interval` fields do
+  not falsely trip the `INTERVAL` route-drift token.
+- `tests/test_mdl_knot_tools_and_integration.py` now checks the evaluator path
+  override and AMP flag.
+
+Local command evidence:
+
+```powershell
+python -m pytest tests/test_mdl_knot_tools_and_integration.py tests/test_mdl_knot_shortdiag.py -q
+```
+
+Result: `30 passed, 2 skipped in 21.03s`.
+
+```powershell
+python tools/mdl_knot/validate_mdl_knot_launch_gate.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py
+```
+
+Result: `PRECHECK_ONLY_REQUEST_ALLOWED`; all remote sync, Slurm, training,
+evaluation, `tools/test.py`, mAP, runtime/FLOPs, deploy, and paper claims remain
+locked by the gate output.
+
+```powershell
+python tools/mdl_knot/audit_mdl_knot_pipeline_precheck.py --out-dir .tmp_mdl_debug_precheck --overwrite
+python tools/mdl_knot/validate_mdl_knot_launch_gate.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py --precheck-summary .tmp_mdl_debug_precheck/mdl_knot_precheck_summary.json
+```
+
+Result: precheck summary was generated and accepted as
+`PRECHECK_ONLY_REQUEST_ALLOWED`.
+
+Interpretation:
+
+- Current step `1118197.535` should not be used as healthy formal-training
+  evidence because it was launched with the polluted evaluator path and still
+  has no first finite loss line after the launch sanity window.
+- This repair prepares the next MDL-Knot restart/queue candidate only.
+- It does not create a new mAP result, runtime claim, sparse-compute claim,
+  deploy claim, or paper claim.
+
 Code commit deployed:
 
 - GitHub branch: `codex/divergent-mdl-knot-realdiag-20260630`
