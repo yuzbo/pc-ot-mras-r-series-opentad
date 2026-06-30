@@ -56,6 +56,32 @@ layout bug rather than model logic.
 - Next action: commit/push the test-fixture fix and rerun remote PRECHECK_ONLY
   in a fresh clone. Fulltrain and metric claims remain locked.
 
+## 2026-06-30 14:10:00 +08:00
+
+C3 PQR Sparse/Irregular-Aware QC V2 remote PRECHECK R2 still failed the same
+focused Linux pytest because the first fixture fix was applied to the wrong
+test block.
+
+- Remote fresh clone:
+  `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQR_QCV2_Precheck_43ef497_20260630_20260630_140649_+0800`.
+- Commit tested: `43ef497d05785fc845f98bd0e7f71f65bfffcd25`.
+- Boundary: no Slurm, `srun`, `tools/train.py`, `tools/test.py`, GPU use,
+  parent-hold action, BH-SDC action, or DIVERGENT route action occurred.
+- Passing parts: clone/checkout/resource symlinks, py_compile, QC V2 validator
+  after operator retry with config argument, and `git diff --check`.
+- Failing part: `/tmp` focused pytest returned `44 passed, 1 failed`, no
+  skipped tests. The failed QC V2 diagnostics test saw selected segments
+  `[[0, 1], [1, 2]]` while expecting `[[0, 0], [0, 2]]`.
+- Root cause: the first local test-fixture fix patched
+  `test_quality_score_fusion_uses_low_alpha_model_score_only`, not
+  `test_sparse_irregular_qc_v2_returns_optional_deploy_visible_diagnostics`.
+- Correct local fix: restore the quality-fusion fixture and patch the QC V2
+  diagnostics fixture exactly. Local verification after the correct fix:
+  `torch_1` focused pytest `37 passed, 8 skipped`; py_compile PASS; QC V2
+  validator PASS; `git diff --check` PASS.
+- Next action: commit/push the corrected fixture fix and rerun remote
+  PRECHECK_ONLY R3. Fulltrain and metric claims remain locked.
+
 ## 2026-06-30 04:28:44 +08:00
 
 C3 PQR RankCal V1 pseudo-boundary clean-clone runtime dependency blocker fixed

@@ -62,3 +62,15 @@ R1 remote PRECHECK at commit `9081d9a2202a` used a fresh clone under `/data/home
 Root cause: the test fixture used `reg_pred` as if the last dimension were `[left, right]` per point, but `AnchorFreeHead.get_refined_proposals` consumes regression as `[B, 2, T]` and then permutes it to `[B, T, 2]`. The fixture therefore produced real selected lengths `[1.0, 1.0]` while the test expected `[0.0, 2.0]`. This is a test-fixture bug, not a QC V2 model-logic bug.
 
 Local fix: encode the intended offsets as left `[0, 1]`, right `[0, 1]`, and add a direct `selected_segments == [[0, 0], [0, 2]]` assertion.
+
+## Remote PRECHECK R2
+
+R2 remote PRECHECK at commit `43ef497d05785fc845f98bd0e7f71f65bfffcd25` used fresh clone `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQR_QCV2_Precheck_43ef497_20260630_20260630_140649_+0800`. It again did not run Slurm, `srun`, `tools/train.py`, `tools/test.py`, or any GPU job. `py_compile`, the QC V2 validator, and `git diff --check` passed, but focused Linux pytest still failed one test:
+
+`tests/test_c3_pqr_rankcal_v1_quality_head.py::test_sparse_irregular_qc_v2_returns_optional_deploy_visible_diagnostics`.
+
+R2 failure detail: `selected_segments` was `[[0, 1], [1, 2]]`, while the test expected `[[0, 0], [0, 2]]`.
+
+Root cause: the first local fixture fix was accidentally applied to the earlier `test_quality_score_fusion_uses_low_alpha_model_score_only` fixture, not to the QC V2 diagnostics fixture. The QC V2 diagnostics fixture still contained the old regression layout at commit `43ef497`.
+
+Local fix after R2: restore the quality-fusion fixture to its original values, update the QC V2 diagnostics fixture to left `[0, 1]`, right `[0, 1]`, and keep the direct selected-segment assertion. Local verification returned `torch_1` focused pytest `37 passed, 8 skipped`, QC V2 validator PASS, py_compile PASS, and `git diff --check` PASS.

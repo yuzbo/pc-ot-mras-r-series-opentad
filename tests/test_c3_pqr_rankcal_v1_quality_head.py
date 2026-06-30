@@ -54,7 +54,7 @@ def test_default_off_quality_path_keeps_prediction_shapes_and_scores():
     torch, _ = _torch_and_head()
     head = _make_head()
     points = [torch.tensor([[0.0, 0.0, 10000.0, 1.0], [1.0, 0.0, 10000.0, 1.0]])]
-    reg_pred = [torch.tensor([[[0.0, 1.0], [0.0, 1.0]]])]
+    reg_pred = [torch.tensor([[[0.0, 0.0], [1.0, 1.0]]])]
     cls_pred = [torch.tensor([[[0.0, 1.0], [2.0, -2.0]]])]
     masks = [torch.tensor([[True, False]])]
 
@@ -142,7 +142,7 @@ def test_sparse_irregular_qc_v2_returns_optional_deploy_visible_diagnostics():
         )
     )
     points = [torch.tensor([[0.0, 0.0, 10000.0, 1.0], [1.0, 0.0, 10000.0, 1.0]])]
-    reg_pred = [torch.tensor([[[0.0, 0.0], [1.0, 1.0]]])]
+    reg_pred = [torch.tensor([[[0.0, 1.0], [0.0, 1.0]]])]
     cls_pred = [torch.zeros(1, 2, 2)]
     masks = [torch.tensor([[True, True]])]
     quality_pred = [torch.tensor([[[4.59511985013459, 0.0]]])]

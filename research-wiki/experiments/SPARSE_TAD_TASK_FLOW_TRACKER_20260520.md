@@ -136,3 +136,12 @@ the broader source for cross-route orchestration.
 - Root cause: the test fixture wrote `reg_pred` with the wrong layout. `AnchorFreeHead.get_refined_proposals` consumes regression as `[B, 2, T]`; the fixture intended left/right offsets per point but encoded left `[0, 0]`, right `[1, 1]`. Model code behaved correctly.
 - Local fix: update the fixture to left `[0, 1]`, right `[0, 1]`, and assert the intended selected segments directly. Local `torch_1` focused pytest returned `37 passed, 8 skipped`; QC V2 validator PASS; py_compile PASS; `git diff --check` PASS.
 - Next launch decision: commit/push the test-fixture fix and rerun remote PRECHECK_ONLY in a fresh clone. Fulltrain, official eval, paper/deploy claim, and route-quality judgment remain locked.
+
+## 2026-06-30 14:10:00 +08:00 Sparse/Irregular-Aware QC V2 Remote PRECHECK R2 Failure And Correct Fixture Fix
+
+- Remote PRECHECK R2 at commit `43ef497d05785fc845f98bd0e7f71f65bfffcd25` used fresh clone `/data/home/sczc063/run/yuzibo/OpenTAD_C3PQR_QCV2_Precheck_43ef497_20260630_20260630_140649_+0800`; no Slurm, `srun`, `tools/train.py`, `tools/test.py`, GPU use, parent-hold action, BH-SDC action, or DIVERGENT route action occurred.
+- R2 evidence: clone/checkout/resource symlinks succeeded; py_compile PASS; QC V2 validator PASS after one operator retry with the config argument; `git diff --check` PASS; focused pytest retried with `/tmp` tempdir and returned `44 passed, 1 failed`, no skipped tests.
+- Failure: the same QC V2 diagnostics test now showed selected segments `[[0, 1], [1, 2]]` while the test expected `[[0, 0], [0, 2]]`.
+- Root cause: the first local fix accidentally patched the earlier quality-fusion fixture, not the QC V2 diagnostics fixture. The model code was still behaving correctly.
+- Local fix: restore the quality-fusion fixture and patch the QC V2 diagnostics fixture exactly. Local `torch_1` focused pytest returned `37 passed, 8 skipped`; QC V2 validator PASS; py_compile PASS; `git diff --check` PASS.
+- Next launch decision: commit/push the corrected fixture fix and rerun remote PRECHECK_ONLY R3 in a fresh clone. Fulltrain, official eval, paper/deploy claim, and route-quality judgment remain locked.
