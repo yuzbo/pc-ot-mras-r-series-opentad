@@ -131,6 +131,92 @@ def validate_launch_gate_payload(payload: Mapping[str, Any]) -> Dict[str, str]:
     return {"allowed_next_action": "REMOTE_PRECHECK_ONLY_REQUEST", "still_locked": "TRAIN_EVAL_SYNC_STAGE_COMMIT_PUSH"}
 
 
+def validate_first_round_bracket_diagnostics(
+    diagnostics: Mapping[str, Any],
+    min_recall: float = 0.95,
+    min_transition_coverage: float = 0.95,
+    require_deploy_visible_scout: bool = False,
+) -> Dict[str, float]:
+    if not isinstance(diagnostics, Mapping):
+        raise ABRValidationError("LOCKED: first-round bracket diagnostics must be a mapping")
+    if require_deploy_visible_scout:
+        source = str(diagnostics.get("scout_source", ""))
+        if diagnostics.get("diagnostic_fallback_used") is True or source.startswith("diagnostic_fallback:"):
+            raise ABRValidationError("LOCKED: formal ABR requires deploy-visible scout; diagnostic fallback is rejected")
+    recall = _require_fraction(diagnostics, "first_round_bracket_recall")
+    coverage = _require_fraction(diagnostics, "first_round_transition_coverage")
+    missed = int(diagnostics.get("missed_transition_count", 0))
+    if recall < float(min_recall):
+        raise ABRValidationError(
+            f"LOCKED: first_round_bracket_recall {recall:.4f} below required {float(min_recall):.4f}"
+        )
+    if coverage < float(min_transition_coverage):
+        raise ABRValidationError(
+            "LOCKED: first_round_transition_coverage "
+            f"{coverage:.4f} below required {float(min_transition_coverage):.4f}"
+        )
+    if missed > 0:
+        raise ABRValidationError(f"LOCKED: first-round bracket diagnostics report {missed} missed transitions")
+    return {
+        "first_round_bracket_recall": float(recall),
+        "first_round_transition_coverage": float(coverage),
+    }
+
+
+def validate_formal_readiness_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    assert_no_forbidden_route_tokens(payload)
+    if payload.get("route_label") != ABR_ROUTE_LABEL:
+        raise ABRValidationError("formal gate requires the ABR route label")
+    if payload.get("method") != "abr_active_bracket_refinement":
+        raise ABRValidationError("formal gate requires method=abr_active_bracket_refinement")
+    if payload.get("status") != "PASS_FORMAL_READINESS_EVIDENCE":
+        raise ABRValidationError("LOCKED: formal gate requires PASS_FORMAL_READINESS_EVIDENCE, not PRECHECK_ONLY")
+    summary = payload.get("summary", {})
+    if not isinstance(summary, Mapping):
+        raise ABRValidationError("LOCKED: formal gate requires summary mapping")
+    if summary.get("diagnostic_fallback_used") is True:
+        raise ABRValidationError("LOCKED: formal gate rejects diagnostic fallback scout")
+    scout_source = str(summary.get("scout_source", ""))
+    if not scout_source or scout_source.startswith("diagnostic_fallback:"):
+        raise ABRValidationError("LOCKED: formal gate requires a deploy-visible scout source")
+    if str(summary.get("fallback_stage", "")).upper() == "PRECHECK_ONLY":
+        raise ABRValidationError("LOCKED: formal gate rejects PRECHECK_ONLY fallback stage")
+    if int(summary.get("detector_forward_count", -1)) != 1:
+        raise ABRValidationError("LOCKED: detector_forward_count must be 1")
+    diagnostics = summary.get("first_round_bracket_diagnostics", {})
+    thresholds = summary.get("formal_thresholds", {})
+    if not isinstance(thresholds, Mapping):
+        thresholds = {}
+    metrics = validate_first_round_bracket_diagnostics(
+        diagnostics,
+        min_recall=float(thresholds.get("min_first_round_bracket_recall", 0.95)),
+        min_transition_coverage=float(thresholds.get("min_first_round_transition_coverage", 0.95)),
+        require_deploy_visible_scout=True,
+    )
+    return {
+        "allowed_next_action": "FORMAL_REVIEW_PACKET_ONLY",
+        "formal_readiness_evidence_ok": True,
+        "full_train_unlocked": False,
+        "route_label": ABR_ROUTE_LABEL,
+        "metrics": metrics,
+        "still_locked": [
+            "FORMAL_FULL_TRAIN_PENDING_REVIEW_AND_COORDINATOR_DECISION",
+            "MAPPAPER_CLAIM",
+            "RUNTIME_OR_SPARSE_COMPUTE_CLAIM",
+            "DEPLOY_CLAIM",
+        ],
+    }
+
+
+def _require_fraction(payload: Mapping[str, Any], key: str) -> float:
+    if key not in payload:
+        raise ABRValidationError(f"LOCKED: missing first-round diagnostic field {key}")
+    value = float(payload[key])
+    if value < 0.0 or value > 1.0:
+        raise ABRValidationError(f"LOCKED: first-round diagnostic field {key} must be in [0, 1]")
+    return value
+
+
 def _walk_string_values(payload: Any, prefix: str = "") -> Iterable[tuple[str, str]]:
     if isinstance(payload, str):
         yield prefix, payload

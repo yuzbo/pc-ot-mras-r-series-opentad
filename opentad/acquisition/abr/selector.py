@@ -57,6 +57,7 @@ def select_active_bracket_refinement(
         selected_meta[pos] = (0, "scaffold", -1)
     scout_ms += len(r0_positions) * cfg.scout_cost_ms_per_position
     brackets = build_initial_brackets(curve, r0_positions, cfg)
+    first_round_diagnostics = _first_round_bracket_diagnostics(curve, brackets, cfg, scout_source_detail, fallback_used)
     stop_reason = "no_brackets" if not brackets else "round0_complete"
     round_ledgers.append(
         _make_ledger(
@@ -74,6 +75,7 @@ def select_active_bracket_refinement(
             scout_ms,
             cfg,
             stop_reason,
+            first_round_diagnostics,
         )
     )
 
@@ -125,6 +127,7 @@ def select_active_bracket_refinement(
                 scout_ms,
                 cfg,
                 stop_reason,
+                {},
             )
         )
         if scout_ms + acquisition_ms >= cfg.deadline_ms:
@@ -256,6 +259,82 @@ def _round_stop_reason(brackets: Sequence[BracketState], config: ABRConfig, roun
     return "active"
 
 
+def _first_round_bracket_diagnostics(
+    curve: Sequence[float],
+    brackets: Sequence[BracketState],
+    config: ABRConfig,
+    scout_source: str,
+    diagnostic_fallback_used: bool,
+) -> Dict[str, object]:
+    dense_t = len(curve)
+    transitions = _dense_scout_transitions(curve, config)
+    covered_pairs = []
+    missed_pairs = []
+    covered_endpoints = 0
+    for left, right, kind in transitions:
+        left_covered = any(bracket.left <= left <= bracket.right for bracket in brackets)
+        right_covered = any(bracket.left <= right <= bracket.right for bracket in brackets)
+        covered_endpoints += int(left_covered) + int(right_covered)
+        item = {"left": int(left), "right": int(right), "kind": kind}
+        if left_covered and right_covered:
+            covered_pairs.append(item)
+        else:
+            missed_pairs.append(item)
+
+    transition_count = len(transitions)
+    bracketed_count = len(covered_pairs)
+    endpoint_total = max(2 * transition_count, 1)
+    union_coverage = _bracket_union_coverage(brackets, dense_t)
+    return {
+        "scope": "first_round_bracket_recall_from_deploy_visible_scout",
+        "scout_source": str(scout_source),
+        "diagnostic_fallback_used": bool(diagnostic_fallback_used),
+        "dense_T": int(dense_t),
+        "round_id": 0,
+        "transition_count": int(transition_count),
+        "bracket_count": int(len(brackets)),
+        "bracketed_transition_count": int(bracketed_count),
+        "missed_transition_count": int(len(missed_pairs)),
+        "first_round_bracket_recall": float(1.0 if transition_count == 0 else bracketed_count / transition_count),
+        "first_round_transition_coverage": float(1.0 if transition_count == 0 else covered_endpoints / endpoint_total),
+        "first_round_temporal_coverage_fraction": float(union_coverage),
+        "missed_transitions": missed_pairs,
+        "covered_transitions": covered_pairs[:16],
+    }
+
+
+def _dense_scout_transitions(curve: Sequence[float], config: ABRConfig) -> List[Tuple[int, int, str]]:
+    transitions: List[Tuple[int, int, str]] = []
+    if len(curve) < 2:
+        return transitions
+    prev_state = state_at_position(curve, 0, config)
+    prev_pos = 0
+    for pos in range(1, len(curve)):
+        state = state_at_position(curve, pos, config)
+        if state == "ambiguous":
+            prev_state = state
+            prev_pos = pos
+            continue
+        if prev_state != "ambiguous" and state != prev_state:
+            kind = "start" if prev_state == "background" and state == "action" else "end"
+            transitions.append((prev_pos, pos, kind))
+        prev_state = state
+        prev_pos = pos
+    return transitions
+
+
+def _bracket_union_coverage(brackets: Sequence[BracketState], dense_t: int) -> float:
+    if dense_t <= 0 or not brackets:
+        return 0.0
+    covered = set()
+    for bracket in brackets:
+        left = max(0, int(bracket.left))
+        right = min(int(bracket.right), dense_t - 1)
+        if right >= left:
+            covered.update(range(left, right + 1))
+    return len(covered) / float(dense_t)
+
+
 def _make_ledger(
     video_id: str,
     window_id: str,
@@ -271,6 +350,7 @@ def _make_ledger(
     cumulative_scout_ms: float,
     config: ABRConfig,
     stop_reason: str,
+    diagnostics: Dict[str, object] | None = None,
 ) -> ABRRoundLedger:
     return ABRRoundLedger(
         video_id=video_id,
@@ -288,5 +368,6 @@ def _make_ledger(
         cumulative_scout_ms=float(cumulative_scout_ms),
         deadline_ms=float(config.deadline_ms),
         stop_reason=stop_reason,
+        diagnostics=dict(diagnostics or {}),
         provenance=dict(DEFAULT_PROVENANCE),
     )

@@ -25,8 +25,12 @@ def build_precheck_summary(require_torch: bool = True) -> dict:
     easy = [0.05] * 96
     rich = [0.03] * 12 + [0.86] * 6 + [0.11] * 9 + [0.88] * 8 + [0.07] * 20 + [0.82] * 7 + [0.04] * 34
     cfg = ABRConfig(k0=8, k1_cap=14, k2_cap=4, max_total_k=32, max_gap=16, target_frame_num=40)
-    easy_result = select_active_bracket_refinement(96, scout_curve=easy, config=cfg)
-    rich_result = select_active_bracket_refinement(96, scout_curve=rich, config=cfg)
+    easy_result = select_active_bracket_refinement(
+        96, scout_curve=easy, scout_source="abr_scout_curve:deploy_visible_precheck_easy", config=cfg
+    )
+    rich_result = select_active_bracket_refinement(
+        96, scout_curve=rich, scout_source="abr_scout_curve:deploy_visible_precheck_rich", config=cfg
+    )
 
     mock = {
         "video_name": "abr_precheck_mock",
@@ -153,6 +157,16 @@ def build_precheck_summary(require_torch: bool = True) -> dict:
         "formal_missing_scout_rejected": bool(formal_missing_scout_rejected),
         "diagnostic_fallback_source": str(fallback_out["abr_scout_source"]),
         "diagnostic_fallback_used": bool(fallback_out["abr_diagnostic_fallback_used"]),
+        "first_round_bracket_diagnostics": dict(rich_result.round_ledgers[0].diagnostics),
+        "first_round_bracket_recall": float(
+            rich_result.round_ledgers[0].diagnostics.get("first_round_bracket_recall", 0.0)
+        ),
+        "first_round_transition_coverage": float(
+            rich_result.round_ledgers[0].diagnostics.get("first_round_transition_coverage", 0.0)
+        ),
+        "first_round_missed_transition_count": int(
+            rich_result.round_ledgers[0].diagnostics.get("missed_transition_count", -1)
+        ),
     }
     if not dynamic_k_nonconstant:
         raise ABRValidationError("dynamic K check failed: easy and rich cases selected identical K")

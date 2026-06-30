@@ -93,6 +93,7 @@ class ABRRoundLedger:
     cumulative_scout_ms: float
     deadline_ms: float
     stop_reason: str
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
     provenance: Dict[str, bool] = field(default_factory=lambda: dict(DEFAULT_PROVENANCE))
 
     def to_dict(self) -> Dict[str, Any]:
