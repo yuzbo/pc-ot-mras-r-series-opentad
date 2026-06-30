@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,13 @@ CONFIG_PATH = ROOT / "configs" / "adatad" / "thumos" / "input_mdl_knot_dynamic_a
 COLLECTOR_PATH = ROOT / "tools" / "mdl_knot" / "collect_mdl_knot_real_video_diagnostics.py"
 VALIDATOR_PATH = ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"
 ROUTE_LABEL = "DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3"
+
+
+def _load_collector_module():
+    spec = importlib.util.spec_from_file_location("mdl_knot_realdiag_collector_under_test", COLLECTOR_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _write_shortdiag_log(tmp_path: Path) -> Path:
@@ -120,6 +129,99 @@ def test_realdiag_collector_emits_fixture_schema_but_formal_gate_rejects_it(tmp_
     assert proc.returncode != 0
     assert "fixture" in proc.stdout.lower() or "dry-run" in proc.stdout.lower()
     assert "Still locked" in proc.stdout
+
+
+def test_annotation_realdiag_uses_no_gt_equivalent_loader_even_when_real_loadframes_imports(tmp_path, monkeypatch):
+    collector = _load_collector_module()
+    calls = {"constructed": 0}
+
+    fake_end_to_end = types.ModuleType("opentad.datasets.transforms.end_to_end")
+
+    class GTRequiringLoadFrames:
+        def __init__(self, **kwargs):
+            calls["constructed"] += 1
+            raise AssertionError("GT-requiring real LoadFrames path must not be constructed for diagnostics")
+
+    fake_end_to_end.LoadFrames = GTRequiringLoadFrames
+    monkeypatch.setitem(sys.modules, "opentad.datasets.transforms.end_to_end", fake_end_to_end)
+    cfg = {
+        "dataset": {
+            "train": {
+                "pipeline": [
+                    {
+                        "type": "LoadFrames",
+                        "method": "mdl_knot_dynamic_subsample",
+                        "method_base": "random_trunc",
+                        "target_len": 64,
+                        "mdl_knot_bridge": "fixed_pad",
+                        "mdl_knot_max_k": 64,
+                        "mdl_knot_allow_synthetic_fallback": False,
+                        "mdl_knot_deploy_scout_source": "frame_metadata_scout",
+                    }
+                ]
+            }
+        }
+    }
+
+    loader, backend = collector._build_loader(cfg)
+
+    assert isinstance(loader, collector.EquivalentMDLKnotLoadFrames)
+    assert calls["constructed"] == 0
+    assert backend["loader"] == "EquivalentMDLKnotLoadFrames"
+    assert backend["diagnostic_loader_mode"] == "equivalent"
+    assert backend["opentad_loadframes_invoked"] is False
+
+    ann_path = tmp_path / "anno.json"
+    ann_path.write_text(
+        json.dumps(
+            {
+                "database": {
+                    "video_validation_0001": {
+                        "subset": "validation",
+                        "total_frames": 96,
+                        "fps": 30.0,
+                        "duration": 3.2,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = types.SimpleNamespace(
+        annotation=str(ann_path),
+        video_root=[],
+        split="validation",
+        window_count=2,
+        window_size=64,
+        dry_run_fixture=False,
+    )
+
+    diagnostics = collector._collect_diagnostics(loader, collector._annotation_windows(args))
+
+    assert len(diagnostics) == 2
+    assert {item["route_label"] for item in diagnostics} == {ROUTE_LABEL}
+    assert all(item["synthetic_fallback_used"] is False for item in diagnostics)
+    assert all(item["metadata_only"] is True for item in diagnostics)
+    assert calls["constructed"] == 0
+
+
+def test_realdiag_formal_validator_keeps_training_locked_without_shortdiag_execution(tmp_path):
+    summary, summary_path = _summary_from_collector(tmp_path)
+    _mark_summary_as_real_video_for_validator(summary)
+    summary["shortdiag_evidence"] = {
+        "validated": False,
+        "formal_train_unlocked": False,
+        "no_sparse_compute_claim": True,
+        "evidence_scope": "missing_shortdiag_log",
+        "log_evidence": None,
+    }
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    proc = _run_formal_validator(summary_path)
+
+    assert proc.returncode != 0
+    assert "formal training remains locked" in proc.stdout
+    assert "shortdiag execution" in proc.stdout
 
 
 def test_realdiag_formal_validator_rejects_synthetic_summary(tmp_path):

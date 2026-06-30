@@ -196,6 +196,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window-size", type=int, default=128, help="Dense frame window size for annotation sampling.")
     parser.add_argument("--shortdiag-log", default=None, help="Validated one-epoch shortdiag train log path.")
     parser.add_argument(
+        "--diagnostic-loader",
+        choices=("equivalent", "opentad_if_available"),
+        default="equivalent",
+        help=(
+            "Loader implementation for diagnostics. Default uses the no-GT torch-free equivalent branch; "
+            "opentad_if_available is a debug-only path and may exercise train crop semantics."
+        ),
+    )
+    parser.add_argument(
         "--dry-run-fixture",
         action="store_true",
         help="Use deterministic in-memory video readers for local tests; no training/evaluation is run.",
@@ -230,20 +239,34 @@ def _decord_available() -> bool:
         return False
 
 
-def _build_loader(cfg: Mapping[str, object]):
+def _build_loader(cfg: Mapping[str, object], diagnostic_loader: str = "equivalent"):
     kwargs = _loadframes_kwargs(cfg)
+    if diagnostic_loader == "equivalent":
+        return EquivalentMDLKnotLoadFrames(**kwargs), {
+            "loader": "EquivalentMDLKnotLoadFrames",
+            "diagnostic_loader_mode": "equivalent",
+            "equivalent_loader_fallback": False,
+            "opentad_loadframes_invoked": False,
+            "reason": "real-video diagnostics intentionally bypass train LoadFrames crop semantics and require no GT",
+        }
+    if diagnostic_loader != "opentad_if_available":
+        raise ValueError(f"unsupported diagnostic loader mode: {diagnostic_loader}")
     try:
         from opentad.datasets.transforms.end_to_end import LoadFrames
 
         return LoadFrames(**kwargs), {
             "loader": "opentad.datasets.transforms.end_to_end.LoadFrames",
+            "diagnostic_loader_mode": "opentad_if_available",
             "equivalent_loader_fallback": False,
+            "opentad_loadframes_invoked": True,
         }
     except Exception as exc:
         print(f"COLLECTOR_NOTICE: using torch-free equivalent MDL LoadFrames branch because import failed: {exc}")
         return EquivalentMDLKnotLoadFrames(**kwargs), {
             "loader": "EquivalentMDLKnotLoadFrames",
+            "diagnostic_loader_mode": "opentad_if_available",
             "equivalent_loader_fallback": True,
+            "opentad_loadframes_invoked": False,
             "opentad_loadframes_import_error": str(exc),
         }
 
@@ -450,7 +473,7 @@ def main() -> int:
     if cfg.get("route_label") != MDL_KNOT_ROUTE_LABEL:
         print(f"LOCKED: route label mismatch in config: {cfg.get('route_label')}")
         return 2
-    loader, reader_backend = _build_loader(cfg)
+    loader, reader_backend = _build_loader(cfg, args.diagnostic_loader)
     windows = _fixture_windows(args.window_count) if args.dry_run_fixture else _annotation_windows(args)
     diagnostics = _collect_diagnostics(loader, windows)
     if not diagnostics:
