@@ -307,6 +307,7 @@ def _first_round_bracket_diagnostics(
             "multiscale_peak_brackets",
             "full_curve_transition_brackets",
             "gradient_spike_brackets",
+            "percentile_adaptive_low_amplitude_activity_brackets",
             "uncertainty_widening",
             "short_action_boundary_protection",
             "max_gap_span_expansion",

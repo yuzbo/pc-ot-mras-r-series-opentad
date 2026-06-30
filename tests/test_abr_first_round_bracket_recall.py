@@ -470,3 +470,50 @@ def test_multiscale_policy_brackets_short_peak_between_sparse_scaffold_points(tm
     assert payload["first_round_transition_coverage"] == pytest.approx(1.0)
     assert payload["temporal_coverage_fraction"] <= 0.35
     assert payload["formal_gate_passed"] is True
+
+
+def test_low_amplitude_repeated_short_actions_get_first_round_brackets_without_blanketing(tmp_path):
+    ann_segments = []
+    curve = [0.08] * 120
+    for start in [12, 28, 44, 60, 76, 92]:
+        for offset, value in enumerate([0.18, 0.31, 0.43, 0.47, 0.42, 0.29, 0.16]):
+            curve[start + offset] = value
+        ann_segments.append({"segment": [float(start), float(start + 6)], "label": "GolfSwing"})
+
+    ann = _write_json(
+        tmp_path / "ann.json",
+        {
+            "database": {
+                "video_0001": {
+                    "subset": "validation",
+                    "duration": 120.0,
+                    "frame": 120,
+                    "annotations": ann_segments,
+                }
+            }
+        },
+    )
+    scout = _write_json(
+        tmp_path / "scout.json",
+        _scout_payload(curve, scout_source="unit_deploy_visible_raw_graydiff_low_amp"),
+    )
+
+    payload = run_audit(
+        ann,
+        scout,
+        abr_config=ABRConfig(k0=8, k1_cap=0, k2_cap=0, max_total_k=8, max_gap=0, round2_enabled=False),
+    )
+
+    assert payload["real_deploy_visible_recall_evidence"] is True
+    assert payload["diagnostic_fallback_used"] is False
+    assert payload["selector_gt_visible"] is False
+    assert payload["formal_thresholds"] == {
+        "min_first_round_bracket_recall": 0.95,
+        "min_first_round_transition_coverage": 0.95,
+        "max_first_round_temporal_coverage_fraction": 0.70,
+    }
+    assert payload["transition_count"] == 12
+    assert payload["first_round_bracket_recall"] == pytest.approx(1.0)
+    assert payload["first_round_transition_coverage"] == pytest.approx(1.0)
+    assert payload["temporal_coverage_fraction"] <= 0.70
+    assert payload["formal_gate_passed"] is True

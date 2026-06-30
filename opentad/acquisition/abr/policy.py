@@ -190,6 +190,25 @@ def _multiscale_curve_brackets(curve: Sequence[float], config: ABRConfig, start_
         brackets.append(bracket)
         next_id += 1
 
+    for left, right, score in _adaptive_low_amplitude_activity_segments(values, composite, gradients, config):
+        window = _expanded_window(left, right, len(values), config, source="adaptive_low_amplitude")
+        bracket = _make_curve_bracket(
+            next_id,
+            "unknown",
+            window[0],
+            window[1],
+            values,
+            composite,
+            gradients,
+            config,
+            "adaptive_low_amplitude_activity",
+        )
+        bracket.score_components["policy_v2_adaptive_activity"] = float(score)
+        bracket.confidence = max(bracket.confidence, min(1.0, 0.25 + 0.65 * float(score)))
+        bracket.priority = score_bracket_priority(bracket, config)
+        brackets.append(bracket)
+        next_id += 1
+
     return brackets
 
 
@@ -276,6 +295,61 @@ def _gradient_magnitude(values: Sequence[float]) -> List[float]:
     return gradients
 
 
+def _adaptive_low_amplitude_activity_segments(
+    values: Sequence[float],
+    composite: Sequence[float],
+    gradients: Sequence[float],
+    config: ABRConfig,
+) -> List[Tuple[int, int, float]]:
+    if len(values) < 3:
+        return []
+
+    activity = [max(float(values[idx]), float(composite[idx])) for idx in range(len(values))]
+    sorted_activity = sorted(activity)
+    low = _percentile(sorted_activity, 0.20)
+    median = _percentile(sorted_activity, 0.50)
+    high = _percentile(sorted_activity, 0.90)
+    top = _percentile(sorted_activity, 0.97)
+    dynamic_range = max(top - low, high - low, 0.0)
+    if dynamic_range < 0.06:
+        return []
+
+    adaptive_floor = max(median + 0.18 * dynamic_range, low + 0.35 * dynamic_range, 0.12)
+    adaptive_floor = min(adaptive_floor, max(top - 0.08 * dynamic_range, low + 0.65 * dynamic_range))
+    candidate_segments = _segments_above(activity, adaptive_floor, max_gap=1)
+    if not candidate_segments:
+        return []
+
+    max_short_width = max(8, min(len(values) // 4, 2 * max(int(config.max_gap), 1) + 8))
+    min_prominence = max(0.045, 0.18 * dynamic_range)
+    scored: List[Tuple[int, int, float]] = []
+    for left, right in candidate_segments:
+        if right - left + 1 > max_short_width:
+            continue
+        local_peak = max(activity[left : right + 1], default=0.0)
+        shoulder_left = max(0, int(left) - max(3, max(int(config.max_gap), 1) // 4))
+        shoulder_right = min(len(activity), int(right) + max(4, max(int(config.max_gap), 1) // 4 + 1))
+        shoulder_values = activity[shoulder_left:left] + activity[right + 1 : shoulder_right]
+        shoulder_floor = min(shoulder_values, default=low)
+        prominence = float(local_peak) - float(shoulder_floor)
+        if prominence < min_prominence:
+            continue
+        local_gradient = max(gradients[max(0, left - 1) : min(len(gradients), right + 2)], default=0.0)
+        score = min(1.0, 0.60 * (prominence / max(dynamic_range, 1e-6)) + 0.40 * local_gradient)
+        scored.append((int(left), int(right), float(score)))
+
+    scored.sort(key=lambda item: (-item[2], item[0], item[1]))
+    max_segments = max(4, min(64, len(values) // max(max(int(config.max_gap), 1) // 2 + 4, 4)))
+    return sorted(scored[:max_segments], key=lambda item: (item[0], item[1]))
+
+
+def _percentile(values: Sequence[float], q: float) -> float:
+    if not values:
+        return 0.0
+    idx = min(max(int(round((len(values) - 1) * float(q))), 0), len(values) - 1)
+    return float(values[idx])
+
+
 def _state_transition_pairs(curve: Sequence[float], config: ABRConfig) -> List[Tuple[int, int, str]]:
     transitions: List[Tuple[int, int, str]] = []
     prev_state = state_at_position(curve, 0, config)
@@ -324,6 +398,8 @@ def _expanded_window(left: int, right: int, dense_t: int, config: ABRConfig, sou
     base = max(2, int(round(max(int(config.max_gap), 1) * 0.25)))
     if source == "peak" and width <= max(4, dense_t // 48):
         base = max(base, 3)
+    if source == "adaptive_low_amplitude" and width <= max(6, dense_t // 40):
+        base = max(base, 2)
     if source == "gradient":
         base = max(1, base - 1)
     return clamp_position(int(left) - base, dense_t), clamp_position(int(right) + base, dense_t)
