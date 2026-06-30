@@ -147,3 +147,61 @@ Specific questions:
 No formal full train, `tools/test.py`, evaluation, final mAP, runtime/FLOPs,
 deploy, paper, or sparse-compute claim is unlocked. This packet asks only for
 the next ABR route decision.
+
+## Rosetta GPT-5.5 Pro Result 2026-06-30
+
+Rosetta command:
+
+```powershell
+rosetta run --pro --port 9223 --host 127.0.0.1 --attach research-wiki/experiments/DIVERGENT_ABR_FORMAL_READINESS_PRO_PACKET_20260630.md <prompt>
+```
+
+The protocol-preferred port `9333` was attempted first and failed immediately
+with `ECONNREFUSED`; the user-requested Chrome CDP port `9223` succeeded.
+
+Local evidence files:
+
+- `logs/abr_rosetta_pro_formal_readiness_20260630_132527_+0800.stderr.txt`
+- `logs/abr_rosetta_pro_formal_readiness_port9223_20260630_132546_+0800.stdout.txt`
+- `logs/abr_rosetta_pro_formal_readiness_port9223_20260630_132546_+0800.stderr.txt`
+
+Rosetta metadata:
+
+- model: `gpt-5-5-pro`
+- elapsed: `446949ms`
+- events: `247`
+- conversation: `6a43536e-e0a0-83e8-8519-dcba3b5d9a67`
+- message: `12dd0aa8-9ae7-4c0e-a552-2dd4cfb0a81f`
+
+Accepted Pro verdict:
+
+`HOLD_FORMAL_FULL_TRAIN__RUN_REAL_DEPLOY_VISIBLE_FIRST_ROUND_BRACKET_RECALL_DIAGNOSTIC_FIRST`
+
+Accepted launch/sync/review/Slurm decision:
+
+`PASS_ALLOW_ABR_REAL_DEPLOY_VISIBLE_FIRST_ROUND_BRACKET_RECALL_DIAGNOSTIC_ONLY`
+
+Interpretation:
+
+- ABR implementation matches Active Bracket Refinement and does not drift into
+  C3, GlobalRank, or Boundary Microscope.
+- First-round bracket recall / transition coverage is the right ABR formal
+  gate.
+- Current synthetic recall/coverage near `0.3333` blocks formal full train.
+- A one-epoch short diagnostic is not the next ABR priority because it only
+  checks finite loss and cannot answer the core bracket-recall risk.
+- The next allowed action is selector-only / no-detector / no-training real
+  deploy-visible first-round bracket recall diagnostics scored offline against
+  GT boundaries. The selector must not see GT.
+
+Still locked after Pro:
+
+- formal full train;
+- Slurm full train;
+- remote sync for training;
+- `tools/test.py`;
+- evaluation/mAP;
+- runtime/FLOPs/sparse-compute claim;
+- deploy claim;
+- paper claim;
+- C3/GlobalRank/BVR/MDL combo merge.
