@@ -434,3 +434,70 @@ Next monitoring policy:
 Do not refresh logs frequently. Recheck near expected first training loss or on
 user request; record only material state changes such as crash, finite loss,
 short diagnostic validation pass/fail, or a next-action-changing blocker.
+
+## 2026-07-01 sampled_raw full-observation edge repair
+
+Timestamp: `2026-07-01 07:53:15 +08:00`.
+
+Route label: `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`
+
+Owned worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_MDLKnot_RealDiag_Worktree_20260630`
+
+Owned branch: `codex/divergent-mdl-knot-realdiag-20260630`
+
+Remote failure evidence accepted for this repair:
+
+- N16R4 formal child: `1118197.535`.
+- Failure: `ValueError: selected_inputs must be shorter than dense_T for sparse selected-only audit`.
+- Interpretation: sampled_raw selected-only validation was too strict for legitimate `valid_k == dense_T` / short dense-window cases. The old run is failed evidence only; it is not mAP, runtime, sparse-compute, deploy, or paper evidence.
+
+Changed surface:
+
+- Input sampling / handoff: yes, sampled_raw/full_raw validator edge-case handling and audit metadata.
+- Dynamic budget policy: no policy change; short/easy windows may still produce `valid_k == dense_T`.
+- Token compression: no.
+- Adapter/backbone internals: no.
+- Detector head logic: no.
+- Loss/assignment: no.
+- Test-time post-processing/evaluator: no.
+
+Fix summary:
+
+- `validate_sampled_sparse_handoff` and `validate_real_sparse_handoff` now allow the legal full-observation/no-compression case when `selected_len == valid_k == dense_T`.
+- The same case is explicitly marked with `full_observation_no_compression=true`, `sampled_raw_sparse_compute_evidence=false`, `raw_sparse_compute_evidence=false`, `sparse_compute_claim=false`, and `no_sparse_compute_claim=true`.
+- True dense passthrough where `selected_len == dense_len` but `selected_len != valid_k` remains rejected as dense passthrough.
+- `LoadFrames` sampled_raw audit writes `sampled_raw_full_observation` for full-observation windows and sets `mdl_knot_real_sparse_handoff_validated=false`, so the edge case cannot be counted as sparse selected-only/raw sparse compute evidence.
+- Pipeline diagnostics now count `full_observation_no_compression_windows`, `sampled_raw_full_observation_windows`, and `full_raw_full_observation_windows` separately from sampled/full raw sparse evidence windows.
+- `MDL_KNOT_PROFILE=1` now gives finer timing inside the previous `selector_and_structural_handoff` block: `selector_initialization`, `selector_objective_loop`, `selector_candidate_pool`, `gap_guard`, `metadata_build`, `handoff_metadata_build`, and `handoff_validator`, alongside existing scout and sampled/full raw decode stages.
+
+Local verification in the owned worktree:
+
+```powershell
+python -m py_compile opentad/acquisition/mdl_knot/validators.py opentad/acquisition/mdl_knot/selector.py opentad/acquisition/mdl_knot/handoff.py opentad/acquisition/mdl_knot/diagnostics.py opentad/datasets/transforms/end_to_end.py tools/mdl_knot/audit_mdl_knot_pipeline_precheck.py tools/mdl_knot/collect_mdl_knot_real_video_diagnostics.py tools/mdl_knot/validate_mdl_knot_launch_gate.py tools/mdl_knot/validate_mdl_knot_shortdiag.py configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py tests/test_mdl_knot_core.py tests/test_mdl_knot_tools_and_integration.py tests/test_mdl_knot_realdiag.py tests/test_mdl_knot_shortdiag.py
+```
+
+Result: exit code `0`.
+
+```powershell
+python -m pytest tests/test_mdl_knot_core.py tests/test_mdl_knot_shortdiag.py tests/test_mdl_knot_tools_and_integration.py tests/test_mdl_knot_realdiag.py -q
+```
+
+Result: `55 passed, 3 skipped in 96.63s`.
+
+```powershell
+python tools/mdl_knot/validate_mdl_knot_launch_gate.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py
+```
+
+Result: `PRECHECK_ONLY_REQUEST_ALLOWED`; still locked for remote sync, Slurm, training, evaluation, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper claims by gate output.
+
+```powershell
+python tools/mdl_knot/validate_mdl_knot_shortdiag.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py
+```
+
+Result: `SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED`, `validated=false`; still requires execution evidence for formal readiness and keeps full training, evaluation, checkpoints, `tools/test.py`, mAP, and sparse-compute claims locked.
+
+Current launch interpretation:
+
+- Remote `PRECHECK_ONLY`: allowed after normal coordinator deployment/sync decision.
+- One-epoch `SHORT_DIAGNOSTIC_ONLY`: allowed after remote precheck passes; no evaluation, no checkpoint claim, no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim.
+- Formal/full long training: still prohibited/locked until remote precheck plus one-epoch shortdiag pass and a separate explicit formal/full-train decision exists.
