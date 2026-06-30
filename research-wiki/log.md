@@ -130,3 +130,11 @@
 - Synced 35 RBA files, including configs, acquisition/transform code, tests, launch gate, Pro transport evidence, severe-low diagnosis packet, route-owned tracker mirror, and log.
 - External review URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-20260701`.
 - RBA-RBR formal full training remains locked pending severe-result diagnosis.
+
+## 2026-07-01 07:23:37 +08:00 - RBA-RBR sparse-forward precheck audit
+
+- Added a route-specific RBA-RBR detector temporal-grid audit in `IrregularActionFormer`.
+- The detector now recognizes `rba_rbr_*` metadata independently from BVR, uses `rba_rbr_detector_feature_positions` / `rba_rbr_detector_feature_valid_len` for native-axis grid construction, and fails closed on missing native-axis semantics or mask/position count mismatch.
+- Added focused tests proving the RBA audit path, the fail-closed mismatch behavior, and that BVR grid auditing remains separately labeled.
+- Verification passed: `python -m py_compile opentad\models\detectors\irregular_actionformer.py tests\test_rba_rbr_integration.py`; `python -m pytest tests\test_rba_rbr_core.py tests\test_rba_rbr_integration.py -q` -> `18 passed, 5 skipped`; `git diff --check` passed with line-ending warnings only.
+- This is severe-result diagnosis infrastructure only. No training, remote sync, Slurm, Pro decision, mAP/runtime/FLOPs/deploy/paper claim, or full-train unlock was produced.
