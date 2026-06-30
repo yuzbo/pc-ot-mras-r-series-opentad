@@ -81,3 +81,10 @@
 - Relaunched RBA-RBR `SHORT_DIAGNOSTIC_ONLY` on protected hold `1118197` GPU0 as child `1118197.538`, logdir `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_shortdiag_rawscout_c0574d5_gpu0_20260701_040627_+0800`.
 - Startup sanity passed: no preview/Traceback/OOM/NaN/non-finite pattern; first observed training line `[000][00020/00199] Loss=2.0044 cls_loss=0.2843 reg_loss=0.2525 boundary_loss=1.4675 mem=9344MB`.
 - Parent hold `1118197 pcot_dbg2g` remains protected and untouched. This is short diagnostic only; formal full training and all metric/runtime/deploy/paper claims remain locked.
+
+## 2026-07-01 04:20:30 +08:00 - RBA-RBR raw scout short diagnostic completed
+
+- RBA-RBR child `1118197.538` completed successfully: `COMPLETED|0:0`, elapsed `00:11:40`.
+- Log path: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_shortdiag_rawscout_c0574d5_gpu0_20260701_040627_+0800/srun-1118197.out`.
+- Bad-pattern count remained `0`; 24 finite loss lines were observed; final line `[001][00199/00199] Loss=1.9425 cls_loss=0.6359 reg_loss=0.6360 boundary_loss=0.6706 mem=9344MB`; log contains `Training Over...`.
+- This confirms the deploy-visible raw scout repair fixed the earlier `.537` launch blocker. It does not provide mAP/runtime/FLOPs/deploy/paper evidence, and formal full training remains locked.

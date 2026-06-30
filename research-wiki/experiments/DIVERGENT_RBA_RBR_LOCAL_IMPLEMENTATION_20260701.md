@@ -465,3 +465,23 @@ Current state:
 - This is not a formal full train and not a mAP-producing run; the shortdiag config disables eval/checkpoint and ends early.
 - Formal full training remains locked.
 - No mAP/runtime/FLOPs/deploy/paper claim is unlocked.
+
+## Remote Raw Scout Shortdiag Completed - 2026-07-01 04:20:30 +08:00
+
+Completion evidence:
+
+- Child step: `1118197.538`, job name `rba_rbr_short_g0`.
+- Slurm state: `COMPLETED|0:0`.
+- Elapsed: `00:11:40`.
+- Log path: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_shortdiag_rawscout_c0574d5_gpu0_20260701_040627_+0800/srun-1118197.out`.
+- Bad-pattern count for preview error, Traceback, RuntimeError, OOM, killed, NaN, non-finite: `0`.
+- Loss lines: `24`.
+- Completion marker: `Training Over...`.
+- Last observed loss line: `[001][00199/00199] Loss=1.9425 cls_loss=0.6359 reg_loss=0.6360 boundary_loss=0.6706 mem=9344MB`.
+
+Interpretation:
+
+- The raw-scout repair fixed the launch-blocking deploy-visible preview failure that killed child `1118197.537`.
+- The repaired RBA-RBR pipeline can train through the configured two-epoch `SHORT_DIAGNOSTIC_ONLY` run with finite loss.
+- This run intentionally has no evaluation, checkpoint, mAP, runtime/FLOPs, deploy, or paper claim.
+- Formal full training remains locked pending a separate formal-train gate/decision.
