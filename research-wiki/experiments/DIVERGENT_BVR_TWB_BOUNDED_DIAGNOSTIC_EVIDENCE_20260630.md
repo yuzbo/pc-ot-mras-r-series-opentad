@@ -840,3 +840,62 @@ Still locked:
 - Remote sync for training, Slurm, GPU allocations, `tools/test.py`, official
   evaluation, mAP, runtime/FLOPs, sparse compute, deploy, and paper claims.
 - Any C3/BVR/ABR/MDL combo or merge.
+
+## 2026-07-01 03:18 +08:00 evaluator path repair after N16R4 long-run crash
+
+Route label: `DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3`
+
+Owned worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_BVR_TWB_PostprocessRepair_Worktree_20260630`
+
+Owned branch: `codex/divergent-bvr-twb-postprocess-repair-20260630`
+
+Remote evidence motivating the repair:
+
+- The N16R4 BVR long run on GPU0 trained through the first long stage and
+  produced checkpoints including `epoch_39.pth`.
+- It failed during validation/evaluation, not during optimization, with
+  `PermissionError: [Errno 13] Permission denied:
+  '/root/autodl-tmp/annotations/thumos_14_anno.json'`.
+- The active BVR config already redirected dataset `ann_file`, `class_map`, and
+  `data_path` to the N16R4 THUMOS symlink, but it did not override the inherited
+  evaluator `ground_truth_filename`.
+
+Code repair:
+
+- `configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py`
+  now explicitly sets `evaluation = dict(ground_truth_filename=annotation_path)`.
+- `tools/bvr_twb/validate_bvr_twb_launch_gate.py` now rejects legacy
+  `/root/autodl-tmp` tokens and fails closed unless the formal BVR config
+  explicitly overrides `evaluation.ground_truth_filename` with `annotation_path`.
+- `tests/test_bvr_twb_opentad_pipeline.py` now asserts the evaluator override is
+  present and the legacy path token is absent.
+
+Local command evidence:
+
+```powershell
+python -m pytest tests/test_bvr_twb_opentad_pipeline.py -q
+```
+
+Result: `9 passed, 7 skipped in 1.47s`.
+
+```powershell
+python tools/bvr_twb/validate_bvr_twb_launch_gate.py --config configs/adatad/thumos/input_bvr_twb_dynamic_adapter_irregular_headv3.py
+```
+
+Result:
+
+```json
+{"adapter_bridge_mode": "adapter_fixed_length_padded_bridge", "allowed_next_action": "FINAL_READ_ONLY_REVIEW_THEN_LINUX_PRECHECK_ONLY", "full_train_unlocked": false, "gate_pass": true, "remote_sync_unlocked_by_local_gate": false, "route_label": "DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3", "sparse_compute_claim": false}
+```
+
+Interpretation:
+
+- This fixes the concrete evaluator-path crash for the next BVR resume/restart
+  candidate.
+- It does not create a new mAP result.
+- It does not unlock a deploy claim, paper claim, sparse-compute claim, or
+  automatic formal-train claim.
+- The useful next BVR action is to sync this repaired branch into a clean remote
+  BVR worktree, run a Linux precheck/config-resolution check, then resume or
+  restart from the existing `epoch_39.pth` only after the active GPU0 queue
+  boundary is clear.

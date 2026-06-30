@@ -270,6 +270,8 @@ def test_bvr_config_uses_dynamic_method_and_excludes_unapproved_route_tokens():
     assert "raw_proposal_cap=1024" in text
     assert "per_class_topk=32" in text
     assert "total_candidate_cap=512" in text
+    assert "evaluation = dict(ground_truth_filename=annotation_path)" in text
+    assert "/root/autodl-tmp" not in text
     assert "diagnostic_deterministic_preview" not in text
     normalized = text.replace(ROUTE_LABEL, "").replace("checkpoint_interval", "checkpoint_period")
     for token in FORBIDDEN_ROUTE_TOKENS:
