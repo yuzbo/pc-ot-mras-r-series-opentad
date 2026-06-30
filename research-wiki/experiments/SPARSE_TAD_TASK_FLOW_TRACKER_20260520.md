@@ -11,6 +11,7 @@ This route worktree did not contain the shared tracker file. The shared/main wor
 | 2026-07-01 04:20:30 | `input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_shortdiag.py` | Raw RGB low-res scout acquisition and adapter bridge launchability | Completed diagnostic | Launch gate pass; full train locked | Child `1118197.538` completed, finite loss, no eval/mAP | Use only as launchability evidence |
 | 2026-07-01 06:33:57 | `input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag.py` | Bounded eval diagnostic for detector-health signal | Completed diagnostic, severe-low | `SEVERE_RESULT_GATE_TRIGGERED`; formal full train locked | Child `1118197.539` completed; final diagnostic `Average-mAP=4.42%`, vector `10.92/6.35/3.16/1.28/0.37`; bad count `0` | Preserve evidence, update diagnosis packet, run Pro/Oracle diagnosis before any RBA long train |
 | 2026-07-01 06:45:00 | GitHub API sync | Evidence/code synchronization for external diagnosis | Completed sync | Ordinary push failed; GitHub API sync succeeded | Branch `codex/divergent-rba-rbr-20260701` updated to `88e498cdbba62e981d042a6e3fee22b7edb70f50` with 35 files | Use GitHub URL for Pro/Oracle severe-result diagnosis |
+| 2026-07-01 07:23:37 | RBA-RBR sparse-forward precheck audit | Detector temporal-grid audit only | Local implementation complete | Self-check passed; Pro transport remains `INCOMPLETE`; formal full train locked | Added env-gated `RBA_RBR_GRID_AUDIT_PATH` JSONL audit and fail-closed tests; local commit/GitHub evidence sync only after tests; no training, remote sync, Slurm, or Pro | Use audit in next sparse-forward precheck; do not treat as performance evidence |
 
 ## Timeline
 
@@ -36,3 +37,12 @@ This route worktree did not contain the shared tracker file. The shared/main wor
 - New GitHub commit and confirmed branch ref: `88e498cdbba62e981d042a6e3fee22b7edb70f50`.
 - Synced file count: `35`.
 - External review URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-20260701`.
+
+### 2026-07-01 07:23:37 +08:00 - RBA-RBR detector temporal-grid audit added
+
+- Changed surface: `opentad/models/detectors/irregular_actionformer.py` and `tests/test_rba_rbr_integration.py`.
+- Purpose: severe-low follow-up for true sparse raw-frame handoff / sparse-forward precheck, specifically proving RBA-RBR detector feature positions enter the native-axis temporal grid.
+- Audit behavior: RBA-RBR metadata is detected independently from BVR via `rba_rbr_*`; RBA grid construction requires `irregular_native_axis=True`, requires mask true count to equal `rba_rbr_detector_feature_positions` length, and writes JSONL only when `RBA_RBR_GRID_AUDIT=1` and `RBA_RBR_GRID_AUDIT_PATH` are set.
+- Verification: `python -m py_compile opentad\models\detectors\irregular_actionformer.py tests\test_rba_rbr_integration.py` passed; explicit RBA suite `python -m pytest tests\test_rba_rbr_core.py tests\test_rba_rbr_integration.py -q` -> `18 passed, 5 skipped`.
+- Non-action: no training, no remote sync, no Slurm, no Pro submission, and no GPU job. The optional CPU ledger diagnostic tool was deferred to keep this stage minimal.
+- Decision: this is audit/precheck evidence only, not a mAP/runtime/FLOPs/deploy/paper claim. Formal RBA-RBR full training remains locked; prior Pro transport remains `INCOMPLETE`.
