@@ -96,3 +96,12 @@
 - Updated `tests/test_rba_rbr_integration.py` to verify evaldiag schedule, checkpoint behavior, N16R4 annotation path, and claim locks.
 - Verification passed locally: `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` -> `18 passed, 2 skipped`; RBA formal launch gate remains `gate_pass=true`, `full_train_unlocked=false`.
 - Subagent tooling limitation recorded for this continuation: only spawn/close interfaces were available, with no usable wait/harvest result path, so the main process proceeded with self-check for this bounded config-only diagnostic. Formal full training remains locked.
+
+## 2026-07-01 04:37:45 +08:00 - RBA-RBR bounded eval diagnostic launched on GPU0
+
+- Synced the eval diagnostic config/test/docs to N16R4 route-owned RBA worktree `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49` and committed remote `564a6f3`.
+- Remote verification passed: `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` -> `20 passed`; formal RBA launch gate remains `gate_pass=true`, `full_train_unlocked=false`; evaldiag resolves to `end_epoch=4`, `val_start_epoch=1`, `val_eval_interval=2`, `disable_checkpoint=False`, and the N16R4 annotation path.
+- Launched child `1118197.539 rba_rbr_eval_g0` on protected hold `1118197` GPU0 with `CUDA_VISIBLE_DEVICES=0`.
+- Logdir: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_evaldiag_564a6f3_gpu0_20260701_043542_+0800`.
+- Startup sanity passed: child state `RUNNING|0:0`, no bad pattern for Traceback/OOM/NaN/non-finite/ValueError, and first loss lines reached `[000][00020/00199] Loss=2.0044 ... mem=9344MB` and `[000][00040/00199] Loss=2.4596 ... mem=9344MB`.
+- This remains diagnostic-only detector-health evidence, not a formal full train or final mAP/runtime/deploy/paper claim. Parent hold remains protected and untouched.

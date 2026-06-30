@@ -521,3 +521,34 @@ Review/deployment note:
 - This is a bounded config-only diagnostic progression after the previous raw-scout repair already received `PASS_SUBAGENT_FINAL_REVIEW_ONLY`.
 - The next launch remains diagnostic-only. Any mAP printed by the evaldiag run is an interim detector-health signal, not a final metric claim.
 - Formal full training, runtime/FLOPs, deploy, and paper claims remain locked.
+
+## Remote Eval Diagnostic Launch - 2026-07-01 04:37:45 +08:00
+
+Remote sync and verification:
+
+- Synced the bounded eval diagnostic config/test/docs into N16R4 route-owned worktree `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49`.
+- Remote route-owned commit: `564a6f3`.
+- Remote verification:
+  - `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q`
+    - Result: `20 passed in 26.19s`.
+  - Formal launch gate remains `gate_pass=true`, `full_train_unlocked=false`.
+  - Evaldiag config resolves to N16R4 annotation path `/data/home/sczc063/run/yuzibo/thumos14/annotations/thumos_14_anno.json`, `end_epoch=4`, `val_start_epoch=1`, `val_eval_interval=2`, `disable_checkpoint=False`.
+
+Launch:
+
+- Protected parent hold `1118197 pcot_dbg2g` was not modified, released, cancelled, or replaced.
+- GPU binding: GPU0 only, `CUDA_VISIBLE_DEVICES=0` through the route launcher.
+- Child step: `1118197.539`, job name `rba_rbr_eval_g0`.
+- Log directory: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_evaldiag_564a6f3_gpu0_20260701_043542_+0800`.
+- Startup sanity:
+  - State after launch: `RUNNING|0:0`.
+  - Bad-pattern grep for Traceback, RuntimeError, OOM, killed, NaN, non-finite, ValueError: empty.
+  - First observed training lines:
+    - `[000][00020/00199] Loss=2.0044 cls_loss=0.2843 reg_loss=0.2525 boundary_loss=1.4675 mem=9344MB`.
+    - `[000][00040/00199] Loss=2.4596 cls_loss=0.5467 reg_loss=0.4726 boundary_loss=1.4403 mem=9344MB`.
+
+Current state:
+
+- RBA-RBR bounded eval diagnostic is running on GPU0.
+- This is not a formal full train. Any validation mAP is diagnostic-only detector-health evidence and must not be reported as a final route result.
+- Formal full training, runtime/FLOPs, deploy, and paper claims remain locked.
