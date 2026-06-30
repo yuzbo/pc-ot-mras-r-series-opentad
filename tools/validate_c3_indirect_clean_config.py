@@ -72,6 +72,7 @@ def _validate_cadf_densitymesh_route(cfg, cfg_text):
         "diagnostic_only",
         "backend_control",
         "formal_selector_candidate_locked",
+        "formal_selector_candidate_fast_safe",
     }:
         raise AssertionError(f"Unsupported C3 claim status: {claim_status}")
     if bool(cfg.get("c3_physical_time_postprocess_enabled", False)):
@@ -139,7 +140,21 @@ def _validate_cadf_densitymesh_route(cfg, cfg_text):
         if selector.get("fast_cpu_selection", None) is not True:
             raise AssertionError("CADF loss-select V2 must preserve fast_cpu_selection")
         if bool(cfg.solver.get("amp", False)) or bool(cfg.solver.get("fp16_compress", False)) or bool(cfg.solver.get("ema", False)):
-            raise AssertionError("CADF loss-select V2 keeps AMP/fp16/EMA disabled until the NaN gate is cleared")
+            fast_safe_speed_fix = cfg.get("c3_speed_fix", None) == "loss_select_v2_fast_safe_amp_fp16_withcp_off_diag_off"
+            if not fast_safe_speed_fix:
+                raise AssertionError("CADF loss-select V2 keeps AMP/fp16/EMA disabled unless the fast-safe gate is explicit")
+            if bool(cfg.solver.get("amp", False)) is not True or bool(cfg.solver.get("fp16_compress", False)) is not True:
+                raise AssertionError("CADF loss-select V2 fast-safe gate must enable both AMP and fp16_compress")
+            if bool(cfg.solver.get("ema", False)):
+                raise AssertionError("CADF loss-select V2 fast-safe gate must keep EMA disabled")
+            if selector.get("emit_selection_diagnostics", None) is not False:
+                raise AssertionError("CADF loss-select V2 fast-safe gate must disable per-iteration selection diagnostics")
+            if int(selector.get("selection_diagnostics_interval", -1)) != 0:
+                raise AssertionError("CADF loss-select V2 fast-safe gate must set selection_diagnostics_interval=0")
+            backbone_cfg = cfg.model.get("backbone", {})
+            backbone_inner_cfg = backbone_cfg.get("backbone", {}) if hasattr(backbone_cfg, "get") else {}
+            if backbone_inner_cfg.get("with_cp", None) is not False:
+                raise AssertionError("CADF loss-select V2 fast-safe gate must set model.backbone.backbone.with_cp=False")
         guard = cfg.solver.get("nonfinite_loss_guard", {})
         if not bool(guard.get("enabled", False)):
             raise AssertionError("CADF loss-select V2 must enable train-engine nonfinite_loss_guard")
@@ -169,6 +184,31 @@ def _validate_cadf_densitymesh_route(cfg, cfg_text):
             raise AssertionError("CADF loss-select V2 formal candidate must not use diagnostic alpha schedule")
         if float(selector.get("density_alpha", 0.0)) <= 0.0:
             raise AssertionError("CADF loss-select V2 formal candidate must use positive density_alpha")
+    elif claim_status == "formal_selector_candidate_fast_safe" and bool(cfg.get("c3_loss_select_v2_formal_candidate", False)):
+        if cfg.get("launch_locked_until_user_unlock", None) is not True:
+            raise AssertionError("CADF fast-safe formal candidate must remain locked until user unlock")
+        if cfg.get("c3_loss_select_v2_user_unlock_evidence", None) != "USER_AUTHORIZED_FAST_SAFE_REDEPLOY_AFTER_SLOW_PATH_STOP":
+            raise AssertionError("CADF fast-safe formal candidate must record explicit redeploy authorization evidence")
+        if cfg.get("c3_speed_fix", None) != "loss_select_v2_fast_safe_amp_fp16_withcp_off_diag_off":
+            raise AssertionError("CADF fast-safe formal candidate must use the fast-safe speed-fix marker")
+        if selector.get("fast_cpu_selection", None) is not True:
+            raise AssertionError("CADF fast-safe formal candidate must enable fast_cpu_selection")
+        if selector.get("emit_selection_diagnostics", None) is not False:
+            raise AssertionError("CADF fast-safe formal candidate must disable per-iteration diagnostics")
+        if int(selector.get("selection_diagnostics_interval", -1)) != 0:
+            raise AssertionError("CADF fast-safe formal candidate must set selection_diagnostics_interval=0")
+        if bool(cfg.solver.get("amp", False)) is not True or bool(cfg.solver.get("fp16_compress", False)) is not True:
+            raise AssertionError("CADF fast-safe formal candidate must enable AMP/fp16_compress for speed")
+        if bool(cfg.solver.get("ema", False)):
+            raise AssertionError("CADF fast-safe formal candidate must keep EMA disabled")
+        backbone_cfg = cfg.model.get("backbone", {})
+        backbone_inner_cfg = backbone_cfg.get("backbone", {}) if hasattr(backbone_cfg, "get") else {}
+        if backbone_inner_cfg.get("with_cp", None) is not False:
+            raise AssertionError("CADF fast-safe formal candidate must set model.backbone.backbone.with_cp=False")
+        if "density_alpha_schedule" in selector:
+            raise AssertionError("CADF fast-safe formal candidate must not use diagnostic alpha schedule")
+        if float(selector.get("density_alpha", 0.0)) <= 0.0:
+            raise AssertionError("CADF fast-safe formal candidate must use positive density_alpha")
     elif claim_status == "formal_selector_candidate_locked":
         speed_fix = cfg.get("c3_speed_fix", None)
         speed_fix_enabled = speed_fix == "selector_cpu_once_repair_diag_off_amp_withcp_probe"
