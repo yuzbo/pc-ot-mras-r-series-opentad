@@ -697,6 +697,9 @@ def test_lowres_probe_ledger_export_launcher_is_gpu1_coverage_only_and_strict():
     assert 'VAL_SUBSET_NAME="${VAL_SUBSET_NAME:-validation}"' in text
     assert "--coverage-only" in text
     assert '--probe-window-size "${DENSE_WINDOW_SIZE}"' in text
+    assert '--eval-window-overlap-ratio "${EVAL_WINDOW_OVERLAP_RATIO}"' in text
+    assert "--eval-include-all-windows" in text
+    assert 'EVAL_WINDOW_OVERLAP_RATIO="${EVAL_WINDOW_OVERLAP_RATIO:-0.5}"' in text
     assert 'DENSE_WINDOW_SIZE="${DENSE_WINDOW_SIZE:-768}"' in text
     assert 'TARGET_LEN="${TARGET_LEN:-384}"' in text
     assert "--deploy-selection-ledger" in text

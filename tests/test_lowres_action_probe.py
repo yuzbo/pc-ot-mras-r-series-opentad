@@ -469,6 +469,35 @@ def test_sample_id_resolution_preserves_window_key_from_metas():
     ) == ["video_test_0001|768"]
 
 
+def test_eval_export_window_overrides_make_probe_ledger_detector_grid_aligned():
+    probe = load_probe_module()
+    cfg = {
+        "dataset": {
+            "val": {
+                "window_overlap_ratio": 0.25,
+                "ioa_thresh": 0.75,
+                "filter_gt": True,
+            }
+        }
+    }
+
+    applied = probe.apply_eval_export_window_overrides(
+        cfg,
+        eval_window_overlap_ratio=0.5,
+        eval_include_all_windows=True,
+    )
+
+    assert applied == {
+        "val_window_overlap_ratio": 0.5,
+        "val_ioa_thresh": 0,
+        "val_filter_gt": False,
+        "val_include_all_windows": True,
+    }
+    assert cfg["dataset"]["val"]["window_overlap_ratio"] == 0.5
+    assert cfg["dataset"]["val"]["ioa_thresh"] == 0
+    assert cfg["dataset"]["val"]["filter_gt"] is False
+
+
 def test_indirect_selection_quality_serializes_sample_rows_with_stable_schema():
     probe = load_probe_module()
 
@@ -635,12 +664,17 @@ def test_parse_args_supports_mobilenetv3_32_64_probe_without_detector_path():
             "32",
             "64",
             "--coverage-only",
+            "--eval-window-overlap-ratio",
+            "0.5",
+            "--eval-include-all-windows",
         ]
     )
 
     assert args.probe_model == "mobilenetv3"
     assert args.mobilenet_sizes == [32, 64]
     assert args.coverage_only is True
+    assert args.eval_window_overlap_ratio == 0.5
+    assert args.eval_include_all_windows is True
     assert "pc_ot_mras_a_uniform_scaffold_small_actionness_strict_maxgap" in args.config
     assert args.max_train_batches == 50
     assert args.max_val_batches == 50

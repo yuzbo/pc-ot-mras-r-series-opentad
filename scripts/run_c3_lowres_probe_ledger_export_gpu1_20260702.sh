@@ -41,10 +41,16 @@ case "${EXPORT_SPLIT}" in
   train)
     VAL_DATA_PATH="${VAL_DATA_PATH:-${TRAIN_DATA_PATH}}"
     VAL_SUBSET_NAME="${VAL_SUBSET_NAME:-training}"
+    EVAL_WINDOW_OVERLAP_RATIO="${EVAL_WINDOW_OVERLAP_RATIO:-0.25}"
     ;;
   val|test)
     VAL_DATA_PATH="${VAL_DATA_PATH:-${TEST_DATA_PATH}}"
     VAL_SUBSET_NAME="${VAL_SUBSET_NAME:-validation}"
+    if [[ "${EXPORT_SPLIT}" == "test" ]]; then
+      EVAL_WINDOW_OVERLAP_RATIO="${EVAL_WINDOW_OVERLAP_RATIO:-0.5}"
+    else
+      EVAL_WINDOW_OVERLAP_RATIO="${EVAL_WINDOW_OVERLAP_RATIO:-0.25}"
+    fi
     ;;
   *)
     echo "EXPORT_SPLIT must be train, val, or test; got '${EXPORT_SPLIT}'." >&2
@@ -76,6 +82,7 @@ echo "PROBE_CHECKPOINT=${PROBE_CHECKPOINT}"
 echo "SELECTION_STRATEGY=${SELECTION_STRATEGY}"
 echo "DENSE_WINDOW_SIZE=${DENSE_WINDOW_SIZE}"
 echo "TARGET_LEN=${TARGET_LEN}"
+echo "EVAL_WINDOW_OVERLAP_RATIO=${EVAL_WINDOW_OVERLAP_RATIO}"
 echo "RUN_DIR=${RUN_DIR}"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 
@@ -94,6 +101,8 @@ PROBE_ARGS=(
   --log-every-batches 25
   --fast-lowres-pipeline
   --probe-window-size "${DENSE_WINDOW_SIZE}"
+  --eval-window-overlap-ratio "${EVAL_WINDOW_OVERLAP_RATIO}"
+  --eval-include-all-windows
   --coverage-only
   --coverage-budget-fraction 0.5
   --boundary-radius "${BOUNDARY_RADIUS}"

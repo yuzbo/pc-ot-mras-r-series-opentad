@@ -2810,6 +2810,41 @@ def _build_dataloaders(cfg: Any, *, batch_size: int, num_workers: int, seed: int
     return train_loader, val_loader
 
 
+def apply_eval_export_window_overrides(
+    cfg: Any,
+    *,
+    eval_window_overlap_ratio: float | None = None,
+    eval_include_all_windows: bool = False,
+) -> dict[str, Any]:
+    """Make the probe eval loader enumerate the detector-facing window grid.
+
+    The low-res probe always evaluates through ``cfg.dataset.val`` so it can
+    keep GT-derived diagnostics. For deploy ledgers that feed AdaTAD's
+    ``dataset.test`` split, the window grid must still match the detector test
+    loader exactly; otherwise the fail-closed value-transport loader will miss
+    background or partial-action windows at validation time.
+    """
+
+    dataset = _get_config_section(cfg, "dataset")
+    if not _has_config_section(dataset, "val"):
+        raise ValueError("eval export window overrides require cfg.dataset.val")
+    val_cfg = _get_config_section(dataset, "val")
+    applied: dict[str, Any] = {}
+    if eval_window_overlap_ratio is not None:
+        ratio = float(eval_window_overlap_ratio)
+        if not (0.0 <= ratio < 1.0):
+            raise ValueError("--eval-window-overlap-ratio must be in [0, 1)")
+        val_cfg["window_overlap_ratio"] = ratio
+        applied["val_window_overlap_ratio"] = ratio
+    if eval_include_all_windows:
+        val_cfg["ioa_thresh"] = 0
+        val_cfg["filter_gt"] = False
+        applied["val_ioa_thresh"] = 0
+        applied["val_filter_gt"] = False
+        applied["val_include_all_windows"] = True
+    return applied
+
+
 def _reader_cfg_from_config(cfg: Any) -> dict[str, Any]:
     selector = cfg.model.get("frame_selector", {})
     reader_cfg = dict(selector.get("reader", default_reader_cfg()))
@@ -2892,6 +2927,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--train-subset-name", default=None, help="Optional dataset subset override for train split.")
     parser.add_argument("--val-subset-name", default=None, help="Optional dataset subset override for val split.")
     parser.add_argument("--test-subset-name", default=None, help="Optional dataset subset override for test split.")
+    parser.add_argument(
+        "--eval-window-overlap-ratio",
+        type=float,
+        default=None,
+        help="Override cfg.dataset.val.window_overlap_ratio for detector-grid ledger export.",
+    )
+    parser.add_argument(
+        "--eval-include-all-windows",
+        action="store_true",
+        help="Set cfg.dataset.val.ioa_thresh=0 so deploy ledgers cover background and partial-action windows.",
+    )
     parser.add_argument("--fast-lowres-pipeline", action="store_true", help="Replace video augmentation with 32x32 probe pipeline.")
     parser.add_argument("--probe-window-size", type=int, default=None, help="Optional shorter frame window for fast local diagnostics.")
     parser.add_argument("--save-checkpoint", action="store_true")
@@ -3273,6 +3319,11 @@ def _run_probe_experiment(
         val_subset_name=args.val_subset_name,
         test_subset_name=args.test_subset_name,
     )
+    eval_export_overrides = apply_eval_export_window_overrides(
+        cfg,
+        eval_window_overlap_ratio=args.eval_window_overlap_ratio,
+        eval_include_all_windows=bool(args.eval_include_all_windows),
+    )
     pipeline_rewrites: dict[str, str] = {}
     if args.fast_lowres_pipeline:
         pipeline_rewrites = apply_fast_lowres_pipeline(
@@ -3375,6 +3426,7 @@ def _run_probe_experiment(
         probe_checkpoint=str(run_args.probe_checkpoint) if run_args.probe_checkpoint else None,
         probe_checkpoint_load_result=checkpoint_load_result,
         dataset_overrides=dataset_overrides,
+        eval_export_overrides=eval_export_overrides,
         pipeline_rewrites=pipeline_rewrites,
     )
 
@@ -3448,6 +3500,7 @@ def _run_probe_experiment(
         "purpose": "diagnostic_only_action_vs_background_frame_probe",
         "config": str(run_args.config),
         "dataset_overrides": dataset_overrides,
+        "eval_export_overrides": eval_export_overrides,
         "pipeline_rewrites": pipeline_rewrites,
         "reader_type": reader_cfg.get("type") if reader_cfg is not None else None,
         "reader_cfg": reader_cfg,
