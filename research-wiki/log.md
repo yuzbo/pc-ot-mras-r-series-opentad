@@ -1,5 +1,19 @@
 # Research Log
 
+## 2026-07-01 10:29:01 +08:00 - RBA-RBR guard diagnostic queued
+
+- Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Local guard fix was committed as `e6de60e9 DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3 coverage guard`.
+- GitHub evidence branch pushed without force: `codex/divergent-rba-rbr-coverage-guard-e6de60e9-20260701`.
+- GitHub URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-coverage-guard-e6de60e9-20260701`.
+- Final read-only review agent `019f1b74-27c5-72c2-8a96-fd862dcd7ac6` returned `PASS_SUBAGENT_FINAL_REVIEW_ONLY_FOR_PRECHECK_AND_SHORT_DIAGNOSTIC_ONLY`; no blocking findings. Non-blocking gate hardening was accepted immediately.
+- Accepted hardening: `tools/rba_rbr/validate_rba_rbr_launch_gate.py` now requires `rba_rbr_min_detector_feature_keep=32`, `rba_rbr_max_raw_gap=16`, and `rba_rbr_max_detector_gap=24` in the formal RBA config.
+- Local verification after hardening: `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` -> `21 passed, 5 skipped in 6.02s`; py_compile for RBA implementation and launch gate -> pass; RBA launch gate -> `gate_pass=true`, `full_train_unlocked=false`, `deploy_claim_unlocked=false`, `paper_claim_unlocked=false`; `git diff --check` -> pass with LF/CRLF warnings only.
+- N16R4 GitHub clone hit a transient proxy error (`Empty reply from server`), so a local git bundle was uploaded instead. New route-owned remote tree: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GuardDiag_20260701_e6de60e9_bundle`, HEAD `e6de60e9`, with `data -> ../OpenTAD_Back_check/data` and `pretrained -> ../pretrained`.
+- Remote PRECHECK_ONLY passed: `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` -> `26 passed in 89.21s`; py_compile -> pass; launch gate -> `gate_pass=true`, `full_train_unlocked=false`.
+- Guard `SHORT_DIAGNOSTIC_ONLY` Slurm job submitted as `1132641 rba_guarddiag` with `--exclude=g0030`; initial status was `PENDING`, no node assigned. Logdir: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GuardDiag_20260701_e6de60e9_bundle/logs/rba_rbr_guard_evaldiag_e6de60e9_20260701/`.
+- Protected hold `1118197 pcot_dbg2g` was not modified, released, cancelled, or reused. Formal/full training and all mAP/runtime/FLOPs/sparse-compute/deploy/paper claims remain locked.
+
 ## 2026-07-01 10:07:14 +08:00 - RBA-RBR recoverable coverage guard local fix
 
 - Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
