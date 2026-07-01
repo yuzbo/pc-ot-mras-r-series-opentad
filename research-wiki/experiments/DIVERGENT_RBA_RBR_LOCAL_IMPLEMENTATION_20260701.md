@@ -754,7 +754,7 @@ GitHub sync:
 
 - Ordinary push to existing branch `codex/divergent-rba-rbr-20260701` was rejected as non-fast-forward.
 - No force push or overwrite was attempted.
-- Pushed the current route-owned state from commit `efbb4eea` to a new evidence branch:
+- Pushed the current route-owned state to a new evidence branch, then fast-forwarded it to commit `314889a9` after recording tracker/log evidence:
   `codex/divergent-rba-rbr-status-efbb4eea-20260701`.
 - GitHub URL:
   `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-status-efbb4eea-20260701`.
