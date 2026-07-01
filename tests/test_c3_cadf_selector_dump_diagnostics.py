@@ -35,6 +35,10 @@ def test_aggregate_summary_keeps_diagnostic_only_flags_and_gap_percentiles():
             boundary_near_rate=0.25,
             gt_remap_kept_count=2,
             gt_remap_length_ratio=0.75,
+            action_inside_selected_fraction=0.50,
+            action_inside_coverage_fraction=0.60,
+            action_inside_max_gap=6,
+            action_inside_mean_gap=3.0,
         ),
         dict(
             video_name="v2",
@@ -49,6 +53,10 @@ def test_aggregate_summary_keeps_diagnostic_only_flags_and_gap_percentiles():
             boundary_near_rate=0.50,
             gt_remap_kept_count=1,
             gt_remap_length_ratio=0.40,
+            action_inside_selected_fraction=0.25,
+            action_inside_coverage_fraction=0.30,
+            action_inside_max_gap=14,
+            action_inside_mean_gap=7.0,
         ),
     ]
 
@@ -72,6 +80,11 @@ def test_aggregate_summary_keeps_diagnostic_only_flags_and_gap_percentiles():
     assert summary["repair_count_mean"] == 4.0
     assert summary["density_entropy_mean"] == pytest.approx(0.7)
     assert summary["boundary_near_rate_mean"] == pytest.approx(0.375)
+    assert summary["action_inside_selected_fraction_mean"] == pytest.approx(0.375)
+    assert summary["action_inside_coverage_fraction_mean"] == pytest.approx(0.45)
+    assert summary["action_inside_mean_gap_mean"] == pytest.approx(5.0)
+    assert summary["action_inside_max_gap"]["mean"] == pytest.approx(10.0)
+    assert summary["action_inside_max_gap"]["p90"] == pytest.approx(13.2)
     assert summary["warnings"] == ["offline GT diagnostics only"]
 
 
@@ -92,6 +105,64 @@ def test_compute_gt_diagnostics_reports_kept_length_ratio_and_boundary_rate():
     assert stats["boundary_near_count"] == 6
     assert stats["boundary_near_rate"] == pytest.approx(1.0)
     assert stats["boundary_radius"] == 1
+
+
+def test_compute_gt_diagnostics_reports_no_action_inside_fields_without_gt():
+    meta = {"window_size": 384, "c3_indirect_valid_len": 12}
+
+    stats = compute_gt_diagnostics(meta, selected_dense_indices=[1, 3, 5], gt_segments=None)
+
+    assert stats["action_inside_segment_count"] == 0
+    assert stats["action_inside_selected_count"] == 0
+    assert stats["action_inside_selected_fraction"] == 0.0
+    assert stats["action_inside_coverage_fraction"] == 0.0
+    assert stats["action_inside_max_gap"] is None
+    assert stats["action_inside_mean_gap"] is None
+
+
+def test_compute_gt_diagnostics_counts_selected_indices_inside_actions():
+    meta = {"window_size": 384, "c3_indirect_valid_len": 12}
+    selected = [1, 2, 4, 5, 8, 10]
+    gt_segments = [[2.0, 6.0], [8.0, 10.0]]
+
+    stats = compute_gt_diagnostics(meta, selected, gt_segments)
+
+    assert stats["action_inside_segment_count"] == 2
+    assert stats["action_inside_selected_count"] == 4
+    assert stats["action_inside_selected_fraction"] == pytest.approx(4 / 6)
+    assert stats["action_inside_coverage_fraction"] == pytest.approx(4 / 6)
+    assert stats["action_inside_max_gap"] == 1
+    assert stats["action_inside_mean_gap"] == pytest.approx(1.0)
+
+
+def test_compute_gt_diagnostics_reports_zero_action_coverage_when_selected_outside_actions():
+    meta = {"window_size": 384, "c3_indirect_valid_len": 12}
+    selected = [0, 1, 8, 9, 10]
+    gt_segments = [[3.0, 7.0]]
+
+    stats = compute_gt_diagnostics(meta, selected, gt_segments)
+
+    assert stats["action_inside_segment_count"] == 1
+    assert stats["action_inside_selected_count"] == 0
+    assert stats["action_inside_selected_fraction"] == 0.0
+    assert stats["action_inside_coverage_fraction"] == 0.0
+    assert stats["action_inside_max_gap"] == 4
+    assert stats["action_inside_mean_gap"] == pytest.approx(4.0)
+
+
+def test_compute_gt_diagnostics_reports_large_gap_inside_long_action():
+    meta = {"window_size": 384, "c3_indirect_valid_len": 24}
+    selected = [2, 3, 18, 20]
+    gt_segments = [[2.0, 21.0]]
+
+    stats = compute_gt_diagnostics(meta, selected, gt_segments)
+
+    assert stats["action_inside_segment_count"] == 1
+    assert stats["action_inside_selected_count"] == 4
+    assert stats["action_inside_selected_fraction"] == 1.0
+    assert stats["action_inside_coverage_fraction"] == pytest.approx(4 / 19)
+    assert stats["action_inside_max_gap"] == 14
+    assert stats["action_inside_mean_gap"] == pytest.approx((14 + 1) / 2)
 
 
 def test_build_record_from_meta_merges_selector_and_gt_diagnostics():
@@ -128,6 +199,8 @@ def test_build_record_from_meta_merges_selector_and_gt_diagnostics():
     assert record["density_entropy"] == 0.9
     assert record["gt_remap_kept_count"] == 1
     assert record["boundary_near_rate"] > 0.0
+    assert record["action_inside_selected_fraction"] == pytest.approx(2 / 6)
+    assert record["action_inside_coverage_fraction"] == pytest.approx(2 / 4)
 
 
 def test_config_gate_accepts_fast_safe_after_forcing_dump_diagnostics():

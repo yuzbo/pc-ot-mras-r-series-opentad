@@ -105,6 +105,84 @@ def _covered_length(segment, intervals):
     return total
 
 
+def _action_dense_range(segment, valid_len):
+    """Discrete diagnostic approximation: dense positions p with start <= p < end."""
+    if valid_len <= 0:
+        return None
+    start = max(0.0, min(float(valid_len), float(segment[0])))
+    end = max(0.0, min(float(valid_len), float(segment[1])))
+    first = max(0, int(math.ceil(start)))
+    stop = min(int(valid_len), int(math.ceil(end)))
+    if stop <= first:
+        return None
+    return first, stop
+
+
+def _positive_action_gaps(first, stop, selected_set):
+    selected_inside = sorted(pos for pos in selected_set if first <= pos < stop)
+    if not selected_inside:
+        return [stop - first]
+
+    gaps = []
+    leading = selected_inside[0] - first
+    if leading > 0:
+        gaps.append(leading)
+    for prev, curr in zip(selected_inside, selected_inside[1:]):
+        gap = curr - prev - 1
+        if gap > 0:
+            gaps.append(gap)
+    trailing = stop - selected_inside[-1] - 1
+    if trailing > 0:
+        gaps.append(trailing)
+    return gaps
+
+
+def _compute_action_inside_diagnostics(segments, selected, valid_len):
+    selected_valid = [int(x) for x in selected if 0 <= int(x) < valid_len]
+    selected_set = set(selected_valid)
+    action_positions = set()
+    segment_ranges = []
+    gap_values = []
+
+    for segment in segments:
+        dense_range = _action_dense_range(segment, valid_len)
+        if dense_range is None:
+            continue
+        first, stop = dense_range
+        segment_ranges.append(dense_range)
+        action_positions.update(range(first, stop))
+        gap_values.extend(_positive_action_gaps(first, stop, selected_set))
+
+    selected_inside_count = sum(1 for pos in selected_valid if pos in action_positions)
+    selected_denominator = len(selected_valid)
+    covered_action_count = len(action_positions.intersection(selected_set))
+    action_dense_count = len(action_positions)
+
+    if not segment_ranges:
+        max_gap = None
+        mean_gap = None
+    elif gap_values:
+        max_gap = max(gap_values)
+        mean_gap = sum(gap_values) / float(len(gap_values))
+    else:
+        max_gap = 0
+        mean_gap = 0.0
+
+    return {
+        "action_inside_segment_count": len(segment_ranges),
+        "action_inside_dense_count": action_dense_count,
+        "action_inside_selected_count": selected_inside_count,
+        "action_inside_selected_fraction": (
+            selected_inside_count / float(selected_denominator) if selected_denominator > 0 else 0.0
+        ),
+        "action_inside_coverage_fraction": (
+            covered_action_count / float(action_dense_count) if action_dense_count > 0 else 0.0
+        ),
+        "action_inside_max_gap": max_gap,
+        "action_inside_mean_gap": mean_gap,
+    }
+
+
 def compute_gt_diagnostics(meta, selected_dense_indices, gt_segments=None, boundary_radius=2):
     """Offline-only GT statistics; never feeds back into selector decisions."""
     selected = [int(x) for x in _as_plain_list(selected_dense_indices)]
@@ -151,7 +229,7 @@ def compute_gt_diagnostics(meta, selected_dense_indices, gt_segments=None, bound
         boundary_hits = sum(1 for hit in covered_boundaries if hit)
 
     selected_count = len(selected)
-    return {
+    stats = {
         "gt_diagnostic_only": True,
         "gt_remap_kept_count": kept_count,
         "gt_remap_total_count": len(segments),
@@ -166,6 +244,8 @@ def compute_gt_diagnostics(meta, selected_dense_indices, gt_segments=None, bound
         "boundary_near_rate": selected_boundary_near / float(selected_count) if selected_count > 0 else 0.0,
         "boundary_radius": int(boundary_radius),
     }
+    stats.update(_compute_action_inside_diagnostics(segments, selected, valid_len))
+    return stats
 
 
 def build_record_from_meta(meta, gt_segments=None, include_selected_indices=False, boundary_radius=2):
@@ -251,6 +331,9 @@ def _percentile(values, q):
 def aggregate_summary(records, config_path, checkpoint_path, split, warnings=None):
     warnings = list(warnings or [])
     max_gaps = [row.get("max_gap", 0) for row in records]
+    action_inside_max_gaps = [
+        row.get("action_inside_max_gap") for row in records if row.get("action_inside_max_gap") is not None
+    ]
     status = "ok" if records else "empty"
     return {
         "status": status,
@@ -284,6 +367,17 @@ def aggregate_summary(records, config_path, checkpoint_path, split, warnings=Non
         "gt_remap_kept_fraction_mean": _mean(records, "gt_remap_kept_fraction"),
         "gt_remap_length_ratio_mean": _mean(records, "gt_remap_length_ratio"),
         "boundary_near_rate_mean": _mean(records, "boundary_near_rate"),
+        "action_inside_selected_fraction_mean": _mean(records, "action_inside_selected_fraction"),
+        "action_inside_coverage_fraction_mean": _mean(records, "action_inside_coverage_fraction"),
+        "action_inside_mean_gap_mean": _mean(records, "action_inside_mean_gap"),
+        "action_inside_segment_count_mean": _mean(records, "action_inside_segment_count"),
+        "action_inside_selected_count_mean": _mean(records, "action_inside_selected_count"),
+        "action_inside_max_gap": {
+            "mean": _mean(records, "action_inside_max_gap"),
+            "p50": _percentile(action_inside_max_gaps, 0.50),
+            "p90": _percentile(action_inside_max_gaps, 0.90),
+            "p95": _percentile(action_inside_max_gaps, 0.95),
+        },
         "warnings": warnings,
     }
 
@@ -353,6 +447,13 @@ def _record_fieldnames(records):
         "gt_remap_kept_fraction",
         "gt_remap_length_ratio",
         "boundary_near_rate",
+        "action_inside_segment_count",
+        "action_inside_dense_count",
+        "action_inside_selected_count",
+        "action_inside_selected_fraction",
+        "action_inside_coverage_fraction",
+        "action_inside_max_gap",
+        "action_inside_mean_gap",
         "diagnostic_only",
         "official_map_claim",
     ]
