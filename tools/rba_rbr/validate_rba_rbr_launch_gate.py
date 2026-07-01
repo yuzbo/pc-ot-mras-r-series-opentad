@@ -53,6 +53,11 @@ def _config_text_is_clean(config_path):
         "rba_rbr_max_raw_gap=16": "recoverable raw gap guard",
         "rba_rbr_max_detector_gap=24": "recoverable detector gap guard",
         f'rba_rbr_adapter_bridge_mode="{ADAPTER_FIXED_LENGTH_PADDED_BRIDGE}"': "adapter bridge mode",
+        "rba_rbr_postprocess_guard=dict(": "RBA-RBR postprocess guard",
+        "require_rba_meta=True": "RBA-RBR postprocess metadata fail-closed guard",
+        "raw_proposal_cap=1024": "RBA-RBR raw proposal cap",
+        "per_class_topk=32": "RBA-RBR per-class postprocess cap",
+        "total_candidate_cap=512": "RBA-RBR total postprocess cap",
     }
     for token, label in required.items():
         if token not in text:

@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -63,6 +64,12 @@ def test_rba_rbr_config_resolves_and_stays_fail_closed():
     assert cfg.dataset.train.pipeline[2].rba_rbr_max_raw_gap == 16
     assert cfg.dataset.train.pipeline[2].rba_rbr_max_detector_gap == 24
     assert cfg.dataset.train.pipeline[2].rba_rbr_feature_stride == 2
+    assert cfg.post_processing.pre_nms_topk == 512
+    assert cfg.post_processing.rba_rbr_postprocess_guard.enabled is True
+    assert cfg.post_processing.rba_rbr_postprocess_guard.require_rba_meta is True
+    assert cfg.post_processing.rba_rbr_postprocess_guard.raw_proposal_cap == 1024
+    assert cfg.post_processing.rba_rbr_postprocess_guard.per_class_topk == 32
+    assert cfg.post_processing.rba_rbr_postprocess_guard.total_candidate_cap == 512
     assert cfg.dataset.val.pipeline[2].rba_rbr_train_value_labels is False
     assert cfg.dataset.test.pipeline[2].rba_rbr_train_value_labels is False
     required_meta = {
@@ -465,6 +472,124 @@ def test_rba_rbr_detector_grid_fails_closed_on_mask_position_mismatch():
 
     with pytest.raises(ValueError, match="RBA-RBR detector temporal grid mask true count"):
         detector._temporal_grid_from_metas([meta], masks)
+
+
+def test_rba_rbr_postprocess_guard_records_route_audit_and_caps_candidates(tmp_path):
+    _require_torch_for_detector_grid()
+    import torch
+
+    from opentad.models.detectors.irregular_actionformer import IrregularActionFormer
+
+    audit_path = tmp_path / "rba_rbr_postprocess_audit.jsonl"
+    old_enabled = os.environ.get("RBA_RBR_POSTPROCESS_AUDIT")
+    old_path = os.environ.get("RBA_RBR_POSTPROCESS_AUDIT_PATH")
+    try:
+        os.environ["RBA_RBR_POSTPROCESS_AUDIT"] = "1"
+        os.environ["RBA_RBR_POSTPROCESS_AUDIT_PATH"] = str(audit_path)
+        detector = object.__new__(IrregularActionFormer)
+        proposal_count = 120
+        num_classes = 5
+        starts = torch.arange(float(proposal_count), dtype=torch.float32)
+        proposals = torch.stack([starts, starts + 1.0], dim=1)
+        scores = torch.full((proposal_count, num_classes), 0.01, dtype=torch.float32)
+        scores[:, 2] = torch.linspace(0.02, 0.80, proposal_count)
+        metas = [
+            {
+                "video_name": "rba_postprocess_guard_unit",
+                "fps": 30.0,
+                "duration": 12.0,
+                "snippet_stride": 1,
+                "offset_frames": 0,
+                "window_start_frame": 0,
+                "irregular_native_axis": True,
+                "rba_rbr_ledger": {
+                    "method": "rba_rbr_recoverable_bracketing",
+                    "valid_k": 84,
+                    "detector_feature_valid_k": 42,
+                },
+                "rba_rbr_detector_feature_positions": np.asarray([2.0, 8.0, 16.0], dtype=np.float32),
+                "rba_rbr_detector_feature_valid_len": 128.0,
+            }
+        ]
+        post_cfg = SimpleNamespace(
+            pre_nms_thresh=0.001,
+            pre_nms_topk=20,
+            sliding_window=True,
+            nms=None,
+            rba_rbr_postprocess_guard=dict(
+                enabled=True,
+                require_rba_meta=True,
+                raw_proposal_cap=50,
+                per_class_topk=3,
+                total_candidate_cap=12,
+                min_score=0.001,
+            ),
+        )
+
+        results = detector.post_processing(([proposals], [scores]), metas, post_cfg, [f"class_{i}" for i in range(num_classes)])
+        rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+
+        assert rows[0]["audit_type"] == "rba_rbr_postprocess_proposal_count"
+        assert rows[0]["route_label"] == ROUTE_LABEL
+        assert rows[0]["guard_active"] is True
+        assert rows[0]["candidate_generation_mode"] == "rba_rbr_guarded_raw_cap_per_class"
+        assert rows[0]["raw_proposal_count"] == proposal_count
+        assert rows[0]["flattened_candidate_count"] == proposal_count * num_classes
+        assert rows[0]["guard_raw_selected_count"] == 50
+        assert rows[0]["guard_class_candidate_count_before_global_topk"] <= 3 * num_classes
+        assert rows[0]["pre_nms_selected_count"] <= 12
+        assert rows[0]["final_result_count"] <= 12
+        assert rows[0]["raw_valid_k"] == 84
+        assert rows[0]["detector_feature_valid_k"] == 42
+        assert getattr(detector, "_last_rba_rbr_postprocess_audit")[0]["route_label"] == ROUTE_LABEL
+        assert "rba_postprocess_guard_unit" in results
+    finally:
+        if old_enabled is None:
+            os.environ.pop("RBA_RBR_POSTPROCESS_AUDIT", None)
+        else:
+            os.environ["RBA_RBR_POSTPROCESS_AUDIT"] = old_enabled
+        if old_path is None:
+            os.environ.pop("RBA_RBR_POSTPROCESS_AUDIT_PATH", None)
+        else:
+            os.environ["RBA_RBR_POSTPROCESS_AUDIT_PATH"] = old_path
+
+
+def test_rba_rbr_postprocess_guard_fails_closed_without_rba_meta():
+    _require_torch_for_detector_grid()
+    import torch
+
+    from opentad.models.detectors.irregular_actionformer import IrregularActionFormer
+
+    detector = object.__new__(IrregularActionFormer)
+    proposals = torch.tensor([[0.0, 1.0], [2.0, 3.0]], dtype=torch.float32)
+    scores = torch.full((2, 3), 0.1, dtype=torch.float32)
+    metas = [
+        {
+            "video_name": "non_rba_guard_should_fail",
+            "fps": 30.0,
+            "duration": 2.0,
+            "snippet_stride": 1,
+            "offset_frames": 0,
+            "window_start_frame": 0,
+        }
+    ]
+    post_cfg = SimpleNamespace(
+        pre_nms_thresh=0.001,
+        pre_nms_topk=512,
+        sliding_window=True,
+        nms=None,
+        rba_rbr_postprocess_guard=dict(
+            enabled=True,
+            require_rba_meta=True,
+            raw_proposal_cap=1024,
+            per_class_topk=32,
+            total_candidate_cap=512,
+            min_score=0.001,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="no RBA-RBR metadata"):
+        detector.post_processing(([proposals], [scores]), metas, post_cfg, ["a", "b", "c"])
 
 
 def test_bvr_detector_grid_path_is_not_captured_by_rba_rbr_audit(tmp_path):

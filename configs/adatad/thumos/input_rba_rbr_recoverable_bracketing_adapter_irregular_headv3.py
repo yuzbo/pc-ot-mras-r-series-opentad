@@ -187,6 +187,19 @@ solver = dict(
     test=dict(batch_size=1, num_workers=2),
 )
 
+post_processing = dict(
+    pre_nms_topk=512,
+    rba_rbr_postprocess_guard=dict(
+        enabled=True,
+        require_rba_meta=True,
+        raw_proposal_cap=1024,
+        per_class_topk=32,
+        total_candidate_cap=512,
+        min_score=0.001,
+    ),
+    nms=dict(max_seg_num=512),
+)
+
 workflow = dict(
     checkpoint_interval=10,
     disable_checkpoint=False,

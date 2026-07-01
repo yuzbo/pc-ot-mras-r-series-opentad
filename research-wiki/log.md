@@ -290,3 +290,11 @@
 - Added focused tests proving the RBA audit path, the fail-closed mismatch behavior, and that BVR grid auditing remains separately labeled.
 - Verification passed: `python -m py_compile opentad\models\detectors\irregular_actionformer.py tests\test_rba_rbr_integration.py`; `python -m pytest tests\test_rba_rbr_core.py tests\test_rba_rbr_integration.py -q` -> `18 passed, 5 skipped`; `git diff --check` passed with line-ending warnings only.
 - This is severe-result diagnosis infrastructure only. No training, remote sync, Slurm, Pro decision, mAP/runtime/FLOPs/deploy/paper claim, or full-train unlock was produced.
+
+## 2026-07-01 14:09:53 +08:00 - RBA-RBR postprocess candidate guard repair
+
+- Trigger: corrected guard diagnostic child `1118197.560 rba_guard_g0` produced severe-low first validation (`Average-mAP=0.22%`) with `411700` predictions despite restored RBA grid-audit coverage/gap constraints.
+- Added RBA-specific postprocess guard/audit in `IrregularActionFormer`: `rba_rbr_postprocess_guard` fails closed without RBA metadata, caps raw proposals/per-class/global candidates, and writes `RBA_RBR_POSTPROCESS_AUDIT_PATH` rows labeled `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Updated RBA config and launch gate to require `pre_nms_topk=512`, `raw_proposal_cap=1024`, `per_class_topk=32`, and `total_candidate_cap=512`.
+- Verification: py_compile passed; `python -m pytest tests\test_rba_rbr_integration.py -q` -> `8 passed, 7 skipped`; synthetic ledger build plus launch gate -> `gate_pass=true`, `full_train_unlocked=false`; `git diff --check` passed with LF/CRLF warnings only.
+- No remote sync, Slurm launch, mAP/runtime/FLOPs/sparse-compute/deploy/paper claim, or formal/full-train unlock was produced by this repair. Next allowed step is a route-owned `SHORT_DIAGNOSTIC_ONLY` postprocess-guard run after current `.560` evidence is harvested or if a user override chooses to replace it.
