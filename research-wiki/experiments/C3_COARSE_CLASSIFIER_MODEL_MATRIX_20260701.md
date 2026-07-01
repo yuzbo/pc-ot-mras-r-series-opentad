@@ -186,6 +186,15 @@ Result:
 - Linux focused pytest: `40 passed`;
 - marker: `REMOTE_C3_MATRIX_ZOO_PRECHECK_PASS_49c793a`.
 
+Frame-segmentation reader extension:
+
+- commit: `6a0c7b3` (`Add frame segmentation coarse probe variants`);
+- remote HEAD after sync: `6a0c7b3`;
+- launcher `bash -n`: pass for TCN and matrix-zoo GPU1 launchers;
+- py_compile: pass for `train_lowres_action_probe.py` and its focused tests;
+- Linux focused pytest: `41 passed in 7.37s`;
+- marker: `REMOTE_C3_FRAME_SEG_READER_PRECHECK_PASS_6a0c7b3`.
+
 No GPU, Slurm child, training, evaluation, detector mAP, runtime/FLOPs, deploy,
 paper claim, GPU0 fallback, or BH-SDC/DIVERGENT action occurred during this
 static verification.
