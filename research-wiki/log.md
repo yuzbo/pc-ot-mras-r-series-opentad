@@ -16,3 +16,18 @@
 - Local verification passed for py_compile, formal/combo validators, 13-config CADF validator matrix, direct formal semantic harness, negative validator harness for unlock/AMP/alpha0/PQR, and launcher `bash -n`. Focused pytest remains blocked before collection by Windows torch `c10.dll` initialization.
 - Required final read-only review is incomplete: Claude review job `35e433c4bf4742c8b73d57af8df38b5a` failed with non-JSON output; `llm_chat` lacked `LLM_API_KEY`; MiniMax lacked `MINIMAX_API_KEY`. No valid final review PASS was recorded.
 - No SSH, Slurm, remote sync, remote training, mAP evaluation, evaluator/postprocess edit, ranking edit, checkpoint cleanup, or formal claim was performed. Formal candidate remains locked pending user-reported combo child `.376` old-window pass evidence.
+
+## 2026-07-01 +0800
+
+- Prepared local-only C3 oracle-shell indirect candidate in `OpenTAD_C3OracleShellIndirect_Worktree_20260701`.
+- Added `coarse_score_oracle_shell_subsample` in `LoadFrames`, fail-closed coarse score cache manifest/schema helpers, cache builder, oracle-vs-indirect distribution diagnostic, configs, validator, GPU1-only local launchers, and focused tests.
+- The changed surface is input sampling only: dense 768 window, selected 384 frames, masks, GT remap, and irregular metadata follow the oracle shell; only `keep_positions` comes from coarse action score/uncertainty/change instead of GT.
+- Local RED/GREEN evidence recorded in `research-wiki/experiments/C3_ORACLE_SHELL_INDIRECT_20260701.md`; focused pytest passed locally. No SSH, Slurm, remote deploy, long training, mAP evaluation, Pro review, commit, or push was performed.
+- Current status: implementation candidate staged; final mAP and oracle-vs-indirect dataset-wide distribution gaps are pending real coarse score cache plus main-process N16R4 GPU1 deployment.
+
+## 2026-07-01 +0800
+
+- Updated C3 oracle-shell indirect candidate with a deploy-visible coarse score cache exporter from trained selector checkpoints and an annotation/cache-based oracle-vs-indirect distribution diagnostic.
+- Cache protocol is now `axis=global_snippet_index`, `uses_gt=false`, with route labels `C3_MAINLINE_OPTIMIZATION` / `C3_ORIGINAL_OPTIMIZATION_ROUTE`.
+- Verification passed: focused pytest `13 passed`, py_compile for changed Python files, `bash -n` for GPU1 launchers, and config validator for precheck/full train.
+- No remote Slurm launch or mAP claim yet; next step is final read-only review, GitHub sync, remote cache export, precheck, and GPU1 full-train launch.

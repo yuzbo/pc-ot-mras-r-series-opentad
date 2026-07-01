@@ -49,6 +49,32 @@ def load_predictions(metas, infer_cfg):
         return load_single_prediction(metas, infer_cfg.folder)
 
 
+def selected_axis_to_dense_axis(coords, meta):
+    positions = meta.get("irregular_selected_positions", None)
+    valid_len = meta.get("irregular_selected_valid_len", None)
+    if positions is None or valid_len is None or meta.get("irregular_native_axis", False):
+        return coords
+
+    positions = torch.as_tensor(positions, dtype=coords.dtype, device=coords.device).reshape(-1)
+    if positions.numel() == 0:
+        return coords
+
+    xp = torch.arange(positions.numel(), dtype=coords.dtype, device=coords.device)
+    xp = torch.cat([xp, xp.new_tensor([float(positions.numel())])], dim=0)
+    fp = torch.cat([positions, positions.new_tensor([float(valid_len)])], dim=0)
+
+    coord_shape = coords.shape
+    coord_flat = coords.reshape(-1).clamp(min=0.0, max=float(positions.numel()))
+    right_idx = torch.searchsorted(xp, coord_flat, right=True).clamp(min=1, max=xp.numel() - 1)
+    left_idx = right_idx - 1
+    x0 = xp[left_idx]
+    x1 = xp[right_idx]
+    y0 = fp[left_idx]
+    y1 = fp[right_idx]
+    weight = (coord_flat - x0) / (x1 - x0).clamp(min=1e-6)
+    return (y0 + weight * (y1 - y0)).reshape(coord_shape)
+
+
 def convert_to_seconds(segments, meta):
     if meta["fps"] == -1:  # resize setting, like in anet / hacs
         segments = segments / meta["resize_length"] * meta["duration"]
@@ -56,6 +82,14 @@ def convert_to_seconds(segments, meta):
         snippet_stride = meta["snippet_stride"]
         offset_frames = meta["offset_frames"]
         window_start_frame = meta["window_start_frame"] if "window_start_frame" in meta.keys() else 0
+        irregular_positions = meta.get("irregular_selected_positions", None)
+        irregular_valid_len = meta.get("irregular_selected_valid_len", None)
+        if (
+            irregular_positions is not None
+            and irregular_valid_len is not None
+            and not meta.get("irregular_native_axis", False)
+        ):
+            segments = selected_axis_to_dense_axis(segments, meta)
         segments = (segments * snippet_stride + window_start_frame + offset_frames) / meta["fps"]
 
     # truncate all boundaries within [0, duration]
