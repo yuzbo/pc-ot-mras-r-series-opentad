@@ -50,7 +50,7 @@ case "${EXPORT_SPLIT}" in
     ;;
   val|test)
     VAL_DATA_PATH="${VAL_DATA_PATH:-${TEST_DATA_PATH}}"
-    VAL_SUBSET_NAME="${VAL_SUBSET_NAME:-test}"
+    VAL_SUBSET_NAME="${VAL_SUBSET_NAME:-validation}"
     ;;
   *)
     echo "EXPORT_SPLIT must be train, val, or test; got '${EXPORT_SPLIT}'." >&2
