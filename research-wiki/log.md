@@ -1,5 +1,27 @@
 # Research Log
 
+## 2026-07-01 15:34:10 +08:00 Asia/Shanghai
+
+Route: `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`
+
+Owned worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_MDLKnot_HandoffSpeedFix_Worktree_20260701`
+
+Owned branch: `codex/divergent-mdl-knot-handoff-speedfix-20260701`
+
+Event: MDL-Knot handoff speedfix / interval allowlist evidence synced to GitHub.
+
+Summary:
+
+- Retried GitHub synchronization from the route-owned worktree after the earlier port 443 timeout.
+- Successfully pushed local commit `493ed2a850e15c67cd0be1dfffe9a1792c239065` to GitHub branch `codex/divergent-mdl-knot-handoff-speedfix-493ed2a-20260701`.
+- GitHub URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-mdl-knot-handoff-speedfix-493ed2a-20260701`.
+- No code change, remote sync to N16R4, Slurm, training, evaluation, `tools/test.py`, Pro/Oracle/Rosetta, mAP/runtime/FLOPs/deploy/paper claim, or sparse-compute claim was run or unlocked by this GitHub sync.
+
+Next action:
+
+- Use this GitHub branch as the source for a bounded remote `SHORT_DIAGNOSTIC_ONLY` resync/rerun when resources and route gates allow.
+- Formal/full training remains locked.
+
 ## 2026-07-01 14:37:21 +08:00 Asia/Shanghai
 
 Route: `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`

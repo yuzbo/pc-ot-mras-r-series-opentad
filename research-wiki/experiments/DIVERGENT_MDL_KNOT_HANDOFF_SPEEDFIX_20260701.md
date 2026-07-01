@@ -112,6 +112,16 @@ Timestamp: 2026-07-01 14:37:21 +08:00 Asia/Shanghai
 - Git push attempt to `pcot-yuzbo` failed once with GitHub port 443 connectivity timeout; no retry was made.
 - Status remains `PRECHECK/SHORT_DIAGNOSTIC_ONLY`; formal full training is still locked.
 
+## GitHub Evidence Sync
+
+Timestamp: 2026-07-01 15:34:10 +08:00 Asia/Shanghai
+
+- Retried GitHub synchronization from the route-owned worktree.
+- Successfully pushed local commit `493ed2a850e15c67cd0be1dfffe9a1792c239065` to branch `codex/divergent-mdl-knot-handoff-speedfix-493ed2a-20260701`.
+- GitHub URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-mdl-knot-handoff-speedfix-493ed2a-20260701`.
+- This sync does not change the claim state: no N16R4 remote sync, Slurm, training, evaluation, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper claim, or sparse-compute claim was produced.
+- Next allowed action is bounded remote `SHORT_DIAGNOSTIC_ONLY` resync/rerun only; formal/full training remains locked.
+
 ## Claim State
 
 No mAP claim exists.
