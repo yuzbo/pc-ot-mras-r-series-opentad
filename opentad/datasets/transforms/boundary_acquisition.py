@@ -1,7 +1,11 @@
 import json
+import re
 from pathlib import Path
 
 import numpy as np
+
+
+INTEGER_TEXT_RE = re.compile(r"^[+-]?(?:0|[1-9][0-9]*)$")
 
 
 FORBIDDEN_VALUE_TRANSPORT_FLAGS = (
@@ -26,6 +30,18 @@ def _is_true(value):
     return False
 
 
+def _strict_int(value, name):
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if INTEGER_TEXT_RE.fullmatch(text):
+            return int(text)
+    raise ValueError(f"{name} must be an integer")
+
+
 def validate_value_transport_selection_row(row, line_no=0, require_deployable=True):
     if not isinstance(row, dict):
         raise ValueError(f"line {line_no}: value-transport row must be a JSON object")
@@ -37,12 +53,7 @@ def validate_value_transport_selection_row(row, line_no=0, require_deployable=Tr
         raise ValueError(f"line {line_no}: selected_positions must be a non-empty list")
     positions = []
     for idx, value in enumerate(raw_positions):
-        if isinstance(value, bool):
-            raise ValueError(f"line {line_no}: selected_positions[{idx}] must be an integer")
-        try:
-            positions.append(int(value))
-        except (TypeError, ValueError):
-            raise ValueError(f"line {line_no}: selected_positions[{idx}] must be an integer") from None
+        positions.append(_strict_int(value, f"line {line_no}: selected_positions[{idx}]"))
     if positions != sorted(positions):
         raise ValueError(f"line {line_no}: selected_positions must be sorted")
     if len(set(positions)) != len(positions):
@@ -51,13 +62,13 @@ def validate_value_transport_selection_row(row, line_no=0, require_deployable=Tr
         raise ValueError(f"line {line_no}: selected_positions must be non-negative")
 
     selected_count = row.get("selected_count")
-    if selected_count is not None and int(selected_count) != len(positions):
+    if selected_count is not None and _strict_int(selected_count, f"line {line_no}: selected_count") != len(positions):
         raise ValueError(f"line {line_no}: selected_count does not match selected_positions")
     valid_len = row.get("valid_len")
     dense_len = row.get("dense_len")
-    if valid_len is not None and positions[-1] >= int(valid_len):
+    if valid_len is not None and positions[-1] >= _strict_int(valid_len, f"line {line_no}: valid_len"):
         raise ValueError(f"line {line_no}: selected_positions exceed valid_len")
-    if dense_len is not None and positions[-1] >= int(dense_len):
+    if dense_len is not None and positions[-1] >= _strict_int(dense_len, f"line {line_no}: dense_len"):
         raise ValueError(f"line {line_no}: selected_positions exceed dense_len")
 
     for key in FORBIDDEN_VALUE_TRANSPORT_FLAGS:

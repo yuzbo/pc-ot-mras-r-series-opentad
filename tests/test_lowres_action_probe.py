@@ -456,6 +456,19 @@ def test_sample_id_resolution_prefers_batch_ids_then_video_name_then_fallback():
     ]
 
 
+def test_sample_id_resolution_preserves_window_key_from_metas():
+    probe = load_probe_module()
+
+    assert probe._resolve_sample_ids(
+        {
+            "video_name": ["plain_video"],
+            "metas": [{"video_name": "video_test_0001", "window_start_frame": 768.0}],
+        },
+        batch_idx=2,
+        batch_size=1,
+    ) == ["video_test_0001|768"]
+
+
 def test_indirect_selection_quality_serializes_sample_rows_with_stable_schema():
     probe = load_probe_module()
 

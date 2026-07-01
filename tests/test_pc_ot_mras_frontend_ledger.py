@@ -8,6 +8,10 @@ import pytest
 from mmengine.config import Config
 
 from tools.bata.convert_pc_ot_mras_hard_positions_to_value_transport_ledger import READY as LEDGER_READY, run_conversion
+from tools.bata.convert_lowres_probe_samples_to_value_transport_ledger import (
+    READY as LOWRES_LEDGER_READY,
+    run_conversion as run_lowres_probe_conversion,
+)
 from tools.bata.dump_pc_ot_mras_reader_snapshots import sample_ids_from_metas
 from tools.bata.export_pc_ot_mras_hard_positions import READY as HARD_READY, run_jsonl_export
 
@@ -258,13 +262,180 @@ def test_pc_ot_mras_hard_positions_convert_to_diagnostic_value_transport_ledger(
     assert row["selected_count"] == 3
     assert row["diagnostic_only"] is True
     assert row["deploy_selection_ledger"] is False
+
+
+def test_lowres_probe_samples_convert_strategy_to_value_transport_ledger(tmp_path):
+    input_jsonl = tmp_path / "samples.jsonl"
+    output_jsonl = tmp_path / "value_transport_ledger.jsonl"
+    summary_json = tmp_path / "summary.json"
+    sample_row = {
+        "sample_id": "video_test_0001|768",
+        "probe_model": "temporal-tcn",
+        "tcn_variant": "gated",
+        "spatial_size": 64,
+        "dense_len": 8,
+        "valid_len": 8,
+        "budget": 3,
+        "selected_positions": [0, 2, 4],
+        "strategy_selected_positions": {
+            "delta_p_action": [1, 3, 6],
+            "topk_action_logit": [0, 2, 4],
+        },
+        "boundary_support_r1": 0.75,
+    }
+    input_jsonl.write_text(json.dumps(sample_row, sort_keys=True) + "\n", encoding="utf-8")
+
+    summary = run_lowres_probe_conversion(
+        input_jsonl,
+        output_jsonl,
+        strategy="delta_p_action",
+        target_len=3,
+        summary_json=summary_json,
+        require_selected_count=3,
+    )
+
+    assert summary["decision"] == LOWRES_LEDGER_READY
+    assert summary["row_count"] == 1
+    row = json.loads(output_jsonl.read_text(encoding="utf-8").splitlines()[0])
+    assert row["schema_version"] == "pc_ot_mras_frontend_value_transport_ledger_v0"
+    assert row["sample_id"] == "video_test_0001|768"
+    assert row["selected_positions"] == [1, 3, 6]
+    assert row["diagnostics"]["source_strategy"] == "delta_p_action"
+    assert row["diagnostics"]["source_tcn_variant"] == "gated"
+    assert row["diagnostics"]["diagnostic_boundary_support_r1_ignored_by_selection"] == 0.75
+    assert row["uses_gt"] is False
+    assert row["uses_teacher"] is False
+    assert row["uses_oracle"] is False
+    validate_value_transport_selection_row(row, line_no=1, require_deployable=False)
+
+
+def test_lowres_probe_conversion_rejects_video_only_or_duplicate_sample_ids(tmp_path):
+    input_jsonl = tmp_path / "samples.jsonl"
+    output_jsonl = tmp_path / "value_transport_ledger.jsonl"
+    base = {
+        "sample_id": "video_only",
+        "dense_len": 4,
+        "valid_len": 4,
+        "strategy_selected_positions": {"delta_p_action": [0, 2]},
+    }
+    input_jsonl.write_text(json.dumps(base, sort_keys=True) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="sample_id must match video_name"):
+        run_lowres_probe_conversion(input_jsonl, output_jsonl, strategy="delta_p_action", target_len=2)
+
+    duplicate_a = dict(base, sample_id="video_test_0001|0")
+    duplicate_b = dict(base, sample_id="video_test_0001|0")
+    input_jsonl.write_text(
+        json.dumps(duplicate_a, sort_keys=True) + "\n" + json.dumps(duplicate_b, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate sample_id"):
+        run_lowres_probe_conversion(input_jsonl, output_jsonl, strategy="delta_p_action", target_len=2)
+
+
+def test_lowres_probe_conversion_can_uniform_fill_to_required_count(tmp_path):
+    input_jsonl = tmp_path / "samples.jsonl"
+    output_jsonl = tmp_path / "value_transport_ledger.jsonl"
+    sample_row = {
+        "sample_id": "video_test_0001|0",
+        "dense_len": 8,
+        "valid_len": 8,
+        "strategy_selected_positions": {"delta_p_action": [2, 5]},
+    }
+    input_jsonl.write_text(json.dumps(sample_row, sort_keys=True) + "\n", encoding="utf-8")
+
+    summary = run_lowres_probe_conversion(
+        input_jsonl,
+        output_jsonl,
+        strategy="delta_p_action",
+        target_len=4,
+        require_selected_count=4,
+        fill_to_target_count=True,
+    )
+
+    row = json.loads(output_jsonl.read_text(encoding="utf-8").splitlines()[0])
+    assert summary["decision"] == LOWRES_LEDGER_READY
+    assert len(row["selected_positions"]) == 4
+    assert set([2, 5]).issubset(set(row["selected_positions"]))
+    assert row["diagnostics"]["uniform_visible_fill_count"] == 2
     assert row["uses_gt"] is False
     assert row["uses_teacher"] is False
     assert row["uses_oracle"] is False
     assert row["uses_raw_prediction"] is False
     assert row["uses_checkpoint"] is False
     validate_value_transport_selection_row(row, line_no=1, require_deployable=False)
-    assert Path(summary_json).is_file()
+
+
+@pytest.mark.parametrize(
+    ("positions", "message"),
+    [
+        ([0, 1.9, 3], "must be an integer"),
+        ([0, 3, 2], "must be sorted"),
+        ([0, 2, 2], "must be unique"),
+    ],
+)
+def test_lowres_probe_conversion_rejects_non_strict_positions(tmp_path, positions, message):
+    input_jsonl = tmp_path / "samples.jsonl"
+    output_jsonl = tmp_path / "value_transport_ledger.jsonl"
+    sample_row = {
+        "sample_id": "video_test_0001|0",
+        "dense_len": 8,
+        "valid_len": 8,
+        "strategy_selected_positions": {"delta_p_action": positions},
+    }
+    input_jsonl.write_text(json.dumps(sample_row, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        run_lowres_probe_conversion(input_jsonl, output_jsonl, strategy="delta_p_action", target_len=3)
+
+
+@pytest.mark.parametrize("sample_id", ["video_test_0001|", "|0", "video_test_0001|abc", "video_test_0001|-1"])
+def test_lowres_probe_conversion_rejects_malformed_window_sample_ids(tmp_path, sample_id):
+    input_jsonl = tmp_path / "samples.jsonl"
+    output_jsonl = tmp_path / "value_transport_ledger.jsonl"
+    sample_row = {
+        "sample_id": sample_id,
+        "dense_len": 4,
+        "valid_len": 4,
+        "strategy_selected_positions": {"delta_p_action": [0, 2]},
+    }
+    input_jsonl.write_text(json.dumps(sample_row, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="sample_id must match video_name"):
+        run_lowres_probe_conversion(input_jsonl, output_jsonl, strategy="delta_p_action", target_len=2)
+
+
+def test_lowres_probe_video_only_escape_is_diagnostic_only(tmp_path):
+    input_jsonl = tmp_path / "samples.jsonl"
+    output_jsonl = tmp_path / "value_transport_ledger.jsonl"
+    sample_row = {
+        "sample_id": "video_test_0001",
+        "dense_len": 4,
+        "valid_len": 4,
+        "strategy_selected_positions": {"delta_p_action": [0, 2]},
+    }
+    input_jsonl.write_text(json.dumps(sample_row, sort_keys=True) + "\n", encoding="utf-8")
+
+    summary = run_lowres_probe_conversion(
+        input_jsonl,
+        output_jsonl,
+        strategy="delta_p_action",
+        target_len=2,
+        require_window_sample_id=False,
+    )
+    row = json.loads(output_jsonl.read_text(encoding="utf-8").splitlines()[0])
+    assert summary["decision"] == LOWRES_LEDGER_READY
+    assert row["diagnostic_only"] is True
+    assert row["deploy_selection_ledger"] is False
+
+    with pytest.raises(ValueError, match="deploy_selection_ledger requires strict"):
+        run_lowres_probe_conversion(
+            input_jsonl,
+            output_jsonl,
+            strategy="delta_p_action",
+            target_len=2,
+            require_window_sample_id=False,
+            deploy_selection_ledger=True,
+        )
 
 
 @pytest.mark.parametrize("flag", ["uses_oracle", "uses_checkpoint"])

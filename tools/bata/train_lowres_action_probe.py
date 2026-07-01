@@ -2351,6 +2351,31 @@ def _resolve_sample_ids(batch: Mapping[str, Any], *, batch_idx: int, batch_size:
             return ["" if item is None else str(item) for item in value]
         return None
 
+    metas = batch.get("metas")
+    if isinstance(metas, Sequence) and not isinstance(metas, (str, bytes)):
+        resolved: list[str] = []
+        for meta in metas[:batch_size]:
+            if isinstance(meta, Mapping):
+                sample_value = meta.get("sample_id") or meta.get("sample_ids")
+                if sample_value is not None:
+                    resolved.append(str(sample_value))
+                    continue
+                video_value = meta.get("video_name") or meta.get("video_names") or meta.get("video_id")
+                window_value = meta.get("window_start_frame")
+                if video_value is not None and window_value is not None:
+                    try:
+                        window_text = str(int(float(window_value)))
+                    except (TypeError, ValueError):
+                        window_text = str(window_value)
+                    resolved.append(f"{video_value}|{window_text}")
+                    continue
+                if video_value is not None:
+                    resolved.append(str(video_value))
+                    continue
+            resolved.append("")
+        if any(item for item in resolved):
+            return [item if item else f"batch_{int(batch_idx):05d}|sample_{sample_idx:05d}" for sample_idx, item in enumerate(resolved)]
+
     for key in ("sample_ids", "sample_id", "video_names", "video_name"):
         if key not in batch:
             continue
@@ -2363,19 +2388,6 @@ def _resolve_sample_ids(batch: Mapping[str, Any], *, batch_idx: int, batch_size:
             return resolved
         if len(resolved) > 1:
             return resolved[:batch_size]
-
-    metas = batch.get("metas")
-    if isinstance(metas, Sequence) and not isinstance(metas, (str, bytes)):
-        resolved: list[str] = []
-        for meta in metas[:batch_size]:
-            if isinstance(meta, Mapping):
-                value = meta.get("sample_id") or meta.get("sample_ids") or meta.get("video_name") or meta.get("video_names")
-                if value is not None:
-                    resolved.append(str(value))
-                    continue
-            resolved.append("")
-        if any(item for item in resolved):
-            return [item if item else f"batch_{int(batch_idx):05d}|sample_{sample_idx:05d}" for sample_idx, item in enumerate(resolved)]
 
     return [f"batch_{int(batch_idx):05d}|sample_{sample_idx:05d}" for sample_idx in range(max(int(batch_size), 0))]
 
