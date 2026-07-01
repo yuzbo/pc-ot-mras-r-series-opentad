@@ -1,5 +1,14 @@
 # Research Log
 
+## 2026-07-01 08:36:33 +08:00
+
+MDL-Knot remote PRECHECK_ONLY rerun passed after the sparse-compute claim-lock schema fix.
+
+- Remote route-owned precheck copy: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7`.
+- Logs: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_sampledraw_fix_precheck_f5fe3a7/`.
+- Remote verification passed: py_compile log is empty/pass; launch gate returned `PRECHECK_ONLY_REQUEST_ALLOWED`; launch gate with generated precheck summary also returned `PRECHECK_ONLY_REQUEST_ALLOWED`; short diagnostic static gate returned `SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED`; focused remote pytest returned `60 passed in 204.98s`.
+- Gate state remains conservative: remote precheck unlocks only one bounded `SHORT_DIAGNOSTIC_ONLY` attempt when GPU0 is free. Formal/full long training, evaluation, checkpoints, `tools/test.py`, mAP/runtime/FLOPs/deploy/paper/sparse-compute claims remain locked.
+
 ## 2026-07-01 07:53:15 +08:00
 
 MDL-Knot route-owned repair for `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`.
