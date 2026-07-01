@@ -107,6 +107,17 @@ def _validate_config(config_path: Path, cfg: dict) -> tuple[int, dict | None]:
     route_status = str(cfg.get("route_status", ""))
     if "LOCAL_FINAL_CODE_CANDIDATE" not in route_status:
         return _locked(f"route_status is not a local final-code candidate: {route_status}"), None
+    route_status_upper = route_status.upper()
+    forbidden_status_tokens = ("USER_OVERRIDE", "FORMAL_TRAIN", "FULL_TRAIN", "QUEUED", "UNLOCKED")
+    hits = [token for token in forbidden_status_tokens if token in route_status_upper]
+    if hits:
+        return _locked(f"route_status contains unlocked/formal-run tokens: {hits}"), None
+    if cfg.get("formal_train_unlocked") is not False:
+        return _locked("formal_train_unlocked must remain false in final-code config"), None
+    if cfg.get("full_train_unlocked", False) is not False:
+        return _locked("full_train_unlocked must remain false in final-code config"), None
+    if cfg.get("sparse_compute_claim", False) is not False:
+        return _locked("sparse_compute_claim must remain false in final-code config"), None
     upper_text = config_path.read_text(encoding="utf-8").replace(MDL_KNOT_ROUTE_LABEL, "").upper()
     for allowed_token in _ALLOWED_WORKFLOW_FIELD_TOKENS:
         upper_text = upper_text.replace(allowed_token, "")
@@ -117,6 +128,12 @@ def _validate_config(config_path: Path, cfg: dict) -> tuple[int, dict | None]:
     acq = cfg.get("mdl_knot_acquisition", {})
     if acq.get("route_label") != MDL_KNOT_ROUTE_LABEL:
         return _locked("mdl_knot_acquisition route_label mismatch"), None
+    if acq.get("formal_train_unlocked") is not False:
+        return _locked("mdl_knot_acquisition formal_train_unlocked must remain false"), None
+    if acq.get("full_train_unlocked", False) is not False:
+        return _locked("mdl_knot_acquisition full_train_unlocked must remain false"), None
+    if acq.get("sparse_compute_claim", False) is not False:
+        return _locked("mdl_knot_acquisition sparse_compute_claim must remain false"), None
     if acq.get("deploy_scout_source") not in ALLOWED_DEPLOY_SCOUT_SOURCES:
         return _locked(f"deploy_scout_source is not formal deploy-visible: {acq.get('deploy_scout_source')}"), None
     if acq.get("deploy_scout_source") == "fallback_synthetic_precheck_only":
@@ -245,7 +262,7 @@ def _validate_precheck_summary(summary_arg: str, config_evidence: dict) -> int:
         if locked_actions.get(key) is not True:
             return _locked(f"summary does not keep {key} locked")
     no_claims = summary.get("no_claims", {})
-    for key in ("mAP", "runtime", "FLOPs", "deploy", "paper"):
+    for key in ("mAP", "runtime", "FLOPs", "deploy", "paper", "sparse_compute"):
         if no_claims.get(key) is not True:
             return _locked(f"summary does not explicitly lock {key} claims")
     return 0
