@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import MutableMapping, Sequence
 
 from .selector import greedy_mdl_knot_select
@@ -16,12 +17,19 @@ def apply_mdl_knot_to_dense_window(
 ) -> MutableMapping[str, object]:
     if len(dense_window) != scout_curve.dense_t:
         raise ValueError(f"dense_window length {len(dense_window)} must match scout dense_t {scout_curve.dense_t}")
+    profile = results.get("mdl_knot_profile")
+    if not isinstance(profile, dict):
+        profile = {}
+        results["mdl_knot_profile"] = profile
+    selector_start = time.perf_counter()
     ledger = greedy_mdl_knot_select(
         scout_curve,
         config,
         video_id=str(results.get("video_name", "unknown")),
         window_id=int(results.get("window_id", 0)),
     )
+    profile["selector_s"] = float(time.perf_counter() - selector_start)
+    structural_start = time.perf_counter()
     selected_positions = list(ledger.selected_positions)
     frame_inds = [int(dense_window[pos]) for pos in selected_positions]
     valid_k = int(ledger.valid_k)
@@ -53,7 +61,9 @@ def apply_mdl_knot_to_dense_window(
     results["irregular_selected_positions"] = [float(v) for v in selected_positions]
     results["irregular_selected_valid_len"] = float(ledger.dense_t)
     results["irregular_native_axis"] = False
+    profile["structural_handoff_s"] = float(time.perf_counter() - structural_start)
 
+    validation_start = time.perf_counter()
     validate_real_sparse_handoff(
         batch={
             "selected_inputs": frame_inds[:valid_k],
@@ -61,5 +71,9 @@ def apply_mdl_knot_to_dense_window(
             "meta": sparse_meta.to_dict(),
         },
         ledger=ledger,
+    )
+    profile["handoff_validation_s"] = float(time.perf_counter() - validation_start)
+    profile["selector_and_structural_handoff_s"] = float(
+        profile["selector_s"] + profile["structural_handoff_s"] + profile["handoff_validation_s"]
     )
     return results

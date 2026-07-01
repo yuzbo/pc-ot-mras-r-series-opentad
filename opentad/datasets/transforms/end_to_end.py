@@ -3,6 +3,7 @@ import hashlib
 import os
 import pickle
 import random
+import time
 import torch
 import random
 import pandas as pd
@@ -663,6 +664,13 @@ class LoadFrames:
             return frame.detach().cpu().numpy()
         return np.asarray(frame)
 
+    def _mdl_knot_profile(self, results):
+        profile = results.get("mdl_knot_profile")
+        if not isinstance(profile, dict):
+            profile = {}
+            results["mdl_knot_profile"] = profile
+        return profile
+
     def _read_mdl_knot_probe_frames(self, reader, frame_indices):
         frame_indices = [int(v) for v in frame_indices]
         if len(frame_indices) == 0:
@@ -709,11 +717,21 @@ class LoadFrames:
             probe_positions = np.unique(np.rint(np.linspace(0, valid_len - 1, num=max_frames)).astype(np.int64))
         frame_indices = np.asarray(dense_window, dtype=np.int64)[probe_positions]
         try:
+            decode_start = time.perf_counter()
             probe_frames = self._read_mdl_knot_probe_frames(reader, frame_indices.tolist())
+            decode_s = time.perf_counter() - decode_start
         except Exception as exc:
             results["mdl_knot_raw_frame_scout_error"] = str(exc)
             return None
-        return build_raw_frame_motion_scout_curve(
+        cache = {int(frame_idx): probe_frames[idx] for idx, frame_idx in enumerate(frame_indices.tolist())}
+        results["mdl_knot_sample_frame_cache"] = cache
+        results["mdl_knot_sample_frame_cache_source"] = "raw_frame_motion_scout_probe"
+        profile = self._mdl_knot_profile(results)
+        profile["raw_scout_decode_s"] = float(decode_s)
+        profile["raw_scout_probe_frame_count"] = int(len(probe_frames))
+        profile["raw_scout_probe_cache_size"] = int(len(cache))
+        curve_start = time.perf_counter()
+        curve = build_raw_frame_motion_scout_curve(
             probe_frames=probe_frames,
             probe_positions=probe_positions.tolist(),
             dense_t=valid_len,
@@ -724,8 +742,12 @@ class LoadFrames:
                 "raw_probe_stride": stride,
                 "raw_probe_max_frames": max_frames,
                 "raw_probe_frame_indices": frame_indices.astype(int).tolist(),
+                "raw_probe_cache_scope": "sample_local_only",
             },
         )
+        profile["raw_scout_curve_build_s"] = float(time.perf_counter() - curve_start)
+        profile["raw_scout_total_s"] = float(profile["raw_scout_decode_s"] + profile["raw_scout_curve_build_s"])
+        return curve
 
     def _build_mdl_knot_scout_curve(self, results, dense_window):
         valid_len = int(len(dense_window))
@@ -1041,6 +1063,7 @@ class LoadFrames:
                     scout_provenance=scout_curve.provenance,
                     bridge=self.mdl_knot_bridge,
                     adapter_target_len=frame_num,
+                    profile=results.get("mdl_knot_profile"),
                 )
             elif self.method == "stratified_random_fixed_subsample":
                 keep_positions = self._select_stratified_random_fixed_positions(valid_len, frame_num, sample_key)
@@ -1225,6 +1248,91 @@ class LoadFrames:
         results["num_clips"] = self.num_clips
         results["clip_len"] = frame_num // self.num_clips
         results["masks"] = masks
+        return results
+
+
+@PIPELINES.register_module()
+class MDLKnotDecordDecode:
+    """Decord decode wrapper that avoids repeated MDL-Knot sparse handoff reads."""
+
+    def _to_numpy_frame(self, frame):
+        if hasattr(frame, "asnumpy"):
+            return frame.asnumpy()
+        if torch.is_tensor(frame):
+            return frame.detach().cpu().numpy()
+        return np.asarray(frame)
+
+    def _read_frames(self, reader, frame_indices):
+        frame_indices = [int(v) for v in frame_indices]
+        if not frame_indices:
+            return {}
+        if hasattr(reader, "get_batch"):
+            batch = self._to_numpy_frame(reader.get_batch(frame_indices))
+            return {int(frame_idx): batch[idx] for idx, frame_idx in enumerate(frame_indices)}
+        return {int(frame_idx): self._to_numpy_frame(reader[int(frame_idx)]) for frame_idx in frame_indices}
+
+    def __call__(self, results):
+        if "frame_inds" not in results:
+            raise KeyError("MDLKnotDecordDecode requires frame_inds")
+        frame_inds = np.asarray(results["frame_inds"], dtype=np.int64).reshape(-1)
+        if frame_inds.size == 0:
+            raise ValueError("MDLKnotDecordDecode received empty frame_inds")
+        reader = results.get("video_reader", None)
+        if reader is None:
+            reader = results.get("decord_reader", None)
+
+        cache = results.get("mdl_knot_sample_frame_cache", {})
+        cache = cache if isinstance(cache, dict) else {}
+        unique_requested = []
+        seen = set()
+        for frame_idx in frame_inds.tolist():
+            frame_idx = int(frame_idx)
+            if frame_idx not in seen:
+                unique_requested.append(frame_idx)
+                seen.add(frame_idx)
+
+        frames_by_idx = {}
+        cache_hit_indices = []
+        missing = []
+        for frame_idx in unique_requested:
+            if frame_idx in cache:
+                frames_by_idx[frame_idx] = self._to_numpy_frame(cache[frame_idx])
+                cache_hit_indices.append(frame_idx)
+            else:
+                missing.append(frame_idx)
+
+        decode_start = time.perf_counter()
+        if missing:
+            if reader is None:
+                raise KeyError("MDLKnotDecordDecode needs video_reader/decord_reader for uncached sparse frames")
+            frames_by_idx.update(self._read_frames(reader, missing))
+        sparse_decode_s = time.perf_counter() - decode_start
+
+        imgs = [frames_by_idx[int(frame_idx)] for frame_idx in frame_inds.tolist()]
+        results["imgs"] = imgs
+        if imgs:
+            shape = imgs[0].shape[:2]
+            results["original_shape"] = shape
+            results["img_shape"] = shape
+        if "video_reader" in results:
+            results["video_reader"] = None
+        if "decord_reader" in results:
+            results["decord_reader"] = None
+
+        profile = results.get("mdl_knot_profile")
+        if not isinstance(profile, dict):
+            profile = {}
+            results["mdl_knot_profile"] = profile
+        profile["sparse_decode_s"] = float(sparse_decode_s)
+        profile["sparse_decode_requested_count"] = int(frame_inds.size)
+        profile["sparse_decode_unique_requested_count"] = int(len(unique_requested))
+        profile["sparse_decode_unique_missing_count"] = int(len(missing))
+        profile["sparse_decode_unique_cache_hit_count"] = int(len(cache_hit_indices))
+        profile["sparse_decode_duplicate_requests_avoided"] = int(frame_inds.size - len(unique_requested))
+        profile["sparse_decode_cache_source"] = str(results.get("mdl_knot_sample_frame_cache_source", "none"))
+        diagnostic = results.get("mdl_knot_pipeline_diagnostic")
+        if isinstance(diagnostic, dict):
+            diagnostic["profile"] = dict(profile)
         return results
 
 

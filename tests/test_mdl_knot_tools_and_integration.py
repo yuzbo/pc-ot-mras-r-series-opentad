@@ -26,6 +26,38 @@ CONFIG_PATH = ROOT / "configs" / "adatad" / "thumos" / "input_mdl_knot_dynamic_a
 SHORTDIAG_CONFIG_PATH = ROOT / "configs" / "adatad" / "thumos" / "input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py"
 SHORTDIAG_VALIDATOR_PATH = ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_shortdiag.py"
 PSEUDO_BOUNDARY_PATH = ROOT / "opentad" / "datasets" / "transforms" / "pseudo_boundary.py"
+MDL_KNOT_DECODER_TYPE = "MDLKnotDecordDecode"
+
+
+class _FakeBatch:
+    def __init__(self, frames):
+        self.frames = frames
+
+    def asnumpy(self):
+        return np.stack(self.frames, axis=0)
+
+
+class _FakeReader:
+    def __init__(self, total_frames=96):
+        self.frames = []
+        for idx in range(total_frames):
+            frame = np.zeros((12, 12, 3), dtype=np.uint8)
+            frame[:, :, 0] = idx % 251
+            frame[2:8, 2:8, 1] = (idx * 3) % 251
+            frame[:, :, 2] = (idx * 7) % 251
+            self.frames.append(frame)
+        self.batch_calls = []
+        self.item_calls = []
+
+    def get_batch(self, frame_indices):
+        indices = [int(v) for v in frame_indices]
+        self.batch_calls.append(indices)
+        return _FakeBatch([self.frames[idx] for idx in indices])
+
+    def __getitem__(self, frame_idx):
+        frame_idx = int(frame_idx)
+        self.item_calls.append(frame_idx)
+        return self.frames[frame_idx]
 
 
 def test_pipeline_mock_sets_frame_inds_before_decode_and_records_valid_k():
@@ -103,9 +135,11 @@ def test_mdl_knot_config_overrides_real_dataset_pipelines_without_dead_standalon
         assert load_frames[0].get("mdl_knot_no_prediction_cache") is True
         assert load_frames[0].get("mdl_knot_no_dense_raw_backbone_handoff") is True
         assert "mmaction.DecordInit" in [step.get("type") for step in pipeline]
-        assert "mmaction.DecordDecode" in [step.get("type") for step in pipeline]
+        assert MDL_KNOT_DECODER_TYPE in [step.get("type") for step in pipeline]
+        assert "mmaction.DecordDecode" not in [step.get("type") for step in pipeline]
         assert "ConvertToTensor" in [step.get("type") for step in pipeline]
-        assert pipeline.index(load_frames[0]) < [step.get("type") for step in pipeline].index("mmaction.DecordDecode")
+        assert pipeline.index(load_frames[0]) < [step.get("type") for step in pipeline].index(MDL_KNOT_DECODER_TYPE)
+        assert load_frames[0]["mdl_knot_scout_max_frames"] == 96
 
     train_load = [step for step in cfg["dataset"]["train"]["pipeline"] if step.get("type") == "LoadFrames"][0]
     assert train_load["method_base"] == "random_trunc"
@@ -122,6 +156,7 @@ def test_mdl_knot_config_overrides_real_dataset_pipelines_without_dead_standalon
     assert cfg["mdl_knot_acquisition"]["no_val_test_gt_selector"] is True
     assert cfg["mdl_knot_acquisition"]["deploy_scout_source"] == "raw_frame_motion_scout_with_metadata_fallback"
     assert cfg["mdl_knot_acquisition"]["synthetic_fallback_allowed"] is False
+    assert cfg["mdl_knot_acquisition"]["scout_max_frames"] == 96
     assert cfg["formal_train_unlocked"] is False
     assert cfg["sparse_compute_claim"] is False
     assert cfg["mdl_knot_acquisition"]["fixed_pad_bridge_compute_boundary"]["sparse_compute_claim"] is False
@@ -175,6 +210,76 @@ def test_real_loadframes_mdl_knot_branch_sets_sparse_frame_inds_before_decode():
     assert diagnostic["metadata_fallback_used"] is False
     assert diagnostic["mask_metadata_alignment"]["all_aligned"] is True
     assert diagnostic["fixed_pad_bridge_compute_boundary"]["sparse_compute_claim"] is False
+
+
+def test_raw_scout_cache_profile_and_dedup_decoder_preserve_sparse_handoff():
+    torch_probe = subprocess.run(
+        [sys.executable, "-c", "import torch"],
+        text=True,
+        capture_output=True,
+    )
+    if torch_probe.returncode != 0:
+        pytest.skip(f"MDL-Knot decoder smoke skipped because torch import fails: {torch_probe.stderr[-240:]}")
+
+    from opentad.datasets.transforms.end_to_end import LoadFrames, MDLKnotDecordDecode
+
+    reader = _FakeReader(total_frames=64)
+    loader = LoadFrames(
+        method="mdl_knot_dynamic_subsample",
+        method_base="sliding_window",
+        scale_factor=1,
+        target_len=24,
+        mdl_knot_max_k=16,
+        mdl_knot_target_weighted_error=0.01,
+        mdl_knot_deploy_scout_source="raw_frame_motion_scout_with_metadata_fallback",
+        mdl_knot_scout_stride=4,
+        mdl_knot_scout_max_frames=96,
+        mdl_knot_allow_synthetic_fallback=False,
+    )
+    results = {
+        "video_name": "video_test_raw_cache",
+        "total_frames": 64,
+        "avg_fps": 30.0,
+        "snippet_stride": 1,
+        "window_size": 32,
+        "feature_start_idx": 0,
+        "feature_end_idx": 31,
+        "video_reader": reader,
+    }
+
+    out = loader(results)
+    selected_before_decode = list(out["mdl_knot_selected_positions"])
+    masks_before_decode = out["masks"].clone()
+
+    assert out["mdl_knot_deploy_scout_source"] == "raw_frame_motion_scout"
+    provenance = out["mdl_knot_deploy_scout_provenance"]
+    assert provenance["uses_raw_frame_probe"] is True
+    assert provenance["raw_probe_max_frames"] == 96
+    assert provenance["raw_probe_cache_scope"] == "sample_local_only"
+    assert provenance["dense_raw_backbone_handoff"] is False
+    assert len(reader.batch_calls) == 1
+    assert reader.batch_calls[0] == provenance["raw_probe_frame_indices"]
+
+    profile = out["mdl_knot_pipeline_diagnostic"]["profile"]
+    for key in ("raw_scout_decode_s", "raw_scout_curve_build_s", "selector_s", "structural_handoff_s"):
+        assert key in profile
+    assert "selector_and_structural_handoff_s" in profile
+    assert profile["raw_scout_probe_frame_count"] == len(provenance["raw_probe_frame_indices"])
+
+    decoded = MDLKnotDecordDecode()(out)
+
+    assert decoded["mdl_knot_selected_positions"] == selected_before_decode
+    assert decoded["masks"].tolist() == masks_before_decode.tolist()
+    assert len(decoded["imgs"]) == int(decoded["frame_inds"].shape[0])
+    decode_profile = decoded["mdl_knot_profile"]
+    assert decode_profile["sparse_decode_requested_count"] == int(decoded["frame_inds"].shape[0])
+    assert decode_profile["sparse_decode_unique_requested_count"] == len(set(decoded["frame_inds"].tolist()))
+    assert decode_profile["sparse_decode_duplicate_requests_avoided"] > 0
+    assert decode_profile["sparse_decode_unique_cache_hit_count"] > 0
+    assert decode_profile["sparse_decode_unique_missing_count"] <= decode_profile["sparse_decode_unique_requested_count"]
+    diagnostic_profile = decoded["mdl_knot_pipeline_diagnostic"]["profile"]
+    assert "sparse_decode_s" in diagnostic_profile
+    assert diagnostic_profile["sparse_decode_requested_count"] == decode_profile["sparse_decode_requested_count"]
 
 
 def test_raw_frame_motion_scout_builder_is_deploy_visible_and_non_synthetic():

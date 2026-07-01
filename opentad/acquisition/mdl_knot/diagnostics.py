@@ -111,6 +111,25 @@ def _mask_values(mask) -> list[bool]:
     return [bool(v) for v in mask]
 
 
+def _profile_values(profile: Mapping[str, object] | None) -> dict:
+    if not isinstance(profile, Mapping):
+        return {}
+    out = {}
+    for key, value in profile.items():
+        if isinstance(value, bool):
+            out[str(key)] = bool(value)
+            continue
+        if isinstance(value, int):
+            out[str(key)] = int(value)
+            continue
+        if isinstance(value, float) and math.isfinite(value):
+            out[str(key)] = float(value)
+            continue
+        if isinstance(value, str):
+            out[str(key)] = value
+    return out
+
+
 def _is_metadata_fallback(source: str, provenance: Mapping[str, object]) -> bool:
     policy = str(provenance.get("scout_policy", ""))
     return source == "frame_metadata_scout" and policy == "raw_frame_motion_scout_with_metadata_fallback"
@@ -241,6 +260,7 @@ def build_pipeline_diagnostic(
     scout_provenance: Mapping[str, object],
     bridge: str,
     adapter_target_len: int,
+    profile: Mapping[str, object] | None = None,
 ) -> dict:
     ledger_data = _ledger_dict(ledger)
     validate_knot_ledger(ledger_data)
@@ -291,6 +311,7 @@ def build_pipeline_diagnostic(
             "sparse_compute_claim": False,
             "claim": "fixed_pad preserves Adapter tensor length; it is not sparse-compute evidence",
         },
+        "profile": _profile_values(profile),
     }
 
 

@@ -41,6 +41,7 @@ ALLOWED_DEPLOY_SCOUT_SOURCES = {
     "raw_frame_motion_scout_with_metadata_fallback",
     "frame_metadata_scout",
 }
+MDL_KNOT_DECODER_TYPE = "MDLKnotDecordDecode"
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,6 +78,13 @@ def _load_steps(dataset: dict, split: str) -> tuple[list, dict]:
     if len(load_steps) != 1:
         raise ValueError(f"{split} must contain exactly one LoadFrames step, got {len(load_steps)}")
     return pipeline, load_steps[0]
+
+
+def _decoder_index(pipeline: list) -> int:
+    for idx, step in enumerate(pipeline):
+        if isinstance(step, dict) and step.get("type") == MDL_KNOT_DECODER_TYPE:
+            return idx
+    raise ValueError(f"pipeline has no {MDL_KNOT_DECODER_TYPE} step")
 
 
 def _validate_config(config_path: Path, cfg: dict) -> tuple[int, dict | None]:
@@ -122,11 +130,12 @@ def _validate_config(config_path: Path, cfg: dict) -> tuple[int, dict | None]:
             pipeline, load = _load_steps(dataset, split)
         except ValueError as exc:
             return _locked(str(exc)), None
-        step_types = [step.get("type") for step in pipeline if isinstance(step, dict)]
-        if "mmaction.DecordDecode" not in step_types:
-            return _locked(f"{split} pipeline has no DecordDecode step"), None
-        if pipeline.index(load) >= step_types.index("mmaction.DecordDecode"):
-            return _locked(f"{split} LoadFrames must run before DecordDecode"), None
+        try:
+            decoder_idx = _decoder_index(pipeline)
+        except ValueError as exc:
+            return _locked(f"{split} {exc}"), None
+        if pipeline.index(load) >= decoder_idx:
+            return _locked(f"{split} LoadFrames must run before {MDL_KNOT_DECODER_TYPE}"), None
         load_methods[split] = load.get("method")
         bridges[split] = load.get("mdl_knot_bridge")
         scout_sources[split] = load.get("mdl_knot_deploy_scout_source")
@@ -160,6 +169,7 @@ def _validate_config(config_path: Path, cfg: dict) -> tuple[int, dict | None]:
         "bridges": bridges,
         "scout_sources": scout_sources,
         "safety": safety,
+        "decoder_type": MDL_KNOT_DECODER_TYPE,
         "changed_surface": acq.get("changed_surface", {}),
         "formal_train_unlocked": False,
         "fixed_pad_bridge_compute_boundary": {
