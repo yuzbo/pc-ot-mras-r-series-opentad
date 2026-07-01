@@ -30,6 +30,11 @@ SUPPORTED_TCN_VARIANTS = (
     "gated",
     "separable_dilated",
     "causal_dilated",
+    "ms_tcnpp",
+    "c2f_tcn",
+    "asformer_lite",
+    "fact_lite",
+    "temporal_mamba_lite",
 )
 MATRIX_ZOO_PROBE_MODEL = "matrix-zoo"
 
@@ -1354,12 +1359,131 @@ class C3TemporalTCNActionProbe:
                     x = F.pad(x, (self.left_padding, 0))
                 return self.dropout(self.act(self.conv(x)))
 
+        class MultiStageTCNPPBlock(nn.Module):
+            def __init__(self, channels: int, dropout_rate: float) -> None:
+                super().__init__()
+                self.stage1 = nn.Sequential(
+                    *[ResidualTCNBlock(channels, dilation, dropout_rate) for dilation in (1, 2, 4, 8)]
+                )
+                self.refine = nn.Sequential(
+                    *[SeparableDilatedTCNBlock(channels, dilation, dropout_rate) for dilation in (1, 2, 4, 8)]
+                )
+                self.fuse = nn.Conv1d(channels * 2, channels, kernel_size=1, bias=False)
+
+            def forward(self, x):
+                coarse = self.stage1(x)
+                refined = self.refine(coarse)
+                return self.fuse(torch.cat([coarse, refined], dim=1))
+
+        class C2FTCNAggregator(nn.Module):
+            def __init__(self, channels: int, dropout_rate: float) -> None:
+                super().__init__()
+                self.fine = nn.Sequential(
+                    *[ResidualTCNBlock(channels, dilation, dropout_rate) for dilation in (1, 2, 4)]
+                )
+                self.coarse = nn.Sequential(
+                    nn.Conv1d(channels, channels, kernel_size=5, stride=2, padding=2, bias=False),
+                    nn.BatchNorm1d(channels),
+                    nn.SiLU(inplace=True),
+                    ResidualTCNBlock(channels, 2, dropout_rate),
+                    ResidualTCNBlock(channels, 4, dropout_rate),
+                )
+                self.fuse = nn.Sequential(
+                    nn.Conv1d(channels * 2, channels, kernel_size=1, bias=False),
+                    nn.BatchNorm1d(channels),
+                    nn.SiLU(inplace=True),
+                    nn.Dropout(float(dropout_rate)),
+                )
+
+            def forward(self, x):
+                _torch, F = _import_torch()
+                fine = self.fine(x)
+                coarse = self.coarse(x)
+                if F is None:
+                    raise RuntimeError("torch.nn.functional is required for c2f_tcn interpolation")
+                coarse = F.interpolate(coarse, size=int(x.shape[-1]), mode="linear", align_corners=False)
+                return self.fuse(torch.cat([fine, coarse], dim=1))
+
+        class ASFormerLiteBlock(nn.Module):
+            def __init__(self, channels: int, dropout_rate: float) -> None:
+                super().__init__()
+                heads = 4 if channels % 4 == 0 else 2
+                self.local = nn.Sequential(
+                    SeparableDilatedTCNBlock(channels, 1, dropout_rate),
+                    SeparableDilatedTCNBlock(channels, 2, dropout_rate),
+                )
+                self.norm = nn.LayerNorm(channels)
+                self.attn = nn.MultiheadAttention(channels, num_heads=heads, dropout=float(dropout_rate), batch_first=True)
+                self.ffn = nn.Sequential(
+                    nn.Linear(channels, channels * 2),
+                    nn.SiLU(inplace=True),
+                    nn.Dropout(float(dropout_rate)),
+                    nn.Linear(channels * 2, channels),
+                )
+
+            def forward(self, x):
+                local = self.local(x)
+                tokens = local.transpose(1, 2)
+                normed = self.norm(tokens)
+                attended, _ = self.attn(normed, normed, normed, need_weights=False)
+                tokens = tokens + attended
+                tokens = tokens + self.ffn(self.norm(tokens))
+                return tokens.transpose(1, 2)
+
+        class FACTLiteBlock(nn.Module):
+            def __init__(self, channels: int, dropout_rate: float) -> None:
+                super().__init__()
+                self.action_tokens = nn.Parameter(torch.randn(2, channels) * 0.02)
+                self.frame_proj = nn.Conv1d(channels, channels, kernel_size=1, bias=False)
+                self.token_proj = nn.Linear(channels, channels, bias=False)
+                self.fuse = nn.Sequential(
+                    nn.Conv1d(channels * 2, channels, kernel_size=1, bias=False),
+                    nn.BatchNorm1d(channels),
+                    nn.SiLU(inplace=True),
+                    nn.Dropout(float(dropout_rate)),
+                    ResidualTCNBlock(channels, 2, dropout_rate),
+                )
+
+            def forward(self, x):
+                frame = self.frame_proj(x)
+                tokens = self.token_proj(self.action_tokens).transpose(0, 1)
+                logits = torch.einsum("bct,ck->btk", frame, tokens) / max(1.0, float(frame.shape[1]) ** 0.5)
+                weights = torch.softmax(logits, dim=-1)
+                context = torch.einsum("btk,kc->btc", weights, self.action_tokens).transpose(1, 2)
+                return self.fuse(torch.cat([frame, context], dim=1))
+
+        class TemporalMambaLiteBlock(nn.Module):
+            def __init__(self, channels: int, dropout_rate: float) -> None:
+                super().__init__()
+                self.in_proj = nn.Conv1d(channels, channels * 2, kernel_size=1, bias=False)
+                self.local_scan = nn.Conv1d(
+                    channels,
+                    channels,
+                    kernel_size=9,
+                    padding=8,
+                    groups=channels,
+                    bias=False,
+                )
+                self.mix = nn.Conv1d(channels, channels, kernel_size=1, bias=False)
+                self.norm = nn.BatchNorm1d(channels)
+                self.dropout = nn.Dropout(float(dropout_rate))
+
+            def forward(self, x):
+                content, gate = self.in_proj(x).chunk(2, dim=1)
+                scanned = self.local_scan(content)[..., : int(x.shape[-1])]
+                scanned = torch.flip(self.local_scan(torch.flip(scanned, dims=(-1,))), dims=(-1,))[..., : int(x.shape[-1])]
+                return x + self.dropout(self.norm(self.mix(scanned * torch.sigmoid(gate))))
+
         self.variant = str(variant)
         self.spatial_size = int(spatial_size)
         self.hidden_dim = int(hidden_dim)
         in_channels = 6 if self.variant == "motion" else 3
         stem_dim = 32 if self.variant == "lite" else 48
+        if self.variant in {"asformer_lite", "fact_lite", "temporal_mamba_lite"}:
+            stem_dim = 64
         temporal_dim = max(32, int(hidden_dim))
+        if self.variant in {"asformer_lite", "fact_lite", "temporal_mamba_lite", "ms_tcnpp", "c2f_tcn"}:
+            temporal_dim = max(96, int(hidden_dim))
 
         self.module = nn.Module()
         self.spatial_stem = nn.Sequential(
@@ -1427,6 +1551,31 @@ class C3TemporalTCNActionProbe:
         elif self.variant == "causal_dilated":
             self.temporal = nn.Sequential(
                 *[CausalDilatedTCNBlock(temporal_dim, dilation, float(dropout)) for dilation in (1, 2, 4, 8)]
+            )
+            self.temporal_branches = None
+            classifier_in = temporal_dim
+        elif self.variant == "ms_tcnpp":
+            self.temporal = MultiStageTCNPPBlock(temporal_dim, float(dropout))
+            self.temporal_branches = None
+            classifier_in = temporal_dim
+        elif self.variant == "c2f_tcn":
+            self.temporal = C2FTCNAggregator(temporal_dim, float(dropout))
+            self.temporal_branches = None
+            classifier_in = temporal_dim
+        elif self.variant == "asformer_lite":
+            self.temporal = nn.Sequential(
+                ASFormerLiteBlock(temporal_dim, float(dropout)),
+                ASFormerLiteBlock(temporal_dim, float(dropout)),
+            )
+            self.temporal_branches = None
+            classifier_in = temporal_dim
+        elif self.variant == "fact_lite":
+            self.temporal = FACTLiteBlock(temporal_dim, float(dropout))
+            self.temporal_branches = None
+            classifier_in = temporal_dim
+        elif self.variant == "temporal_mamba_lite":
+            self.temporal = nn.Sequential(
+                *[TemporalMambaLiteBlock(temporal_dim, float(dropout)) for _idx in range(3)]
             )
             self.temporal_branches = None
             classifier_in = temporal_dim

@@ -87,6 +87,45 @@ Current fine-tuning support:
   be downloaded as teacher or upper-bound candidates, but are not silently
   treated as supported fine-tuning models.
 
+## Frame-Segmentation Reader Matrix
+
+The temporal-TCN probe was expanded from small TCN variants into a broader
+frame-segmentation reader matrix. These models are still diagnostic-only coarse
+action/background classifiers. They are not detector heads and they do not
+change AdaTAD, assignment, post-processing, or official evaluation.
+
+Classic/low-cost variants:
+
+- `lite`;
+- `dilated`;
+- `multiscale`;
+- `motion`;
+- `residual`;
+- `gated`;
+- `separable_dilated`;
+- `causal_dilated`.
+
+Stronger frame-segmentation inspired variants:
+
+- `ms_tcnpp`: multi-stage residual/dilated TCN refinement, used as a stronger
+  TCN-family baseline.
+- `c2f_tcn`: coarse-to-fine temporal aggregation with a downsampled coarse path
+  fused back into the dense frame axis.
+- `asformer_lite`: local temporal convolution plus lightweight self-attention,
+  inspired by action-segmentation Transformers such as ASFormer.
+- `fact_lite`: frame-action cross-attention with two action/background tokens,
+  inspired by FACT-style frame/action interaction.
+- `temporal_mamba_lite`: gated long-kernel bidirectional scan, inspired by
+  Mamba/SSM temporal modeling but implemented without an external Mamba
+  dependency.
+
+These are compact "inspired-lite" probes for fast screening under the existing
+`[B,T]` frame-logit contract. They should be judged by whether their
+`p_action(t)`, `|delta p_action|`, uncertainty, transition score, and sample
+visualizations align better with true action intervals/boundaries than
+MobileNet, CADF/TCN, or oracle-shell controls. They should not be described as
+full ASFormer/FACT/Mamba reproductions.
+
 ## Local Verification
 
 Commands:
@@ -104,7 +143,7 @@ Results:
 
 - py_compile: pass;
 - launcher `bash -n`: pass;
-- focused pytest: `40 passed`;
+- focused pytest: `41 passed`;
 - matrix dry-run JSON: pass;
 - train-probe CLI help: pass;
 - diff check: pass.

@@ -646,6 +646,11 @@ def test_parse_args_supports_temporal_tcn_variants_and_rejects_unknown_variant()
         "gated",
         "separable_dilated",
         "causal_dilated",
+        "ms_tcnpp",
+        "c2f_tcn",
+        "asformer_lite",
+        "fact_lite",
+        "temporal_mamba_lite",
     ]
     args = probe.parse_args(
         [
@@ -730,7 +735,9 @@ def test_tcn_probe_gpu1_launcher_fail_closes_and_runs_all_variants():
     assert 'if [[ "${CUDA_VISIBLE_DEVICES}" != "1" ]]' in text
     assert "--probe-model temporal-tcn" in text
     assert "--scout-spatial-size 64" in text
-    assert "--tcn-variants lite dilated multiscale motion residual gated separable_dilated causal_dilated" in text
+    assert "TCN_VARIANTS=" in text
+    assert "lite dilated multiscale motion residual gated separable_dilated causal_dilated" in text
+    assert "ms_tcnpp c2f_tcn asformer_lite fact_lite temporal_mamba_lite" in text
     assert "--mobilenet-sizes" not in text
     assert "SLURM_STEP_GPUS" in text
 
@@ -1110,6 +1117,24 @@ def test_temporal_tcn_new_variants_keep_framewise_shape_and_mask_invalid_positio
         assert logits.shape == (2, 5)
         assert logits.masked_fill_value == 0.0
         assert logits.masked_fill_mask_shape == (2, 5)
+
+
+def test_temporal_segmentation_reader_variants_keep_real_torch_framewise_shape():
+    probe = load_probe_module()
+    torch = pytest.importorskip("torch")
+
+    frames = torch.rand(2, 7, 3, 16, 16)
+    valid = torch.tensor([[1, 1, 1, 1, 0, 0, 0], [1, 1, 1, 1, 1, 1, 0]], dtype=torch.bool)
+
+    for variant in ("ms_tcnpp", "c2f_tcn", "asformer_lite", "fact_lite", "temporal_mamba_lite"):
+        model = probe.C3TemporalTCNActionProbe(variant=variant, spatial_size=16, hidden_dim=32, dropout=0.0)
+        model.eval()
+        with torch.no_grad():
+            logits = model(frames, valid)
+
+        assert logits.shape == (2, 7)
+        assert torch.all(logits[~valid] == 0)
+        assert torch.isfinite(logits[valid]).all()
 
 
 def test_multisize_mobilenet_summary_exposes_per_size_results():

@@ -3,6 +3,11 @@ set -euo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-/data/run01/sczc063/yuzibo/OpenTAD_C3TCNCoarseProbe_20260701}"
 OUT_DIR="${OUT_DIR:-/data/run01/sczc063/yuzibo/projects/c3_lowres_action_probe/outputs/c3_tcn_coarse_probe_gpu1_20260701}"
+TCN_VARIANTS="${TCN_VARIANTS:-lite dilated multiscale motion residual gated separable_dilated causal_dilated ms_tcnpp c2f_tcn asformer_lite fact_lite temporal_mamba_lite}"
+BATCH_SIZE="${BATCH_SIZE:-3}"
+EPOCHS="${EPOCHS:-10}"
+MAX_TRAIN_BATCHES="${MAX_TRAIN_BATCHES:-50}"
+MAX_VAL_BATCHES="${MAX_VAL_BATCHES:-20}"
 
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"
 if [[ "${CUDA_VISIBLE_DEVICES}" != "1" ]]; then
@@ -36,6 +41,7 @@ echo "SLURM_STEP_ID=${SLURM_STEP_ID:-}"
 echo "SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-}"
 echo "SLURM_STEP_GPUS=${SLURM_STEP_GPUS:-}"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+echo "TCN_VARIANTS=${TCN_VARIANTS}"
 nvidia-smi || true
 python - <<'PY'
 import torch
@@ -48,16 +54,16 @@ python -u tools/bata/train_lowres_action_probe.py \
   --config configs/adatad/thumos/pc_ot_mras_a_uniform_scaffold_small_actionness_strict_maxgap_c3_physical_grid_actionformer_n16r4.py \
   --out-dir "${OUT_DIR}" \
   --device cuda \
-  --epochs 10 \
-  --batch-size 4 \
+  --epochs "${EPOCHS}" \
+  --batch-size "${BATCH_SIZE}" \
   --num-workers 4 \
   --lr 1.0e-4 \
   --seed 0 \
   --probe-model temporal-tcn \
   --scout-spatial-size 64 \
-  --tcn-variants lite dilated multiscale motion residual gated separable_dilated causal_dilated \
-  --max-train-batches 50 \
-  --max-val-batches 20 \
+  --tcn-variants ${TCN_VARIANTS} \
+  --max-train-batches "${MAX_TRAIN_BATCHES}" \
+  --max-val-batches "${MAX_VAL_BATCHES}" \
   --log-every-batches 10 \
   --fast-lowres-pipeline \
   --probe-window-size 384 \
