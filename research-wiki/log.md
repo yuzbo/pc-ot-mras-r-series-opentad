@@ -5,7 +5,7 @@
 MDL-Knot route-owned evidence was synced to a new GitHub branch while the bounded short diagnostic continued.
 
 - Existing branch push to `codex/divergent-mdl-knot-realdiag-20260630` was rejected as non-fast-forward; no force push or overwrite was attempted.
-- New evidence branch pushed successfully and then fast-forwarded to commit `dba5186f`: `codex/divergent-mdl-knot-status-410d499f-20260701`.
+- New evidence branch pushed successfully and then fast-forwarded with live-sync records: `codex/divergent-mdl-knot-status-410d499f-20260701`.
 - GitHub URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-mdl-knot-status-410d499f-20260701`.
 - Active job `1132502 mdl_shortdiag` remained `RUNNING` on `g0032` with `--exclude=g0030`; protected hold `1118197 pcot_dbg2g` was not modified.
 - Training tail reached iter 15 with finite losses after the initial iter-1 skipped non-finite gradient; no new Traceback/RuntimeError was observed in the inspected tail.
