@@ -1,5 +1,14 @@
 # Research Log
 
+## 2026-07-01 10:38:15 +08:00 - RBA-RBR guard/grid-audit monitor update
+
+- Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Read-only Slurm/log scan confirmed `1132462 rba_grid_audit` remained `RUNNING|0:0` on `g0053`; this is the old pre-guard grid-audit diagnostic.
+- Old pre-guard evidence: finite losses continued through epoch 3, first validation remained severe-low at `Average-mAP=0.16%`, and `rba_rbr_grid_audit.jsonl` reached `3962` rows. This is diagnostic evidence for the pre-guard collapse, not evidence against the new coverage guard.
+- New guard diagnostic `1132641 rba_guarddiag` remained `PENDING|0:0`, reason `Priority`, with no node assigned. Its logdir still had only the sbatch script and no train/audit output yet.
+- Resource boundary: both RBA jobs use `--exclude=g0030`; protected parent hold `1118197 pcot_dbg2g` was not modified, released, cancelled, or reused.
+- Decision: formal/full RBA-RBR training and all mAP/runtime/FLOPs/sparse-compute/deploy/paper claims remain locked. Next action is to let the old audit finish and wait for the guard short diagnostic to start, then compare raw/detector count and gap evidence.
+
 ## 2026-07-01 10:29:01 +08:00 - RBA-RBR guard diagnostic queued
 
 - Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
