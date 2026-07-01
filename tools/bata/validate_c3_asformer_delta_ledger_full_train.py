@@ -89,18 +89,24 @@ def _validate_model_and_train(cfg):
     _require(int(cfg.workflow.end_epoch) == 60, "formal full train must run 60 epochs")
     _require(cfg.workflow.get("max_train_iters", None) is None, "full train must not cap train iterations")
     _require(int(cfg.workflow.val_eval_interval) == 5, "validation interval must be 5")
-    _require(list(cfg.workflow.get("val_eval_epochs", [])) == [2], "first scheduled validation must be epoch 2")
+    explicit_eval_epochs = list(cfg.workflow.get("val_eval_epochs", []))
+    _require(2 in explicit_eval_epochs, "first scheduled validation must include epoch 2")
+    _require(60 in explicit_eval_epochs, "final scheduled validation must include epoch 60")
     _require(int(cfg.workflow.get("val_eval_interval_anchor_epoch", 0)) == 2, "validation anchor must be epoch 2")
     _require(not _as_bool(cfg.solver.get("ema", True)), "EMA should be off for this diagnostic comparison")
 
 
-def _validate_gate(cfg):
+def _validate_gate(cfg, *, allow_launch_unlocked=False):
     gate = cfg.c3_asformer_delta_ledger_full_train_gate
     _require(gate.route == "C3_MAINLINE_OPTIMIZATION", "wrong route")
     _require(gate.route_variant == "C3_ORIGINAL_OPTIMIZATION_ROUTE", "wrong route variant")
     _require(_as_bool(gate.full_train_candidate), "not marked as full train candidate")
     _require(_as_bool(gate.requires_launch_gate), "launch gate must be required")
-    _require(not _as_bool(gate.launch_gate_passed), "config must be locked by default")
+    if allow_launch_unlocked:
+        _require(_as_bool(gate.launch_gate_passed), "execution config must pass launch gate")
+        _require(_as_bool(gate.get("reviewed_execution_config", False)), "execution config must be reviewed")
+    else:
+        _require(not _as_bool(gate.launch_gate_passed), "config must be locked by default")
     _require(tuple(gate.allowed_entrypoints) == ("tools/train.py",), "only tools/train.py may be allowed")
     _require("tools/test.py" in tuple(gate.forbidden_entrypoints), "tools/test.py must be forbidden by this launcher")
     text = repr(
@@ -155,9 +161,9 @@ def _validate_ledger_file(path, *, require_exists):
     _require(rows > 0, f"ledger file has no rows: {path}")
 
 
-def validate_config(config_path=CONFIG_DEFAULT, *, require_ledger_files=False):
+def validate_config(config_path=CONFIG_DEFAULT, *, require_ledger_files=False, allow_launch_unlocked=False):
     cfg = Config.fromfile(str(config_path))
-    _validate_gate(cfg)
+    _validate_gate(cfg, allow_launch_unlocked=allow_launch_unlocked)
     _validate_dataset(cfg)
     _validate_model_and_train(cfg)
     for ledger_path in (cfg.train_ledger_path, cfg.val_ledger_path, cfg.test_ledger_path):
@@ -169,8 +175,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=CONFIG_DEFAULT)
     parser.add_argument("--require-ledger-files", action="store_true")
+    parser.add_argument("--allow-launch-unlocked", action="store_true")
     args = parser.parse_args(argv)
-    validate_config(args.config, require_ledger_files=args.require_ledger_files)
+    validate_config(
+        args.config,
+        require_ledger_files=args.require_ledger_files,
+        allow_launch_unlocked=args.allow_launch_unlocked,
+    )
     print(READY)
     return 0
 

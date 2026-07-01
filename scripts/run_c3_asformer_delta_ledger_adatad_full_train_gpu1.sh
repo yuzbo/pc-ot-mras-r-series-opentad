@@ -12,6 +12,7 @@ cd "${REPO_ROOT}"
 PRECHECK_ONLY="${PRECHECK_ONLY:-1}"
 ALLOW_C3_ASFORMER_DELTA_LEDGER_FULLTRAIN="${ALLOW_C3_ASFORMER_DELTA_LEDGER_FULLTRAIN:-0}"
 CONFIG="${CONFIG:-configs/adatad/thumos/c3_official_asformer_delta_ledger_original_adatad_full_train.py}"
+EXEC_CONFIG="${EXEC_CONFIG:-configs/adatad/thumos/c3_official_asformer_delta_ledger_original_adatad_full_train_exec.py}"
 VALIDATOR="${VALIDATOR:-tools/bata/validate_c3_asformer_delta_ledger_full_train.py}"
 RUN_TAG="${RUN_TAG:-c3_asformer_delta_ledger_adatad_full_train_gpu1_$(date +%Y%m%d_%H%M%S_%z)}"
 RUN_ID="${RUN_ID:-0}"
@@ -46,6 +47,7 @@ require_file() {
 }
 
 require_file "${CONFIG}"
+require_file "${EXEC_CONFIG}"
 require_file "${VALIDATOR}"
 require_file "${THUMOS14_ANNOTATION_PATH}"
 require_file "${THUMOS14_CLASS_MAP}"
@@ -67,9 +69,11 @@ echo "[C3_ASFORMER_DELTA_FULLTRAIN] precheck_only=${PRECHECK_ONLY} unlock=${ALLO
 bash -n "${BASH_SOURCE[0]}"
 "${PYTHON}" -m py_compile \
   tools/train.py \
+  opentad/utils/train_schedule.py \
   opentad/datasets/transforms/end_to_end.py \
   "${VALIDATOR}"
 "${PYTHON}" "${VALIDATOR}" --config "${CONFIG}" --require-ledger-files
+"${PYTHON}" "${VALIDATOR}" --config "${EXEC_CONFIG}" --require-ledger-files --allow-launch-unlocked
 "${PYTHON}" -m pytest \
   tests/test_pc_ot_mras_frontend_ledger.py \
   tests/test_c3_asformer_delta_ledger_full_train.py \
@@ -95,7 +99,7 @@ echo "[C3_ASFORMER_DELTA_FULLTRAIN] work_dir=${WORK_DIR}"
   --nproc_per_node=1 \
   --master_port="${MASTER_PORT}" \
   tools/train.py \
-  "${CONFIG}" \
+  "${EXEC_CONFIG}" \
   --id "${RUN_ID}" \
   --seed "${SEED}" \
   --cfg-options "work_dir=${WORK_DIR}" \
