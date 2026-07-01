@@ -9,6 +9,16 @@
 - Resource boundary: both RBA jobs use `--exclude=g0030`; protected parent hold `1118197 pcot_dbg2g` was not modified, released, cancelled, or reused.
 - Decision: formal/full RBA-RBR training and all mAP/runtime/FLOPs/sparse-compute/deploy/paper claims remain locked. Next action is to let the old audit finish and wait for the guard short diagnostic to start, then compare raw/detector count and gap evidence.
 
+## 2026-07-01 10:47:49 +08:00 - RBA-RBR old pre-guard grid-audit completed severe-low
+
+- Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Slurm job `1132462 rba_grid_audit` completed normally on non-protected node `g0053`: `COMPLETED|0:0`, elapsed `01:50:24`.
+- Final diagnostic metric: `Average-mAP=5.10%`, with `mAP@0.3/0.4/0.5/0.6/0.7 = 12.66/7.33/3.56/1.48/0.47`. This remains severe-low diagnostic evidence, not a route success claim.
+- Grid audit result: `4090` rows; every row had `PASS_RBA_RBR_NATIVE_AXIS_POSITIONS_ENTERED_MODEL`, `native_axis=True`, and `dispatch_hit=True`.
+- Detector coverage diagnosis: `mask_true_count` mean `27.65`, min `9`, p50 `28`, p95 `36`; `3102/4090` rows were below the new coverage-guard floor of `32`.
+- Attribution boundary: this is the old pre-guard branch result. New guard job `1132641 rba_guarddiag` remains `PENDING`, reason `Priority`, no node/log yet.
+- Decision: old audit supports the coverage-guard fix hypothesis: the detector received native-axis metadata, but the effective detector-side budget/spacing was often too sparse. Formal/full RBA-RBR training and all claims remain locked until the guard diagnostic verifies count/gap restoration.
+
 ## 2026-07-01 10:29:01 +08:00 - RBA-RBR guard diagnostic queued
 
 - Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
