@@ -258,6 +258,53 @@ Launch decision:
 - Do not make metric/runtime/FLOPs/sparse-compute/deploy/paper claims.
 - Prepare a severe-result Pro prompt/context package for when Rosetta/Oracle transport becomes available.
 
+## Coverage-Guard Final Diagnostic Severe-Low - 2026-07-01 14:47:42 +08:00
+
+Run context:
+
+- Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Corrected coverage-guard branch commit deployed remotely: `e6de60e9`.
+- Latest GitHub evidence branch for Pro diagnosis: `codex/divergent-rba-rbr-guard-complete-39073521-20260701`.
+- Latest GitHub URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-guard-complete-39073521-20260701`.
+- Protected parent hold: `1118197 pcot_dbg2g`; not released, cancelled, replaced, or modified by this evidence update.
+- Completed child step: `1118197.560`.
+- Job name: `rba_guard_g0`.
+- GPU binding: protected hold GPU0 only; GPU1/C3 not touched.
+- Log directory: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GuardDiag_20260701_e6de60e9_bundle/logs/rba_rbr_guard_evaldiag_manual_parallel_holdg0_20260701_123213_+0800`.
+- Evidence files: `srun-1118197.out`, `train.log`, `rba_rbr_grid_audit.jsonl`.
+
+Metric evidence:
+
+- First observed Average-mAP line at `2026-07-01 13:39:19 +08:00`: `0.22%`.
+- Final observed Average-mAP line at `2026-07-01 14:47:42 +08:00`: `7.45%`.
+- Final `mAP@0.3/0.4/0.5/0.6/0.7 = 17.34/11.47/5.69/2.09/0.65`.
+- Final evaluator counts: `411700` predictions and `3325` GT instances.
+- `Training Over` count: `1`.
+- Hard error count: `0`.
+
+Final coverage-guard audit:
+
+- Rows: `4090`.
+- Labels: only `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Statuses: all `PASS_RBA_RBR_NATIVE_AXIS_POSITIONS_ENTERED_MODEL`.
+- `raw_valid_k` avg: `84.6235`.
+- `mask_true_count` avg: `42.5601`.
+- `selected_max_gap_after_guard`: max `16`, avg `15.5897`.
+- `max_detector_gap_after_guard`: max `24`, avg `22.5460`.
+
+Interpretation:
+
+- The guard diagnostic completed normally and produced a better final detector-health number than its first validation, but `7.45%` Average-mAP remains failure-scale relative to the RBA-RBR baseline targets and known fixed-budget references.
+- The final audit confirms that RBA-RBR native-axis detector positions entered the model and that the coverage/gap guard held through the full diagnostic.
+- Because coverage/gap constraints are restored while detector performance remains severely low, the route should be diagnosed as a deeper RBA-RBR mechanism, geometry, bridge, assignment, or post-processing failure rather than as a simple missing-audit or launch failure.
+
+Decision:
+
+- Formal/full RBA-RBR training remains locked.
+- No mAP/runtime/FLOPs/sparse-compute/deploy/paper claim is unlocked.
+- No route conclusion is unlocked.
+- A valid GPT-5.5 Pro severe-result diagnosis is required before any long RBA-RBR follow-up or route-level conclusion, unless the user gives an explicit same-scope override.
+
 ## Local Postprocess Candidate Guard Repair - 2026-07-01 14:09:53 +08:00
 
 Motivation:
