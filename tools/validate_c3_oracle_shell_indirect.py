@@ -97,6 +97,8 @@ def _validate_pipeline(cfg):
         keys = set(collect.get("keys", []))
         if split == "test" and ({"gt_segments", "gt_labels"} & keys):
             raise AssertionError("test Collect must not pass gt_segments/gt_labels into the model")
+    if not bool(cfg.dataset.test.get("test_mode", False)):
+        raise AssertionError("test split must use test_mode=True to avoid validation/test GT protocol pollution")
 
 
 def _validate_schedule(cfg):

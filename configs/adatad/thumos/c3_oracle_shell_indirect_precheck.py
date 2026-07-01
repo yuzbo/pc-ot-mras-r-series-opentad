@@ -111,7 +111,7 @@ dataset = dict(
     ),
     test=dict(
         window_size=c3_dense_window_size,
-        test_mode=False,
+        test_mode=True,
         ioa_thresh=0.0,
         pipeline=[
             dict(type="PrepareVideoInfo", format="mp4"),

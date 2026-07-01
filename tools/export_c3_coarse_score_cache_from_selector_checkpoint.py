@@ -143,7 +143,7 @@ def _split_cfg_from_source(cfg, split, window_size, window_overlap_ratio, batch_
     collect_keys = ["masks", "gt_segments", "gt_labels"] if batch_gt else ["masks"]
     tensor_keys = ["imgs", "gt_segments", "gt_labels"] if batch_gt else ["imgs"]
     return dict(
-        type=source.get("type", "ThumosSlidingDataset"),
+        type="ThumosSlidingDataset",
         ann_file=source.ann_file,
         subset_name=source.subset_name,
         data_path=source.data_path,

@@ -13,7 +13,11 @@ from opentad.datasets.transforms.pseudo_boundary import (
     select_coarse_oracle_shell_positions,
     validate_coarse_score_cache_manifest,
 )
-from tools.export_c3_coarse_score_cache_from_selector_checkpoint import ScoreAccumulator, _window_start_snippet
+from tools.export_c3_coarse_score_cache_from_selector_checkpoint import (
+    ScoreAccumulator,
+    _split_cfg_from_source,
+    _window_start_snippet,
+)
 from tools.build_c3_coarse_score_cache_from_records import build_cache
 from tools.diagnose_c3_oracle_shell_indirect_distribution import (
     compare_oracle_and_indirect_window,
@@ -238,6 +242,13 @@ def test_c3_oracle_shell_indirect_configs_pass_validator_and_reject_forbidden_to
     with pytest.raises(AssertionError, match="Forbidden"):
         validate_config(bad_config)
 
+    cfg = Config.fromfile(FULL_CONFIG)
+    cfg.dataset.test.test_mode = False
+    bad_test_mode = tmp_path / "bad_c3_oracle_shell_indirect_test_mode.py"
+    cfg.dump(bad_test_mode)
+    with pytest.raises(AssertionError, match="test_mode=True"):
+        validate_config(bad_test_mode)
+
 
 def test_full_train_uses_epoch2_then_every5_validation_schedule():
     cfg = Config.fromfile(FULL_CONFIG)
@@ -277,6 +288,21 @@ def test_collect_preserves_oracle_shell_meta_and_test_split_does_not_pass_gt():
     test_collect = next(step for step in cfg.dataset.test.pipeline if step["type"] == "Collect")
     assert "gt_segments" not in test_collect["keys"]
     assert "gt_labels" not in test_collect["keys"]
+    assert cfg.dataset.test.test_mode is True
+
+
+def test_exporter_forces_sliding_dataset_for_padding_train_split():
+    cfg = Config.fromfile(FULL_CONFIG)
+    cfg.dataset.train.type = "ThumosPaddingDataset"
+
+    split_cfg = _split_cfg_from_source(cfg, "train", window_size=768, window_overlap_ratio=0.25, batch_gt=False)
+
+    assert split_cfg["type"] == "ThumosSlidingDataset"
+    assert split_cfg["test_mode"] is True
+    assert split_cfg["window_size"] == 768
+    assert split_cfg["window_overlap_ratio"] == 0.25
+    assert split_cfg["pipeline"][2]["type"] == "LoadFrames"
+    assert split_cfg["pipeline"][2]["method"] == "sliding_window"
 
 
 def test_selected_axis_segments_are_mapped_back_to_dense_axis():

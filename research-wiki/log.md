@@ -31,3 +31,10 @@
 - Cache protocol is now `axis=global_snippet_index`, `uses_gt=false`, with route labels `C3_MAINLINE_OPTIMIZATION` / `C3_ORIGINAL_OPTIMIZATION_ROUTE`.
 - Verification passed: focused pytest `13 passed`, py_compile for changed Python files, `bash -n` for GPU1 launchers, and config validator for precheck/full train.
 - No remote Slurm launch or mAP claim yet; next step is final read-only review, GitHub sync, remote cache export, precheck, and GPU1 full-train launch.
+
+## 2026-07-01 +0800
+
+- Fixed C3 oracle-shell indirect final-review blockers: test split now requires `test_mode=True`, and checkpoint exporter forces deploy-visible `ThumosSlidingDataset` for train/val/test score-cache export.
+- Added regression tests for both issues and validator coverage for the test protocol.
+- Verification after fixes passed: focused pytest `14 passed`, py_compile, `bash -n`, and config validator for both C3 oracle-shell indirect configs.
+- Remote clean clone from the previous bundle exists but must be updated to the fix commit before cache export/precheck/training.

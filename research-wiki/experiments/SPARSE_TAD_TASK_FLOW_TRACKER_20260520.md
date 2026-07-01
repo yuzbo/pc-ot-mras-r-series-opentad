@@ -4,7 +4,7 @@
 
 | Experiment / Config | Changed Surface | Current Status | Review / Gate State | Deployment / Result State | Next Action |
 |---|---|---|---|---|---|
-| C3 oracle-shell indirect precheck / `configs/adatad/thumos/c3_oracle_shell_indirect_precheck.py` | Input sampling only: coarse score `keep_positions` inside oracle shell; no Adapter/head/loss/postprocess change | Local implementation complete | Focused pytest 13 passed; py_compile, bash -n, and config validator PASS; subagent final review pending | Not deployed; no mAP | Commit/push, export real `C3_COARSE_SCORE_CACHE_DIR`, then run precheck on GPU1 |
+| C3 oracle-shell indirect precheck / `configs/adatad/thumos/c3_oracle_shell_indirect_precheck.py` | Input sampling only: coarse score `keep_positions` inside oracle shell; no Adapter/head/loss/postprocess change | Local implementation complete after review blocker fixes | Focused pytest 14 passed; py_compile, bash -n, and config validator PASS; subagent blockers fixed locally | Remote clean clone staged from bundle but must be updated to fix commit; no mAP | Sync fix commit, export real `C3_COARSE_SCORE_CACHE_DIR`, then run precheck on GPU1 |
 | C3 oracle-shell indirect full train / `configs/adatad/thumos/c3_oracle_shell_indirect_full_train.py` | Input sampling only; fixed 384/768 Original AdaTAD backend; validation epoch2 then every5 | Staged but locked | Validator and launcher fail-closed; full train requires explicit main-process unlock env | Not launched; no final Avg-mAP, no high-IoU result | After precheck and cache validation, main process may launch on N16R4 GPU1 |
 | Oracle-vs-indirect distribution diagnostic / `tools/diagnose_c3_oracle_shell_indirect_distribution.py` | Diagnostic only; compares indirect positions with GT oracle positions offline from annotation + deploy cache | Local tool implemented | TDD coverage confirms diagnostic does not mutate `frame_inds` and can read annotation/cache | No dataset-wide output yet | Run after coarse cache exists to report overlap/Jaccard, boundary/action/gap/histogram differences |
 
@@ -25,3 +25,10 @@
 - Extended distribution diagnostic to support `--ann-file` + `--cache-dir` so oracle-vs-indirect comparisons can be generated without video decoding and without feeding GT into selection.
 - Verification: focused pytest `13 passed`, py_compile pass, `bash -n` pass for both GPU1 launchers, and `tools/validate_c3_oracle_shell_indirect.py` pass for precheck/full-train configs.
 - Current mAP evidence: none. This is implementation/deployment preparation only.
+
+### 2026-07-01 Asia/Shanghai - Final Review Blocker Fixes
+
+- Final read-only subagent review found two blockers: test split used `test_mode=False`, and the score-cache exporter could inherit `ThumosPaddingDataset` for train export.
+- Fixed test protocol by setting `dataset.test.test_mode=True` and adding validator/test coverage.
+- Fixed exporter by forcing `type=\"ThumosSlidingDataset\"` for all deploy-visible score-cache export splits.
+- Verification after fixes: focused pytest `14 passed`, py_compile pass, `bash -n` pass, and precheck/full-train validators pass.

@@ -7,7 +7,7 @@
 - Worktree: `OpenTAD_C3OracleShellIndirect_Worktree_20260701`
 - Branch: `codex/c3-oracle-shell-indirect-20260701`
 - Base commit: `c9b8cd6cdc26307048356258d4a9f2dc92b72b1f`
-- Current evidence: local implementation and gate candidate complete; no remote deploy, no Slurm, no long training, no mAP.
+- Current evidence: local implementation and gate candidate complete after final-review blocker fixes; remote clean clone staged but no Slurm precheck/training yet; no mAP.
 
 ## Purpose
 
@@ -56,7 +56,7 @@ GREEN:
 
 ```text
 C:\Users\skywalker\.conda\envs\torch_1\python.exe -m pytest tests\test_c3_oracle_shell_indirect.py -q
-13 passed
+14 passed
 ```
 
 Additional GREEN:
@@ -83,3 +83,16 @@ PASS_C3_ORACLE_SHELL_INDIRECT_CONFIG
 - GPU1 scripts: `scripts/run_c3_oracle_shell_indirect_precheck_gpu1.sh`, `scripts/run_c3_oracle_shell_indirect_full_train_gpu1.sh`
 - Parent hold: `1118197` is documented as protected. Scripts do not cancel Slurm jobs.
 - Next allowed action: after final read-only review, commit/push the branch, clone a clean remote directory, export a real coarse score cache from the trained coarse selector checkpoint, run oracle-vs-indirect distribution diagnostics, then run N16R4 GPU1 precheck and start full training. Full mAP is pending complete training.
+
+## Final Review Fixes
+
+Subagent final review initially returned blockers:
+
+- `dataset.test.test_mode=False` could let validation/test GT enter the pipeline before `Collect`.
+- The score-cache exporter inherited source split dataset type and could build `ThumosPaddingDataset` for train, which does not accept sliding-window export arguments.
+
+Fixes applied:
+
+- `dataset.test.test_mode=True` is now required by config and validator.
+- Exporter forces `ThumosSlidingDataset` for all export splits, so default `train test` cache export is deploy-visible sliding-window scoring.
+- Focused tests now cover both failures.
