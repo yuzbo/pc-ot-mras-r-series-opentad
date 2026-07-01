@@ -13540,3 +13540,29 @@
   line is Epoch 41 step 50 `Loss=0.9698`.
 - BoundarySharp-ST reached Epoch 6 step 50 `Loss=1.8143`.
 - Failure scans remain `0`; no cleanup because all three runs are active.
+
+## 2026-07-01T17:45:00+08:00 - Divergent low-performance diagnosis fixes landed
+
+- BVR-TWB diagnosis found that the route enforced a raw-frame floor rather than
+  an effective detector-token floor. Current long run on protected hold step
+  `1118197.542` was still running on GPU0; latest checked validation was
+  `23.92` Avg-mAP at epoch 54, with no NaN/OOM and pretrained loading present.
+- BVR-TWB repair was implemented in route-owned worktree
+  `OpenTAD_BVR_TWB_BudgetFix_Worktree_20260701`, branch
+  `codex/divergent-bvr-twb-budgetfix-20260701`, commit `895474b`. Local BVR
+  tests reported `66 passed, 17 skipped`; final read-only review returned
+  `PASS_SUBAGENT_FINAL_REVIEW_ONLY`. Full training, remote sync, sparse-compute
+  claim, and learned-regret claim remain locked.
+- MDL-Knot diagnosis found sparse handoff crash root cause: short windows could
+  select `valid_k == dense_T`, which is dense passthrough and correctly failed
+  the selected-only sparse audit. Prior user-override run loaded pretrained but
+  stopped at iteration 50 with `selected_inputs must be shorter than dense_T`.
+- MDL-Knot repair was implemented in route-owned worktree
+  `OpenTAD_MDLKnot_SparseHandoffFix_Worktree_20260701`, branch
+  `codex/divergent-mdl-knot-sparse-handoff-fix-20260701`, commit `4bedd4b`.
+  Local MDL tests reported `49 passed, 2 skipped`; final read-only review
+  returned `PASS_SUBAGENT_FINAL_REVIEW_ONLY`. Full training, remote sync,
+  Slurm, `tools/test.py`, and metric/runtime/deploy/paper claims remain locked.
+- RBA-RBR controls `1133000 rba_ctrlfull` and `1133001 rba_ctrllow`, original
+  AdaTAD baseline `1133021 adatad_orig2g`, and PHASER jobs `1133022-1133026`
+  were still pending at the 2026-07-01 17:33 +0800 queue check.
