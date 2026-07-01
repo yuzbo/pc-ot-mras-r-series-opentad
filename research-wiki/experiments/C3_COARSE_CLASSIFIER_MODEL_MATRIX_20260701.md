@@ -109,6 +109,48 @@ Results:
 - train-probe CLI help: pass;
 - diff check: pass.
 
+## Remote Static Verification
+
+Remote clean clone:
+`/data/run01/sczc063/yuzibo/OpenTAD_C3TCNCoarseProbe_20260701`.
+
+GitHub branch:
+`https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/c3-tcn-coarse-probe-20260701`.
+
+Commit:
+`49c793a` (`Add matrix-zoo coarse classifier probes`).
+
+Commands/evidence:
+
+```bash
+git fetch origin codex/c3-tcn-coarse-probe-20260701
+git reset --hard 49c793a
+bash -n scripts/download_c3_coarse_classifier_model_zoo_n16r4.sh \
+  scripts/run_c3_tcn_coarse_probe_gpu1_20260701.sh \
+  scripts/run_c3_matrix_zoo_image_backbone_probe_gpu1_20260701.sh \
+  scripts/run_c3_matrix_zoo_video_probe_gpu1_20260701.sh
+/data/run01/sczc063/yuzibo/conda_envs/opentad/bin/python -m py_compile \
+  tools/bata/train_lowres_action_probe.py \
+  tools/bata/c3_coarse_classifier_model_matrix.py \
+  tests/test_lowres_action_probe.py \
+  tests/test_c3_coarse_classifier_model_matrix.py
+/data/run01/sczc063/yuzibo/conda_envs/opentad/bin/python -m pytest \
+  tests/test_lowres_action_probe.py \
+  tests/test_c3_coarse_classifier_model_matrix.py -q
+```
+
+Result:
+
+- remote HEAD: `49c793a`;
+- launcher `bash -n`: pass;
+- py_compile: pass;
+- Linux focused pytest: `40 passed`;
+- marker: `REMOTE_C3_MATRIX_ZOO_PRECHECK_PASS_49c793a`.
+
+No GPU, Slurm child, training, evaluation, detector mAP, runtime/FLOPs, deploy,
+paper claim, GPU0 fallback, or BH-SDC/DIVERGENT action occurred during this
+static verification.
+
 ## Next Actions
 
 1. Commit and push this C3 coarse classifier model-matrix/fine-tuning update.
