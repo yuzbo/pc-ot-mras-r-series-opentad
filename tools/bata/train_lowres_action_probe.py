@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import copy
 import argparse
+import importlib.util
 import json
 import math
 import os
 import random
 import sys
 import time
+import types
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -37,6 +39,13 @@ SUPPORTED_TCN_VARIANTS = (
     "temporal_mamba_lite",
 )
 MATRIX_ZOO_PROBE_MODEL = "matrix-zoo"
+OFFICIAL_ACTION_SEG_PROBE_MODEL = "official-action-seg"
+SUPPORTED_OFFICIAL_ACTION_SEG_BACKENDS = (
+    "official_ms_tcn2",
+    "official_asformer",
+    "official_fact",
+    "official_video_mamba_asformer",
+)
 
 
 def _as_nested_list(value: Any) -> Any:
@@ -1659,6 +1668,349 @@ class C3TemporalTCNActionProbe:
         return self.module.load_state_dict(state_dict)
 
 
+def _official_repos_root() -> Path:
+    here = Path(__file__).resolve()
+    candidates = []
+    for parent in here.parents:
+        candidates.append(parent / "external_official_action_segmentation_repos_20260702")
+        candidates.append(parent.parent / "external_official_action_segmentation_repos_20260702")
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return here.parents[2] / "external_official_action_segmentation_repos_20260702"
+
+
+def _load_module_from_path(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, str(path))
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"failed to create import spec for official module: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_official_mstcn2_module(repo_root: Path):
+    path = repo_root / "MS-TCN2" / "model.py"
+    source = path.read_text(encoding="utf-8")
+    source = source.replace("MS_TCB    def __init__", "    def __init__")
+    source = source.replace("from loguru import logger", "logger = None")
+    source = source.split("\nclass Trainer:", 1)[0]
+    module = type(sys)("official_mstcn2_model")
+    exec(compile(source, str(path), "exec"), module.__dict__)
+    return module
+
+
+def _load_official_asformer_module(repo_root: Path):
+    path = repo_root / "ASFormer" / "model.py"
+    source = path.read_text(encoding="utf-8")
+    source = source.replace("from eval import segment_bars_with_confidence", "segment_bars_with_confidence = None")
+    source = source.split("\nclass Trainer:", 1)[0]
+    module = type(sys)("official_asformer_model")
+    exec(compile(source, str(path), "exec"), module.__dict__)
+    return module
+
+
+def _load_official_video_mamba_asformer_module(repo_root: Path):
+    tas_root = repo_root / "video-mamba-suite" / "video-mamba-suite" / "temporal-action-segmentation"
+    path = tas_root / "model.py"
+    source = path.read_text(encoding="utf-8")
+    source = source.replace("from eval import segment_bars_with_confidence", "segment_bars_with_confidence = None")
+    source = source.split("\nclass Trainer:", 1)[0]
+    inserted = False
+    tas_root_str = str(tas_root)
+    if tas_root_str not in sys.path:
+        sys.path.insert(0, tas_root_str)
+        inserted = True
+    try:
+        module = type(sys)("official_video_mamba_asformer_model")
+        exec(compile(source, str(path), "exec"), module.__dict__)
+        return module
+    finally:
+        if inserted and tas_root_str in sys.path:
+            sys.path.remove(tas_root_str)
+
+
+def _load_official_fact_module(repo_root: Path):
+    fact_root = repo_root / "CVPR2024-FACT"
+    pkg_name = "official_fact_repo"
+    package_paths = {
+        pkg_name: fact_root,
+        f"{pkg_name}.models": fact_root / "models",
+        f"{pkg_name}.utils": fact_root / "utils",
+        f"{pkg_name}.configs": fact_root / "configs",
+    }
+    old_modules = {name: sys.modules.get(name) for name in package_paths}
+    for name, path in package_paths.items():
+        pkg = types.ModuleType(name)
+        pkg.__path__ = [str(path)]  # type: ignore[attr-defined]
+        sys.modules[name] = pkg
+    root_self = str(fact_root)
+    inserted: list[str] = []
+    for item in (root_self,):
+        if item not in sys.path:
+            sys.path.insert(0, item)
+            inserted.append(item)
+    try:
+        return _load_module_from_path(f"{pkg_name}.models.blocks", fact_root / "models" / "blocks.py")
+    finally:
+        for item in inserted:
+            if item in sys.path:
+                sys.path.remove(item)
+        for name, previous in old_modules.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+
+
+def official_action_seg_backend_available(backend: str) -> bool:
+    if backend not in SUPPORTED_OFFICIAL_ACTION_SEG_BACKENDS:
+        return False
+    repo_root = _official_repos_root()
+    if backend == "official_video_mamba_asformer":
+        try:
+            import mamba_ssm  # type: ignore  # noqa: F401
+        except Exception:
+            return False
+    repo_map = {
+        "official_ms_tcn2": repo_root / "MS-TCN2" / "model.py",
+        "official_asformer": repo_root / "ASFormer" / "model.py",
+        "official_fact": repo_root / "CVPR2024-FACT" / "models" / "blocks.py",
+        "official_video_mamba_asformer": repo_root
+        / "video-mamba-suite"
+        / "video-mamba-suite"
+        / "temporal-action-segmentation"
+        / "model.py",
+    }
+    return repo_map[backend].exists()
+
+
+class _AttrNamespace:
+    def __init__(self, **kwargs: Any) -> None:
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+    def clone(self):
+        return copy.deepcopy(self)
+
+    def defrost(self) -> None:
+        return None
+
+    def freeze(self) -> None:
+        return None
+
+    def __iter__(self):
+        return iter(self.__dict__)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.__dict__
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        setattr(self, key, value)
+
+
+class C3OfficialActionSegmentationProbe:
+    """Wrapper around official action-segmentation temporal models for binary frame probing."""
+
+    def __init__(
+        self,
+        *,
+        backend: str,
+        spatial_size: int = 64,
+        hidden_dim: int = 96,
+        num_layers: int = 2,
+        dropout: float = 0.10,
+    ) -> None:
+        if backend not in SUPPORTED_OFFICIAL_ACTION_SEG_BACKENDS:
+            raise ValueError(f"unsupported official action segmentation backend: {backend}")
+        if backend == "official_video_mamba_asformer" and not official_action_seg_backend_available(backend):
+            raise RuntimeError("official_video_mamba_asformer requires mamba_ssm; install it before enabling this backend")
+        torch, _F = _import_torch()
+        import torch.nn as nn  # type: ignore
+
+        self.backend = str(backend)
+        self.spatial_size = int(spatial_size)
+        self.hidden_dim = int(hidden_dim)
+        self.num_layers = int(num_layers)
+        repo_root = _official_repos_root()
+        self.official_source = {
+            "backend": self.backend,
+            "repo_root": str(repo_root),
+            "repo_path": "",
+            "compatibility_shim": None,
+        }
+
+        temporal_dim = max(16, int(hidden_dim))
+        self.module = nn.Module()
+        self.spatial_stem = nn.Sequential(
+            nn.Conv2d(3, temporal_dim, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(temporal_dim),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(temporal_dim, temporal_dim, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(temporal_dim),
+            nn.SiLU(inplace=True),
+            nn.AdaptiveAvgPool2d(1),
+        )
+        self.module.spatial_stem = self.spatial_stem
+
+        if self.backend == "official_ms_tcn2":
+            official = _load_official_mstcn2_module(repo_root)
+            self.official_module = official
+            self.official_temporal = official.MS_TCN2(
+                max(1, int(num_layers)),
+                max(1, int(num_layers)),
+                2,
+                temporal_dim,
+                temporal_dim,
+                2,
+            )
+            self.official_source.update(
+                repo_path=str(repo_root / "MS-TCN2"),
+                compatibility_shim="in_memory_fix_for_stray_MS_TCB_token_and_skip_trainer",
+            )
+        elif self.backend == "official_asformer":
+            official = _load_official_asformer_module(repo_root)
+            official.device = torch.device("cpu")
+            self.official_module = official
+            self.official_temporal = official.MyTransformer(
+                1,
+                max(1, int(num_layers)),
+                2,
+                2,
+                temporal_dim,
+                temporal_dim,
+                2,
+                0.0,
+            )
+            self.official_source.update(
+                repo_path=str(repo_root / "ASFormer"),
+                compatibility_shim="in_memory_drop_unused_eval_import_and_skip_trainer",
+            )
+        elif self.backend == "official_fact":
+            official = _load_official_fact_module(repo_root)
+            self.official_module = official
+            cfg = self._make_fact_cfg(temporal_dim=temporal_dim, dropout=float(dropout))
+            self.official_temporal = official.FACT(cfg, temporal_dim, 2)
+            self.official_source.update(repo_path=str(repo_root / "CVPR2024-FACT"), compatibility_shim="minimal_cfg_namespace")
+        else:
+            official = _load_official_video_mamba_asformer_module(repo_root)
+            official.device = torch.device("cpu")
+            self.official_module = official
+            self.official_temporal = official.MaTransformer(
+                1,
+                max(1, int(num_layers)),
+                2,
+                2,
+                temporal_dim,
+                temporal_dim,
+                2,
+                0.0,
+            )
+            self.official_source.update(repo_path=str(repo_root / "video-mamba-suite"), compatibility_shim=None)
+        self.module.official_temporal = self.official_temporal
+
+    def _sync_official_runtime_tensors(self, device: Any) -> None:
+        for submodule in self.official_temporal.modules():
+            tensor = getattr(submodule, "window_mask", None)
+            if hasattr(tensor, "to"):
+                submodule.window_mask = tensor.to(device)
+
+    @staticmethod
+    def _make_fact_cfg(*, temporal_dim: int, dropout: float):
+        bi = _AttrNamespace(
+            hid_dim=temporal_dim,
+            dropout=float(dropout),
+            a="sca",
+            a_nhead=1,
+            a_ffdim=max(temporal_dim * 2, 16),
+            a_layers=1,
+            a_dim=temporal_dim,
+            f="m2",
+            f_layers=1,
+            f_ln=False,
+            f_dim=temporal_dim,
+            f_ngp=1,
+        )
+        bu = copy.deepcopy(bi)
+        bu.a = "sa"
+        bu.f_layers = 1
+        cfg = _AttrNamespace(
+            FACT=_AttrNamespace(ntoken=2, block="iu", trans=False, fpos=True, cmr=0.0, mwt=0.1),
+            Bi=bi,
+            Bu=bu,
+            BU=copy.deepcopy(bu),
+            TM=_AttrNamespace(use=False, t=0, m=0, p=0.0),
+            Loss=_AttrNamespace(sw=0.0),
+        )
+        return cfg
+
+    def __call__(self, frames: Any, valid: Any, time_coords: Any | None = None):
+        torch, _F = _import_torch()
+        if frames.ndim != 5:
+            raise ValueError(f"Official action-seg probe expects [B,T,C,H,W], got {tuple(frames.shape)}")
+        batch, dense_len, channels, height, width = frames.shape
+        if int(channels) != 3:
+            raise ValueError("Official action-seg probe expects RGB frame tensors with 3 channels")
+        frames = frames.float()
+        if bool((frames.detach().abs().amax() > 2.0).item()):
+            frames = frames / 255.0
+        flat = frames.reshape(batch * dense_len, channels, height, width)
+        features = self.spatial_stem(flat).flatten(1).reshape(batch, dense_len, -1).transpose(1, 2)
+        mask = valid.to(device=features.device).bool()
+        features = features.masked_fill(~mask[:, None, :], 0.0)
+        if hasattr(self, "official_module") and hasattr(self.official_module, "device"):
+            self.official_module.device = torch.device(features.device)
+        self._sync_official_runtime_tensors(features.device)
+        if self.backend == "official_ms_tcn2":
+            outputs = self.official_temporal(features)
+            logits = outputs[-1, :, 1, :] - outputs[-1, :, 0, :]
+        elif self.backend == "official_asformer":
+            rows = []
+            for idx in range(int(batch)):
+                outputs = self.official_temporal(features[idx : idx + 1], mask[idx : idx + 1, None, :].float())
+                rows.append(outputs[-1, 0, 1, :] - outputs[-1, 0, 0, :])
+            logits = torch.stack(rows, dim=0)
+        elif self.backend == "official_fact":
+            rows = []
+            for idx in range(int(batch)):
+                seq = features[idx].transpose(0, 1).unsqueeze(1)
+                self.official_temporal._forward_one_video(seq)
+                frame_clogit = self.official_temporal.block_list[-1].frame_clogit.squeeze(1)
+                rows.append(frame_clogit[:, 1] - frame_clogit[:, 0])
+            logits = torch.stack(rows, dim=0)
+        else:
+            rows = []
+            for idx in range(int(batch)):
+                outputs = self.official_temporal(features[idx : idx + 1], mask[idx : idx + 1, None, :].float())
+                rows.append(outputs[-1, 0, 1, :] - outputs[-1, 0, 0, :])
+            logits = torch.stack(rows, dim=0)
+        return logits.masked_fill(~mask, 0.0)
+
+    def train(self):
+        self.module.train()
+        return self
+
+    def eval(self):
+        self.module.eval()
+        return self
+
+    def to(self, *args, **kwargs):
+        self.module.to(*args, **kwargs)
+        return self
+
+    def parameters(self):
+        return self.module.parameters()
+
+    def state_dict(self):
+        return self.module.state_dict()
+
+    def load_state_dict(self, state_dict):
+        return self.module.load_state_dict(state_dict)
+
+
 def _matrix_entry_by_id(model_id: str) -> dict[str, Any]:
     try:
         from tools.bata.c3_coarse_classifier_model_matrix import MODEL_MATRIX
@@ -1966,7 +2318,7 @@ def make_lowres_frame_images(inputs: Any, *, spatial_size: int = 32, normalize: 
 def prepare_probe_inputs(inputs: Any, *, probe_model: str, spatial_size: int):
     if probe_model == "c3-reader":
         return make_lowres_descriptors(inputs, scout_spatial_size=int(spatial_size))
-    if probe_model in {"mobilenetv3", "temporal-tcn", MATRIX_ZOO_PROBE_MODEL}:
+    if probe_model in {"mobilenetv3", "temporal-tcn", MATRIX_ZOO_PROBE_MODEL, OFFICIAL_ACTION_SEG_PROBE_MODEL}:
         return make_lowres_frame_images(inputs, spatial_size=int(spatial_size))
     raise ValueError(f"unsupported probe_model: {probe_model}")
 
@@ -2090,6 +2442,7 @@ def train_one_epoch(
     log_every_batches: int,
     tcn_variant: str | None = None,
     matrix_model_id: str | None = None,
+    official_action_seg_backend: str | None = None,
 ) -> dict[str, Any]:
     torch, F = _import_torch()
     model.train()
@@ -2107,6 +2460,7 @@ def train_one_epoch(
         expected_batches=total_batches,
         tcn_variant=tcn_variant,
         matrix_model_id=matrix_model_id,
+        official_action_seg_backend=official_action_seg_backend,
     )
     for batch_idx, batch in enumerate(dataloader):
         if max_batches > 0 and batch_idx >= max_batches:
@@ -2133,6 +2487,7 @@ def train_one_epoch(
                 last_loss=float(loss.detach().cpu().item()),
                 tcn_variant=tcn_variant,
                 matrix_model_id=matrix_model_id,
+                official_action_seg_backend=official_action_seg_backend,
             )
     if batch_count <= 0:
         raise ValueError("train_one_epoch processed zero batches; check max_train_batches and the dataloader")
@@ -2148,6 +2503,7 @@ def train_one_epoch(
         total_epochs=total_epochs,
         tcn_variant=tcn_variant,
         matrix_model_id=matrix_model_id,
+        official_action_seg_backend=official_action_seg_backend,
         **stats,
     )
     return stats
@@ -2171,6 +2527,7 @@ def evaluate(
     sample_jsonl_path: Path | None = None,
     tcn_variant: str | None = None,
     matrix_model_id: str | None = None,
+    official_action_seg_backend: str | None = None,
 ) -> dict[str, Any]:
     torch, _F = _import_torch()
     model.eval()
@@ -2192,6 +2549,7 @@ def evaluate(
         expected_batches=total_batches,
         tcn_variant=tcn_variant,
         matrix_model_id=matrix_model_id,
+        official_action_seg_backend=official_action_seg_backend,
     )
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
@@ -2220,6 +2578,7 @@ def evaluate(
                     expected_batches=total_batches,
                     tcn_variant=tcn_variant,
                     matrix_model_id=matrix_model_id,
+                    official_action_seg_backend=official_action_seg_backend,
                 )
     if batch_count <= 0:
         raise ValueError("evaluate processed zero validation batches; check max_val_batches and the dataloader")
@@ -2252,6 +2611,7 @@ def evaluate(
             sample_row["probe_model"] = probe_model
             sample_row["tcn_variant"] = tcn_variant
             sample_row["matrix_model_id"] = matrix_model_id
+            sample_row["official_action_seg_backend"] = official_action_seg_backend
             sample_row["spatial_size"] = int(scout_spatial_size)
             sample_rows.append(sample_row)
         _write_jsonl(sample_jsonl_path, sample_rows)
@@ -2264,12 +2624,14 @@ def evaluate(
         metrics["probe_model"] = probe_model
         metrics["tcn_variant"] = tcn_variant
         metrics["matrix_model_id"] = matrix_model_id
+        metrics["official_action_seg_backend"] = official_action_seg_backend
         metrics["spatial_size"] = int(scout_spatial_size)
         metrics["indirect_selection_baseline"] = compact_indirect_quality.get("baseline")
         metrics["indirect_selection_delta"] = compact_indirect_quality.get("delta")
     metrics["batches"] = batch_count
     metrics["seconds"] = time.time() - start_time
     metrics["tcn_variant"] = tcn_variant
+    metrics["official_action_seg_backend"] = official_action_seg_backend
     _emit_progress(progress_path, "val_epoch_end", epoch=epoch, total_epochs=total_epochs, **metrics)
     return metrics
 
@@ -2468,12 +2830,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--probe-model",
-        choices=("c3-reader", "mobilenetv3", "temporal-tcn", MATRIX_ZOO_PROBE_MODEL),
+        choices=("c3-reader", "mobilenetv3", "temporal-tcn", MATRIX_ZOO_PROBE_MODEL, OFFICIAL_ACTION_SEG_PROBE_MODEL),
         default="c3-reader",
     )
     parser.add_argument("--scout-spatial-size", type=int, default=32)
     parser.add_argument("--mobilenet-sizes", type=int, nargs="+", default=[32, 64])
     parser.add_argument("--tcn-variants", nargs="+", default=list(SUPPORTED_TCN_VARIANTS))
+    parser.add_argument(
+        "--official-action-seg-backends",
+        nargs="+",
+        default=list(SUPPORTED_OFFICIAL_ACTION_SEG_BACKENDS),
+        help="Official action-segmentation backends adapted to binary frame classification.",
+    )
     parser.add_argument(
         "--matrix-model-ids",
         nargs="+",
@@ -2523,6 +2891,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     unsupported_tcn_variants = [variant for variant in args.tcn_variants if variant not in SUPPORTED_TCN_VARIANTS]
     if unsupported_tcn_variants:
         parser.error(f"--tcn-variants must be drawn from {list(SUPPORTED_TCN_VARIANTS)}, got {unsupported_tcn_variants}")
+    unsupported_official = [
+        backend for backend in args.official_action_seg_backends if backend not in SUPPORTED_OFFICIAL_ACTION_SEG_BACKENDS
+    ]
+    if unsupported_official:
+        parser.error(
+            "--official-action-seg-backends must be drawn from "
+            f"{list(SUPPORTED_OFFICIAL_ACTION_SEG_BACKENDS)}, got {unsupported_official}"
+        )
     if args.probe_model == MATRIX_ZOO_PROBE_MODEL and not args.matrix_model_ids:
         try:
             from tools.bata.c3_coarse_classifier_model_matrix import iter_matrix
@@ -2560,6 +2936,20 @@ def _active_matrix_model_id(args: argparse.Namespace, explicit_model_id: str | N
     return str(model_id)
 
 
+def _active_official_action_seg_backend(args: argparse.Namespace, explicit_backend: str | None = None) -> str | None:
+    if args.probe_model != OFFICIAL_ACTION_SEG_PROBE_MODEL:
+        return None
+    backend = explicit_backend if explicit_backend is not None else getattr(args, "official_action_seg_backend", None)
+    if backend is None:
+        backends = list(getattr(args, "official_action_seg_backends", []))
+        backend = backends[0] if backends else None
+    if not backend:
+        raise ValueError("official-action-seg requires at least one --official-action-seg-backends entry")
+    if backend not in SUPPORTED_OFFICIAL_ACTION_SEG_BACKENDS:
+        raise ValueError(f"unsupported official action-segmentation backend: {backend}")
+    return str(backend)
+
+
 def _build_probe_model(args: argparse.Namespace, cfg: Any, *, spatial_size: int):
     if args.probe_model == "c3-reader":
         reader_cfg = _reader_cfg_from_config(cfg)
@@ -2595,6 +2985,14 @@ def _build_probe_model(args: argparse.Namespace, cfg: Any, *, spatial_size: int)
             ),
             None,
         )
+    if args.probe_model == OFFICIAL_ACTION_SEG_PROBE_MODEL:
+        return (
+            C3OfficialActionSegmentationProbe(
+                backend=str(_active_official_action_seg_backend(args)),
+                spatial_size=int(spatial_size),
+            ),
+            None,
+        )
     raise ValueError(f"unsupported probe_model: {args.probe_model}")
 
 
@@ -2616,6 +3014,9 @@ def _probe_out_dir(
     if probe_model == MATRIX_ZOO_PROBE_MODEL and tcn_variant:
         safe_id = str(tcn_variant).replace("/", "_").replace(":", "_")
         return base_out_dir / f"matrix_zoo_{safe_id}_{int(spatial_size)}"
+    if probe_model == OFFICIAL_ACTION_SEG_PROBE_MODEL and tcn_variant:
+        safe_id = str(tcn_variant).replace("/", "_").replace(":", "_")
+        return base_out_dir / f"official_action_seg_{safe_id}_{int(spatial_size)}"
     return base_out_dir
 
 
@@ -2792,6 +3193,48 @@ def _combine_matrix_model_summaries(*, base_summary: Mapping[str, Any], summarie
     return combined
 
 
+def _combine_official_action_seg_summaries(*, base_summary: Mapping[str, Any], summaries: Sequence[Mapping[str, Any]], args_out_dir: Path) -> dict[str, Any]:
+    combined: dict[str, Any] = {
+        "schema_version": "lowres_action_probe_official_action_seg_v1",
+        "purpose": base_summary.get("purpose", "diagnostic_only_action_vs_background_frame_probe"),
+        "probe_model": OFFICIAL_ACTION_SEG_PROBE_MODEL,
+        "diagnostic_only": True,
+        "not_connected_to_detector": True,
+        "no_detector_training": True,
+        "no_detector_eval": True,
+        "no_detector_map": True,
+        "seed": base_summary.get("seed"),
+        "out_dir": str(args_out_dir),
+        "official_action_seg_backends": [],
+        "summaries": list(summaries),
+    }
+    ap_by_backend: dict[str, Any] = {}
+    roc_by_backend: dict[str, Any] = {}
+    f1_by_backend: dict[str, Any] = {}
+    boundary_by_backend: dict[str, Any] = {}
+    for summary in summaries:
+        backend = summary.get("official_action_seg_backend")
+        if not backend:
+            continue
+        backend = str(backend)
+        combined["official_action_seg_backends"].append(backend)
+        combined[f"official_action_seg_{backend}"] = summary
+        final_val = summary.get("final_val", {})
+        ap_by_backend[backend] = final_val.get("average_precision")
+        roc_by_backend[backend] = final_val.get("roc_auc")
+        f1_by_backend[backend] = final_val.get("best_f1")
+        boundary_by_backend[backend] = final_val.get("sampling_quality", {}).get("boundary_support_r1")
+    valid_ap = {backend: float(value) for backend, value in ap_by_backend.items() if value is not None}
+    combined["comparison"] = {
+        "average_precision_by_backend": ap_by_backend,
+        "roc_auc_by_backend": roc_by_backend,
+        "best_f1_by_backend": f1_by_backend,
+        "boundary_support_r1_by_backend": boundary_by_backend,
+        "best_average_precision_backend": max(valid_ap, key=lambda backend: valid_ap[backend]) if valid_ap else None,
+    }
+    return combined
+
+
 def _run_probe_experiment(
     *,
     args: argparse.Namespace,
@@ -2801,6 +3244,7 @@ def _run_probe_experiment(
     seed: int,
     tcn_variant: str | None = None,
     matrix_model_id: str | None = None,
+    official_action_seg_backend: str | None = None,
     multi_variant: bool = False,
 ) -> dict[str, Any]:
     torch, _F = _import_torch()
@@ -2827,12 +3271,17 @@ def _run_probe_experiment(
     train_loader, val_loader = _build_dataloaders(cfg, batch_size=args.batch_size, num_workers=args.num_workers, seed=seed)
     active_tcn_variant = _active_tcn_variant(args, tcn_variant)
     active_matrix_model_id = _active_matrix_model_id(args, matrix_model_id)
+    active_official_backend = _active_official_action_seg_backend(args, official_action_seg_backend)
     active_probe_variant = active_tcn_variant if active_tcn_variant is not None else active_matrix_model_id
+    if active_probe_variant is None:
+        active_probe_variant = active_official_backend
     run_args = copy.copy(args)
     if active_tcn_variant is not None:
         setattr(run_args, "tcn_variant", active_tcn_variant)
     if active_matrix_model_id is not None:
         setattr(run_args, "matrix_model_id", active_matrix_model_id)
+    if active_official_backend is not None:
+        setattr(run_args, "official_action_seg_backend", active_official_backend)
     device = run_args.device
     try:
         model, reader_cfg = _build_probe_model(run_args, cfg, spatial_size=spatial_size)
@@ -2855,6 +3304,7 @@ def _run_probe_experiment(
             "purpose": "diagnostic_only_action_vs_background_frame_probe",
             "probe_model": run_args.probe_model,
             "matrix_model_id": active_matrix_model_id,
+            "official_action_seg_backend": active_official_backend,
             "spatial_size": int(spatial_size),
             "out_dir": str(out_dir),
             "diagnostic_only": True,
@@ -2903,6 +3353,7 @@ def _run_probe_experiment(
         probe_model=run_args.probe_model,
         tcn_variant=active_tcn_variant,
         matrix_model_id=active_matrix_model_id,
+        official_action_seg_backend=active_official_backend,
         scout_spatial_size=int(spatial_size),
         spatial_size=int(spatial_size),
         coverage_only=bool(args.coverage_only),
@@ -2939,6 +3390,7 @@ def _run_probe_experiment(
                 log_every_batches=int(args.log_every_batches),
                 tcn_variant=active_tcn_variant,
                 matrix_model_id=active_matrix_model_id,
+                official_action_seg_backend=active_official_backend,
             )
         val_metrics = evaluate(
             model=model,
@@ -2957,6 +3409,7 @@ def _run_probe_experiment(
             sample_jsonl_path=sample_jsonl_path,
             tcn_variant=active_tcn_variant,
             matrix_model_id=active_matrix_model_id,
+            official_action_seg_backend=active_official_backend,
         )
         compact_val_metrics = _compact_metric_payload(val_metrics)
         history.append({"epoch": epoch, "train": train_stats, "val": compact_val_metrics})
@@ -2974,6 +3427,7 @@ def _run_probe_experiment(
             val_batches=val_metrics.get("batches"),
             tcn_variant=active_tcn_variant,
             matrix_model_id=active_matrix_model_id,
+            official_action_seg_backend=active_official_backend,
         )
 
     final_val = _compact_metric_payload(val_metrics)
@@ -2988,6 +3442,8 @@ def _run_probe_experiment(
         "probe_model": run_args.probe_model,
         "tcn_variant": active_tcn_variant,
         "matrix_model_id": active_matrix_model_id,
+        "official_action_seg_backend": active_official_backend,
+        "official_source": getattr(model, "official_source", None),
         "spatial_size": int(spatial_size),
         "out_dir": str(out_dir),
         "diagnostic_only": True,
@@ -3025,7 +3481,7 @@ def _run_probe_experiment(
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     args = parse_args(argv)
     torch, _F = _import_torch()
-    if args.probe_model in {"c3-reader", "temporal-tcn"}:
+    if args.probe_model in {"c3-reader", "temporal-tcn", OFFICIAL_ACTION_SEG_PROBE_MODEL}:
         sizes = [int(args.scout_spatial_size)]
     elif args.probe_model == MATRIX_ZOO_PROBE_MODEL:
         sizes = [int(args.scout_spatial_size)]
@@ -3035,16 +3491,22 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         raise ValueError("at least one probe spatial size is required")
     tcn_variants = list(args.tcn_variants) if args.probe_model == "temporal-tcn" else [None]
     matrix_model_ids = list(args.matrix_model_ids) if args.probe_model == MATRIX_ZOO_PROBE_MODEL else [None]
+    official_backends = (
+        list(args.official_action_seg_backends) if args.probe_model == OFFICIAL_ACTION_SEG_PROBE_MODEL else [None]
+    )
     if args.probe_model == "temporal-tcn" and not tcn_variants:
         raise ValueError("at least one temporal-tcn variant is required")
     if args.probe_model == MATRIX_ZOO_PROBE_MODEL and not matrix_model_ids:
         raise ValueError("at least one matrix-zoo model id is required")
+    if args.probe_model == OFFICIAL_ACTION_SEG_PROBE_MODEL and not official_backends:
+        raise ValueError("at least one official action-segmentation backend is required")
     if args.device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but torch.cuda.is_available() is false")
     if (
         (args.probe_model == "mobilenetv3" and len(sizes) > 1)
         or (args.probe_model == "temporal-tcn" and len(tcn_variants) > 1)
         or (args.probe_model == MATRIX_ZOO_PROBE_MODEL and len(matrix_model_ids) > 1)
+        or (args.probe_model == OFFICIAL_ACTION_SEG_PROBE_MODEL and len(official_backends) > 1)
     ):
         _seed_everything(args.seed)
     summaries = []
@@ -3074,6 +3536,19 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
                     multi_variant=len(matrix_model_ids) > 1,
                 )
             )
+    elif args.probe_model == OFFICIAL_ACTION_SEG_PROBE_MODEL:
+        for backend in official_backends:
+            summaries.append(
+                _run_probe_experiment(
+                    args=args,
+                    cfg=_load_cfg(args.config),
+                    spatial_size=sizes[0],
+                    multi_size=False,
+                    seed=int(args.seed),
+                    official_action_seg_backend=str(backend),
+                    multi_variant=len(official_backends) > 1,
+                )
+            )
     else:
         summaries = [
             _run_probe_experiment(
@@ -3100,6 +3575,12 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         )
     elif args.probe_model == MATRIX_ZOO_PROBE_MODEL:
         combined = _combine_matrix_model_summaries(
+            base_summary=base_summary,
+            summaries=summaries,
+            args_out_dir=Path(args.out_dir),
+        )
+    elif args.probe_model == OFFICIAL_ACTION_SEG_PROBE_MODEL:
+        combined = _combine_official_action_seg_summaries(
             base_summary=base_summary,
             summaries=summaries,
             args_out_dir=Path(args.out_dir),

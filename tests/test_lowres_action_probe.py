@@ -672,6 +672,120 @@ def test_parse_args_supports_temporal_tcn_variants_and_rejects_unknown_variant()
         probe.parse_args(["--probe-model", "temporal-tcn", "--tcn-variants", "unknown"])
 
 
+def test_parse_args_supports_official_action_segmentation_backends():
+    probe = load_probe_module()
+
+    expected = [
+        "official_ms_tcn2",
+        "official_asformer",
+        "official_fact",
+        "official_video_mamba_asformer",
+    ]
+    args = probe.parse_args(
+        [
+            "--probe-model",
+            "official-action-seg",
+            "--official-action-seg-backends",
+            *expected,
+            "--scout-spatial-size",
+            "64",
+        ]
+    )
+
+    assert args.probe_model == "official-action-seg"
+    assert tuple(expected) == probe.SUPPORTED_OFFICIAL_ACTION_SEG_BACKENDS
+    assert args.official_action_seg_backends == expected
+
+    with pytest.raises(SystemExit):
+        probe.parse_args(["--probe-model", "official-action-seg", "--official-action-seg-backends", "asformer_lite"])
+
+
+def test_official_action_seg_probe_forwards_binary_logits_with_source_metadata():
+    probe = load_probe_module()
+    torch = pytest.importorskip("torch")
+
+    frames = torch.rand(2, 9, 3, 16, 16)
+    valid = torch.ones(2, 9, dtype=torch.bool)
+
+    for backend in ("official_ms_tcn2", "official_asformer", "official_fact"):
+        reader = probe.C3OfficialActionSegmentationProbe(
+            backend=backend,
+            spatial_size=16,
+            hidden_dim=16,
+            num_layers=1,
+        )
+        logits = reader(frames, valid)
+
+        assert tuple(logits.shape) == (2, 9)
+        assert torch.isfinite(logits).all()
+        assert reader.official_source["backend"] == backend
+        assert reader.official_source["repo_path"]
+        assert "lite" not in reader.official_source["backend"]
+
+
+def test_official_action_seg_probe_uses_action_minus_background_logit_and_masks_invalid_frames():
+    probe = load_probe_module()
+    torch = pytest.importorskip("torch")
+
+    class ConstantStem(torch.nn.Module):
+        def __init__(self, channels):
+            super().__init__()
+            self.channels = int(channels)
+
+        def forward(self, frames):
+            return torch.ones(frames.shape[0], self.channels, 1, 1, device=frames.device)
+
+    class FakeTwoClassTemporal(torch.nn.Module):
+        def forward(self, features, mask=None):
+            batch, _channels, dense_len = features.shape
+            background = torch.full((batch, dense_len), -2.0, device=features.device)
+            action = torch.full((batch, dense_len), 3.0, device=features.device)
+            return torch.stack([torch.stack([background, action], dim=1)], dim=0)
+
+    class FakeFactTemporal(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.block_list = [types.SimpleNamespace(frame_clogit=None)]
+
+        def _forward_one_video(self, seq):
+            dense_len = seq.shape[0]
+            background = torch.full((dense_len,), -2.0, device=seq.device)
+            action = torch.full((dense_len,), 3.0, device=seq.device)
+            self.block_list[-1].frame_clogit = torch.stack([background, action], dim=1).unsqueeze(1)
+
+    frames = torch.rand(2, 5, 3, 16, 16)
+    valid = torch.tensor([[True, True, False, True, False], [True, False, True, True, True]])
+    expected = torch.where(valid, torch.full_like(valid.float(), 5.0), torch.zeros_like(valid.float()))
+
+    for backend in ("official_ms_tcn2", "official_asformer", "official_fact"):
+        reader = probe.C3OfficialActionSegmentationProbe(
+            backend=backend,
+            spatial_size=16,
+            hidden_dim=16,
+            num_layers=1,
+        )
+        reader.spatial_stem = ConstantStem(reader.hidden_dim)
+        if backend == "official_fact":
+            reader.official_temporal = FakeFactTemporal()
+        else:
+            reader.official_temporal = FakeTwoClassTemporal()
+        reader.module.official_temporal = reader.official_temporal
+
+        logits = reader(frames, valid)
+
+        assert torch.allclose(logits, expected)
+
+
+def test_official_video_mamba_backend_fails_closed_without_dependency():
+    probe = load_probe_module()
+
+    if probe.official_action_seg_backend_available("official_video_mamba_asformer"):
+        pytest.skip("mamba_ssm is installed in this environment; fail-closed path is not exercised")
+
+    with pytest.raises(RuntimeError, match="mamba_ssm"):
+        probe.C3OfficialActionSegmentationProbe(backend="official_video_mamba_asformer", spatial_size=16)
+
+
 def test_parse_args_supports_matrix_zoo_model_ids_and_defaults_from_matrix():
     probe = load_probe_module()
 
