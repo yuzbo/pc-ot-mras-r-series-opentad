@@ -777,3 +777,37 @@ Decision:
 - Continue the job to natural completion.
 - Use the completed JSONL to update the severe-low diagnosis packet.
 - Formal/full long training and all metric/runtime/FLOPs/deploy/paper/sparse-compute claims remain locked.
+
+## Guard Fallback Watcher - 2026-07-01 10:58:56 +08:00
+
+Purpose:
+
+- Avoid losing time while the public Slurm guard diagnostic `1132641 rba_guarddiag`
+  remains `PENDING` due to priority.
+- Preserve resource boundaries: do not collide with BVR on protected hold GPU0,
+  do not touch C3 GPU1, and do not release/cancel the protected parent hold
+  `1118197 pcot_dbg2g`.
+
+Deployment:
+
+- Watcher directory:
+  `/data/run01/sczc063/yuzibo/route_watchers/rba_rbr_guard_after_bvr_1118197_542_20260701_1055_+0800`.
+- Watcher PID: `509961`.
+- First log line:
+  `[2026-07-01T10:58:56+08:00] waiting_for_bvr step=1118197.542 public_state=PENDING`.
+- The watcher waits for BVR child `1118197.542` to finish before considering GPU0.
+- If public guard job `1132641` is already `RUNNING`, `COMPLETING`, or
+  `COMPLETED`, the watcher exits without launching a hold child.
+- If `1132641` is still pending after BVR finishes, the watcher cancels only
+  that pending RBA public job to avoid duplicate GPU use, then launches the same
+  guard `SHORT_DIAGNOSTIC_ONLY` run on protected hold GPU0 as `rba_guard_g0`.
+- If `1132641` is in a terminal failed/cancelled state, the watcher stops for
+  manual review and does not hide the failure with a duplicate launch.
+
+Current decision:
+
+- This is remote orchestration only, not a code/config/model change.
+- No metric/runtime/FLOPs/sparse-compute/deploy/paper claim is unlocked.
+- RBA-RBR formal/full training remains locked until the guard diagnostic
+  verifies count/gap restoration and severe-result diagnosis produces a concrete
+  next decision.
