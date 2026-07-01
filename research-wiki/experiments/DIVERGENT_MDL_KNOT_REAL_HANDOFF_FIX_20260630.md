@@ -678,10 +678,12 @@ Remote evidence:
 
 - Runtime worktree: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7`.
 - Remote code commit: `9183fb7` (`DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3 remote shortdiag sync`).
-- Slurm job: `1132480` (`mdl_shortdiag`).
+- Active Slurm job: `1132502` (`mdl_shortdiag`).
 - Slurm constraints: `--gpus=1`, `--cpus-per-task=4`, `--exclude=g0030`.
-- Initial allocation: `RUNNING` on `g0053`, not the protected hold node `g0030`.
-- Logdir: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_shortdiag_sbatch_9183fb7_20260701_090910_+0800_exclude_g0030`.
+- Initial clean allocation: `RUNNING` on `g0032`, not the protected hold node `g0030`.
+- Clean logdir: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_shortdiag_sbatch_9183fb7_20260701_091642_+0800_torchrun_port29683_exclude_g0030`.
+- Superseded launch attempts: `1132480` was cancelled after a stale sbatch argument made `launch_gate.log` invalid; `1132482` was cancelled after `torch.distributed.run` hit the shared-node default port `29400`; `1132483` was cancelled after direct Python exposed the required `LOCAL_RANK` DDP entrypoint contract. These are deployment-entry corrections, not model failure evidence.
+- Startup evidence for `1132502`: clean py_compile, base launch gate, and shortdiag static gate passed; pretrained VideoMAE checkpoint loaded; AMP and EMA enabled; `Epoch 0 started`; first sampled_raw `MDL_KNOT_PROFILE` line emitted before the first loss.
 
 Current decision:
 

@@ -7,8 +7,10 @@ MDL-Knot bounded `SHORT_DIAGNOSTIC_ONLY` was deployed after final read-only revi
 - Review verdict: `PASS_SUBAGENT_FINAL_REVIEW_ONLY_FOR_SHORT_DIAGNOSTIC_ONLY`.
 - Remote runtime worktree: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7`.
 - Remote code evidence commit: `9183fb7`.
-- Slurm job: `1132480` (`mdl_shortdiag`), submitted with `--exclude=g0030`; initial state `RUNNING` on `g0053`.
-- Logdir: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_shortdiag_sbatch_9183fb7_20260701_090910_+0800_exclude_g0030`.
+- Active clean Slurm job: `1132502` (`mdl_shortdiag`), submitted with `--exclude=g0030`; initial state `RUNNING` on `g0032`.
+- Clean logdir: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_shortdiag_sbatch_9183fb7_20260701_091642_+0800_torchrun_port29683_exclude_g0030`.
+- Superseded launch attempts: `1132480` was cancelled after a stale launch-gate argument; `1132482` was cancelled after `torch.distributed.run` hit default port `29400`; `1132483` was cancelled after direct Python exposed the required `LOCAL_RANK` DDP contract. These are deployment-entry correction evidence, not route model failure evidence.
+- Startup evidence for `1132502`: clean gates passed, pretrained checkpoint loaded, AMP and EMA enabled, `Epoch 0 started`, and first sampled_raw `MDL_KNOT_PROFILE` line emitted before first loss.
 - Claim state remains locked: no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim; formal/full training, evaluation, `tools/test.py`, and checkpoint result claims remain locked.
 
 ## 2026-07-01 08:36:33 +08:00

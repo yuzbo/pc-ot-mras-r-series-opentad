@@ -6,7 +6,7 @@ Route-owned copy for `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`.
 
 | Experiment / config | Changed surface | Current status | Review / gate state | Deployment / result state | Next action |
 | --- | --- | --- | --- | --- | --- |
-| MDL-Knot sampled_raw full-observation edge repair, `input_mdl_knot_dynamic_adapter_irregular_headv3*.py` | Input sampling handoff validator, sampled_raw audit metadata, profile instrumentation, diagnostics counters | `SHORT_DIAGNOSTIC_ONLY` Slurm job running | Local and remote py_compile/gates passed; remote focused pytest passed `60 passed in 204.98s`; final read-only subagent returned `PASS_SUBAGENT_FINAL_REVIEW_ONLY_FOR_SHORT_DIAGNOSTIC_ONLY` | Remote commit `9183fb7`; Slurm job `1132480` (`mdl_shortdiag`) running on `g0053`; logdir `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_shortdiag_sbatch_9183fb7_20260701_090910_+0800_exclude_g0030`; no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim | Monitor launch sanity and post-shortdiag validator; formal/full long training remains locked |
+| MDL-Knot sampled_raw full-observation edge repair, `input_mdl_knot_dynamic_adapter_irregular_headv3*.py` | Input sampling handoff validator, sampled_raw audit metadata, profile instrumentation, diagnostics counters | `SHORT_DIAGNOSTIC_ONLY` Slurm job running | Local and remote py_compile/gates passed; remote focused pytest passed `60 passed in 204.98s`; final read-only subagent returned `PASS_SUBAGENT_FINAL_REVIEW_ONLY_FOR_SHORT_DIAGNOSTIC_ONLY`; clean restart gate passed | Remote commit `9183fb7`; active Slurm job `1132502` (`mdl_shortdiag`) running on `g0032`; clean logdir `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_shortdiag_sbatch_9183fb7_20260701_091642_+0800_torchrun_port29683_exclude_g0030`; prior children `1132480/1132482/1132483` are deployment-entry corrections only; no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim | Monitor first finite loss and post-shortdiag validator; formal/full long training remains locked |
 | MDL-Knot formal/full train lock consistency fix, `input_mdl_knot_dynamic_adapter_irregular_headv3.py` | Config lock state, launch gate claim locks, tests | Local blocker fix complete; remote PRECHECK_ONLY rerun passed under locked formal state | py_compile passed; launch gate rejects stale unlock/status/sparse-claim states; remote launch gate and launch gate with summary both returned `PRECHECK_ONLY_REQUEST_ALLOWED` | Remote logs under `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_sampledraw_fix_precheck_f5fe3a7/`; `.535` remains failed historical user-override formal evidence only | One-epoch shortdiag only; formal/full long training remains locked |
 | MDL-Knot precheck sparse-compute claim-lock schema fix, `audit_mdl_knot_pipeline_precheck.py` | Precheck summary schema, launch gate regression tests | Remote PRECHECK_ONLY passed after schema fix | py_compile passed; generated summary validator emitted `VALIDATED_PRECHECK_SUMMARY`; remote `tests/test_mdl_knot_core.py tests/test_mdl_knot_shortdiag.py tests/test_mdl_knot_tools_and_integration.py tests/test_mdl_knot_realdiag.py -q` passed as `60 passed in 204.98s` | No GPU/Slurm/train/eval was run by precheck; no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim | Queue one-epoch `SHORT_DIAGNOSTIC_ONLY` when GPU0 is available and BVR is no longer occupying it; formal/full long training remains locked |
 
@@ -26,6 +26,27 @@ Route-owned copy for `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`.
 - GT/teacher leakage risk: no new GT, teacher, prediction cache, evaluator, or post-processing access added.
 - Current mAP evidence: none.
 - Decision: monitor launch sanity and post-shortdiag validator only. Do not promote to formal/full training from this launch without a new gate decision.
+
+### 2026-07-01 09:12:59 +08:00
+
+- Route label: `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`.
+- Deployment correction: ordinary child `1132480` was cancelled because the sbatch carried a stale `--request-stage PRECHECK_ONLY` argument that made `launch_gate.log` invalid; ordinary child `1132482` was cancelled because `torch.distributed.run` collided with an already used default port `29400` on shared node `g0053`.
+- Clean restart: submitted child `1132483` with direct single-GPU `python tools/train.py` entry, `--exclude=g0030`, and `set -euo pipefail`.
+- Clean logdir: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_shortdiag_sbatch_9183fb7_20260701_091259_+0800_direct_python_exclude_g0030`.
+- Clean gate evidence: py_compile pass; `launch_gate.log` returned `PRECHECK_ONLY_REQUEST_ALLOWED`; `shortdiag_static_gate.log` returned `SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED`; `CUDA_VISIBLE_DEVICES_INITIAL=0` inside Slurm allocation on `g0053`.
+- Current status: child `1132483` running at launch window; no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim.
+- Decision: monitor first finite loss and post-shortdiag validator. Previous children are deployment-script evidence only, not route failure evidence.
+
+### 2026-07-01 09:16:42 +08:00
+
+- Route label: `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`.
+- Deployment correction: ordinary child `1132483` reached `tools/train.py` but failed immediately with `KeyError: 'LOCAL_RANK'` because direct single-process Python does not satisfy this repo's DDP entrypoint contract.
+- Clean restart: submitted child `1132502` with `torch.distributed.run --nnodes=1 --nproc_per_node=1 --master_addr=127.0.0.1 --master_port=29683`, `--exclude=g0030`, and `set -euo pipefail`.
+- Clean logdir: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_shortdiag_sbatch_9183fb7_20260701_091642_+0800_torchrun_port29683_exclude_g0030`.
+- Clean gate evidence: py_compile pass; `launch_gate.log` returned `PRECHECK_ONLY_REQUEST_ALLOWED`; `shortdiag_static_gate.log` returned `SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED`; initial `sacct` shows `RUNNING` on `g0032`, not protected hold node `g0030`.
+- Training startup evidence: pretrained checkpoint loaded from `pretrained/vit-small-p16_videomae-k400-pre_16x4x1_kinetics-400_my.pth`; AMP and EMA enabled; `Epoch 0 started`; first `MDL_KNOT_PROFILE` line emitted for sampled_raw scout/handoff. No first loss yet at this record.
+- Current mAP evidence: none.
+- Decision: continue monitoring first finite loss and post-shortdiag validator. Previous children are deployment-entry evidence only, not route model failure evidence.
 
 ### 2026-07-01 08:36:33 +08:00
 
