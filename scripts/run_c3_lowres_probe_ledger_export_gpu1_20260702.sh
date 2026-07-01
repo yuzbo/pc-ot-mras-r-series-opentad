@@ -65,8 +65,12 @@ LEDGER_SUMMARY="${RUN_DIR}/value_transport_ledger_${SELECTION_STRATEGY}_${TARGET
 mkdir -p "${RUN_DIR}"
 
 cd "${PROJECT_DIR}"
-module load cuda/11.8
-module load miniforge3/24.11
+if command -v module >/dev/null 2>&1; then
+  module load cuda/11.8
+  module load miniforge3/24.11
+else
+  echo "module command not found; using existing environment paths."
+fi
 source /data/run01/sczc063/yuzibo/conda_envs/opentad/bin/activate
 
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
