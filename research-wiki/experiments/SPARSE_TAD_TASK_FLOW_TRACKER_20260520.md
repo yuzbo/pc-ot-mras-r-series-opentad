@@ -8,6 +8,8 @@ This route worktree did not contain the shared tracker file. The shared/main wor
 
 | Timestamp (+08:00) | Experiment / config | Changed surface | Status | Review / gate state | Deployment / result state | Next action |
 | --- | --- | --- | --- | --- | --- | --- |
+| 2026-07-01 12:20:35 | RBA-RBR guard watcher safety hardening | Route-owned N16R4 watcher/hold launcher safety checks | Hardened watcher running | Read-only review passed `PASS_SUBAGENT_FINAL_REVIEW_ONLY_FOR_RBA_RBR_GUARD_WATCHER_SHORT_DIAGNOSTIC_ONLY`; remote `bash -n` passed | Hardened scripts uploaded; old watcher PID `1670139` stopped; new watcher PID `1840205`; public job cancellation now rechecks `1132718|rba_guarddiag|PENDING/CONFIGURING`; BVR step disappearance uses a second check; hold child fails closed unless `CUDA_VISIBLE_DEVICES=0`; public job `1132718` still pending and BVR `1118197.542` still running | Continue watcher/public queue race; inspect guard audit once started; no full train or claims |
+| 2026-07-01 12:12:00 | RBA-RBR corrected guard fallback watcher | Route-owned N16R4 watcher/hold launcher scripts only | Watcher staged, waiting | Remote `bash -n` passed; formal/full train locked | Public corrected job `1132718` still `PENDING`, reason `Priority`; BVR child `1118197.542` still `RUNNING` on protected hold GPU0; watcher PID `1670139` in `/data/run01/sczc063/yuzibo/route_watchers/rba_rbr_guard_after_bvr_1118197_542_public1132718_20260701/` waits for BVR and exits if public job starts/completes first | Let watcher/public queue race safely; inspect guard audit summary once either path runs; no full train or claims |
 | 2026-07-01 11:59:27 | RBA-RBR guard launcher relaunch, `input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag.py` | N16R4 launcher only; switched from direct `python tools/train.py` to single-GPU torch distributed entrypoint | Corrected job queued | Remote `bash -n` passed; formal/full train locked | Public job `1132641` failed before training with `KeyError: 'LOCAL_RANK'`; added and uploaded `scripts/run_rba_rbr_guard_evaldiag_n16r4.sbatch`; GitHub branch `codex/divergent-rba-rbr-guard-launcher-843b4948-20260701`; relaunched as `1132718 rba_guarddiag`, initial state `PENDING`, reason `Priority`, logdir `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GuardDiag_20260701_e6de60e9_bundle/logs/rba_rbr_guard_evaldiag_torchrun_20260701_1200_0800/`; BVR child `1118197.542` still running on protected hold GPU0, so no hold child was launched | Wait for `1132718` to start; inspect startup log and guard audit summary; no full train or claims |
 | 2026-07-01 04:20:30 | `input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_shortdiag.py` | Raw RGB low-res scout acquisition and adapter bridge launchability | Completed diagnostic | Launch gate pass; full train locked | Child `1118197.538` completed, finite loss, no eval/mAP | Use only as launchability evidence |
 | 2026-07-01 06:33:57 | `input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag.py` | Bounded eval diagnostic for detector-health signal | Completed diagnostic, severe-low | `SEVERE_RESULT_GATE_TRIGGERED`; formal full train locked | Child `1118197.539` completed; final diagnostic `Average-mAP=4.42%`, vector `10.92/6.35/3.16/1.28/0.37`; bad count `0` | Preserve evidence, update diagnosis packet, run Pro/Oracle diagnosis before any RBA long train |
@@ -24,6 +26,23 @@ This route worktree did not contain the shared tracker file. The shared/main wor
 | 2026-07-01 10:58:56 | RBA-RBR guard fallback watcher for protected hold GPU0 | Remote orchestration only; no code/config/model changes | Watcher staged, waiting | Formal/full train locked; public guard remains primary if it starts first | Watcher `/data/run01/sczc063/yuzibo/route_watchers/rba_rbr_guard_after_bvr_1118197_542_20260701_1055_+0800`, PID `509961`, is waiting for BVR child `1118197.542` to finish. If public job `1132641` starts/completes first, watcher exits; if it remains pending after BVR, watcher cancels only pending job `1132641` to avoid duplicate consumption and launches the same guard `SHORT_DIAGNOSTIC_ONLY` on GPU0 as `rba_guard_g0`. Parent hold `1118197` unchanged. | Monitor watcher/public queue with long interval; compare guard audit summary once either path runs |
 
 ## Timeline
+
+### 2026-07-01 12:20:35 +08:00 - RBA-RBR guard watcher safety hardening applied
+
+- Read-only review result: `PASS_SUBAGENT_FINAL_REVIEW_ONLY_FOR_RBA_RBR_GUARD_WATCHER_SHORT_DIAGNOSTIC_ONLY`; blockers: none.
+- Applied accepted non-blocking hardening: public job cancellation now rechecks `jobid|name|state`; BVR step disappearance requires a second negative check after 10 seconds; hold launcher prints Slurm GPU environment and fails closed unless `CUDA_VISIBLE_DEVICES=0`.
+- Remote `bash -n` passed for both hardened scripts.
+- Restarted remote watcher: old PID `1670139` stopped; hardened watcher PID `1840205` is alive and `watcher.pid` was updated.
+- Latest state remains safe: public corrected job `1132718` is `PENDING`, reason `Priority`; BVR child `1118197.542` is `RUNNING` on protected hold GPU0; no hold child was launched. Parent hold `1118197` was not modified, released, cancelled, or replaced.
+
+### 2026-07-01 12:12:00 +08:00 - RBA-RBR corrected guard fallback watcher staged
+
+- Corrected public guard job `1132718 rba_guarddiag` remained `PENDING`, reason `Priority`; BVR child `1118197.542 bvr_twb_fix2_g0` remained `RUNNING` on protected hold GPU0.
+- Added route-owned scripts `scripts/watch_rba_rbr_guard_after_bvr_n16r4.sh` and `scripts/launch_rba_rbr_guarddiag_hold_g0_n16r4.sh`.
+- Uploaded both scripts to `/data/run01/sczc063/yuzibo/route_watchers/rba_rbr_guard_after_bvr_1118197_542_public1132718_20260701/`; remote `bash -n` passed for both.
+- Watcher PID `1670139` is alive and logged `waiting_for_bvr step=1118197.542 public_state=PENDING`.
+- Safety behavior: if public job `1132718` starts/completes first, watcher exits; if BVR ends while `1132718` is still pending/configuring, watcher cancels only that pending public RBA job and launches the corrected guard diagnostic on protected hold GPU0 as `rba_guard_g0`; terminal public failure stops for manual review.
+- Parent hold `1118197 pcot_dbg2g` was not modified, released, cancelled, or replaced. This remains `SHORT_DIAGNOSTIC_ONLY`; formal/full RBA-RBR training and all claims remain locked.
 
 ### 2026-07-01 11:59:27 +08:00 - RBA-RBR guard launcher torchrun fix and relaunch
 

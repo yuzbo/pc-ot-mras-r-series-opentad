@@ -871,3 +871,101 @@ Decision:
   `3102/4090` rows below the new floor of `32`.
 - Formal/full RBA-RBR training and all metric/runtime/FLOPs/sparse-compute,
   deploy, and paper claims remain locked.
+
+## Corrected Guard Fallback Watcher - 2026-07-01 12:12:00 +08:00
+
+Reason:
+
+- Corrected public guard job `1132718 rba_guarddiag` remained `PENDING`,
+  reason `Priority`.
+- BVR child `1118197.542 bvr_twb_fix2_g0` remained `RUNNING` on protected hold
+  GPU0.
+- RBA-RBR therefore should not immediately occupy GPU0, but should be ready to
+  use GPU0 if BVR finishes before the public corrected job starts.
+
+Local route-owned scripts:
+
+- `scripts/watch_rba_rbr_guard_after_bvr_n16r4.sh`.
+- `scripts/launch_rba_rbr_guarddiag_hold_g0_n16r4.sh`.
+
+Remote deployment:
+
+- Watcher directory:
+  `/data/run01/sczc063/yuzibo/route_watchers/rba_rbr_guard_after_bvr_1118197_542_public1132718_20260701/`.
+- Remote `bash -n` passed for both scripts.
+- Watcher PID: `1670139`.
+- First watcher evidence:
+  `[2026-07-01T12:10:17+08:00] watcher_start parent=1118197 wait_step=1118197.542 public_job=1132718 wt=/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GuardDiag_20260701_e6de60e9_bundle`
+  and
+  `[2026-07-01T12:10:17+08:00] waiting_for_bvr step=1118197.542 public_state=PENDING`.
+
+Safety behavior:
+
+- If public job `1132718` starts or completes first, the watcher exits without
+  launching a hold child.
+- If `1118197.542` ends while `1132718` is still pending/configuring, the
+  watcher cancels only `1132718` to avoid duplicate RBA GPU consumption, then
+  launches the same corrected guard diagnostic on protected hold GPU0 as
+  `rba_guard_g0`.
+- If the public job reaches `FAILED`, `CANCELLED`, `TIMEOUT`,
+  `OUT_OF_MEMORY`, or `NODE_FAIL`, the watcher stops for manual review.
+
+Resource boundary:
+
+- Parent hold `1118197 pcot_dbg2g` was not released, cancelled, replaced, or
+  modified.
+- No C3/CADF/PQR GPU1 work was touched.
+- This remains `SHORT_DIAGNOSTIC_ONLY`; formal/full RBA-RBR training and all
+  metric/runtime/FLOPs/sparse-compute/deploy/paper claims remain locked.
+
+## Guard Watcher Safety Hardening - 2026-07-01 12:20:35 +08:00
+
+Review:
+
+- Read-only review agent returned:
+  `PASS_SUBAGENT_FINAL_REVIEW_ONLY_FOR_RBA_RBR_GUARD_WATCHER_SHORT_DIAGNOSTIC_ONLY`.
+- Blocking findings: none.
+- Accepted non-blocking hardening:
+  1. Recheck public job id/name/state before `scancel`.
+  2. Make BVR step disappearance fail-closed by checking twice with a delay.
+  3. Print Slurm GPU environment and fail closed unless the hold child sees
+     `CUDA_VISIBLE_DEVICES=0`.
+
+Implemented hardening:
+
+- `scripts/watch_rba_rbr_guard_after_bvr_n16r4.sh`:
+  - added `public_squeue_record`;
+  - added `cancel_pending_public_guard`;
+  - only cancels when the record is exactly `1132718|rba_guarddiag|PENDING`
+    or `1132718|rba_guarddiag|CONFIGURING`;
+  - added `step_alive_fail_closed`, which requires two negative checks before
+    treating BVR step `1118197.542` as finished.
+- `scripts/launch_rba_rbr_guarddiag_hold_g0_n16r4.sh`:
+  - prints `SLURM_STEP_GPUS` and `SLURM_JOB_GPUS`;
+  - exits with `ERROR_RBA_RBR_HOLD_GPU_BOUNDARY` unless
+    `CUDA_VISIBLE_DEVICES=0`.
+
+Remote application:
+
+- Uploaded hardened scripts to:
+  `/data/run01/sczc063/yuzibo/route_watchers/rba_rbr_guard_after_bvr_1118197_542_public1132718_20260701/`.
+- Remote `bash -n` passed for both scripts.
+- Restarted watcher:
+  - stopped old watcher PID `1670139`;
+  - hardened watcher PID `1840205` is alive;
+  - updated remote `watcher.pid` to `1840205`.
+- Latest watcher evidence:
+  `[2026-07-01T12:20:35+08:00] watcher_start ... public_job=1132718`
+  and
+  `[2026-07-01T12:20:35+08:00] waiting_for_bvr step=1118197.542 public_state=PENDING`.
+
+Current boundary:
+
+- Public corrected job `1132718 rba_guarddiag` remains `PENDING`, reason
+  `Priority`.
+- BVR child `1118197.542 bvr_twb_fix2_g0` remains `RUNNING` on protected hold
+  GPU0.
+- Parent hold `1118197 pcot_dbg2g` was not released, cancelled, replaced, or
+  modified.
+- No full train, metric/runtime/FLOPs/sparse-compute/deploy, or paper claim is
+  unlocked.

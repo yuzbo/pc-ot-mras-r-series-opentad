@@ -1,5 +1,25 @@
 # Research Log
 
+## 2026-07-01 12:20:35 +08:00 - RBA-RBR guard watcher safety hardening applied
+
+- Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Accepted read-only review result: `PASS_SUBAGENT_FINAL_REVIEW_ONLY_FOR_RBA_RBR_GUARD_WATCHER_SHORT_DIAGNOSTIC_ONLY`; blockers: none.
+- Applied non-blocking safety hardening in the route-owned watcher/hold launcher scripts: cancel public job only after rechecking `jobid|name|state` equals `1132718|rba_guarddiag|PENDING/CONFIGURING`; BVR wait uses a second check after 10 seconds before treating `1118197.542` as ended; hold launcher prints `SLURM_STEP_GPUS`/`SLURM_JOB_GPUS` and fails closed unless `CUDA_VISIBLE_DEVICES=0`.
+- Uploaded hardened scripts to `/data/run01/sczc063/yuzibo/route_watchers/rba_rbr_guard_after_bvr_1118197_542_public1132718_20260701/`; remote `bash -n` passed for both.
+- Restarted watcher: old PID `1670139` stopped, hardened watcher PID `1840205` is alive and logged `waiting_for_bvr step=1118197.542 public_state=PENDING`.
+- Current remote state: public corrected job `1132718` remains `PENDING`, reason `Priority`; BVR child `1118197.542` remains `RUNNING` on protected hold GPU0. Parent hold `1118197 pcot_dbg2g` was not released, cancelled, replaced, or modified.
+
+## 2026-07-01 12:12:00 +08:00 - RBA-RBR corrected guard fallback watcher staged
+
+- Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Corrected public guard job `1132718 rba_guarddiag` remained `PENDING`, reason `Priority`, with no node assigned.
+- BVR child `1118197.542 bvr_twb_fix2_g0` remained `RUNNING` on protected hold GPU0, so RBA-RBR did not launch a hold child immediately.
+- Added route-owned watcher scripts: `scripts/watch_rba_rbr_guard_after_bvr_n16r4.sh` and `scripts/launch_rba_rbr_guarddiag_hold_g0_n16r4.sh`.
+- Uploaded both scripts to `/data/run01/sczc063/yuzibo/route_watchers/rba_rbr_guard_after_bvr_1118197_542_public1132718_20260701/`; remote `bash -n` passed for both.
+- Started watcher PID `1670139`. First log lines: watcher started for parent `1118197`, wait step `1118197.542`, public job `1132718`, then `waiting_for_bvr ... public_state=PENDING`.
+- Safety behavior: if `1132718` starts or completes first, watcher exits; if BVR ends while `1132718` is still pending/configuring, watcher cancels only that pending public RBA job to avoid duplicate GPU use and launches the same corrected guard diagnostic on protected hold GPU0. Terminal public failure stops for manual review.
+- Resource boundary: parent hold `1118197 pcot_dbg2g` was not released, cancelled, replaced, or modified. Formal/full RBA-RBR training and all claims remain locked.
+
 ## 2026-07-01 11:59:27 +08:00 - RBA-RBR guard launcher torchrun fix and relaunch
 
 - Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
