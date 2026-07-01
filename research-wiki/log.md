@@ -13566,3 +13566,15 @@
 - RBA-RBR controls `1133000 rba_ctrlfull` and `1133001 rba_ctrllow`, original
   AdaTAD baseline `1133021 adatad_orig2g`, and PHASER jobs `1133022-1133026`
   were still pending at the 2026-07-01 17:33 +0800 queue check.
+- `2026-07-01T18:28:00+08:00` - Completed the parallel low-performance
+  diagnosis update for divergent routes in the status worktree. BVR-TWB commit
+  `8a02314` now enforces the Adapter duplicate-padding raw-frame floor and
+  passed N16R4 Linux PRECHECK_ONLY: pipeline pytest `33 passed`, audit
+  `ledgers=3 all_validated=True sparse_compute_claim=False blocked=False`, and
+  launch gate `gate_pass=true/full_train_unlocked=false`. MDL-Knot commit
+  `4bedd4b` remote precheck evidence remains `51 passed` with
+  `validated=true/formal_train_unlocked=false`. ABR remains frozen for low
+  first-round bracket recall, RBA-RBR remains severe-result locked after the
+  `7.45%` short diagnostic, and original AdaTAD baseline job `1133021` remains
+  pending as the global stack sanity control. Detailed report:
+  `research-wiki/experiments/DIVERGENT_LOW_PERFORMANCE_DIAGNOSIS_FIX_STATUS_20260701.md`.
