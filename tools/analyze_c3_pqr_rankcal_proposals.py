@@ -178,7 +178,10 @@ def _prediction_records(predictions, gt_by_video):
     per_video_label_counts = defaultdict(lambda: defaultdict(int))
 
     for video_id, video_predictions in predictions.items():
-        sorted_predictions = sorted(video_predictions, key=lambda item: float(item.get("score", 0.0)), reverse=True)
+        valid_predictions = [
+            item for item in video_predictions if not bool(item.get("qc_v2_diagnostic_carrier", False))
+        ]
+        sorted_predictions = sorted(valid_predictions, key=lambda item: float(item.get("score", 0.0)), reverse=True)
         per_video_counts[video_id] = len(sorted_predictions)
         gt = gt_by_video.get(video_id, [])
         gt_by_label = defaultdict(list)
@@ -258,6 +261,13 @@ def _count_records(records):
         per_video_counts[record["video_id"]] += 1
         per_video_label_counts[record["video_id"]][record["label"]] += 1
     return per_video_counts, per_video_label_counts
+
+
+def _mean_or_none(values):
+    values = list(values)
+    if not values:
+        return None
+    return sum(values) / len(values)
 
 
 def _rerank_records(records):
@@ -354,7 +364,7 @@ def _analysis_summary_from_records(
     class_counts = [count for label_counts in per_video_label_counts.values() for count in label_counts.values()]
 
     summary = {
-        "videos_with_predictions": len(per_video_counts),
+        "videos_with_predictions": sum(1 for count in per_video_counts.values() if count > 0),
         "videos_with_ground_truth": len(gt_by_video),
         "total_predictions": len(records),
         "total_ground_truth_instances": sum(len(annotations) for annotations in gt_by_video.values()),
@@ -438,13 +448,253 @@ def _qc_v2_diagnostic_state(records):
     }
 
 
-def _qc_v2_pre_nms_diagnostic_state(pre_nms_candidates):
+def _pre_nms_candidate_segment(record):
+    return _segment_or_none(record.get("physical_segment")) or _segment_or_none(record.get("segment"))
+
+
+def _pre_nms_candidate_score(record):
+    return _as_float_or_none(_first_present(record, ("score", "pre_nms_score", "fused_score", "cls_score")))
+
+
+def _pre_nms_candidate_enriched_records(pre_nms_candidates, gt_by_video):
+    gt_by_video_label = {}
+    any_gt_by_video = {}
+    for video_id, annotations in gt_by_video.items():
+        by_label = defaultdict(list)
+        any_segments = []
+        for ann in annotations:
+            by_label[ann["label"]].append(ann["segment"])
+            any_segments.append(ann["segment"])
+        gt_by_video_label[video_id] = by_label
+        any_gt_by_video[video_id] = any_segments
+
+    enriched = []
+    for source_rank, candidate in enumerate(pre_nms_candidates, start=1):
+        video_id = candidate.get("video_id")
+        segment = _pre_nms_candidate_segment(candidate)
+        label_available = "label" in candidate and candidate.get("label") is not None
+        label = candidate.get("label")
+        any_label_iou = None
+        same_label_iou = None
+        if segment is not None:
+            any_label_iou = _segment_iou(segment, any_gt_by_video.get(video_id, []))
+            if label_available:
+                same_label_iou = _segment_iou(segment, gt_by_video_label.get(video_id, {}).get(label, []))
+        pre_nms_rank = _as_float_or_none(candidate.get("pre_nms_rank"))
+        enriched.append(
+            {
+                "video_id": video_id,
+                "label": label,
+                "label_available": label_available,
+                "segment": segment,
+                "score": _pre_nms_candidate_score(candidate),
+                "pre_nms_rank": None if pre_nms_rank is None else int(pre_nms_rank),
+                "source_order_rank": source_rank,
+                "max_iou_same_label": same_label_iou,
+                "max_iou_any_label": any_label_iou,
+                "survived_after_nms": candidate.get("survived_after_nms"),
+            }
+        )
+    return enriched
+
+
+def _pre_nms_sort_key(record):
+    rank = record.get("pre_nms_rank")
+    if rank is not None:
+        return (0, rank, 0.0, record["source_order_rank"])
+    score = record.get("score")
+    if score is not None:
+        return (1, 0, -score, record["source_order_rank"])
+    return (2, 0, 0.0, record["source_order_rank"])
+
+
+def _pre_nms_rank_recall(enriched_records, gt_by_video, topk_values, thresholds):
+    by_video = defaultdict(list)
+    for record in enriched_records:
+        if record["segment"] is not None:
+            by_video[record["video_id"]].append(record)
+
+    total_gt = sum(len(annotations) for annotations in gt_by_video.values())
+    labels_available = any(record["label_available"] for record in enriched_records)
+    segments_available = any(record["segment"] is not None for record in enriched_records)
+    summary = {}
+    for k in topk_values:
+        topk_by_video = {
+            video_id: sorted(video_records, key=_pre_nms_sort_key)[:k]
+            for video_id, video_records in by_video.items()
+        }
+        for threshold in thresholds:
+            same_label_key = f"top{k}_same_label_recall@{threshold:.1f}"
+            any_label_key = f"top{k}_any_label_recall@{threshold:.1f}"
+            if total_gt == 0 or not segments_available:
+                summary[same_label_key] = None
+                summary[any_label_key] = None
+                continue
+            same_label_covered = 0
+            any_label_covered = 0
+            for video_id, annotations in gt_by_video.items():
+                candidates = topk_by_video.get(video_id, [])
+                for ann in annotations:
+                    same_best = 0.0
+                    any_best = 0.0
+                    for candidate in candidates:
+                        any_best = max(any_best, _segment_iou(ann["segment"], [candidate["segment"]]))
+                        if candidate["label_available"] and candidate["label"] == ann["label"]:
+                            same_best = max(same_best, _segment_iou(ann["segment"], [candidate["segment"]]))
+                    if same_best >= threshold:
+                        same_label_covered += 1
+                    if any_best >= threshold:
+                        any_label_covered += 1
+            summary[same_label_key] = None if not labels_available else same_label_covered / total_gt
+            summary[any_label_key] = any_label_covered / total_gt
+    return summary
+
+
+def _pre_nms_survival_group_name(value):
+    if value is True:
+        return "survived"
+    if value is False:
+        return "suppressed"
+    return "unknown"
+
+
+def _pre_nms_iou_group_summary(records):
+    same_ious = [record["max_iou_same_label"] for record in records if record["max_iou_same_label"] is not None]
+    any_ious = [record["max_iou_any_label"] for record in records if record["max_iou_any_label"] is not None]
+    summary = {
+        "count": len(records),
+        "same_label_best_iou_mean": _mean_or_none(same_ious),
+        "same_label_best_iou_max": None if not same_ious else max(same_ious),
+        "any_label_best_iou_mean": _mean_or_none(any_ious),
+        "any_label_best_iou_max": None if not any_ious else max(any_ious),
+    }
+    for threshold in SWEEP_TIOU_THRESHOLDS:
+        summary[f"same_label_high_iou_count@{threshold:.1f}"] = sum(1 for value in same_ious if value >= threshold)
+        summary[f"any_label_high_iou_count@{threshold:.1f}"] = sum(1 for value in any_ious if value >= threshold)
+    return summary
+
+
+def _qc_v2_pre_nms_gt_iou_diagnostic(pre_nms_candidates, gt_by_video, topk_values, thresholds):
+    total = len(pre_nms_candidates)
+    empty_rank_recall = {
+        f"top{k}_{mode}_label_recall@{threshold:.1f}": None
+        for k in topk_values
+        for threshold in thresholds
+        for mode in ("same", "any")
+    }
+    if total == 0:
+        return {
+            "status": "MISSING_QC_V2_PRE_NMS_GT_IOU_DIAGNOSTIC",
+            "diagnostic_only": True,
+            "official_map_claim": False,
+            "field_coverage": {
+                "pre_nms_candidates_total": 0,
+                "pre_nms_candidates_with_physical_segment": 0,
+                "pre_nms_candidates_with_label": 0,
+                "pre_nms_candidates_with_score": 0,
+                "pre_nms_candidates_with_pre_nms_rank": 0,
+                "pre_nms_candidates_with_same_label_iou": 0,
+                "pre_nms_candidates_with_any_label_iou": 0,
+            },
+            "rank_recall": empty_rank_recall,
+            "survival_groups": {
+                "survived": _pre_nms_iou_group_summary([]),
+                "suppressed": _pre_nms_iou_group_summary([]),
+                "unknown": _pre_nms_iou_group_summary([]),
+            },
+            "candidate_count_per_video": _count_summary([]),
+            "candidate_cap_diagnostic": _proposal_cap_diagnostic([], DEFAULT_PROPOSAL_CAP),
+        }
+
+    enriched = _pre_nms_candidate_enriched_records(pre_nms_candidates, gt_by_video)
+    per_video_counts = defaultdict(int)
+    for record in enriched:
+        per_video_counts[record["video_id"]] += 1
+
+    same_iou_records = [record for record in enriched if record["max_iou_same_label"] is not None]
+    any_iou_records = [record for record in enriched if record["max_iou_any_label"] is not None]
+    score_same_pairs = [
+        (record["score"], record["max_iou_same_label"])
+        for record in same_iou_records
+        if record["score"] is not None
+    ]
+    score_any_pairs = [
+        (record["score"], record["max_iou_any_label"])
+        for record in any_iou_records
+        if record["score"] is not None
+    ]
+    rank_same_pairs = [
+        (-float(record["pre_nms_rank"]), record["max_iou_same_label"])
+        for record in same_iou_records
+        if record["pre_nms_rank"] is not None
+    ]
+    rank_any_pairs = [
+        (-float(record["pre_nms_rank"]), record["max_iou_any_label"])
+        for record in any_iou_records
+        if record["pre_nms_rank"] is not None
+    ]
+
+    segments_available = bool(any_iou_records)
+    labels_available = any(record["label_available"] for record in enriched)
+    ranking_available = any(record["pre_nms_rank"] is not None or record["score"] is not None for record in enriched)
+    total_gt = sum(len(annotations) for annotations in gt_by_video.values())
+    if not segments_available:
+        status = "UNAVAILABLE_MISSING_PRE_NMS_SEGMENTS"
+    elif total_gt == 0:
+        status = "UNAVAILABLE_NO_GT_FOR_SUBSET"
+    elif not labels_available or len(same_iou_records) < total or not ranking_available:
+        status = "PARTIAL_QC_V2_PRE_NMS_GT_IOU_DIAGNOSTIC"
+    else:
+        status = "PASS_QC_V2_PRE_NMS_GT_IOU_DIAGNOSTIC"
+
+    grouped = {"survived": [], "suppressed": [], "unknown": []}
+    for record in enriched:
+        grouped[_pre_nms_survival_group_name(record["survived_after_nms"])].append(record)
+
+    return {
+        "status": status,
+        "diagnostic_only": True,
+        "official_map_claim": False,
+        "field_coverage": {
+            "pre_nms_candidates_total": total,
+            "pre_nms_candidates_with_physical_segment": sum(1 for record in enriched if record["segment"] is not None),
+            "pre_nms_candidates_with_label": sum(1 for record in enriched if record["label_available"]),
+            "pre_nms_candidates_with_score": sum(1 for record in enriched if record["score"] is not None),
+            "pre_nms_candidates_with_pre_nms_rank": sum(1 for record in enriched if record["pre_nms_rank"] is not None),
+            "pre_nms_candidates_with_same_label_iou": len(same_iou_records),
+            "pre_nms_candidates_with_any_label_iou": len(any_iou_records),
+        },
+        "score_iou_same_label_pearson": None if not score_same_pairs else _pearson(*zip(*score_same_pairs)),
+        "score_iou_same_label_spearman": None if not score_same_pairs else _spearman(*zip(*score_same_pairs)),
+        "score_iou_any_label_pearson": None if not score_any_pairs else _pearson(*zip(*score_any_pairs)),
+        "score_iou_any_label_spearman": None if not score_any_pairs else _spearman(*zip(*score_any_pairs)),
+        "pre_nms_rank_iou_same_label_pearson": None if not rank_same_pairs else _pearson(*zip(*rank_same_pairs)),
+        "pre_nms_rank_iou_same_label_spearman": None if not rank_same_pairs else _spearman(*zip(*rank_same_pairs)),
+        "pre_nms_rank_iou_any_label_pearson": None if not rank_any_pairs else _pearson(*zip(*rank_any_pairs)),
+        "pre_nms_rank_iou_any_label_spearman": None if not rank_any_pairs else _spearman(*zip(*rank_any_pairs)),
+        "rank_recall": _pre_nms_rank_recall(enriched, gt_by_video, topk_values, thresholds),
+        "survival_groups": {
+            name: _pre_nms_iou_group_summary(records) for name, records in grouped.items()
+        },
+        "candidate_count_per_video": _count_summary(per_video_counts.values()),
+        "candidate_cap_diagnostic": _proposal_cap_diagnostic(per_video_counts.values(), DEFAULT_PROPOSAL_CAP),
+    }
+
+
+def _qc_v2_pre_nms_diagnostic_state(pre_nms_candidates, gt_by_video=None, topk_values=DEFAULT_TOPK, thresholds=SWEEP_TIOU_THRESHOLDS):
+    gt_by_video = {} if gt_by_video is None else gt_by_video
     total = len(pre_nms_candidates)
     if total == 0:
         return {
             "status": "MISSING_QC_V2_PRE_NMS_SURVIVAL_DUMP",
             "diagnostic_only": True,
             "official_map_claim": False,
+            "gt_iou_diagnostic": _qc_v2_pre_nms_gt_iou_diagnostic(
+                pre_nms_candidates,
+                gt_by_video,
+                topk_values,
+                thresholds,
+            ),
             "field_coverage": {
                 "pre_nms_candidates_total": 0,
                 "pre_nms_candidates_with_selected_proposal": 0,
@@ -495,6 +745,12 @@ def _qc_v2_pre_nms_diagnostic_state(pre_nms_candidates):
         "status": status,
         "diagnostic_only": True,
         "official_map_claim": False,
+        "gt_iou_diagnostic": _qc_v2_pre_nms_gt_iou_diagnostic(
+            pre_nms_candidates,
+            gt_by_video,
+            topk_values,
+            thresholds,
+        ),
         "field_coverage": {
             "pre_nms_candidates_total": total,
             "pre_nms_candidates_with_selected_proposal": sum(1 for record in pre_nms_candidates if has_selected(record)),
@@ -824,7 +1080,12 @@ def analyze(
             proposal_cap_value=DEFAULT_PROPOSAL_CAP,
         )
     )
-    summary["qc_v2_pre_nms_survival_state"] = _qc_v2_pre_nms_diagnostic_state(pre_nms_candidates)
+    summary["qc_v2_pre_nms_survival_state"] = _qc_v2_pre_nms_diagnostic_state(
+        pre_nms_candidates,
+        gt_by_video,
+        topk_values,
+        thresholds,
+    )
     if include_sweep:
         return summary, records, _diagnostic_sweep(prediction_path, annotation_path, subset, records, gt_by_video, per_video_counts)
     return summary, records

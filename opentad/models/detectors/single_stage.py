@@ -208,6 +208,8 @@ class SingleStageDetector(BaseDetector):
                 results_per_video.append(record)
             if pre_nms_candidates and results_per_video:
                 results_per_video[0]["qc_v2_pre_nms_candidates"] = pre_nms_candidates
+            elif pre_nms_candidates:
+                results_per_video.append(self._build_qc_v2_diagnostic_carrier(pre_nms_candidates))
 
             if video_id in results.keys():
                 results[video_id].extend(results_per_video)
@@ -355,6 +357,18 @@ class SingleStageDetector(BaseDetector):
                 }
             )
         return candidates
+
+    @staticmethod
+    def _build_qc_v2_diagnostic_carrier(pre_nms_candidates):
+        return {
+            "segment": [0.0, 0.0],
+            "label": "__qc_v2_diagnostic_carrier__",
+            "score": -1e30,
+            "qc_v2_diagnostic_carrier": True,
+            "diagnostic_only": True,
+            "official_map_claim": False,
+            "qc_v2_pre_nms_candidates": pre_nms_candidates,
+        }
 
     def _attach_qc_v2_diagnostic_record(self, output_record, diagnostic_record, physical_segment):
         if not diagnostic_record:

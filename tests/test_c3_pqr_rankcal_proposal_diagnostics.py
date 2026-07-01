@@ -686,6 +686,163 @@ def test_pqr_proposal_diagnostic_reads_qc_v2_pre_nms_survival_dump(tmp_path):
     assert state["field_coverage"]["pre_nms_candidates_with_level_point_index"] == 2
 
 
+def test_pqr_proposal_diagnostic_reports_pre_nms_gt_iou_rank_recall_and_survival_groups(tmp_path):
+    annotation = tmp_path / "thumos_14_anno.json"
+    prediction = tmp_path / "result_detection.json"
+    _write_json(
+        annotation,
+        {
+            "database": {
+                "video_a": {
+                    "subset": "validation",
+                    "annotations": [
+                        {"segment": [0.0, 2.0], "label": "Diving"},
+                        {"segment": [5.0, 7.0], "label": "BaseballPitch"},
+                    ],
+                },
+                "video_b": {
+                    "subset": "validation",
+                    "annotations": [{"segment": [1.0, 3.0], "label": "Diving"}],
+                },
+            }
+        },
+    )
+    _write_json(
+        prediction,
+        {
+            "results": {
+                "video_a": [
+                    {
+                        "segment": [0.0, 2.0],
+                        "label": "Diving",
+                        "score": 0.9,
+                        "qc_v2_pre_nms_candidates": [
+                            {
+                                "physical_segment": [0.0, 2.0],
+                                "label": "Diving",
+                                "score": 0.95,
+                                "pre_nms_rank": 1,
+                                "survived_after_topk": True,
+                                "survived_after_nms": True,
+                                "selected_segment": [0.0, 2.0],
+                                "level_id": 0,
+                                "point_index": 1,
+                            },
+                            {
+                                "physical_segment": [4.8, 7.2],
+                                "label": "BaseballPitch",
+                                "score": 0.90,
+                                "pre_nms_rank": 2,
+                                "survived_after_topk": True,
+                                "survived_after_nms": False,
+                                "selected_segment": [4.8, 7.2],
+                                "level_id": 0,
+                                "point_index": 2,
+                            },
+                            {
+                                "physical_segment": [8.0, 9.0],
+                                "label": "Diving",
+                                "score": 0.20,
+                                "pre_nms_rank": 3,
+                                "survived_after_topk": True,
+                                "survived_after_nms": None,
+                                "selected_segment": [8.0, 9.0],
+                                "level_id": 0,
+                                "point_index": 3,
+                            },
+                        ],
+                    }
+                ],
+                "video_b": [
+                    {
+                        "segment": [1.0, 3.0],
+                        "label": "Diving",
+                        "score": 0.8,
+                        "qc_v2_pre_nms_candidates": [
+                            {
+                                "physical_segment": [1.2, 3.2],
+                                "label": "Diving",
+                                "score": 0.70,
+                                "pre_nms_rank": 1,
+                                "survived_after_topk": True,
+                                "survived_after_nms": False,
+                                "selected_segment": [1.2, 3.2],
+                                "level_id": 1,
+                                "point_index": 4,
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
+    )
+
+    summary, _records = analyze(prediction, annotation, subset="validation", topk_values=(1, 2), thresholds=(0.5, 0.7))
+
+    diagnostic = summary["qc_v2_pre_nms_survival_state"]["gt_iou_diagnostic"]
+    assert diagnostic["status"] == "PASS_QC_V2_PRE_NMS_GT_IOU_DIAGNOSTIC"
+    assert diagnostic["field_coverage"]["pre_nms_candidates_with_physical_segment"] == 4
+    assert diagnostic["field_coverage"]["pre_nms_candidates_with_label"] == 4
+    assert diagnostic["score_iou_same_label_spearman"] is not None
+    assert diagnostic["pre_nms_rank_iou_same_label_spearman"] is not None
+    assert diagnostic["rank_recall"]["top1_same_label_recall@0.5"] == 2 / 3
+    assert diagnostic["rank_recall"]["top2_same_label_recall@0.7"] == 3 / 3
+    assert diagnostic["candidate_count_per_video"]["max"] == 3
+    assert diagnostic["candidate_cap_diagnostic"]["videos_considered"] == 2
+    assert diagnostic["survival_groups"]["survived"]["count"] == 1
+    assert diagnostic["survival_groups"]["survived"]["same_label_high_iou_count@0.7"] == 1
+    assert diagnostic["survival_groups"]["suppressed"]["count"] == 2
+    assert diagnostic["survival_groups"]["suppressed"]["same_label_high_iou_count@0.7"] == 2
+    assert diagnostic["survival_groups"]["unknown"]["count"] == 1
+    assert diagnostic["survival_groups"]["unknown"]["same_label_best_iou_max"] == 0.0
+
+
+def test_pqr_proposal_diagnostic_pre_nms_gt_iou_fails_closed_without_labels_or_segments(tmp_path):
+    annotation = tmp_path / "thumos_14_anno.json"
+    prediction = tmp_path / "result_detection.json"
+    _write_json(
+        annotation,
+        {
+            "database": {
+                "video_a": {
+                    "subset": "validation",
+                    "annotations": [{"segment": [0.0, 2.0], "label": "Diving"}],
+                }
+            }
+        },
+    )
+    _write_json(
+        prediction,
+        {
+            "results": {
+                "video_a": [
+                    {
+                        "segment": [0.0, 1.0],
+                        "label": "Diving",
+                        "score": 0.5,
+                        "qc_v2_pre_nms_candidates": [
+                            {
+                                "score": 0.9,
+                                "pre_nms_rank": 1,
+                                "survived_after_topk": True,
+                                "survived_after_nms": True,
+                            }
+                        ],
+                    }
+                ]
+            }
+        },
+    )
+
+    summary, _records = analyze(prediction, annotation, subset="validation")
+
+    diagnostic = summary["qc_v2_pre_nms_survival_state"]["gt_iou_diagnostic"]
+    assert diagnostic["status"] == "UNAVAILABLE_MISSING_PRE_NMS_SEGMENTS"
+    assert diagnostic["rank_recall"]["top1_same_label_recall@0.5"] is None
+    assert diagnostic["field_coverage"]["pre_nms_candidates_with_label"] == 0
+    assert diagnostic["field_coverage"]["pre_nms_candidates_with_physical_segment"] == 0
+
+
 def test_pqr_proposal_diagnostic_pre_nms_survival_core_does_not_require_quality_or_fused(tmp_path):
     annotation = tmp_path / "thumos_14_anno.json"
     prediction = tmp_path / "result_detection.json"
@@ -969,6 +1126,96 @@ def test_single_stage_post_processing_dumps_pre_nms_qc_v2_survival_fields(monkey
     assert candidates[3]["post_topk_score"] == pytest.approx(0.05)
     assert candidates[3]["survived_after_nms"] is False
     assert candidates[3]["post_nms_score"] is None
+
+
+def test_single_stage_post_processing_preserves_pre_nms_dump_with_zero_survivors(monkeypatch, tmp_path):
+    try:
+        import torch
+        import opentad.models.detectors.single_stage as single_stage_module
+        from opentad.models.detectors.single_stage import SingleStageDetector
+    except OSError as exc:
+        pytest.skip(f"torch import failed in this Windows environment: {exc}")
+    except ModuleNotFoundError as exc:
+        if exc.name == "nms_1d_cpu":
+            pytest.skip(f"local OpenTAD NMS extension is unavailable: {exc}")
+        raise
+
+    def suppress_all(segments, scores, labels, **_kwargs):
+        return segments[:0], scores[:0], labels[:0]
+
+    monkeypatch.setattr(single_stage_module, "batched_nms", suppress_all)
+    predictions = (
+        [torch.tensor([[0.0, 2.0]])],
+        [torch.tensor([[0.9, 0.1]])],
+        [
+            dict(
+                diagnostic_available=True,
+                coverage_available=True,
+                cls_scores=torch.tensor([[0.9, 0.1]]),
+                fused_scores=torch.tensor([[0.45, 0.05]]),
+                quality_scores=torch.tensor([0.5]),
+                selected_segments=torch.tensor([[0.0, 2.0]]),
+                physical_segments=torch.tensor([[0.0, 4.0]]),
+                selected_lengths=torch.tensor([2.0]),
+                physical_lengths=torch.tensor([4.0]),
+                proposal_widths=torch.tensor([4.0]),
+                gap_mean=torch.tensor([2.0]),
+                visibility_support=torch.tensor([0.75]),
+                coverage=torch.tensor([0.5]),
+                endpoint_support=torch.tensor([0.8]),
+                level_ids=torch.tensor([1]),
+                point_indices=torch.tensor([9]),
+            )
+        ],
+    )
+    metas = [
+        dict(
+            video_name="video_a",
+            fps=1.0,
+            duration=10.0,
+            snippet_stride=1,
+            offset_frames=0,
+            window_start_frame=0,
+            irregular_selected_positions=[0.0, 2.0, 4.0],
+            irregular_selected_valid_len=6.0,
+            irregular_native_axis=False,
+        )
+    ]
+    post_cfg = SimpleNamespace(pre_nms_thresh=0.0, pre_nms_topk=5, sliding_window=False, nms={})
+
+    results = SingleStageDetector.post_processing(
+        SingleStageDetector.__new__(SingleStageDetector),
+        predictions,
+        metas,
+        post_cfg,
+        ext_cls=["Diving", "BaseballPitch"],
+    )
+
+    carrier = results["video_a"][0]
+    assert len(results["video_a"]) == 1
+    assert carrier["qc_v2_diagnostic_carrier"] is True
+    assert carrier["label"] == "__qc_v2_diagnostic_carrier__"
+    assert carrier["score"] < -1e20
+    assert len(carrier["qc_v2_pre_nms_candidates"]) == 2
+
+    annotation = tmp_path / "thumos_14_anno.json"
+    prediction = tmp_path / "result_detection.json"
+    _write_json(
+        annotation,
+        {
+            "database": {
+                "video_a": {
+                    "subset": "validation",
+                    "annotations": [{"segment": [0.0, 4.0], "label": "Diving"}],
+                }
+            }
+        },
+    )
+    _write_json(prediction, {"results": results})
+    summary, records = analyze(prediction, annotation, subset="validation")
+    assert records == []
+    assert summary["total_predictions"] == 0
+    assert summary["qc_v2_pre_nms_survival_state"]["field_coverage"]["pre_nms_candidates_total"] == 2
 
 
 def test_test_engine_nms_match_preserves_qc_v2_diagnostic_fields():

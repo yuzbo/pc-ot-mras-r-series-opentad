@@ -393,3 +393,84 @@ Remaining risk:
   local Windows environments because OpenTAD cannot import with the local torch
   DLL / missing `nms_1d_cpu`. It should run in Linux review/CI where the NMS
   extension is available before deployment, sync, or training.
+
+## 2026-07-01 11:00:49 +08:00 Diagnostic-Only Pre-NMS GT IoU Enhancement
+
+Scope:
+
+- Route-owned worktree only:
+  `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_C3PQRQCV2_Worktree_20260630`.
+- Branch remained `codex/c3-pqr-qcv2-full-20260630` at starting HEAD
+  `e04fc6c222111d41bc13307649a906feafb60db5`.
+- Diagnostic-only analyzer/detector serialization enhancement; no training,
+  evaluation, GPU, SSH, remote sync, Slurm, or launch action.
+
+Implementation:
+
+- `tools/analyze_c3_pqr_rankcal_proposals.py` now excludes
+  `qc_v2_diagnostic_carrier` records from normal proposal records while still
+  reading their `qc_v2_pre_nms_candidates`.
+- Added nested
+  `qc_v2_pre_nms_survival_state.gt_iou_diagnostic` with same-label and
+  any-label best GT IoU coverage, score/IoU and pre-NMS-rank/IoU
+  correlations, top-k recall at requested thresholds, survived/suppressed/
+  unknown NMS group summaries, and per-video candidate cap diagnostics.
+- Missing pre-NMS segments/labels remain explicit unavailable or partial
+  statuses instead of being reported as PASS.
+- `opentad/models/detectors/single_stage.py` now preserves pre-NMS diagnostic
+  dumps when NMS leaves zero surviving results by emitting one marked
+  `qc_v2_diagnostic_carrier` with label `__qc_v2_diagnostic_carrier__`, score
+  `-1e30`, `diagnostic_only=True`, and `official_map_claim=False`.
+
+Tests:
+
+- Added focused analyzer tests for pre-NMS GT IoU/rank recall and
+  survived/suppressed/unknown group summaries.
+- Added fail-closed analyzer test for missing pre-NMS segment/label fields.
+- Added detector serialization test for zero-survivor diagnostic carrier and
+  analyzer filtering of that carrier from normal proposal statistics.
+
+Verification:
+
+- `python -m py_compile tools/analyze_c3_pqr_rankcal_proposals.py opentad/models/detectors/single_stage.py tests/test_c3_pqr_rankcal_proposal_diagnostics.py`:
+  PASS.
+- `python -m pytest tests/test_c3_pqr_rankcal_proposal_diagnostics.py -q`:
+  `18 passed, 4 skipped`; the base Windows Python still prints torch DLL
+  access-violation noise on skipped torch/OpenTAD import tests, but the command
+  exited 0.
+- QC V2 validators PASS for precheck, shortdiag, and fulltrain-candidate
+  configs.
+
+Boundary:
+
+- No CADF selector, BH-SDC, DIVERGENT route, launcher, shared main repo,
+  remote workspace, evaluator scoring, training, or Slurm files were touched.
+- No git commit or push was made.
+
+Final read-only review:
+
+- Reviewer agent `019f1ba2-adf8-7db3-a91f-097b707b49cf` returned
+  `PASS_SUBAGENT_FINAL_REVIEW_ONLY`.
+- Blocking findings: none.
+- The reviewer confirmed that the new pre-NMS GT-IoU diagnostic can separate
+  candidate-localization failure from cases where high-IoU candidates exist but
+  are suppressed or poorly ranked by top-k/NMS/score calibration.
+- The reviewer confirmed that `qc_v2_diagnostic_carrier` is filtered from this
+  analyzer's normal proposal records and `total_predictions`, but because the
+  carrier is written into `result_detection.json`, any file containing it must
+  remain diagnostic-only and must not be treated as a clean official prediction
+  file.
+- Local evaluator inspection confirmed OpenTAD's mAP evaluator maps unknown
+  labels to an extra label and averages only GT-known classes, so the carrier
+  should not affect known-class mAP; this does not unlock official metric
+  claims because the carrier file is deliberately diagnostic.
+
+Coordinator probe:
+
+- A synthetic carrier-only prediction produced `total_predictions=0`,
+  `pre_nms_candidates_total=2`, and
+  `gt_iou_diagnostic.status=PASS_QC_V2_PRE_NMS_GT_IOU_DIAGNOSTIC`.
+- The probe showed the intended failure signal: a high-IoU candidate in the
+  suppressed group can be counted even when no normal proposal survives.
+- The probe used a temporary local JSON only; it did not run OpenTAD training,
+  evaluation, remote sync, or GPU work.
