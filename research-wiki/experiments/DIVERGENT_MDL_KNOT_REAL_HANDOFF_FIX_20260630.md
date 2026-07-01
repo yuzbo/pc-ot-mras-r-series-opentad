@@ -701,7 +701,7 @@ GitHub sync:
 
 - Ordinary push to existing branch `codex/divergent-mdl-knot-realdiag-20260630` was rejected as non-fast-forward.
 - No force push or overwrite was attempted.
-- Pushed current route-owned local state at commit `410d499f` to a new evidence branch:
+- Pushed current route-owned local state to a new evidence branch, then fast-forwarded it to commit `dba5186f` after recording tracker/log evidence:
   `codex/divergent-mdl-knot-status-410d499f-20260701`.
 - GitHub URL:
   `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-mdl-knot-status-410d499f-20260701`.
