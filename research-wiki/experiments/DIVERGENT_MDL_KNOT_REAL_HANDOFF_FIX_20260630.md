@@ -501,3 +501,69 @@ Current launch interpretation:
 - Remote `PRECHECK_ONLY`: allowed after normal coordinator deployment/sync decision.
 - One-epoch `SHORT_DIAGNOSTIC_ONLY`: allowed after remote precheck passes; no evaluation, no checkpoint claim, no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim.
 - Formal/full long training: still prohibited/locked until remote precheck plus one-epoch shortdiag pass and a separate explicit formal/full-train decision exists.
+
+## 2026-07-01 formal/full train lock blocker fix
+
+Timestamp: `2026-07-01 08:06:19 +08:00`.
+
+Final read-only review returned `BLOCKED` because the main formal config still
+contained stale user-override formal-run state after child `1118197.535` failed.
+The stale fields were inconsistent with the current sampled_raw edge-fix
+decision, which permits only remote `PRECHECK_ONLY` and then one-epoch
+`SHORT_DIAGNOSTIC_ONLY`.
+
+Fix summary:
+
+- `configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py`
+  is fail-closed again:
+  - `formal_train_unlocked=False`;
+  - `full_train_unlocked=False`;
+  - `mdl_knot_acquisition.formal_train_unlocked=False`;
+  - `mdl_knot_acquisition.full_train_unlocked=False`;
+  - `sparse_compute_claim=False`;
+  - route status changed to
+    `LOCAL_FINAL_CODE_CANDIDATE_PRECHECK_ONLY_AFTER_SAMPLED_RAW_EDGE_FIX_NO_METRIC_CLAIMS`;
+  - work dir no longer contains user-override/formal-train wording.
+- `tools/mdl_knot/validate_mdl_knot_launch_gate.py` now fails closed if the
+  config or acquisition dict tries to set formal/full train unlocked or
+  sparse-compute claim true. It also rejects route-status tokens
+  `USER_OVERRIDE`, `FORMAL_TRAIN`, `FULL_TRAIN`, `QUEUED`, and `UNLOCKED`.
+- The precheck summary gate now requires `no_claims.sparse_compute=True`; a
+  sparse-compute claim lock omission is no longer accepted.
+- Tests now assert that the main config remains formal/full-train locked and
+  that the launch gate rejects stale unlock/status/sparse-claim states.
+
+Local verification in the owned worktree:
+
+```powershell
+python -m py_compile configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py tools/mdl_knot/validate_mdl_knot_launch_gate.py tools/mdl_knot/validate_mdl_knot_shortdiag.py tests/test_mdl_knot_tools_and_integration.py
+```
+
+Result: exit code `0`.
+
+```powershell
+python tools/mdl_knot/validate_mdl_knot_launch_gate.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py
+```
+
+Result: `PRECHECK_ONLY_REQUEST_ALLOWED`, with `formal_train_unlocked=false`.
+
+```powershell
+python tools/mdl_knot/validate_mdl_knot_shortdiag.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py
+```
+
+Result: `SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED`, `validated=false`.
+
+```powershell
+python -m pytest tests/test_mdl_knot_tools_and_integration.py -q
+```
+
+Result: `19 passed, 3 skipped in 19.18s`.
+
+Current decision:
+
+- Historical user-override formal child `1118197.535` is failed evidence only.
+- This edge fix and lock fix do not create full-train permission.
+- Next action remains remote `PRECHECK_ONLY` first, then one-epoch
+  `SHORT_DIAGNOSTIC_ONLY` only after remote precheck passes.
+- Formal/full long training, `tools/test.py`, evaluation, checkpoints,
+  mAP/runtime/FLOPs/deploy/paper/sparse-compute claims remain locked.
