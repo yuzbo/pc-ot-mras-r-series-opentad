@@ -165,9 +165,16 @@ def test_mdl_knot_config_overrides_real_dataset_pipelines_without_dead_standalon
     assert cfg["dataset"]["val"]["ann_file"] == cfg["annotation_path"]
     assert cfg["dataset"]["test"]["ann_file"] == cfg["annotation_path"]
     assert "/root/autodl-tmp" not in cfg["evaluation"]["ground_truth_filename"]
-    assert cfg["formal_train_unlocked"] is True
+    assert cfg["formal_train_unlocked"] is False
+    assert cfg["full_train_unlocked"] is False
+    assert "USER_OVERRIDE" not in cfg["route_status"]
+    assert "FORMAL_TRAIN" not in cfg["route_status"]
+    assert "QUEUED" not in cfg["route_status"]
     assert cfg["solver"]["amp"] is True
     assert cfg["sparse_compute_claim"] is False
+    assert cfg["mdl_knot_acquisition"]["formal_train_unlocked"] is False
+    assert cfg["mdl_knot_acquisition"]["full_train_unlocked"] is False
+    assert cfg["mdl_knot_acquisition"]["sparse_compute_claim"] is False
     assert cfg["mdl_knot_acquisition"]["fixed_pad_bridge_compute_boundary"]["sparse_compute_claim"] is False
 
 
@@ -441,6 +448,68 @@ def test_launch_gate_unlocks_only_for_valid_precheck_summary(tmp_path):
     assert "PRECHECK_ONLY_REQUEST_ALLOWED" in proc.stdout
 
 
+def test_launch_gate_rejects_formal_unlock_config_status_and_sparse_claim(tmp_path):
+    unlocked_config = tmp_path / "input_mdl_knot_unlocked.py"
+    text = CONFIG_PATH.read_text(encoding="utf-8")
+
+    unlocked_config.write_text(text.replace("formal_train_unlocked = False", "formal_train_unlocked = True"), encoding="utf-8")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
+            "--config",
+            str(unlocked_config),
+            "--route-label",
+            ROUTE_LABEL,
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert proc.returncode != 0
+    assert "formal_train_unlocked" in proc.stdout
+
+    unlocked_config.write_text(
+        text.replace(
+            "LOCAL_FINAL_CODE_CANDIDATE_PRECHECK_ONLY_AFTER_SAMPLED_RAW_EDGE_FIX_NO_METRIC_CLAIMS",
+            "LOCAL_FINAL_CODE_CANDIDATE_USER_OVERRIDE_FORMAL_TRAIN_QUEUED_AFTER_PREVIOUS_RUN_NO_METRIC_CLAIMS",
+        ),
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
+            "--config",
+            str(unlocked_config),
+            "--route-label",
+            ROUTE_LABEL,
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert proc.returncode != 0
+    assert "route_status" in proc.stdout
+
+    unlocked_config.write_text(text.replace("sparse_compute_claim = False", "sparse_compute_claim = True"), encoding="utf-8")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
+            "--config",
+            str(unlocked_config),
+            "--route-label",
+            ROUTE_LABEL,
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert proc.returncode != 0
+    assert "sparse_compute_claim" in proc.stdout
+
+
 def test_launch_gate_rejects_non_mdl_config_evidence_and_forbidden_tokens(tmp_path):
     bad_summary = {
         "route_label": ROUTE_LABEL,
@@ -452,7 +521,14 @@ def test_launch_gate_rejects_non_mdl_config_evidence_and_forbidden_tokens(tmp_pa
             "evaluation": True,
             "tools_test_py": True,
         },
-        "no_claims": {"mAP": True, "runtime": True, "FLOPs": True, "deploy": True, "paper": True},
+        "no_claims": {
+            "mAP": True,
+            "runtime": True,
+            "FLOPs": True,
+            "deploy": True,
+            "paper": True,
+            "sparse_compute": True,
+        },
         "cases": {"a": {"valid_k": 4}, "b": {"valid_k": 7}},
         "config_evidence": {
             "route_label": ROUTE_LABEL,
@@ -551,7 +627,14 @@ def test_launch_gate_rejects_missing_tools_test_lock_random_fixed_and_combo(tmp_
             "training": True,
             "evaluation": True,
         },
-        "no_claims": {"mAP": True, "runtime": True, "FLOPs": True, "deploy": True, "paper": True},
+        "no_claims": {
+            "mAP": True,
+            "runtime": True,
+            "FLOPs": True,
+            "deploy": True,
+            "paper": True,
+            "sparse_compute": True,
+        },
         "cases": {"a": {"valid_k": 4}, "b": {"valid_k": 7}},
         "config_evidence": {
             "route_label": ROUTE_LABEL,
@@ -651,6 +734,69 @@ def test_launch_gate_rejects_missing_tools_test_lock_random_fixed_and_combo(tmp_
     )
     assert proc.returncode != 0
     assert "C3 drift" in proc.stdout
+
+
+def test_launch_gate_rejects_precheck_without_sparse_compute_claim_lock(tmp_path):
+    safety = {
+        split: {
+            "no_gt_selector": True,
+            "no_teacher": True,
+            "no_prediction_cache": True,
+            "no_dense_raw_backbone_handoff": True,
+            "load_before_decode": True,
+        }
+        for split in ("train", "val", "test")
+    }
+    summary = {
+        "route_label": ROUTE_LABEL,
+        "validated": True,
+        "locked_actions": {
+            "remote_sync": True,
+            "slurm": True,
+            "training": True,
+            "evaluation": True,
+            "tools_test_py": True,
+        },
+        "no_claims": {"mAP": True, "runtime": True, "FLOPs": True, "deploy": True, "paper": True},
+        "cases": {"a": {"valid_k": 4}, "b": {"valid_k": 7}},
+        "config_evidence": {
+            "route_label": ROUTE_LABEL,
+            "dataset_pipelines_use_mdl": True,
+            "load_methods": {
+                "train": "mdl_knot_dynamic_subsample",
+                "val": "mdl_knot_dynamic_subsample",
+                "test": "mdl_knot_dynamic_subsample",
+            },
+            "bridges": {"train": "fixed_pad", "val": "fixed_pad", "test": "fixed_pad"},
+            "safety": safety,
+            "forbidden_route_token_hits": [],
+            "drift_tokens": [],
+            "deploy_scout_source": "raw_frame_motion_scout_with_metadata_fallback",
+            "real_scout_unavailable": False,
+            "synthetic_fallback_allowed": False,
+            "no_metric_runtime_deploy_claims": True,
+        },
+    }
+    summary_path = tmp_path / "gate_summary_missing_sparse_compute.json"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
+            "--config",
+            str(CONFIG_PATH),
+            "--route-label",
+            ROUTE_LABEL,
+            "--precheck-summary",
+            str(summary_path),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert proc.returncode != 0
+    assert "sparse_compute" in proc.stdout
 
 
 def _write_valid_shortdiag_log(tmp_path: Path) -> Path:
