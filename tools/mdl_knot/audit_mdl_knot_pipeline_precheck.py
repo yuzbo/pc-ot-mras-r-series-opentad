@@ -37,6 +37,17 @@ _ALLOWED_WORKFLOW_FIELD_TOKENS = (
 )
 
 
+def _no_claim_locks() -> dict:
+    return {
+        "mAP": True,
+        "runtime": True,
+        "FLOPs": True,
+        "deploy": True,
+        "paper": True,
+        "sparse_compute": True,
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MDL-Knot local synthetic/offline precheck.")
     parser.add_argument("--out-dir", required=True, help="Directory for JSON ledgers and summary.")
@@ -116,6 +127,9 @@ def _collect_config_evidence() -> dict:
         "deploy_scout_source": acq.get("deploy_scout_source", "unknown"),
         "real_scout_unavailable": bool(acq.get("real_scout_unavailable", False)),
         "synthetic_fallback_allowed": bool(acq.get("synthetic_fallback_allowed", False)),
+        "sparse_compute_claim": bool(cfg.get("sparse_compute_claim", False)),
+        "no_sparse_compute_claim": cfg.get("sparse_compute_claim", False) is False
+        and acq.get("sparse_compute_claim", False) is False,
         "no_metric_runtime_deploy_claims": (
             acq.get("no_metric_claims") is True
             and acq.get("no_runtime_claims") is True
@@ -180,14 +194,10 @@ def main() -> int:
         "route_label": MDL_KNOT_ROUTE_LABEL,
         "validated": True,
         "validation_scope": "synthetic_offline_real_sparse_handoff_only",
-        "no_claims": {
-            "mAP": True,
-            "runtime": True,
-            "FLOPs": True,
-            "deploy": True,
-            "paper": True,
-            "sparse_compute": True,
-        },
+        "no_claims": _no_claim_locks(),
+        "no_sparse_compute_claim": True,
+        "sparse_compute_claim": False,
+        "fixed_pad_sparse_compute_claim_locked": True,
         "locked_actions": {
             "remote_sync": True,
             "slurm": True,

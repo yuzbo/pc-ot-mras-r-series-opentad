@@ -8,6 +8,7 @@ Route-owned copy for `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`.
 | --- | --- | --- | --- | --- | --- |
 | MDL-Knot sampled_raw full-observation edge repair, `input_mdl_knot_dynamic_adapter_irregular_headv3*.py` | Input sampling handoff validator, sampled_raw audit metadata, profile instrumentation, diagnostics counters | Local fix complete in owned worktree | Local py_compile passed; requested pytest passed; static launch gate says `PRECHECK_ONLY_REQUEST_ALLOWED`; shortdiag validator says static allowed but `validated=false` | No remote action by this owner; old formal child `1118197.535` failed with `selected_inputs must be shorter than dense_T for sparse selected-only audit`; no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim | Coordinator may allow remote `PRECHECK_ONLY`; one-epoch `SHORT_DIAGNOSTIC_ONLY` only after remote precheck passes; formal/full long training remains locked |
 | MDL-Knot formal/full train lock consistency fix, `input_mdl_knot_dynamic_adapter_irregular_headv3.py` | Config lock state, launch gate claim locks, tests | Local blocker fix complete in owned worktree | py_compile passed; `tests/test_mdl_knot_tools_and_integration.py` passed; launch gate rejects stale unlock/status/sparse-claim states | No remote action; `.535` remains failed historical user-override formal evidence only | Remote `PRECHECK_ONLY` only; then one-epoch shortdiag after remote precheck; formal/full long training remains locked |
+| MDL-Knot precheck sparse-compute claim-lock schema fix, `audit_mdl_knot_pipeline_precheck.py` | Precheck summary schema, launch gate regression tests | Local blocker fix complete in owned worktree | py_compile passed; targeted valid-precheck test passed; full tools/integration file passed | No remote action by this owner; remote prior pytest failed because generated precheck summary missed explicit sparse-compute claim lock | Rerun remote `PRECHECK_ONLY`; one-epoch shortdiag only after precheck passes; formal/full long training remains locked |
 
 ## Timeline
 
@@ -38,3 +39,16 @@ Route-owned copy for `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`.
 - Verification: py_compile relevant config/gate/test files passed; `python -m pytest tests/test_mdl_knot_tools_and_integration.py -q` passed as `19 passed, 3 skipped in 19.18s`.
 - Gate state: `validate_mdl_knot_launch_gate.py` returned `PRECHECK_ONLY_REQUEST_ALLOWED` with `formal_train_unlocked=false`; `validate_mdl_knot_shortdiag.py` returned `SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED` with `validated=false`.
 - Decision: historical `.535` formal user-override run is failed evidence only; no full-train permission exists. Next action remains remote `PRECHECK_ONLY` then one-epoch shortdiag only after precheck passes; formal/full long training remains locked.
+
+### 2026-07-01 08:24:45 +08:00
+
+- Route label: `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`.
+- Owned worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_MDLKnot_RealDiag_Worktree_20260630`.
+- Owned branch: `codex/divergent-mdl-knot-realdiag-20260630`.
+- Remote PRECHECK_ONLY feedback: py_compile, launch gate, and shortdiag gate passed; pytest failed at `test_launch_gate_unlocks_only_for_valid_precheck_summary` because generated precheck summary did not explicitly lock `no_claims.sparse_compute`.
+- Changed files: `tools/mdl_knot/audit_mdl_knot_pipeline_precheck.py`, `tests/test_mdl_knot_tools_and_integration.py`, route report, tracker, and `research-wiki/log.md`.
+- Strict random-fixed 50% contract: not applicable to this MDL-Knot dynamic route; fixed-pad bridge still makes no sparse-compute claim.
+- GT/teacher leakage risk: no new GT, teacher, prediction cache, evaluator, or post-processing access added.
+- Current mAP evidence: none.
+- Verification: py_compile relevant files passed; targeted `test_launch_gate_unlocks_only_for_valid_precheck_summary` passed; generated precheck summary plus launch gate passed as `PRECHECK_ONLY_REQUEST_ALLOWED`; `tests/test_mdl_knot_tools_and_integration.py` passed as `19 passed, 3 skipped in 19.96s`.
+- Decision: rerun remote `PRECHECK_ONLY` only. One-epoch shortdiag may follow only after remote precheck passes; formal/full long training remains locked.

@@ -413,6 +413,12 @@ def test_precheck_outputs_validated_json_summary(tmp_path):
     assert summary["route_label"] == ROUTE_LABEL
     assert summary["validated"] is True
     assert summary["locked_actions"]["remote_sync"] is True
+    assert summary["no_claims"]["sparse_compute"] is True
+    assert summary["no_sparse_compute_claim"] is True
+    assert summary["sparse_compute_claim"] is False
+    assert summary["fixed_pad_sparse_compute_claim_locked"] is True
+    assert summary["config_evidence"]["no_sparse_compute_claim"] is True
+    assert summary["config_evidence"]["sparse_compute_claim"] is False
     assert summary["cases"]["short_islands"]["valid_k"] != summary["cases"]["stable_background"]["valid_k"]
     assert summary["real_video_pipeline_diagnostics"] is None
     assert summary["synthetic_pipeline_diagnostics"]["synthetic_fallback_rejected"] is False
@@ -443,6 +449,10 @@ def test_launch_gate_unlocks_only_for_valid_precheck_summary(tmp_path):
         "--precheck-summary",
         str(out_dir / "mdl_knot_precheck_summary.json"),
     ]
+    summary = json.loads((out_dir / "mdl_knot_precheck_summary.json").read_text(encoding="utf-8"))
+    assert summary["no_claims"]["sparse_compute"] is True
+    assert summary["no_sparse_compute_claim"] is True
+    assert summary["sparse_compute_claim"] is False
     proc = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True)
     assert proc.returncode == 0, proc.stderr
     assert "PRECHECK_ONLY_REQUEST_ALLOWED" in proc.stdout
@@ -778,6 +788,27 @@ def test_launch_gate_rejects_precheck_without_sparse_compute_claim_lock(tmp_path
         },
     }
     summary_path = tmp_path / "gate_summary_missing_sparse_compute.json"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "mdl_knot" / "validate_mdl_knot_launch_gate.py"),
+            "--config",
+            str(CONFIG_PATH),
+            "--route-label",
+            ROUTE_LABEL,
+            "--precheck-summary",
+            str(summary_path),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert proc.returncode != 0
+    assert "sparse_compute" in proc.stdout
+
+    summary["no_claims"]["sparse_compute"] = False
     summary_path.write_text(json.dumps(summary), encoding="utf-8")
     proc = subprocess.run(
         [

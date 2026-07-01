@@ -567,3 +567,67 @@ Current decision:
   `SHORT_DIAGNOSTIC_ONLY` only after remote precheck passes.
 - Formal/full long training, `tools/test.py`, evaluation, checkpoints,
   mAP/runtime/FLOPs/deploy/paper/sparse-compute claims remain locked.
+
+## 2026-07-01 precheck sparse-compute claim-lock schema repair
+
+Timestamp: `2026-07-01 08:24:45 +08:00`.
+
+Remote `PRECHECK_ONLY` feedback:
+
+- Remote `py_compile`, `validate_mdl_knot_launch_gate.py`, and
+  `validate_mdl_knot_shortdiag.py` passed.
+- Remote pytest failed:
+  `tests/test_mdl_knot_tools_and_integration.py::test_launch_gate_unlocks_only_for_valid_precheck_summary`.
+- Root cause: launch gate correctly required `no_claims.sparse_compute=True`,
+  but the precheck summary generator schema could still be interpreted as an
+  older format that did not explicitly lock sparse-compute claims.
+
+Fix summary:
+
+- `tools/mdl_knot/audit_mdl_knot_pipeline_precheck.py` now centralizes
+  precheck no-claim locks with `sparse_compute=True`.
+- Generated `mdl_knot_precheck_summary.json` now also includes explicit
+  top-level sparse-compute claim locks:
+  `no_sparse_compute_claim=True`, `sparse_compute_claim=False`, and
+  `fixed_pad_sparse_compute_claim_locked=True`.
+- `config_evidence` now records
+  `no_sparse_compute_claim=True` and `sparse_compute_claim=False`.
+- Tests now assert that a valid generated precheck summary contains these
+  sparse-compute locks and that missing or false `no_claims.sparse_compute`
+  remains rejected by the launch gate.
+
+Local verification in the owned worktree:
+
+```powershell
+python -m py_compile tools/mdl_knot/audit_mdl_knot_pipeline_precheck.py tools/mdl_knot/validate_mdl_knot_launch_gate.py tests/test_mdl_knot_tools_and_integration.py
+```
+
+Result: exit code `0`.
+
+```powershell
+python -m pytest tests/test_mdl_knot_tools_and_integration.py::test_launch_gate_unlocks_only_for_valid_precheck_summary -q
+```
+
+Result: `1 passed in 4.04s`.
+
+```powershell
+$out = Join-Path $env:TEMP 'mdl_knot_precheck_sparse_lock_local'
+python tools/mdl_knot/audit_mdl_knot_pipeline_precheck.py --out-dir $out --overwrite
+python tools/mdl_knot/validate_mdl_knot_launch_gate.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py --precheck-summary (Join-Path $out 'mdl_knot_precheck_summary.json')
+```
+
+Result: generator emitted `VALIDATED_PRECHECK_SUMMARY`; launch gate returned
+`PRECHECK_ONLY_REQUEST_ALLOWED`.
+
+```powershell
+python -m pytest tests/test_mdl_knot_tools_and_integration.py -q
+```
+
+Result: `19 passed, 3 skipped in 19.96s`.
+
+Current decision:
+
+- Remote `PRECHECK_ONLY` remains the only allowed remote next step.
+- One-epoch `SHORT_DIAGNOSTIC_ONLY` may follow only after remote precheck passes.
+- Formal/full long training, `tools/test.py`, evaluation, checkpoints, and all
+  mAP/runtime/FLOPs/deploy/paper/sparse-compute claims remain locked.
