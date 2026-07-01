@@ -19,3 +19,13 @@ MDL-Knot route-owned blocker fix after final review.
 - Updated tests to assert formal/full train remains locked and to reject stale unlock/status/sparse-claim cases.
 - Verification passed: py_compile relevant files, launch gate `PRECHECK_ONLY_REQUEST_ALLOWED`, shortdiag static gate `SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED` with `validated=false`, and `tests/test_mdl_knot_tools_and_integration.py` passed `19 passed, 3 skipped in 19.18s`.
 - Historical user-override child `1118197.535` remains failed evidence only. Next allowed action is remote `PRECHECK_ONLY`, then one-epoch shortdiag after precheck; formal/full long training remains locked.
+
+## 2026-07-01 08:24:45 +08:00
+
+MDL-Knot route-owned precheck schema fix after remote PRECHECK_ONLY pytest failure.
+
+- Remote feedback: py_compile, launch gate, and shortdiag gate passed, but valid-precheck pytest failed because the generated `mdl_knot_precheck_summary.json` lacked an explicit sparse-compute claim lock.
+- Updated `audit_mdl_knot_pipeline_precheck.py` so generated summaries include `no_claims.sparse_compute=True`, `no_sparse_compute_claim=True`, `sparse_compute_claim=False`, and `fixed_pad_sparse_compute_claim_locked=True`; config evidence also records sparse-compute claim locked.
+- Updated tests to assert valid generated precheck summaries carry sparse-compute locks and that missing/false `no_claims.sparse_compute` is rejected.
+- Verification passed: py_compile relevant files, targeted valid-precheck test `1 passed in 4.04s`, generated precheck plus launch gate `PRECHECK_ONLY_REQUEST_ALLOWED`, and `tests/test_mdl_knot_tools_and_integration.py` `19 passed, 3 skipped in 19.96s`.
+- No remote action, training, evaluation, or claims were run locally. Next allowed action remains remote `PRECHECK_ONLY`; shortdiag only after remote precheck; formal/full train remains locked.
