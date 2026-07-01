@@ -594,6 +594,7 @@ def test_lowres_probe_ledger_export_launcher_is_gpu1_coverage_only_and_strict():
 
     assert 'CUDA_VISIBLE_DEVICES}" != "1"' in text
     assert "PROBE_CHECKPOINT is required" in text
+    assert 'VAL_SUBSET_NAME="${VAL_SUBSET_NAME:-training}"' in text
     assert "--coverage-only" in text
     assert '--probe-window-size "${DENSE_WINDOW_SIZE}"' in text
     assert 'DENSE_WINDOW_SIZE="${DENSE_WINDOW_SIZE:-768}"' in text

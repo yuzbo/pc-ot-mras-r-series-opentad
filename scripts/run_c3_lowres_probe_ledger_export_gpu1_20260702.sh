@@ -46,7 +46,7 @@ fi
 case "${EXPORT_SPLIT}" in
   train)
     VAL_DATA_PATH="${VAL_DATA_PATH:-${TRAIN_DATA_PATH}}"
-    VAL_SUBSET_NAME="${VAL_SUBSET_NAME:-validation}"
+    VAL_SUBSET_NAME="${VAL_SUBSET_NAME:-training}"
     ;;
   val|test)
     VAL_DATA_PATH="${VAL_DATA_PATH:-${TEST_DATA_PATH}}"
