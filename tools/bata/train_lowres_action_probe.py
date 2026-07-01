@@ -475,6 +475,95 @@ def _select_top_indices(scores: Sequence[float], valid: Sequence[bool], budget: 
     return sorted(ranked[: min(int(budget), len(valid_indices))])
 
 
+def _selection_quality_from_indices(
+    *,
+    selected_indices: Sequence[Sequence[int]],
+    target_rows: Sequence[Sequence[Any]],
+    valid_rows: Sequence[Sequence[Any]],
+    gt_rows: Sequence[Sequence[Any]],
+    budget: int | None,
+    requested_budget_fraction: float | None,
+    boundary_radius: int,
+    strategy_name: str | None = None,
+) -> dict[str, Any]:
+    selected_counts: list[int] = []
+    budget_fractions: list[float] = []
+    gaps: list[float] = []
+    run_counts: list[int] = []
+    longest_runs: list[int] = []
+    run_lengths_by_window: list[list[int]] = []
+    all_run_lengths: list[int] = []
+    all_selected_distances: list[float] = []
+    boundary_hits = 0
+    boundary_total = 0
+    selected_positive = 0
+    total_selected = 0
+    selected_unique_positive = 0
+    total_positive = 0
+
+    for selected_raw, target_row, valid_row, segments in zip(selected_indices, target_rows, valid_rows, gt_rows):
+        valid_indices = [idx for idx, is_valid in enumerate(valid_row) if bool(is_valid)]
+        valid_set = set(valid_indices)
+        selected = sorted(dict.fromkeys(int(idx) for idx in selected_raw if int(idx) in valid_set))
+        selected_set = set(selected)
+        selected_counts.append(len(selected))
+        budget_fractions.append(0.0 if not valid_indices else len(selected) / float(len(valid_indices)))
+        total_selected += len(selected)
+        run_lengths = _selected_run_lengths(selected)
+        run_lengths_by_window.append(run_lengths)
+        run_counts.append(len(run_lengths))
+        longest_runs.append(0 if not run_lengths else max(run_lengths))
+        all_run_lengths.extend(run_lengths)
+
+        for left, right in zip(selected, selected[1:]):
+            gaps.append(float(right - left))
+        for idx in selected:
+            if float(target_row[idx]) >= 0.5:
+                selected_positive += 1
+        positive_indices = [idx for idx in valid_indices if float(target_row[idx]) >= 0.5]
+        total_positive += len(positive_indices)
+        selected_unique_positive += sum(1 for idx in positive_indices if idx in selected_set)
+
+        boundaries = _gt_boundaries(segments)
+        boundary_total += len(boundaries)
+        boundary_hits += _boundary_hit_count(selected, boundaries, boundary_radius)
+        for idx in selected:
+            distance = min((abs(float(idx) - boundary) for boundary in boundaries), default=None)
+            if distance is not None:
+                all_selected_distances.append(float(distance))
+
+    support = _boundary_support(boundary_hits, boundary_total)
+    metrics = {
+        "budget": None if budget is None else int(budget),
+        "budget_fraction": sum(budget_fractions) / float(max(len(budget_fractions), 1)),
+        "requested_budget_fraction": requested_budget_fraction,
+        "selected_count": sum(selected_counts) / float(max(len(selected_counts), 1)),
+        "sample_count": int(sum(selected_counts)),
+        "selected_indices": [list(map(int, row)) for row in selected_indices],
+        "selected_run_count_mean": sum(run_counts) / float(max(len(run_counts), 1)),
+        "selected_run_count_p95": _percentile(run_counts, 0.95),
+        "longest_selected_run_mean": sum(longest_runs) / float(max(len(longest_runs), 1)),
+        "longest_selected_run_p95": _percentile(longest_runs, 0.95),
+        "mean_selected_run_length": None if not all_run_lengths else sum(all_run_lengths) / float(len(all_run_lengths)),
+        "selected_run_count_by_window": run_counts,
+        "longest_selected_run_by_window": longest_runs,
+        "selected_run_lengths_by_window": run_lengths_by_window,
+        f"boundary_support_r{int(boundary_radius)}": support,
+        f"boundary_support@{int(boundary_radius)}": support,
+        "zero_support_rate": None if support is None else 1.0 - support,
+        "mean_gap": None if not gaps else sum(gaps) / float(len(gaps)),
+        "max_gap": None if not gaps else max(gaps),
+        "p95_gap": _percentile(gaps, 0.95),
+        "mean_selected_distance_to_boundary": None if not all_selected_distances else sum(all_selected_distances) / float(len(all_selected_distances)),
+        "action_selected_fraction": None if total_selected <= 0 else selected_positive / float(total_selected),
+        "action_positive_recall": None if total_positive <= 0 else selected_unique_positive / float(total_positive),
+        "action_positive_coverage": None if total_positive <= 0 else selected_unique_positive / float(total_positive),
+    }
+    if strategy_name is not None:
+        metrics["strategy"] = str(strategy_name)
+    return metrics
+
+
 def _allocate_role_budgets(budget: int, fractions: Sequence[float]) -> list[int]:
     if budget <= 0:
         return [0 for _ in fractions]
@@ -637,6 +726,14 @@ def compute_indirect_selection_quality_from_logits(
     boundary_total = 0
     boundary_hits = 0
     boundary_selected_distances: list[float] = []
+    strategy_selected_indices: dict[str, list[list[int]]] = {
+        "topk_action_logit": [],
+        "delta_p_action": [],
+        "entropy_uncertainty": [],
+        "boundary_score": [],
+        "weighted_transition_mix": [],
+        "state_machine_mix": [],
+    }
     selected_role_counts = {"background": 0, "action": 0, "transition": 0, "mixed_fill": 0}
     action_selected_count = 0
     background_selected_count = 0
@@ -667,6 +764,21 @@ def compute_indirect_selection_quality_from_logits(
         boundary_candidates = _select_top_indices(bundle["boundary_score"], valid_mask, resolved_budget)
         action_candidates = _select_top_indices(bundle["action_score"], valid_mask, resolved_budget)
         background_candidates = _select_top_indices(bundle["background_score"], valid_mask, resolved_budget)
+        delta_candidates = _select_top_indices(bundle["p_change"], valid_mask, resolved_budget)
+        entropy_candidates = _select_top_indices(bundle["entropy"], valid_mask, resolved_budget)
+        weighted_transition_score = [
+            (
+                1.50 * float(bundle["boundary_score"][idx])
+                + 1.00 * float(bundle["p_change"][idx])
+                + 0.75 * float(bundle["entropy"][idx])
+                + 0.50 * float(bundle["uncertainty"][idx])
+                + 0.25 * float(bundle["role_overlap"][idx])
+            )
+            if bool(valid_mask[idx])
+            else 0.0
+            for idx in range(len(valid_mask))
+        ]
+        weighted_transition_candidates = _select_top_indices(weighted_transition_score, valid_mask, resolved_budget)
         selected_roles = _frame_roles_from_scores(
             p_action=p_action,
             entropy=entropy,
@@ -707,6 +819,12 @@ def compute_indirect_selection_quality_from_logits(
         if len(selected) > resolved_budget:
             selected = sorted(selected[:resolved_budget])
         selected_indices.append(selected)
+        strategy_selected_indices["topk_action_logit"].append(list(per_sample_baseline[sample_idx]))
+        strategy_selected_indices["delta_p_action"].append(delta_candidates)
+        strategy_selected_indices["entropy_uncertainty"].append(entropy_candidates)
+        strategy_selected_indices["boundary_score"].append(boundary_candidates)
+        strategy_selected_indices["weighted_transition_mix"].append(weighted_transition_candidates)
+        strategy_selected_indices["state_machine_mix"].append(selected)
         selected_count_total += len(selected)
         selected_run_lengths_all.extend(_selected_run_lengths(selected))
 
@@ -760,6 +878,10 @@ def compute_indirect_selection_quality_from_logits(
                 "selected_sources": {
                     "baseline": "topk_action_logit",
                     "indirect": "boundary_action_background_state_machine",
+                    "strategies": list(strategy_selected_indices),
+                },
+                "strategy_selected_positions": {
+                    key: list(value[sample_idx]) for key, value in strategy_selected_indices.items()
                 },
                 "frame_signals": {
                     "p_action": [float(item) for item in p_action],
@@ -839,10 +961,40 @@ def compute_indirect_selection_quality_from_logits(
         "mixed_fill_rate": _safe_div(overlap_selected_count, selected_count_total),
         "sample_count": len(selected_indices),
     }
+    strategy_metrics = {
+        strategy_name: _selection_quality_from_indices(
+            selected_indices=strategy_indices,
+            target_rows=target_rows,
+            valid_rows=valid_rows,
+            gt_rows=gt_rows,
+            budget=budget,
+            requested_budget_fraction=budget_fraction,
+            boundary_radius=boundary_radius,
+            strategy_name=strategy_name,
+        )
+        for strategy_name, strategy_indices in strategy_selected_indices.items()
+    }
+    boundary_values = {
+        strategy_name: metrics.get(boundary_key)
+        for strategy_name, metrics in strategy_metrics.items()
+    }
+    valid_boundary_values = {
+        strategy_name: float(value)
+        for strategy_name, value in boundary_values.items()
+        if value is not None
+    }
+    best_boundary_strategy = None if not valid_boundary_values else max(valid_boundary_values, key=lambda item: valid_boundary_values[item])
 
     return {
         "baseline": baseline_metrics,
         "indirect": indirect_metrics,
+        "strategy_metrics": strategy_metrics,
+        "strategy_comparison": {
+            "boundary_support_key": boundary_key,
+            "boundary_support_by_strategy": boundary_values,
+            f"{boundary_key}_by_strategy": boundary_values,
+            "best_boundary_support_strategy": best_boundary_strategy,
+        },
         "per_sample_rows": per_sample_rows,
         "delta": {
             boundary_key: None
@@ -1951,6 +2103,8 @@ def _combine_tcn_variant_summaries(*, base_summary: Mapping[str, Any], summaries
     roc_auc_by_variant: dict[str, Any] = {}
     balanced_accuracy_by_variant: dict[str, Any] = {}
     boundary_support_by_variant: dict[str, Any] = {}
+    best_indirect_strategy_by_variant: dict[str, Any] = {}
+    indirect_boundary_support_by_variant: dict[str, Any] = {}
     for summary in summaries:
         variant = summary.get("tcn_variant")
         if not variant:
@@ -1963,6 +2117,13 @@ def _combine_tcn_variant_summaries(*, base_summary: Mapping[str, Any], summaries
         roc_auc_by_variant[variant] = final_val.get("roc_auc")
         balanced_accuracy_by_variant[variant] = final_val.get("balanced_accuracy")
         boundary_support_by_variant[variant] = final_val.get("sampling_quality", {}).get("boundary_support_r1")
+        strategy_comparison = final_val.get("indirect_selection_quality", {}).get("strategy_comparison", {})
+        best_indirect_strategy_by_variant[variant] = strategy_comparison.get("best_boundary_support_strategy")
+        indirect_boundary_support_by_variant[variant] = (
+            strategy_comparison.get("boundary_support_r1_by_strategy")
+            or strategy_comparison.get("boundary_support_by_strategy")
+            or {}
+        )
 
     valid_ap = {
         variant: float(value)
@@ -1977,6 +2138,8 @@ def _combine_tcn_variant_summaries(*, base_summary: Mapping[str, Any], summaries
         "roc_auc_by_variant": roc_auc_by_variant,
         "balanced_accuracy_by_variant": balanced_accuracy_by_variant,
         "boundary_support_r1_by_variant": boundary_support_by_variant,
+        "best_indirect_strategy_by_variant": best_indirect_strategy_by_variant,
+        "indirect_boundary_support_r1_by_variant": indirect_boundary_support_by_variant,
         "best_average_precision_variant": best_average_precision_variant,
     }
     return combined

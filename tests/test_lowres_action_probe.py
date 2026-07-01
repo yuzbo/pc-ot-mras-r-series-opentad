@@ -476,6 +476,34 @@ def test_indirect_selection_quality_serializes_sample_rows_with_stable_schema():
     json.dumps(row)
 
 
+def test_indirect_selection_quality_reports_strategy_comparison():
+    probe = load_probe_module()
+
+    payload = probe.compute_indirect_selection_quality_from_logits(
+        logits=[[-6.0, -5.0, 6.0, 6.0, 6.0, -5.0, -6.0]],
+        target=[[0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0]],
+        valid=[[True, True, True, True, True, True, True]],
+        gt_segments=[[[2.0, 5.0]]],
+        sample_ids=["state_change_window"],
+        budget=2,
+        boundary_radius=0,
+    )
+
+    strategies = payload["strategy_metrics"]
+    assert "topk_action_logit" in strategies
+    assert "delta_p_action" in strategies
+    assert "entropy_uncertainty" in strategies
+    assert "boundary_score" in strategies
+    assert "weighted_transition_mix" in strategies
+    assert "state_machine_mix" in strategies
+    assert payload["strategy_comparison"]["best_boundary_support_strategy"] in strategies
+    assert strategies["delta_p_action"]["boundary_support_r0"] == 1.0
+    assert strategies["topk_action_logit"]["boundary_support_r0"] < strategies["delta_p_action"]["boundary_support_r0"]
+    row = payload["per_sample_rows"][0]
+    assert row["strategy_selected_positions"]["delta_p_action"] == [2, 5]
+    assert row["selected_sources"]["strategies"] == list(strategies)
+
+
 def test_evaluate_aggregates_gt_segments_for_sampling_quality_on_both_probe_paths():
     probe = load_probe_module()
     batch = {
@@ -778,14 +806,32 @@ def test_tcn_variant_summary_exposes_per_variant_results():
             "probe_model": "temporal-tcn",
             "tcn_variant": "lite",
             "spatial_size": 64,
-            "final_val": {"average_precision": 0.55, "roc_auc": 0.61},
+            "final_val": {
+                "average_precision": 0.55,
+                "roc_auc": 0.61,
+                "indirect_selection_quality": {
+                    "strategy_comparison": {
+                        "best_boundary_support_strategy": "delta_p_action",
+                        "boundary_support_r1_by_strategy": {"delta_p_action": 0.70},
+                    }
+                },
+            },
             "out_dir": "root/temporal_tcn_lite_64",
         },
         {
             "probe_model": "temporal-tcn",
             "tcn_variant": "motion",
             "spatial_size": 64,
-            "final_val": {"average_precision": 0.66, "roc_auc": 0.72},
+            "final_val": {
+                "average_precision": 0.66,
+                "roc_auc": 0.72,
+                "indirect_selection_quality": {
+                    "strategy_comparison": {
+                        "best_boundary_support_strategy": "weighted_transition_mix",
+                        "boundary_support_r1_by_strategy": {"weighted_transition_mix": 0.80},
+                    }
+                },
+            },
             "out_dir": "root/temporal_tcn_motion_64",
         },
     ]
@@ -803,6 +849,8 @@ def test_tcn_variant_summary_exposes_per_variant_results():
     assert combined["temporal_tcn_motion"]["out_dir"] == "root/temporal_tcn_motion_64"
     assert combined["comparison"]["best_average_precision_variant"] == "motion"
     assert combined["comparison"]["average_precision_by_variant"]["lite"] == 0.55
+    assert combined["comparison"]["best_indirect_strategy_by_variant"]["lite"] == "delta_p_action"
+    assert combined["comparison"]["best_indirect_strategy_by_variant"]["motion"] == "weighted_transition_mix"
 
 
 def test_load_torch_state_dict_accepts_probe_state_dict(tmp_path):
