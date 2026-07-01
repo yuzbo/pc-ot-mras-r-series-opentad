@@ -38,3 +38,12 @@
 - Added regression tests for both issues and validator coverage for the test protocol.
 - Verification after fixes passed: focused pytest `14 passed`, py_compile, `bash -n`, and config validator for both C3 oracle-shell indirect configs.
 - Remote clean clone from the previous bundle exists but must be updated to the fix commit before cache export/precheck/training.
+
+## 2026-07-01 14:02 +0800
+
+- Completed C3 oracle-shell indirect remote deployment milestone on N16R4 under route labels `C3_MAINLINE_OPTIMIZATION` / `C3_ORIGINAL_OPTIMIZATION_ROUTE`.
+- Remote clean clone `/data/run01/sczc063/yuzibo/OpenTAD_C3OracleShellIndirect_69aa934_20260701` is at HEAD `d9a7481d0d5ba058cc48cb970fe8cd5e0c3b4997`; GitHub branch is `codex/c3-oracle-shell-indirect-20260701`.
+- Remote score cache export from CADF loss-select V2 `epoch_41.pth` completed as child `1118197.564 c3_oracle_cache_g1`, output `logs/c3_oracle_shell_score_cache_epoch41_d9a7481_20260701_r2/cache`, with `411` videos, `uses_gt=false`, and `axis=global_snippet_index`.
+- Oracle-vs-indirect diagnostic completed in `logs/c3_oracle_shell_oracle_vs_indirect_diag_epoch41_d9a7481_20260701`: train mean Jaccard `0.3922`, validation mean Jaccard `0.3824`; validation indirect action coverage `0.5173` versus oracle `0.8831`; validation indirect boundary-near selected rate `0.0808` versus oracle `0.1465`.
+- GPU1 precheck `logs/c3_oracle_shell_indirect_precheck_gpu1_d9a7481_20260701_135939_+0800` entered `tools/train.py`, produced finite loss `0.8188`, and exited normally.
+- Full train started on protected hold `1118197 pcot_dbg2g` as child `1118197.571 c3_oracle_full_g1`, run dir `logs/c3_oracle_shell_indirect_full_train_gpu1_d9a7481_20260701_140057_+0800`, with first finite loss `1.2794`. Parent hold was not released or replaced. No final mAP exists yet.
