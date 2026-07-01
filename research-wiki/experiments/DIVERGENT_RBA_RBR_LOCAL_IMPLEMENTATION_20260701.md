@@ -969,3 +969,48 @@ Current boundary:
   modified.
 - No full train, metric/runtime/FLOPs/sparse-compute/deploy, or paper claim is
   unlocked.
+
+## Corrected Guard Manual Parallel Launch - 2026-07-01 12:34:06 +08:00
+
+Reason:
+
+- Corrected public guard job `1132718 rba_guarddiag` remained pending due to
+  Slurm priority while BVR child `1118197.542 bvr_twb_fix2_g0` was still
+  running on protected hold GPU0.
+- BVR looked stable rather than hard-failed: recent loss lines were finite, and
+  the last observed validation during the BVR run was `Average-mAP=22.08%`.
+- A hold-overlap GPU query before RBA launch showed `CUDA_VISIBLE_DEVICES=0`
+  and about `2441/24564 MiB` used, so there was enough memory for a bounded
+  diagnostic to run in parallel without touching GPU1.
+
+Actions:
+
+- Rechecked the exact public-job record as `1132718|rba_guarddiag|PENDING`.
+- Cancelled only that RBA public pending job to prevent duplicate execution.
+- Stopped only the RBA watcher PID `1840205`, because manual parallel launch
+  superseded the wait-for-BVR behavior.
+- Started the corrected guard diagnostic on protected hold GPU0 as child
+  `1118197.560 rba_guard_g0`.
+
+Run evidence:
+
+- Logdir:
+  `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GuardDiag_20260701_e6de60e9_bundle/logs/rba_rbr_guard_evaldiag_manual_parallel_holdg0_20260701_123213_+0800`.
+- Launcher evidence:
+  `RBA_GUARD_HOLD_G0_START 2026-07-01 12:32:25 +0800`,
+  `CUDA_VISIBLE_DEVICES_INITIAL=0`, `HEAD=e6de60e9`, and
+  `SLURM_STEP_GPUS=2`.
+- Training startup evidence:
+  torch distributed init succeeded, epoch 0 started, and finite loss reached
+  `[000][00040/00199] Loss=2.5124 cls_loss=0.5899 reg_loss=0.5088 boundary_loss=1.4138 mem=9344MB`.
+- Grid audit evidence:
+  `rba_rbr_grid_audit.jsonl` reached `46` rows during the startup window.
+
+Boundary:
+
+- Parent hold `1118197 pcot_dbg2g` was not released, cancelled, replaced, or
+  modified.
+- GPU1/C3 work was not touched.
+- This remains `SHORT_DIAGNOSTIC_ONLY`; formal/full RBA-RBR training and all
+  metric/runtime/FLOPs/sparse-compute/deploy/paper claims remain locked until
+  the guard audit and diagnostic metrics are reviewed.

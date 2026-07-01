@@ -1,5 +1,15 @@
 # Research Log
 
+## 2026-07-01 12:34:06 +08:00 - RBA-RBR guard diagnostic launched in parallel on protected GPU0
+
+- Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- BVR child `1118197.542 bvr_twb_fix2_g0` remained `RUNNING` on protected hold GPU0, but its current log showed normal finite training and only about `1454MB` model memory; a hold-overlap GPU query showed `CUDA_VISIBLE_DEVICES=0` with about `2441/24564 MiB` used before RBA launch.
+- To avoid waiting on Slurm priority while GPU0 had enough memory, cancelled only the RBA public pending job after rechecking the exact record `1132718|rba_guarddiag|PENDING`, then stopped only the route watcher PID `1840205`.
+- Started RBA-RBR corrected guard `SHORT_DIAGNOSTIC_ONLY` as protected-hold child `1118197.560 rba_guard_g0` with logdir `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GuardDiag_20260701_e6de60e9_bundle/logs/rba_rbr_guard_evaldiag_manual_parallel_holdg0_20260701_123213_+0800`.
+- Startup evidence: launcher printed `CUDA_VISIBLE_DEVICES_INITIAL=0`, `SLURM_STEP_GPUS=2`, `HEAD=e6de60e9`; torch distributed init succeeded; training reached `[000][00040/00199] Loss=2.5124 ... mem=9344MB`; `rba_rbr_grid_audit.jsonl` reached `46` rows during the startup window.
+- No Traceback/OOM/NaN/non-finite pattern was observed in the startup window. Parent hold `1118197 pcot_dbg2g` was not released, cancelled, replaced, or modified; GPU1/C3 work was not touched.
+- This is still `SHORT_DIAGNOSTIC_ONLY`; formal/full RBA-RBR training and all metric/runtime/FLOPs/sparse-compute/deploy/paper claims remain locked until guard audit and metric evidence are reviewed.
+
 ## 2026-07-01 12:20:35 +08:00 - RBA-RBR guard watcher safety hardening applied
 
 - Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
