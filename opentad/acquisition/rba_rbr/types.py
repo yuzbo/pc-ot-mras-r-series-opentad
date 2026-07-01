@@ -14,6 +14,7 @@ STOP_REASONS = {
     "budget_cap",
     "candidate_exhausted",
     "coverage_guard",
+    "control_forced_uniform",
 }
 
 FORBIDDEN_ROUTE_TOKENS = (

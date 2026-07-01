@@ -159,7 +159,90 @@ def exact_uniform_positions(dense_T, k):
         return []
     if k >= dense_T:
         return list(range(dense_T))
-    return sorted({int(round(x)) for x in np.linspace(0, dense_T - 1, k)})
+    picked = []
+    used = set()
+    for value in np.linspace(0, dense_T - 1, k):
+        center = int(round(float(value)))
+        if center not in used:
+            pos = center
+        else:
+            pos = None
+            for offset in range(1, dense_T):
+                for candidate in (center - offset, center + offset):
+                    if 0 <= candidate < dense_T and candidate not in used:
+                        pos = candidate
+                        break
+                if pos is not None:
+                    break
+        if pos is None:
+            raise ValueError(f"unable to build exact uniform positions for dense_T={dense_T}, k={k}")
+        used.add(int(pos))
+        picked.append(int(pos))
+    return sorted(picked)
+
+
+def validate_rba_rbr_control_bridge_metadata(ledger, bridge_meta):
+    validate_rba_rbr_ledger(ledger)
+    if ledger.get("selector_method") != "forced_uniform_control_diagnostic":
+        raise ValueError("RBA-RBR control audit requires forced_uniform_control_diagnostic selector_method")
+    if ledger.get("rba_rbr_control_mode") != "uniform_raw":
+        raise ValueError("RBA-RBR control audit requires rba_rbr_control_mode=uniform_raw")
+    if bool(ledger.get("full_train_unlocked", True)):
+        raise ValueError("RBA-RBR control diagnostics must keep full_train_unlocked=false")
+    for key in ("no_metric_claim", "no_runtime_claim", "no_deploy_claim", "no_paper_claim", "no_sparse_compute_claim"):
+        if not bool(ledger.get(key, False)):
+            raise ValueError(f"RBA-RBR control diagnostics require {key}=true")
+
+    dense_T = int(ledger["dense_T"])
+    selected = [int(pos) for pos in ledger["selected_positions"]]
+    validate_selected_positions(selected, dense_T, valid_k=ledger["valid_k"])
+    required_meta = {
+        "irregular_native_axis",
+        "rba_rbr_raw_selected_positions",
+        "rba_rbr_raw_selected_valid_len",
+        "rba_rbr_detector_feature_positions",
+        "rba_rbr_detector_feature_valid_len",
+        "detector_valid_mask",
+        "adapter_valid_raw_mask",
+    }
+    missing = sorted(required_meta.difference(bridge_meta.keys()))
+    if missing:
+        raise ValueError(f"RBA-RBR control bridge metadata missing fields: {missing}")
+    if bridge_meta["irregular_native_axis"] is not True:
+        raise ValueError("RBA-RBR control bridge requires irregular_native_axis=True")
+
+    raw_positions = np.asarray(bridge_meta["rba_rbr_raw_selected_positions"], dtype=np.float64).reshape(-1)
+    detector_positions = np.asarray(bridge_meta["rba_rbr_detector_feature_positions"], dtype=np.float64).reshape(-1)
+    detector_mask = np.asarray(bridge_meta["detector_valid_mask"], dtype=np.bool_).reshape(-1)
+    raw_mask = np.asarray(bridge_meta["adapter_valid_raw_mask"], dtype=np.bool_).reshape(-1)
+    raw_valid_k = int(ledger["valid_k"])
+    detector_valid_k = int(ledger["detector_feature_valid_k"])
+    if raw_positions.shape[0] != raw_valid_k:
+        raise ValueError("RBA-RBR control raw position count does not match valid_k")
+    if raw_positions.tolist() != [float(pos) for pos in selected]:
+        raise ValueError("RBA-RBR control raw positions drifted from selected_positions")
+    if detector_positions.shape[0] != detector_valid_k:
+        raise ValueError("RBA-RBR control detector position count does not match detector_feature_valid_k")
+    if int(detector_mask.sum()) != detector_valid_k:
+        raise ValueError("RBA-RBR control detector mask true count does not match detector_feature_valid_k")
+    if int(raw_mask.sum()) != raw_valid_k:
+        raise ValueError("RBA-RBR control raw mask true count does not match valid_k")
+    if np.any(np.diff(raw_positions) <= 0.0):
+        raise ValueError("RBA-RBR control raw positions must be strictly increasing")
+    if detector_positions.size > 1 and np.any(np.diff(detector_positions) <= 0.0):
+        raise ValueError("RBA-RBR control detector positions must be strictly increasing")
+
+    raw_density = float(raw_valid_k) / float(max(dense_T, 1))
+    if abs(float(ledger["control_raw_density"]) - raw_density) > 1e-8:
+        raise ValueError("RBA-RBR control raw density summary is incoherent")
+    detector_target_len = int(ledger["detector_feature_target_len"])
+    detector_density = float(detector_valid_k) / float(max(detector_target_len, 1))
+    if abs(float(ledger["control_detector_density"]) - detector_density) > 1e-8:
+        raise ValueError("RBA-RBR control detector density summary is incoherent")
+    raw_gap = build_selection_gap_diagnostics(selected, dense_T)
+    if int(ledger["control_raw_gap_summary"]["max_gap"]) != int(raw_gap["max_gap"]):
+        raise ValueError("RBA-RBR control raw gap summary is incoherent")
+    return True
 
 
 def validate_dynamic_precheck_ledgers(ledgers):

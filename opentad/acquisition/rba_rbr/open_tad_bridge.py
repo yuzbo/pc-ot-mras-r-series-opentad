@@ -262,6 +262,8 @@ def build_rba_rbr_open_tad_selection(
     feature_stride=1,
     max_raw_gap=None,
     max_detector_gap=None,
+    control_mode=None,
+    control_keep=None,
 ):
     validate_route_identity({"route_label": ROUTE_LABEL, "method": METHOD_KEY})
     split = str(split)
@@ -271,6 +273,23 @@ def build_rba_rbr_open_tad_selection(
     valid_len = int(dense_window.shape[0])
     if valid_len <= 0:
         raise RuntimeError("RBA-RBR received an empty dense window")
+    if control_mode is not None:
+        from .control_diagnostics import CONTROL_MODE_UNIFORM_RAW, build_rba_rbr_uniform_control_selection
+
+        if str(control_mode) != CONTROL_MODE_UNIFORM_RAW:
+            raise ValueError(f"unsupported RBA-RBR control_mode: {control_mode}")
+        return build_rba_rbr_uniform_control_selection(
+            results=results,
+            dense_window=dense_window,
+            target_frame_num=target_frame_num,
+            split=split,
+            control_keep=control_keep,
+            max_keep=max_keep,
+            fps=fps,
+            window_id=window_id,
+            feature_stride=feature_stride,
+            selector_meta=_selector_facing_metadata(results, preview_meta={"control_mode": str(control_mode)}),
+        )
     actionness, uncertainty, transition, preview_source, preview_meta = _preview_from_results(
         results,
         dense_window,

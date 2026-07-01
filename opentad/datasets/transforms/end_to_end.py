@@ -248,6 +248,8 @@ class LoadFrames:
         rba_rbr_adapter_bridge_mode="adapter_fixed_length_padded_bridge",
         rba_rbr_allow_diagnostic_preview_fallback=False,
         rba_rbr_scout_sample_count=32,
+        rba_rbr_control_mode=None,
+        rba_rbr_control_keep=None,
     ):
         self.num_clips = num_clips
         self.scale_factor = scale_factor  # multiply by the frame number, if backbone has downsampling
@@ -302,6 +304,8 @@ class LoadFrames:
         self.rba_rbr_adapter_bridge_mode = rba_rbr_adapter_bridge_mode
         self.rba_rbr_allow_diagnostic_preview_fallback = bool(rba_rbr_allow_diagnostic_preview_fallback)
         self.rba_rbr_scout_sample_count = int(max(rba_rbr_scout_sample_count, 2))
+        self.rba_rbr_control_mode = rba_rbr_control_mode
+        self.rba_rbr_control_keep = rba_rbr_control_keep
 
     def _apply_trunc_window(self, feats, st, ed, gt_segments, gt_labels, offset=0):
         feats = feats[st:ed]
@@ -1327,6 +1331,8 @@ class LoadFrames:
                 feature_stride=self.rba_rbr_feature_stride,
                 max_raw_gap=self.rba_rbr_max_raw_gap,
                 max_detector_gap=self.rba_rbr_max_detector_gap,
+                control_mode=self.rba_rbr_control_mode,
+                control_keep=self.rba_rbr_control_keep,
             )
             keep_positions = bridge["keep_positions"].astype(np.int64)
             fresh_frame_idxs = bridge["selected_frame_inds"].astype(np.int64)

@@ -258,3 +258,20 @@ This route worktree did not contain the shared tracker file. The shared/main wor
   - `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GridAuditPrecheck_20260701_600fc8f2/logs/rba_rbr_grid_audit_precheck_600fc8f2/pytest.log`.
 - Non-actions: no GPU, no Slurm child, no `tools/train.py`, no `tools/test.py`, no official evaluation, no mAP/runtime/FLOPs/deploy/paper claim, and no protected-hold release/cancel/replacement.
 - Decision: this proves the sparse-forward detector-grid audit is runnable in the Linux/OpenTAD environment only. It does not resolve the RBA-RBR severe-low result, and formal full training remains locked pending Pro/diagnostic decision.
+### 2026-07-01 15:35:09 +08:00 - RBA-RBR control diagnostics staged locally
+
+- Route/stage: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`, `CONTROL_DIAGNOSTIC_ONLY`, owned worktree `OpenTAD_RBA_RBR_ControlDiag_Worktree_20260701`, branch `codex/divergent-rba-rbr-control-diagnostics-20260701`.
+- Experiment/configs:
+  - `configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_control_uniform_full.py`: forced uniform raw `K=192`, detector `feature_stride=2`, expected detector valid features `96`.
+  - `configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_control_uniform_lowbudget.py`: forced uniform raw `K=85`, detector `feature_stride=2`, expected detector valid features `43`.
+- Changed files planned/edited: RBA control selector path, `LoadFrames` route-owned control knobs, RBA launch-gate audit, focused pytest, and route-owned documentation.
+- Strict protocol status: no GT/teacher/test-cache/raw-prediction/oracle selector input; no detector, loss, assignment, evaluator, or postprocess behavior change; same RBA native-axis/adapter bridge path retained.
+- Review/gate state: local implementation in progress; no Pro/Oracle/Rosetta call; no subagent final read-only review yet.
+- Claim state: no final mAP, no runtime/FLOPs, no deploy claim, no paper claim, no sparse-compute claim, and no full-train approval.
+- Local verification:
+  - `py_compile` on changed Python/config/test files passed.
+  - Focused RBA pytest passed: `25 passed, 7 skipped`.
+  - Launch gate passed on the main RBA config and both control configs.
+  - Control audit summaries: full uniform `raw_valid_k=192`, `detector_feature_valid_k=96`; low-budget uniform `raw_valid_k=85`, `detector_feature_valid_k=43`; both have `detector_mask_len=96`.
+  - `git diff --check` passed with line-ending warnings only.
+- Next action: create owned-worktree commit, then final read-only/subagent review is the next allowed gate before any `SHORT_DIAGNOSTIC_ONLY` local/remote action.

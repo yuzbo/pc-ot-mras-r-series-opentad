@@ -317,3 +317,10 @@
 - Local commit: `546ed6159c2155633981050ae102547de03ea6bc`; GitHub base commit: `1cbdb50422f9b1c968ef92e9c036d2787d434c79`; GitHub synced ref: `6ba723abe4f5b2eca7c38f71c5b14872d637dbaa`.
 - URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-postprocess-guard-546ed615-20260701`.
 - Synced 8 RBA postprocess-guard files for later Pro/severe-result review. No remote precheck, Slurm launch, training result, final mAP/runtime/FLOPs/sparse-compute/deploy/paper claim, or formal/full-train unlock was produced.
+## 2026-07-01 15:35:09 +08:00 - RBA-RBR control diagnostic knobs staged locally
+
+- Added local-only `CONTROL_DIAGNOSTIC_ONLY` controls under route label `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3` in owned worktree `OpenTAD_RBA_RBR_ControlDiag_Worktree_20260701`.
+- New control configs prepare two selector-free uniform-through-RBA-bridge probes: full raw `K=192` and matched-low-budget raw `K=85`, both with detector `feature_stride=2`.
+- The controls retain RBA raw/native-axis metadata and fixed-length padded adapter bridge behavior, while explicitly keeping train value labels, GT/teacher/cache/oracle selector input, full train, deploy, paper, runtime/FLOPs, sparse-compute, and metric claims locked.
+- Local verification passed: changed-file `py_compile`; focused RBA pytest `25 passed, 7 skipped`; launch gate `gate_pass=true` on main RBA config plus both control configs; full control audit `raw_valid_k=192` / detector valid `96`; low-budget control audit `raw_valid_k=85` / detector valid `43`; `git diff --check` passed with line-ending warnings only.
+- No remote sync, Slurm launch, training/evaluation launch, Pro/Oracle/Rosetta call, mAP result, runtime/FLOPs result, deploy claim, paper claim, or full-train unlock was produced.
