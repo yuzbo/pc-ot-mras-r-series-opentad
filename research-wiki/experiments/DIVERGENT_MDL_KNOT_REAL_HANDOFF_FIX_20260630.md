@@ -692,3 +692,29 @@ Current decision:
 - Monitor only for launch sanity, finite loss, hard errors, and post-shortdiag validator output.
 - Do not treat this diagnostic as mAP or sparse-compute evidence.
 - Do not unlock formal/full training without a new explicit gate decision.
+
+## 2026-07-01 evidence-branch sync and live shortdiag status
+
+Timestamp: `2026-07-01 09:31:39 +08:00`.
+
+GitHub sync:
+
+- Ordinary push to existing branch `codex/divergent-mdl-knot-realdiag-20260630` was rejected as non-fast-forward.
+- No force push or overwrite was attempted.
+- Pushed current route-owned local state at commit `410d499f` to a new evidence branch:
+  `codex/divergent-mdl-knot-status-410d499f-20260701`.
+- GitHub URL:
+  `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-mdl-knot-status-410d499f-20260701`.
+
+Live shortdiag status:
+
+- Job `1132502 mdl_shortdiag` remains `RUNNING` on `g0032`, not protected hold node `g0030`.
+- The inspected training tail reached iter 15 with finite losses after the initial iter-1 skipped non-finite gradient.
+- No new Traceback or RuntimeError was observed in the inspected tail.
+- The sampled_raw `selector_and_structural_handoff` throughput issue remains serious on long videos.
+
+Current decision:
+
+- Continue this bounded shortdiag to natural completion/failure.
+- Use it only for stability and speed diagnosis.
+- Formal/full long training and all evaluation/runtime/FLOPs/deploy/paper/sparse-compute claims remain locked.

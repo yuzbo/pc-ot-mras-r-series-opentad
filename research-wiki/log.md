@@ -1,5 +1,17 @@
 # Research Log
 
+## 2026-07-01 09:31:39 +08:00
+
+MDL-Knot route-owned evidence was synced to a new GitHub branch while the bounded short diagnostic continued.
+
+- Existing branch push to `codex/divergent-mdl-knot-realdiag-20260630` was rejected as non-fast-forward; no force push or overwrite was attempted.
+- New evidence branch pushed successfully: `codex/divergent-mdl-knot-status-410d499f-20260701`.
+- GitHub URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-mdl-knot-status-410d499f-20260701`.
+- Active job `1132502 mdl_shortdiag` remained `RUNNING` on `g0032` with `--exclude=g0030`; protected hold `1118197 pcot_dbg2g` was not modified.
+- Training tail reached iter 15 with finite losses after the initial iter-1 skipped non-finite gradient; no new Traceback/RuntimeError was observed in the inspected tail.
+- Throughput issue remains: sampled_raw `selector_and_structural_handoff` can take tens of seconds to over 100 seconds on long videos.
+- This remains `SHORT_DIAGNOSTIC_ONLY`; no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim or full-train unlock.
+
 ## 2026-07-01 09:09:10 +08:00
 
 MDL-Knot bounded `SHORT_DIAGNOSTIC_ONLY` was deployed after final read-only review passed.
