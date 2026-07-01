@@ -1,5 +1,16 @@
 # Research Log
 
+## 2026-07-01 09:09:10 +08:00
+
+MDL-Knot bounded `SHORT_DIAGNOSTIC_ONLY` was deployed after final read-only review passed.
+
+- Review verdict: `PASS_SUBAGENT_FINAL_REVIEW_ONLY_FOR_SHORT_DIAGNOSTIC_ONLY`.
+- Remote runtime worktree: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7`.
+- Remote code evidence commit: `9183fb7`.
+- Slurm job: `1132480` (`mdl_shortdiag`), submitted with `--exclude=g0030`; initial state `RUNNING` on `g0053`.
+- Logdir: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_shortdiag_sbatch_9183fb7_20260701_090910_+0800_exclude_g0030`.
+- Claim state remains locked: no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim; formal/full training, evaluation, `tools/test.py`, and checkpoint result claims remain locked.
+
 ## 2026-07-01 08:36:33 +08:00
 
 MDL-Knot remote PRECHECK_ONLY rerun passed after the sparse-compute claim-lock schema fix.

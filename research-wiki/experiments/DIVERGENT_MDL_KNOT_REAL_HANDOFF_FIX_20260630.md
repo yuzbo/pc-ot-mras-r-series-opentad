@@ -659,3 +659,32 @@ Current decision:
 - It does not unlock formal/full long training, evaluation, checkpoints,
   `tools/test.py`, mAP/runtime/FLOPs/deploy/paper claims, or any sparse-compute
   claim.
+
+## 2026-07-01 short diagnostic deployment
+
+Timestamp: `2026-07-01 09:09:10 +08:00`.
+
+Final read-only review returned:
+
+`PASS_SUBAGENT_FINAL_REVIEW_ONLY_FOR_SHORT_DIAGNOSTIC_ONLY`
+
+Allowed action:
+
+- One bounded one-epoch `SHORT_DIAGNOSTIC_ONLY` only.
+- No evaluation, `tools/test.py`, checkpoint claim, mAP/runtime/FLOPs/deploy/paper claim, or sparse-compute claim.
+- Formal/full training remains locked.
+
+Remote evidence:
+
+- Runtime worktree: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7`.
+- Remote code commit: `9183fb7` (`DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3 remote shortdiag sync`).
+- Slurm job: `1132480` (`mdl_shortdiag`).
+- Slurm constraints: `--gpus=1`, `--cpus-per-task=4`, `--exclude=g0030`.
+- Initial allocation: `RUNNING` on `g0053`, not the protected hold node `g0030`.
+- Logdir: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_shortdiag_sbatch_9183fb7_20260701_090910_+0800_exclude_g0030`.
+
+Current decision:
+
+- Monitor only for launch sanity, finite loss, hard errors, and post-shortdiag validator output.
+- Do not treat this diagnostic as mAP or sparse-compute evidence.
+- Do not unlock formal/full training without a new explicit gate decision.

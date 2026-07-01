@@ -6,11 +6,26 @@ Route-owned copy for `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`.
 
 | Experiment / config | Changed surface | Current status | Review / gate state | Deployment / result state | Next action |
 | --- | --- | --- | --- | --- | --- |
-| MDL-Knot sampled_raw full-observation edge repair, `input_mdl_knot_dynamic_adapter_irregular_headv3*.py` | Input sampling handoff validator, sampled_raw audit metadata, profile instrumentation, diagnostics counters | Local fix complete; remote PRECHECK_ONLY rerun passed | Local and remote py_compile/gates passed; remote focused pytest passed `60 passed in 204.98s`; shortdiag validator remains static allowed with `validated=false` | Remote copy `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7`; old formal child `1118197.535` remains failed historical evidence only; no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim | One-epoch `SHORT_DIAGNOSTIC_ONLY` may be queued only after GPU0 is free; formal/full long training remains locked |
+| MDL-Knot sampled_raw full-observation edge repair, `input_mdl_knot_dynamic_adapter_irregular_headv3*.py` | Input sampling handoff validator, sampled_raw audit metadata, profile instrumentation, diagnostics counters | `SHORT_DIAGNOSTIC_ONLY` Slurm job running | Local and remote py_compile/gates passed; remote focused pytest passed `60 passed in 204.98s`; final read-only subagent returned `PASS_SUBAGENT_FINAL_REVIEW_ONLY_FOR_SHORT_DIAGNOSTIC_ONLY` | Remote commit `9183fb7`; Slurm job `1132480` (`mdl_shortdiag`) running on `g0053`; logdir `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_shortdiag_sbatch_9183fb7_20260701_090910_+0800_exclude_g0030`; no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim | Monitor launch sanity and post-shortdiag validator; formal/full long training remains locked |
 | MDL-Knot formal/full train lock consistency fix, `input_mdl_knot_dynamic_adapter_irregular_headv3.py` | Config lock state, launch gate claim locks, tests | Local blocker fix complete; remote PRECHECK_ONLY rerun passed under locked formal state | py_compile passed; launch gate rejects stale unlock/status/sparse-claim states; remote launch gate and launch gate with summary both returned `PRECHECK_ONLY_REQUEST_ALLOWED` | Remote logs under `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_sampledraw_fix_precheck_f5fe3a7/`; `.535` remains failed historical user-override formal evidence only | One-epoch shortdiag only; formal/full long training remains locked |
 | MDL-Knot precheck sparse-compute claim-lock schema fix, `audit_mdl_knot_pipeline_precheck.py` | Precheck summary schema, launch gate regression tests | Remote PRECHECK_ONLY passed after schema fix | py_compile passed; generated summary validator emitted `VALIDATED_PRECHECK_SUMMARY`; remote `tests/test_mdl_knot_core.py tests/test_mdl_knot_shortdiag.py tests/test_mdl_knot_tools_and_integration.py tests/test_mdl_knot_realdiag.py -q` passed as `60 passed in 204.98s` | No GPU/Slurm/train/eval was run by precheck; no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim | Queue one-epoch `SHORT_DIAGNOSTIC_ONLY` when GPU0 is available and BVR is no longer occupying it; formal/full long training remains locked |
 
 ## Timeline
+
+### 2026-07-01 09:09:10 +08:00
+
+- Route label: `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`.
+- Owned worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_MDLKnot_RealDiag_Worktree_20260630`.
+- Owned branch: `codex/divergent-mdl-knot-realdiag-20260630`.
+- Final read-only subagent review: `PASS_SUBAGENT_FINAL_REVIEW_ONLY_FOR_SHORT_DIAGNOSTIC_ONLY`; formal/full training, evaluation, `tools/test.py`, checkpoints, mAP/runtime/FLOPs/deploy/paper/sparse-compute claims remain locked.
+- Remote runtime worktree: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7`.
+- Remote code evidence commit: `9183fb7` (`DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3 remote shortdiag sync`).
+- Slurm deployment: submitted bounded one-epoch `SHORT_DIAGNOSTIC_ONLY` as job `1132480` (`mdl_shortdiag`) with `--exclude=g0030`; initial `sacct` shows `RUNNING` on `g0053`, so the protected hold node `g0030` and C3/BVR hold GPUs were not used.
+- Logdir: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_shortdiag_sbatch_9183fb7_20260701_090910_+0800_exclude_g0030`.
+- Strict random-fixed 50% contract: not applicable to this MDL-Knot dynamic route; fixed-pad bridge still makes no sparse-compute claim.
+- GT/teacher leakage risk: no new GT, teacher, prediction cache, evaluator, or post-processing access added.
+- Current mAP evidence: none.
+- Decision: monitor launch sanity and post-shortdiag validator only. Do not promote to formal/full training from this launch without a new gate decision.
 
 ### 2026-07-01 08:36:33 +08:00
 
