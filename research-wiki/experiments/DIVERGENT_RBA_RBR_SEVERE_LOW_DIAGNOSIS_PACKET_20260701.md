@@ -342,3 +342,36 @@ GitHub evidence:
 - Local commit: `546ed6159c2155633981050ae102547de03ea6bc`.
 - GitHub synced ref: `6ba723abe4f5b2eca7c38f71c5b14872d637dbaa`.
 - URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-postprocess-guard-546ed615-20260701`.
+
+## Non-GPU Coordinate/Budget Audit Tool - 2026-07-01 15:12:35 +08:00
+
+Purpose:
+
+- Added a CPU-only diagnostic CLI, `tools/rba_rbr/audit_coordinate_budget.py`, for the severe-low `7.45%` RBA-RBR result.
+- It consumes either existing RBA-RBR detector grid-audit JSONL rows or built-in synthetic rows.
+- It summarizes `raw_valid_k`, detector valid count, raw/detector gap statistics, route/status counts, and whether the effective detector density is far below the fixed 384/192 50% reference.
+- It also runs a synthetic coordinate-closure check: raw selected native-axis positions -> detector feature centers -> synthetic native-axis segment coverage. This uses only synthetic segments and explicitly does not use validation/test GT.
+
+Claim and gate status:
+
+- Non-GPU only; no training, remote sync, Slurm, `tools/test.py`, evaluator change, postprocess runtime change, mAP/runtime/FLOPs/deploy/paper claim, or full-train unlock.
+- Claim lock wording is fixed as `rba_rbr_non_gpu_coordinate_budget_audit_only_no_metric_runtime_deploy_or_paper_claim`.
+- Pro gate is not waived: `valid_gpt_5_5_pro_severe_result_diagnosis_required_before_long_followup_or_route_conclusion`.
+
+How this informs next steps:
+
+- `postprocess-guard shortdiag`: if the audit confirms detector density is still far below the 50% reference while postprocess candidates remain huge, the already prepared postprocess guard short diagnostic is the lowest-risk next GPU check, but it remains diagnostic-only and still needs the severe-result Pro context before any long follow-up.
+- `matched low-budget uniform`: if RBA-RBR detector count is about `42` instead of the 50% detector reference `96`, run a matched low-budget uniform diagnostic with comparable detector valid count to separate RBA mechanism failure from simply operating at a much lower effective detector density.
+- `K=192 forced coverage`: force raw selected `K=192` with the same detector/adapter path to test whether the failure is mainly density/coverage, or whether the adapter bridge / coordinate / loss / postprocess semantics remain broken even at the standard fixed 50% raw budget.
+- `coordinate closure`: use the synthetic closure result plus any real grid-audit JSONL summary to focus Pro review on native-axis alignment, detector feature centers, assignment/loss coordinates, and proposal time conversion without touching validation/test GT.
+
+Verification:
+
+- `python -m py_compile tools\rba_rbr\audit_coordinate_budget.py tests\test_rba_rbr_diagnostics.py` passed.
+- `python -m pytest tests\test_rba_rbr_diagnostics.py -q` passed: `5 passed`.
+
+Still locked:
+
+- Formal/full RBA-RBR training remains locked.
+- Severe-result GPT-5.5 Pro diagnosis remains required before any long RBA-RBR follow-up or route-level conclusion.
+- No metric/runtime/FLOPs/sparse-compute/deploy/paper claim is unlocked.

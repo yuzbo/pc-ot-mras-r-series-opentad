@@ -317,3 +317,13 @@
 - Local commit: `546ed6159c2155633981050ae102547de03ea6bc`; GitHub base commit: `1cbdb50422f9b1c968ef92e9c036d2787d434c79`; GitHub synced ref: `6ba723abe4f5b2eca7c38f71c5b14872d637dbaa`.
 - URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-postprocess-guard-546ed615-20260701`.
 - Synced 8 RBA postprocess-guard files for later Pro/severe-result review. No remote precheck, Slurm launch, training result, final mAP/runtime/FLOPs/sparse-compute/deploy/paper claim, or formal/full-train unlock was produced.
+
+## 2026-07-01 15:12:35 +08:00 - RBA-RBR non-GPU coordinate/budget audit tooling
+
+- Added `tools/rba_rbr/audit_coordinate_budget.py` in the route-owned diagnostics worktree for `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- The CLI is CPU-only and consumes either detector grid-audit JSONL or built-in synthetic rows; it summarizes `raw_valid_k`, detector valid count, raw/detector gap stats, route/status counts, and whether detector density is far below the 384/192 fixed 50% reference.
+- Added synthetic coordinate closure: raw selected native-axis positions -> detector feature centers -> synthetic native-axis segment coverage, with `uses_validation_or_test_gt=False`.
+- Added `tests/test_rba_rbr_diagnostics.py` covering synthetic summaries, route label/C3 mixing rejection, CLI JSONL input, and claim-lock wording.
+- Verification passed: `python -m py_compile tools\rba_rbr\audit_coordinate_budget.py tests\test_rba_rbr_diagnostics.py`; `python -m pytest tests\test_rba_rbr_diagnostics.py -q` -> `5 passed`.
+- This does not run GPU, remote sync, Slurm, `tools/test.py`, or training; it does not modify evaluator/postprocess runtime behavior; it does not unlock mAP/runtime/FLOPs/sparse-compute/deploy/paper claims or formal/full RBA-RBR training.
+- Next diagnostic planning remains: postprocess-guard shortdiag, matched low-budget uniform, `K=192` forced coverage, and coordinate-closure Pro diagnosis. Valid GPT-5.5 Pro severe-result diagnosis remains required before long follow-up or route-level conclusion.
