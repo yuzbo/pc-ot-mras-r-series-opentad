@@ -17,13 +17,14 @@ echo "OFFICIAL_ACTION_SEG_WATCH_START $(date -Iseconds) PROJECT_DIR=${PROJECT_DI
 echo "PARENT_JOB_ID=${PARENT_JOB_ID} NODE_NAME=${NODE_NAME} WAIT_SECONDS=${WAIT_SECONDS} MAX_WAIT_SECONDS=${MAX_WAIT_SECONDS}"
 
 while true; do
-  running=$(squeue -j "${PARENT_JOB_ID}" -h -o '%i %j %T' | grep -E 'c3_tcn_g1|cadf|pqr|official_action_seg_g1' || true)
+  running=$(
+    {
+      squeue --steps -j "${PARENT_JOB_ID}" 2>/dev/null || true
+      ps -u "${USER}" -o pid,ppid,stat,etime,cmd 2>/dev/null || true
+    } | grep -E 'c3_tcn_g1|cadf|pqr|launch_c3_tcn|train_lowres_action_probe.py.*temporal-tcn|official_action_seg_g1' | grep -v grep || true
+  )
   if [[ -z "${running}" ]]; then
-    gpu1_busy=$(nvidia-smi -i 1 --query-compute-apps=pid,used_memory,process_name --format=csv,noheader,nounits 2>/dev/null | grep -E 'python|train_lowres_action_probe|tools/train.py' || true)
-    if [[ -z "${gpu1_busy}" ]]; then
-      break
-    fi
-    echo "GPU still has compute processes at $(date -Iseconds): ${gpu1_busy}"
+    break
   else
     echo "Waiting for active C3 child at $(date -Iseconds): ${running}"
   fi

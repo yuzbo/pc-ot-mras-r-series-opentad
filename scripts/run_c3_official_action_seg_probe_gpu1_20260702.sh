@@ -33,6 +33,7 @@ source /data/run01/sczc063/yuzibo/conda_envs/opentad/bin/activate
 
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 export PYTHONUNBUFFERED=1
+export OFFICIAL_BACKENDS
 
 echo "START $(date -Iseconds)"
 echo "HOST $(hostname)"
