@@ -18,6 +18,7 @@ from tools.bata.export_pc_ot_mras_hard_positions import READY as HARD_READY, run
 
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "scripts" / "run_pc_ot_mras_frontend_ledger_eval_n16r4.sbatch"
+LOWRES_LEDGER_EXPORT_LAUNCHER = ROOT / "scripts" / "run_c3_lowres_probe_ledger_export_gpu1_20260702.sh"
 BOUNDARY_PATH = ROOT / "opentad" / "datasets" / "transforms" / "boundary_acquisition.py"
 END_TO_END_PATH = ROOT / "opentad" / "datasets" / "transforms" / "end_to_end.py"
 GUARD_PATH = ROOT / "opentad" / "utils" / "training_guard.py"
@@ -309,6 +310,38 @@ def test_lowres_probe_samples_convert_strategy_to_value_transport_ledger(tmp_pat
     validate_value_transport_selection_row(row, line_no=1, require_deployable=False)
 
 
+def test_lowres_probe_deploy_ledger_strips_gt_derived_diagnostics(tmp_path):
+    input_jsonl = tmp_path / "samples.jsonl"
+    output_jsonl = tmp_path / "value_transport_ledger.jsonl"
+    sample_row = {
+        "sample_id": "video_test_0001|768",
+        "probe_model": "temporal-tcn",
+        "tcn_variant": "gated",
+        "spatial_size": 64,
+        "dense_len": 8,
+        "valid_len": 8,
+        "strategy_selected_positions": {"delta_p_action": [1, 3, 6]},
+        "boundary_support_r1": 0.75,
+    }
+    input_jsonl.write_text(json.dumps(sample_row, sort_keys=True) + "\n", encoding="utf-8")
+
+    run_lowres_probe_conversion(
+        input_jsonl,
+        output_jsonl,
+        strategy="delta_p_action",
+        target_len=3,
+        require_selected_count=3,
+        deploy_selection_ledger=True,
+    )
+
+    row = json.loads(output_jsonl.read_text(encoding="utf-8").splitlines()[0])
+    assert row["deploy_selection_ledger"] is True
+    assert row["diagnostic_only"] is False
+    assert "diagnostic_boundary_support_r1_ignored_by_selection" not in row["diagnostics"]
+    assert row["uses_gt"] is False
+    validate_value_transport_selection_row(row, line_no=1, require_deployable=True)
+
+
 def test_lowres_probe_conversion_rejects_video_only_or_duplicate_sample_ids(tmp_path):
     input_jsonl = tmp_path / "samples.jsonl"
     output_jsonl = tmp_path / "value_transport_ledger.jsonl"
@@ -554,3 +587,18 @@ def test_frontend_launcher_defaults_to_review_safe_precheck_and_uses_supported_d
     assert "DUMP_ARGS+=(--use-amp)" in text
     assert "DUMP_ARGS+=(--amp)" not in text
     assert "tests/test_bata_post_processing_selected_axis.py" in text
+
+
+def test_lowres_probe_ledger_export_launcher_is_gpu1_coverage_only_and_strict():
+    text = LOWRES_LEDGER_EXPORT_LAUNCHER.read_text(encoding="utf-8")
+
+    assert 'CUDA_VISIBLE_DEVICES}" != "1"' in text
+    assert "PROBE_CHECKPOINT is required" in text
+    assert "--coverage-only" in text
+    assert '--probe-window-size "${DENSE_WINDOW_SIZE}"' in text
+    assert 'DENSE_WINDOW_SIZE="${DENSE_WINDOW_SIZE:-768}"' in text
+    assert 'TARGET_LEN="${TARGET_LEN:-384}"' in text
+    assert "--deploy-selection-ledger" in text
+    assert '--require-selected-count "${TARGET_LEN}"' in text
+    assert "--fill-to-target-count" in text
+    assert "--allow-video-only-sample-id" not in text

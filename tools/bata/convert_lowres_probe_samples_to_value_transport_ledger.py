@@ -250,7 +250,7 @@ def sample_row_to_value_transport_row(
             and not (isinstance(row.get("strategy_selected_positions"), Mapping) and strategy in row["strategy_selected_positions"])
         ),
     }
-    boundary_support = _finite_float_or_none(row.get("boundary_support_r1"))
+    boundary_support = None if deploy_selection_ledger else _finite_float_or_none(row.get("boundary_support_r1"))
     if boundary_support is not None:
         diagnostics["diagnostic_boundary_support_r1_ignored_by_selection"] = boundary_support
 
