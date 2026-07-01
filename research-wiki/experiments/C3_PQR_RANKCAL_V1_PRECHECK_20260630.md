@@ -53,3 +53,15 @@
   - `python -m py_compile tests/test_c3_pqr_rankcal_proposal_diagnostics.py` -> PASS.
   - `python -m pytest tests/test_c3_pqr_rankcal_proposal_diagnostics.py -q` -> PASS, `16 passed, 3 skipped`; skipped tests are torch/OpenTAD-extension dependent in this Windows environment, where torch import prints access-violation traces before the existing skip path.
 - Required next gate: main process may commit/push and retry remote Linux PRECHECK. No remote action is performed in this owner task.
+
+## Local launcher hardening: QC V2 explicit root/head gate, 2026-07-01 Asia/Shanghai
+
+- Route: `C3_MAINLINE_OPTIMIZATION / C3_ORIGINAL_OPTIMIZATION_ROUTE`, SparseIrregularQCV2 diagnostic-only launcher hardening.
+- Changed files: `scripts/run_c3_pqr_qc_v2_shortdiag_hold_child.sh`, `tests/test_c3_pqr_rankcal_v1_config.py`, and this evidence report.
+- Change summary: removed the old implicit RankCal clone default from the QC V2 shortdiag child launcher. The launcher now fails closed unless `PQR_ROOT` is explicitly set, exists, is a git repository, and `git rev-parse HEAD` matches `PQR_EXPECTED_HEAD` (default `9b3859d1b2d43b1be8b860a99fe37ee9169ff83a`). The existing `CUDA_VISIBLE_DEVICES=1` GPU1-only gate remains before any train command.
+- Protocol status: no input sampling, dynamic policy, token compression, Adapter/backbone/neck/head internals, detector head logic, losses/assignment, post-processing, training config, GT/teacher/cache path, remote sync, SSH, Slurm, `tools/train.py`, or `tools/test.py` changed or executed.
+- Local verification in this owner task:
+  - `bash -n scripts/run_c3_pqr_qc_v2_shortdiag_hold_child.sh` -> PASS.
+  - `python -m pytest tests/test_c3_pqr_rankcal_v1_config.py -q -k "qc_v2_shortdiag_launcher or qc_v2_launcher"` -> PASS, `7 passed, 31 deselected, 1 warning`.
+  - `git diff --check` -> PASS.
+- Launch decision: no launch, no remote action, no training, no Slurm, no commit/push in this owner task.

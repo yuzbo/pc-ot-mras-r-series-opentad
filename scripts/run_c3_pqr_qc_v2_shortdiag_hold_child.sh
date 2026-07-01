@@ -1,7 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${PQR_ROOT:-/data/home/sczc063/run/yuzibo/OpenTAD_C3PQRRankCal_Precheck_20260630/github_clean_c3_pqr_rankcal_v1}"
+EXPECTED_HEAD="${PQR_EXPECTED_HEAD:-9b3859d1b2d43b1be8b860a99fe37ee9169ff83a}"
+
+fail_root_guard() {
+  echo "PQR_QCV2_ROOT_GUARD_FAIL $*"
+  exit 41
+}
+
+if [[ -z "${PQR_ROOT:-}" ]]; then
+  fail_root_guard "PQR_ROOT must be explicitly set to the current prechecked QC V2 clone; expected HEAD=$EXPECTED_HEAD. Refusing to default to an old RankCal clone."
+fi
+
+ROOT="$PQR_ROOT"
+if [[ ! -d "$ROOT" ]]; then
+  fail_root_guard "PQR_ROOT does not exist: $ROOT; set PQR_ROOT to the current prechecked QC V2 clone."
+fi
+
+if ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  fail_root_guard "PQR_ROOT is not a git repository: $ROOT; set PQR_ROOT to the current prechecked QC V2 clone."
+fi
+
+ACTUAL_HEAD="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)" || fail_root_guard "cannot read git HEAD from PQR_ROOT: $ROOT"
+if [[ "$ACTUAL_HEAD" != "$EXPECTED_HEAD" ]]; then
+  echo "PQR_QCV2_HEAD_GUARD_FAIL PQR_ROOT=$ROOT expected=$EXPECTED_HEAD actual=$ACTUAL_HEAD"
+  exit 41
+fi
+echo "PQR_QCV2_ROOT_GUARD_PASS root=$ROOT head=$ACTUAL_HEAD expected=$EXPECTED_HEAD"
+
+if [[ "${CUDA_VISIBLE_DEVICES:-}" != "1" ]]; then
+  echo "PQR_QCV2_GPU_GUARD_FAIL expected CUDA_VISIBLE_DEVICES=1 for C3/PQR/QC V2 GPU1-only diagnostics, got ${CUDA_VISIBLE_DEVICES:-unset}"
+  exit 42
+fi
+
 CONFIG_REL="configs/adatad/thumos/c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_sparse_irregular_qc_v2_shortdiag.py"
 CONFIG="$ROOT/$CONFIG_REL"
 STAMP="${PQR_STAMP:-$(date +%Y%m%d_%H%M%S_%z)}"
@@ -49,11 +80,6 @@ EOF
   echo "runtime_config=$TMP_CONFIG"
   echo "run_dir=$RUN_DIR"
   echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
-
-  if [[ "${CUDA_VISIBLE_DEVICES:-}" != "1" ]]; then
-    echo "PQR_QCV2_GPU_GUARD_FAIL expected CUDA_VISIBLE_DEVICES=1 for C3/PQR/QC V2 GPU1-only diagnostics, got ${CUDA_VISIBLE_DEVICES:-unset}"
-    exit 42
-  fi
 
   module load cuda/11.8
   module load miniforge3/24.11

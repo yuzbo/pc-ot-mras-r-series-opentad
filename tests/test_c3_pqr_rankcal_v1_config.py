@@ -1,4 +1,7 @@
 import importlib.util
+import os
+import shlex
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -35,11 +38,62 @@ QC_V2_FULLTRAIN_CANDIDATE_CONFIG = (
     / "configs/adatad/thumos/c3_indirect_original_adatad_32px_a_pqr_rankcal_v1_sparse_irregular_qc_v2_fulltrain_candidate.py"
 )
 QC_V2_SHORTDIAG_LAUNCHER = ROOT / "scripts/run_c3_pqr_qc_v2_shortdiag_hold_child.sh"
+QC_V2_EXPECTED_HEAD = "9b3859d1b2d43b1be8b860a99fe37ee9169ff83a"
 
 
 def _load(config_path):
     assert config_path.exists(), f"missing config: {config_path}"
     return Config.fromfile(config_path)
+
+
+def _bash_path(path):
+    resolved = Path(path).resolve()
+    if os.name == "nt":
+        drive = resolved.drive.rstrip(":").lower()
+        rest = resolved.as_posix().split(":", 1)[1]
+        return f"/mnt/{drive}{rest}"
+    return resolved.as_posix()
+
+
+def _run_qc_v2_launcher(env):
+    exports = "; ".join(f"export {key}={shlex.quote(str(value))}" for key, value in env.items())
+    script = shlex.quote(_bash_path(QC_V2_SHORTDIAG_LAUNCHER))
+    command = f"{exports}; {script}" if exports else script
+    return subprocess.run(
+        ["bash", "-lc", command],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+
+
+def _init_git_repo(tmp_path):
+    repo = tmp_path / "qc_v2_clone"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    (repo / "README.md").write_text("qc v2 launcher gate test\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Codex", "-c", "user.email=codex@example.invalid", "commit", "-m", "init"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    return repo, head
 
 
 def _load_frame_step(cfg, split):
@@ -481,6 +535,13 @@ def test_sparse_irregular_qc_v2_fulltrain_candidate_exists_but_remains_locked():
 def test_sparse_irregular_qc_v2_shortdiag_launcher_is_gpu1_guarded_and_runs_analyzer():
     source = QC_V2_SHORTDIAG_LAUNCHER.read_text(encoding="utf-8")
 
+    assert "PQR_EXPECTED_HEAD" in source
+    assert QC_V2_EXPECTED_HEAD in source
+    assert '[[ -z "${PQR_ROOT:-}" ]]' in source
+    assert "PQR_QCV2_ROOT_GUARD_FAIL" in source
+    assert "PQR_QCV2_HEAD_GUARD_FAIL" in source
+    assert 'git -C "$ROOT" rev-parse --is-inside-work-tree' in source
+    assert 'git -C "$ROOT" rev-parse HEAD' in source
     assert "CUDA_VISIBLE_DEVICES" in source
     assert '[[ "${CUDA_VISIBLE_DEVICES:-}" != "1" ]]' in source
     assert "PQR_QCV2_GPU_GUARD_FAIL" in source
@@ -496,6 +557,102 @@ def test_sparse_irregular_qc_v2_shortdiag_launcher_is_gpu1_guarded_and_runs_anal
     assert "PQR_QCV2_RESULT_AMBIGUOUS" in source
     assert "CUDA_VISIBLE_DEVICES=0" not in source
     assert "CUDA_VISIBLE_DEVICES:-0" not in source
+
+
+def test_sparse_irregular_qc_v2_launcher_fails_closed_when_pqr_root_unset():
+    result = _run_qc_v2_launcher({"CUDA_VISIBLE_DEVICES": "1"})
+
+    assert result.returncode == 41
+    assert "PQR_QCV2_ROOT_GUARD_FAIL" in result.stdout
+    assert "PQR_ROOT must be explicitly set" in result.stdout
+    assert "current prechecked QC V2 clone" in result.stdout
+    assert "tools/train.py" not in result.stdout
+
+
+def test_sparse_irregular_qc_v2_launcher_fails_closed_when_pqr_root_missing(tmp_path):
+    result = _run_qc_v2_launcher(
+        {
+            "PQR_ROOT": _bash_path(tmp_path / "missing_clone"),
+            "CUDA_VISIBLE_DEVICES": "1",
+        }
+    )
+
+    assert result.returncode == 41
+    assert "PQR_QCV2_ROOT_GUARD_FAIL" in result.stdout
+    assert "does not exist" in result.stdout
+    assert "tools/train.py" not in result.stdout
+
+
+def test_sparse_irregular_qc_v2_launcher_fails_closed_when_pqr_root_is_not_git(tmp_path):
+    root = tmp_path / "not_git_clone"
+    root.mkdir()
+
+    result = _run_qc_v2_launcher(
+        {
+            "PQR_ROOT": _bash_path(root),
+            "CUDA_VISIBLE_DEVICES": "1",
+        }
+    )
+
+    assert result.returncode == 41
+    assert "PQR_QCV2_ROOT_GUARD_FAIL" in result.stdout
+    assert "not a git repository" in result.stdout
+    assert "tools/train.py" not in result.stdout
+
+
+def test_sparse_irregular_qc_v2_launcher_fails_closed_when_head_mismatches(tmp_path):
+    root, head = _init_git_repo(tmp_path)
+
+    result = _run_qc_v2_launcher(
+        {
+            "PQR_ROOT": _bash_path(root),
+            "PQR_EXPECTED_HEAD": "9b3859d1b2d43b1be8b860a99fe37ee9169ff83a",
+            "CUDA_VISIBLE_DEVICES": "1",
+        }
+    )
+
+    assert result.returncode == 41
+    assert "PQR_QCV2_HEAD_GUARD_FAIL" in result.stdout
+    assert "expected=9b3859d1b2d43b1be8b860a99fe37ee9169ff83a" in result.stdout
+    assert f"actual={head}" in result.stdout
+    assert "tools/train.py" not in result.stdout
+
+
+def test_sparse_irregular_qc_v2_launcher_fails_closed_when_cuda_not_gpu1(tmp_path):
+    root, head = _init_git_repo(tmp_path)
+
+    result = _run_qc_v2_launcher(
+        {
+            "PQR_ROOT": _bash_path(root),
+            "PQR_EXPECTED_HEAD": head,
+            "CUDA_VISIBLE_DEVICES": "0",
+        }
+    )
+
+    assert result.returncode == 42
+    assert "PQR_QCV2_ROOT_GUARD_PASS" in result.stdout
+    assert "PQR_QCV2_GPU_GUARD_FAIL" in result.stdout
+    assert "expected CUDA_VISIBLE_DEVICES=1" in result.stdout
+    assert "tools/train.py" not in result.stdout
+
+
+def test_sparse_irregular_qc_v2_launcher_accepts_correct_root_head_before_training(tmp_path):
+    root, head = _init_git_repo(tmp_path)
+
+    result = _run_qc_v2_launcher(
+        {
+            "PQR_ROOT": _bash_path(root),
+            "PQR_EXPECTED_HEAD": head,
+            "CUDA_VISIBLE_DEVICES": "0",
+        }
+    )
+
+    assert "PQR_QCV2_ROOT_GUARD_PASS" in result.stdout
+    assert f"head={head}" in result.stdout
+    assert "PQR_QCV2_ROOT_GUARD_FAIL" not in result.stdout
+    assert "PQR_QCV2_HEAD_GUARD_FAIL" not in result.stdout
+    assert "PQR_QCV2_GPU_GUARD_FAIL" in result.stdout
+    assert "tools/train.py" not in result.stdout
 
 
 def test_sparse_irregular_qc_v2_validator_rejects_unlocked_fulltrain(tmp_path):
