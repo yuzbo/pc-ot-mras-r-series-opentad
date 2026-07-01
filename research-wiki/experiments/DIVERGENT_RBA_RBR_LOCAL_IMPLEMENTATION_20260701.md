@@ -747,3 +747,33 @@ Interpretation:
   selector quality, adapter bridge semantics, coordinate scaling, assignment,
   loss calibration, or post-processing.
 - No metric, runtime, sparse-compute, deploy, or paper claim is unlocked.
+
+## Grid-Audit Live Status and GitHub Evidence Sync - 2026-07-01 09:31:39 +08:00
+
+GitHub sync:
+
+- Ordinary push to existing branch `codex/divergent-rba-rbr-20260701` was rejected as non-fast-forward.
+- No force push or overwrite was attempted.
+- Pushed the current route-owned state from commit `efbb4eea` to a new evidence branch:
+  `codex/divergent-rba-rbr-status-efbb4eea-20260701`.
+- GitHub URL:
+  `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-status-efbb4eea-20260701`.
+
+Live job status:
+
+- Job `1132462 rba_grid_audit` remains `RUNNING` on `g0053` with `--exclude=g0030`.
+- Protected hold `1118197 pcot_dbg2g` on `g0030` was not modified, released, cancelled, or replaced.
+- `rba_rbr_grid_audit.jsonl` reached `1387` rows at inspection time.
+- Latest inspected row still reported:
+  - `route_label=DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+  - `status=PASS_RBA_RBR_NATIVE_AXIS_POSITIONS_ENTERED_MODEL`.
+  - `native_axis=True`.
+  - `mask_true_count=32`.
+  - `meta_detector_feature_position_count=32`.
+- The train log shows two bounded diagnostic epochs completed with finite losses, followed by validation/audit progress around `1010/1645` windows.
+
+Decision:
+
+- Continue the job to natural completion.
+- Use the completed JSONL to update the severe-low diagnosis packet.
+- Formal/full long training and all metric/runtime/FLOPs/deploy/paper/sparse-compute claims remain locked.

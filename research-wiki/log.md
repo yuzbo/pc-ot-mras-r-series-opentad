@@ -1,5 +1,15 @@
 # Research Log
 
+## 2026-07-01 09:31:39 +08:00 - RBA-RBR grid-audit live sync/status
+
+- Existing branch push to `codex/divergent-rba-rbr-20260701` was rejected as non-fast-forward; no force push or overwrite was attempted.
+- New evidence branch pushed successfully: `codex/divergent-rba-rbr-status-efbb4eea-20260701`.
+- GitHub URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-status-efbb4eea-20260701`.
+- Active job: `1132462 rba_grid_audit`, still `RUNNING` on `g0053` with `--exclude=g0030`; protected hold `1118197 pcot_dbg2g` was not modified.
+- Audit file reached `1387` rows; latest inspected row retained `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`, `PASS_RBA_RBR_NATIVE_AXIS_POSITIONS_ENTERED_MODEL`, `native_axis=True`, and matched mask/position counts.
+- Training portion completed two bounded diagnostic epochs with finite losses and entered validation/audit; progress tail was around `1010/1645` windows.
+- This remains `SHORT_DIAGNOSTIC_ONLY`; no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim or full-train unlock.
+
 ## 2026-07-01 08:53:47 +08:00 - RBA-RBR grid-audit diagnostic launched off protected hold
 
 - Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
