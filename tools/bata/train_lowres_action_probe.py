@@ -21,7 +21,16 @@ SUPPORTED_C3_READER_TYPES = {
     "PCOTMRASBoundaryDifficultyTemporalFrameScout",
     "PCOTMRASCoarseActionnessFrameScout",
 }
-SUPPORTED_TCN_VARIANTS = ("lite", "dilated", "multiscale", "motion", "residual", "gated")
+SUPPORTED_TCN_VARIANTS = (
+    "lite",
+    "dilated",
+    "multiscale",
+    "motion",
+    "residual",
+    "gated",
+    "separable_dilated",
+    "causal_dilated",
+)
 
 
 def _as_nested_list(value: Any) -> Any:
@@ -1299,6 +1308,51 @@ class C3TemporalTCNActionProbe:
                 gated = self.glu(self.norm(self.conv(x)))
                 return x + self.project(self.dropout(gated))
 
+        class SeparableDilatedTCNBlock(nn.Module):
+            def __init__(self, channels: int, dilation: int, dropout_rate: float) -> None:
+                super().__init__()
+                self.net = nn.Sequential(
+                    nn.Conv1d(
+                        channels,
+                        channels,
+                        kernel_size=3,
+                        padding=int(dilation),
+                        dilation=int(dilation),
+                        groups=channels,
+                        bias=False,
+                    ),
+                    nn.BatchNorm1d(channels),
+                    nn.SiLU(inplace=True),
+                    nn.Conv1d(channels, channels, kernel_size=1, bias=False),
+                    nn.BatchNorm1d(channels),
+                    nn.SiLU(inplace=True),
+                    nn.Dropout(float(dropout_rate)),
+                )
+
+            def forward(self, x):
+                return self.net(x)
+
+        class CausalDilatedTCNBlock(nn.Module):
+            def __init__(self, channels: int, dilation: int, dropout_rate: float) -> None:
+                super().__init__()
+                self.left_padding = int(dilation) * 2
+                self.conv = nn.Conv1d(
+                    channels,
+                    channels,
+                    kernel_size=3,
+                    padding=0,
+                    dilation=int(dilation),
+                    bias=False,
+                )
+                self.act = nn.SiLU(inplace=True)
+                self.dropout = nn.Dropout(float(dropout_rate))
+
+            def forward(self, x):
+                _torch, F = _import_torch()
+                if F is not None:
+                    x = F.pad(x, (self.left_padding, 0))
+                return self.dropout(self.act(self.conv(x)))
+
         self.variant = str(variant)
         self.spatial_size = int(spatial_size)
         self.hidden_dim = int(hidden_dim)
@@ -1360,6 +1414,18 @@ class C3TemporalTCNActionProbe:
         elif self.variant == "gated":
             self.temporal = nn.Sequential(
                 *[GatedTCNBlock(temporal_dim, dilation, float(dropout)) for dilation in (1, 2, 4, 8)]
+            )
+            self.temporal_branches = None
+            classifier_in = temporal_dim
+        elif self.variant == "separable_dilated":
+            self.temporal = nn.Sequential(
+                *[SeparableDilatedTCNBlock(temporal_dim, dilation, float(dropout)) for dilation in (1, 2, 4, 8)]
+            )
+            self.temporal_branches = None
+            classifier_in = temporal_dim
+        elif self.variant == "causal_dilated":
+            self.temporal = nn.Sequential(
+                *[CausalDilatedTCNBlock(temporal_dim, dilation, float(dropout)) for dilation in (1, 2, 4, 8)]
             )
             self.temporal_branches = None
             classifier_in = temporal_dim

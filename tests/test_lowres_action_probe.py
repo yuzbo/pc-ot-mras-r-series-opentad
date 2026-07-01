@@ -634,7 +634,16 @@ def test_parse_args_supports_mobilenetv3_32_64_probe_without_detector_path():
 def test_parse_args_supports_temporal_tcn_variants_and_rejects_unknown_variant():
     probe = load_probe_module()
 
-    expected_variants = ["lite", "dilated", "multiscale", "motion", "residual", "gated"]
+    expected_variants = [
+        "lite",
+        "dilated",
+        "multiscale",
+        "motion",
+        "residual",
+        "gated",
+        "separable_dilated",
+        "causal_dilated",
+    ]
     args = probe.parse_args(
         [
             "--probe-model",
@@ -684,7 +693,7 @@ def test_tcn_probe_gpu1_launcher_fail_closes_and_runs_all_variants():
     assert 'if [[ "${CUDA_VISIBLE_DEVICES}" != "1" ]]' in text
     assert "--probe-model temporal-tcn" in text
     assert "--scout-spatial-size 64" in text
-    assert "--tcn-variants lite dilated multiscale motion residual gated" in text
+    assert "--tcn-variants lite dilated multiscale motion residual gated separable_dilated causal_dilated" in text
     assert "--mobilenet-sizes" not in text
     assert "SLURM_STEP_GPUS" in text
 
@@ -943,7 +952,7 @@ def test_temporal_tcn_new_variants_keep_framewise_shape_and_mask_invalid_positio
     frames = FakeTensor((2, 5, 3, 16, 16))
     valid = FakeTensor((2, 5), ndim=2)
 
-    for variant in ("residual", "gated"):
+    for variant in ("residual", "gated", "separable_dilated", "causal_dilated"):
         model = probe.C3TemporalTCNActionProbe(variant=variant, spatial_size=16, hidden_dim=32)
         logits = model(frames, valid)
 

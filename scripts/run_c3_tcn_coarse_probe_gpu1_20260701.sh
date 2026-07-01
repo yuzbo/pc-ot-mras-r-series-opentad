@@ -55,7 +55,7 @@ python -u tools/bata/train_lowres_action_probe.py \
   --seed 0 \
   --probe-model temporal-tcn \
   --scout-spatial-size 64 \
-  --tcn-variants lite dilated multiscale motion residual gated \
+  --tcn-variants lite dilated multiscale motion residual gated separable_dilated causal_dilated \
   --max-train-batches 50 \
   --max-val-batches 20 \
   --log-every-batches 10 \
