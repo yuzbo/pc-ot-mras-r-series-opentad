@@ -841,6 +841,10 @@ Fix:
 
 Remote evidence:
 
+- GitHub evidence branch pushed without force:
+  `codex/divergent-rba-rbr-guard-launcher-843b4948-20260701`.
+- GitHub URL:
+  `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-guard-launcher-843b4948-20260701`.
 - Uploaded launcher:
   `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GuardDiag_20260701_e6de60e9_bundle/scripts/run_rba_rbr_guard_evaldiag_n16r4.sbatch`.
 - Remote `bash -n` passed.
