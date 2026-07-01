@@ -21,7 +21,7 @@ SUPPORTED_C3_READER_TYPES = {
     "PCOTMRASBoundaryDifficultyTemporalFrameScout",
     "PCOTMRASCoarseActionnessFrameScout",
 }
-SUPPORTED_TCN_VARIANTS = ("lite", "dilated", "multiscale", "motion")
+SUPPORTED_TCN_VARIANTS = ("lite", "dilated", "multiscale", "motion", "residual", "gated")
 
 
 def _as_nested_list(value: Any) -> Any:
@@ -1256,6 +1256,49 @@ class C3TemporalTCNActionProbe:
         torch, _F = _import_torch()
         import torch.nn as nn  # type: ignore
 
+        class ResidualTCNBlock(nn.Module):
+            def __init__(self, channels: int, dilation: int, dropout_rate: float) -> None:
+                super().__init__()
+                self.net = nn.Sequential(
+                    nn.Conv1d(
+                        channels,
+                        channels,
+                        kernel_size=3,
+                        padding=int(dilation),
+                        dilation=int(dilation),
+                        bias=False,
+                    ),
+                    nn.BatchNorm1d(channels),
+                    nn.SiLU(inplace=True),
+                    nn.Dropout(float(dropout_rate)),
+                    nn.Conv1d(channels, channels, kernel_size=1, bias=False),
+                    nn.BatchNorm1d(channels),
+                )
+                self.act = nn.SiLU(inplace=True)
+
+            def forward(self, x):
+                return self.act(x + self.net(x))
+
+        class GatedTCNBlock(nn.Module):
+            def __init__(self, channels: int, dilation: int, dropout_rate: float) -> None:
+                super().__init__()
+                self.conv = nn.Conv1d(
+                    channels,
+                    channels * 2,
+                    kernel_size=3,
+                    padding=int(dilation),
+                    dilation=int(dilation),
+                    bias=False,
+                )
+                self.norm = nn.BatchNorm1d(channels * 2)
+                self.glu = nn.GLU(dim=1)
+                self.dropout = nn.Dropout(float(dropout_rate))
+                self.project = nn.Conv1d(channels, channels, kernel_size=1, bias=False)
+
+            def forward(self, x):
+                gated = self.glu(self.norm(self.conv(x)))
+                return x + self.project(self.dropout(gated))
+
         self.variant = str(variant)
         self.spatial_size = int(spatial_size)
         self.hidden_dim = int(hidden_dim)
@@ -1306,6 +1349,18 @@ class C3TemporalTCNActionProbe:
                     ]
                 )
             self.temporal = nn.Sequential(*blocks)
+            self.temporal_branches = None
+            classifier_in = temporal_dim
+        elif self.variant == "residual":
+            self.temporal = nn.Sequential(
+                *[ResidualTCNBlock(temporal_dim, dilation, float(dropout)) for dilation in (1, 2, 4, 8)]
+            )
+            self.temporal_branches = None
+            classifier_in = temporal_dim
+        elif self.variant == "gated":
+            self.temporal = nn.Sequential(
+                *[GatedTCNBlock(temporal_dim, dilation, float(dropout)) for dilation in (1, 2, 4, 8)]
+            )
             self.temporal_branches = None
             classifier_in = temporal_dim
         elif self.variant == "multiscale":

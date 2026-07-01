@@ -634,6 +634,7 @@ def test_parse_args_supports_mobilenetv3_32_64_probe_without_detector_path():
 def test_parse_args_supports_temporal_tcn_variants_and_rejects_unknown_variant():
     probe = load_probe_module()
 
+    expected_variants = ["lite", "dilated", "multiscale", "motion", "residual", "gated"]
     args = probe.parse_args(
         [
             "--probe-model",
@@ -641,16 +642,14 @@ def test_parse_args_supports_temporal_tcn_variants_and_rejects_unknown_variant()
             "--scout-spatial-size",
             "64",
             "--tcn-variants",
-            "lite",
-            "dilated",
-            "multiscale",
-            "motion",
+            *expected_variants,
         ]
     )
 
     assert args.probe_model == "temporal-tcn"
     assert args.scout_spatial_size == 64
-    assert args.tcn_variants == ["lite", "dilated", "multiscale", "motion"]
+    assert tuple(expected_variants) == probe.SUPPORTED_TCN_VARIANTS
+    assert args.tcn_variants == expected_variants
 
     with pytest.raises(SystemExit):
         probe.parse_args(["--probe-model", "temporal-tcn", "--tcn-variants", "unknown"])
@@ -685,7 +684,7 @@ def test_tcn_probe_gpu1_launcher_fail_closes_and_runs_all_variants():
     assert 'if [[ "${CUDA_VISIBLE_DEVICES}" != "1" ]]' in text
     assert "--probe-model temporal-tcn" in text
     assert "--scout-spatial-size 64" in text
-    assert "--tcn-variants lite dilated multiscale motion" in text
+    assert "--tcn-variants lite dilated multiscale motion residual gated" in text
     assert "--mobilenet-sizes" not in text
     assert "SLURM_STEP_GPUS" in text
 
@@ -769,6 +768,188 @@ def test_build_probe_model_supports_temporal_tcn_branch(monkeypatch):
     assert isinstance(model, FakeTemporalTCN)
     assert reader_cfg is None
     assert captured == {"variant": "dilated", "spatial_size": 64}
+
+
+def test_temporal_tcn_new_variants_keep_framewise_shape_and_mask_invalid_positions(monkeypatch):
+    probe = load_probe_module()
+
+    class FakeScalar:
+        def __gt__(self, other):
+            return self
+
+        def item(self):
+            return False
+
+    class FakeTensor:
+        def __init__(self, shape, *, ndim=None, device="cpu"):
+            self.shape = tuple(shape)
+            self.ndim = len(self.shape) if ndim is None else ndim
+            self.device = device
+            self.masked_fill_value = None
+
+        def float(self):
+            return self
+
+        def detach(self):
+            return self
+
+        def abs(self):
+            return self
+
+        def amax(self):
+            return FakeScalar()
+
+        def reshape(self, *shape):
+            resolved = []
+            known = 1
+            unknown_idx = None
+            total = 1
+            for dim in self.shape:
+                total *= int(dim)
+            for idx, dim in enumerate(shape):
+                if int(dim) == -1:
+                    unknown_idx = idx
+                    resolved.append(1)
+                else:
+                    resolved.append(int(dim))
+                    known *= int(dim)
+            if unknown_idx is not None:
+                resolved[unknown_idx] = total // known
+            return FakeTensor(tuple(resolved), device=self.device)
+
+        def flatten(self, start_dim=0):
+            if int(start_dim) != 1:
+                raise AssertionError("test fake only supports flatten(1)")
+            tail = 1
+            for dim in self.shape[1:]:
+                tail *= int(dim)
+            return FakeTensor((self.shape[0], tail), device=self.device)
+
+        def transpose(self, dim0, dim1):
+            shape = list(self.shape)
+            shape[int(dim0)], shape[int(dim1)] = shape[int(dim1)], shape[int(dim0)]
+            return FakeTensor(tuple(shape), device=self.device)
+
+        def squeeze(self, dim):
+            shape = list(self.shape)
+            if shape[int(dim)] == 1:
+                shape.pop(int(dim))
+            return FakeTensor(tuple(shape), device=self.device)
+
+        def to(self, *args, **kwargs):
+            return self
+
+        def bool(self):
+            return self
+
+        def __invert__(self):
+            return FakeTensor(self.shape, device=self.device)
+
+        def masked_fill(self, mask, value):
+            result = FakeTensor(self.shape, device=self.device)
+            result.masked_fill_value = value
+            result.masked_fill_mask_shape = mask.shape
+            return result
+
+        def __add__(self, other):
+            return FakeTensor(self.shape, device=self.device)
+
+    class FakeModule:
+        def __call__(self, *args, **kwargs):
+            if hasattr(self, "forward"):
+                return self.forward(*args, **kwargs)
+            raise TypeError(f"{self.__class__.__name__} has no forward")
+
+        def train(self):
+            return self
+
+        def eval(self):
+            return self
+
+        def to(self, *args, **kwargs):
+            return self
+
+        def parameters(self):
+            return []
+
+        def state_dict(self):
+            return {}
+
+        def load_state_dict(self, state_dict):
+            return state_dict
+
+    class FakeSequential(FakeModule):
+        def __init__(self, *modules):
+            self.modules = modules
+
+        def __call__(self, x):
+            for module in self.modules:
+                x = module(x)
+            return x
+
+    class FakeModuleList(list):
+        pass
+
+    class FakeConv(FakeModule):
+        def __init__(self, in_channels, out_channels, *args, **kwargs):
+            self.in_channels = in_channels
+            self.out_channels = out_channels
+
+        def __call__(self, x):
+            shape = list(x.shape)
+            shape[1] = int(self.out_channels)
+            return FakeTensor(tuple(shape), device=x.device)
+
+    class FakeIdentityModule(FakeModule):
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __call__(self, x):
+            return x
+
+    class FakeAdaptiveAvgPool2d(FakeModule):
+        def __init__(self, output_size):
+            self.output_size = output_size
+
+        def __call__(self, x):
+            return FakeTensor((x.shape[0], x.shape[1], 1, 1), device=x.device)
+
+    class FakeGLU(FakeModule):
+        def __init__(self, dim=1):
+            self.dim = int(dim)
+
+        def __call__(self, x):
+            shape = list(x.shape)
+            shape[self.dim] = shape[self.dim] // 2
+            return FakeTensor(tuple(shape), device=x.device)
+
+    fake_nn = types.ModuleType("torch.nn")
+    fake_nn.Module = FakeModule
+    fake_nn.Sequential = FakeSequential
+    fake_nn.ModuleList = FakeModuleList
+    fake_nn.Conv2d = FakeConv
+    fake_nn.Conv1d = FakeConv
+    fake_nn.BatchNorm2d = FakeIdentityModule
+    fake_nn.BatchNorm1d = FakeIdentityModule
+    fake_nn.SiLU = FakeIdentityModule
+    fake_nn.Dropout = FakeIdentityModule
+    fake_nn.AdaptiveAvgPool2d = FakeAdaptiveAvgPool2d
+    fake_nn.GLU = FakeGLU
+    fake_torch = types.SimpleNamespace(nn=fake_nn)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "torch.nn", fake_nn)
+    monkeypatch.setattr(probe, "_import_torch", lambda: (fake_torch, None))
+
+    frames = FakeTensor((2, 5, 3, 16, 16))
+    valid = FakeTensor((2, 5), ndim=2)
+
+    for variant in ("residual", "gated"):
+        model = probe.C3TemporalTCNActionProbe(variant=variant, spatial_size=16, hidden_dim=32)
+        logits = model(frames, valid)
+
+        assert logits.shape == (2, 5)
+        assert logits.masked_fill_value == 0.0
+        assert logits.masked_fill_mask_shape == (2, 5)
 
 
 def test_multisize_mobilenet_summary_exposes_per_size_results():
