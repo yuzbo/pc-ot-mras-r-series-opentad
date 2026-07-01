@@ -11,6 +11,8 @@ MDL-Knot bounded `SHORT_DIAGNOSTIC_ONLY` was deployed after final read-only revi
 - Clean logdir: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_shortdiag_sbatch_9183fb7_20260701_091642_+0800_torchrun_port29683_exclude_g0030`.
 - Superseded launch attempts: `1132480` was cancelled after a stale launch-gate argument; `1132482` was cancelled after `torch.distributed.run` hit default port `29400`; `1132483` was cancelled after direct Python exposed the required `LOCAL_RANK` DDP contract. These are deployment-entry correction evidence, not route model failure evidence.
 - Startup evidence for `1132502`: clean gates passed, pretrained checkpoint loaded, AMP and EMA enabled, `Epoch 0 started`, and first sampled_raw `MDL_KNOT_PROFILE` line emitted before first loss.
+- First training evidence: iter 1 had one skipped non-finite gradient in `module.rpn_head.reg_head.weight`; iter 2-7 then produced finite losses from `1.5851` to `2.1502` with memory about `9750MB`.
+- Throughput warning: sampled_raw `selector_and_structural_handoff` remains very slow for some videos, roughly `84-105s`, so this shortdiag is also serving as a speed/root-cause probe.
 - Claim state remains locked: no mAP/runtime/FLOPs/deploy/paper/sparse-compute claim; formal/full training, evaluation, `tools/test.py`, and checkpoint result claims remain locked.
 
 ## 2026-07-01 08:36:33 +08:00

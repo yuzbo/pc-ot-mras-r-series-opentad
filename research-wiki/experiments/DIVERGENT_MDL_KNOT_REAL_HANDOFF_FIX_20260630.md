@@ -684,6 +684,8 @@ Remote evidence:
 - Clean logdir: `/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_shortdiag_sbatch_9183fb7_20260701_091642_+0800_torchrun_port29683_exclude_g0030`.
 - Superseded launch attempts: `1132480` was cancelled after a stale sbatch argument made `launch_gate.log` invalid; `1132482` was cancelled after `torch.distributed.run` hit the shared-node default port `29400`; `1132483` was cancelled after direct Python exposed the required `LOCAL_RANK` DDP entrypoint contract. These are deployment-entry corrections, not model failure evidence.
 - Startup evidence for `1132502`: clean py_compile, base launch gate, and shortdiag static gate passed; pretrained VideoMAE checkpoint loaded; AMP and EMA enabled; `Epoch 0 started`; first sampled_raw `MDL_KNOT_PROFILE` line emitted before the first loss.
+- First training evidence: iter 1 had one skipped non-finite gradient in `module.rpn_head.reg_head.weight`, followed by finite losses at iter 2-7: `1.5851`, `2.1502`, `1.9394`, `1.8892`, `2.0425`, `1.9420`.
+- Speed evidence: sampled_raw `selector_and_structural_handoff` can take about `84-105s` for long videos in this shortdiag; this is a serious throughput issue to diagnose, but not a launch crash.
 
 Current decision:
 
