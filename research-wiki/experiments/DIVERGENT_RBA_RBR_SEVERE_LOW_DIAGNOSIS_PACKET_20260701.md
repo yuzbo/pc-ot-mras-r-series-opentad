@@ -191,3 +191,67 @@ The grid-audit update was also checked in a Linux/OpenTAD no-GPU environment:
   - `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GridAuditPrecheck_20260701_600fc8f2/logs/rba_rbr_grid_audit_precheck_600fc8f2/pytest.log`.
 
 This verifies that the sparse-forward temporal-grid audit is runnable on N16R4/Linux. It does not diagnose or fix the severe-low mAP by itself, does not run training, does not run `tools/test.py`, and does not unlock formal full training or any claim.
+
+## Coverage-Guard First Validation Severe-Low - 2026-07-01 13:39:19 +08:00
+
+Run context:
+
+- Corrected coverage-guard branch commit deployed remotely: `e6de60e9`.
+- Protected parent hold: `1118197 pcot_dbg2g`; not released, cancelled, replaced, or modified.
+- Child step: `1118197.560`.
+- Job name: `rba_guard_g0`.
+- GPU binding: protected hold GPU0 only; GPU1/C3 not touched.
+- Log directory: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GuardDiag_20260701_e6de60e9_bundle/logs/rba_rbr_guard_evaldiag_manual_parallel_holdg0_20260701_123213_+0800`.
+- Evidence files: `srun-1118197.out`, `train.log`, `rba_rbr_grid_audit.jsonl`.
+
+First validation metric:
+
+- Completed at `2026-07-01 13:39:19 +08:00`.
+- `Average-mAP=0.22%`.
+- `mAP@0.3/0.4/0.5/0.6/0.7 = 0.66/0.30/0.09/0.04/0.01`.
+- `3325` ground-truth instances.
+- `411700` predictions.
+
+Health evidence:
+
+- Epoch 0 final: `[000][00199/00199] Loss=2.3574 ... mem=9344MB`.
+- Epoch 1 final: `[001][00199/00199] Loss=1.8465 ... mem=9344MB`.
+- Training continued after first validation into epoch 2; latest inspected line: `[002][00120/00199] Loss=1.6674 ... mem=9344MB`.
+- No Traceback/OOM/NaN/non-finite pattern was observed in the inspected log.
+
+Coverage-guard audit at inspection time:
+
+- Rows: `2183`.
+- Labels: only `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Statuses: only `PASS_RBA_RBR_NATIVE_AXIS_POSITIONS_ENTERED_MODEL`.
+- `raw_valid_k`: min `60`, p05 `78`, p50 `85`, p95 `91`, max `94`, avg `84.56`.
+- `mask_true_count`: min `30`, p05 `39`, p50 `43`, p95 `46`, max `47`, avg `42.53`.
+- `meta_detector_feature_position_count`: min `30`, p05 `39`, p50 `43`, p95 `46`, max `47`, avg `42.53`.
+- `selected_max_gap_after_guard`: min `1`, p05 `14`, p50 `16`, p95 `16`, max `16`, avg `15.58`.
+- `max_detector_gap_after_guard`: min `2.0`, p05 `20.5`, p50 `23.0`, p95 `24.0`, max `24.0`, avg `22.52`.
+- `guard_addition_count`: min `3`, p05 `13`, p50 `29`, p95 `49`, max `54`, avg `29.88`.
+- `mask_lt32=1`, `rawgap_gt16_after=0`, `detgap_gt24_after=0`.
+
+Interpretation:
+
+- The guard restored detector feature count and raw/detector gap constraints.
+- The first-validation metric is still failure-scale severe-low.
+- Therefore the current evidence does not support the narrower hypothesis that the collapse was only caused by large temporal holes or too few detector feature positions.
+- The remaining suspected causes are deeper selector quality, sparse-to-fixed adapter bridge semantics, train/validation geometry mismatch, coordinate/loss/postprocess alignment, or raw-scout weakness. These remain suspicions, not conclusions.
+
+Pro/Oracle severe-result gate:
+
+- Rosetta probing failed on all currently requested/known ports:
+  - `rosetta probe --port 9223 --host 127.0.0.1`: connection refused.
+  - `rosetta probe --port 9333 --host 127.0.0.1`: connection refused.
+  - `rosetta probe --port 9222 --host 127.0.0.1`: connection refused.
+- Oracle provider check failed for Pro models because the OpenAI provider is not ready and `OPENAI_API_KEY` is missing.
+- This is `INCOMPLETE/UNAVAILABLE`, not an accepted Pro diagnosis.
+
+Launch decision:
+
+- Let the current `SHORT_DIAGNOSTIC_ONLY` run continue to its scheduled epoch-3/final diagnostic if it remains finite.
+- Do not launch RBA-RBR formal/full training.
+- Do not launch a new RBA-RBR long follow-up run.
+- Do not make metric/runtime/FLOPs/sparse-compute/deploy/paper claims.
+- Prepare a severe-result Pro prompt/context package for when Rosetta/Oracle transport becomes available.

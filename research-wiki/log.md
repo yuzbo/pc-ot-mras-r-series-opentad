@@ -1,5 +1,16 @@
 # Research Log
 
+## 2026-07-01 13:39:19 +08:00 - RBA-RBR guard diagnostic first validation severe-low
+
+- Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Protected-hold child `1118197.560 rba_guard_g0` reached first validation in `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GuardDiag_20260701_e6de60e9_bundle/logs/rba_rbr_guard_evaldiag_manual_parallel_holdg0_20260701_123213_+0800`.
+- Metric evidence: `Average-mAP=0.22%`, `mAP@0.3/0.4/0.5/0.6/0.7 = 0.66/0.30/0.09/0.04/0.01`, `3325` GT instances, `411700` predictions.
+- Health evidence: no Traceback/OOM/NaN/non-finite pattern was observed; the child continued into epoch 2 with finite loss.
+- Guard audit evidence: `2183` rows, all RBA label/status PASS; detector feature count is restored (`mask_true_count` avg `42.53`, p50 `43`), raw gap max is `16`, detector gap max is `24`, and only one row was below the detector feature floor.
+- Interpretation: the coverage guard is functioning, but it did not rescue first-validation detector health. The severe-result gate remains active; formal/full RBA-RBR training and all mAP/runtime/FLOPs/sparse-compute/deploy/paper claims stay locked.
+- Pro transport state: Rosetta CDP ports `9223/9333/9222` refused connection and Oracle Pro provider was not ready because `OPENAI_API_KEY` is missing. This is not a completed Pro review.
+- Resource boundary: parent hold `1118197 pcot_dbg2g` was not released, cancelled, replaced, or modified; GPU1/C3 was not touched.
+
 ## 2026-07-01 12:34:06 +08:00 - RBA-RBR guard diagnostic launched in parallel on protected GPU0
 
 - Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.

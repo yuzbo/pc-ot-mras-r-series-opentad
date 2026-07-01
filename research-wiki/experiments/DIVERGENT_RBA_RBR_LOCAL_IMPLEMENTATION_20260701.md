@@ -1014,3 +1014,30 @@ Boundary:
 - This remains `SHORT_DIAGNOSTIC_ONLY`; formal/full RBA-RBR training and all
   metric/runtime/FLOPs/sparse-compute/deploy/paper claims remain locked until
   the guard audit and diagnostic metrics are reviewed.
+
+## Coverage-Guard First Validation Severe-Low - 2026-07-01 13:39:19 +08:00
+
+Result:
+
+- Child `1118197.560 rba_guard_g0` reached first validation.
+- `Average-mAP=0.22%`.
+- `mAP@0.3/0.4/0.5/0.6/0.7 = 0.66/0.30/0.09/0.04/0.01`.
+- `3325` GT instances and `411700` predictions.
+- The child continued into epoch 2 with finite loss; no Traceback/OOM/NaN/non-finite pattern was observed.
+
+Guard audit:
+
+- `2183` rows were inspected from `rba_rbr_grid_audit.jsonl`.
+- All rows had the RBA route label and `PASS_RBA_RBR_NATIVE_AXIS_POSITIONS_ENTERED_MODEL`.
+- `mask_true_count` avg `42.53`, p50 `43`, max `47`; only one row fell below `32`.
+- `selected_max_gap_after_guard` max `16`.
+- `max_detector_gap_after_guard` max `24`.
+- This confirms the coverage guard is active and is no longer leaving the broad detector-side holes seen in the pre-guard run.
+
+Decision:
+
+- This is a severe-low detector-health result despite restored count/gap constraints.
+- Formal/full RBA-RBR training remains locked.
+- The current short diagnostic may continue to the planned final diagnostic only.
+- No new RBA-RBR long run, metric claim, runtime/FLOPs claim, sparse-compute claim, deploy claim, or paper claim is allowed until severe-result diagnosis is complete.
+- Pro/Rosetta/Oracle transport is currently unavailable, so the Pro gate is incomplete rather than passed.
