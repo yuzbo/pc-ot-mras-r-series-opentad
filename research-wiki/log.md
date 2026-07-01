@@ -1,5 +1,14 @@
 # Research Log
 
+## 2026-07-01 10:58:56 +08:00 - RBA-RBR guard GPU0 fallback watcher staged
+
+- Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Public Slurm guard job `1132641 rba_guarddiag` remained `PENDING`, reason `Priority`, with no node assigned and no train/audit log.
+- BVR child `1118197.542 bvr_twb_fix2_g0` was still running on protected hold GPU0, so no RBA child was launched immediately.
+- Staged a conservative fallback watcher at `/data/run01/sczc063/yuzibo/route_watchers/rba_rbr_guard_after_bvr_1118197_542_20260701_1055_+0800`, PID `509961`.
+- Watcher behavior: wait for BVR step `1118197.542` to disappear; if public guard job `1132641` is already running/completed, exit without launching; if it is still pending, cancel only that pending public RBA job to avoid duplicate consumption and launch the same guard `SHORT_DIAGNOSTIC_ONLY` on protected hold GPU0 as child `rba_guard_g0`.
+- Resource boundary: the protected parent hold `1118197 pcot_dbg2g` was not modified, released, cancelled, or replaced. C3 GPU1 remains out of scope. Formal/full RBA-RBR training and all metric/runtime/FLOPs/sparse-compute/deploy/paper claims remain locked.
+
 ## 2026-07-01 10:38:15 +08:00 - RBA-RBR guard/grid-audit monitor update
 
 - Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
