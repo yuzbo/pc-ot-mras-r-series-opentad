@@ -398,6 +398,37 @@ def test_lowres_probe_conversion_can_uniform_fill_to_required_count(tmp_path):
     validate_value_transport_selection_row(row, line_no=1, require_deployable=False)
 
 
+def test_lowres_probe_conversion_can_require_short_valid_ratio_count(tmp_path):
+    input_jsonl = tmp_path / "samples.jsonl"
+    output_jsonl = tmp_path / "value_transport_ledger.jsonl"
+    sample_row = {
+        "sample_id": "video_test_0001|0",
+        "dense_len": 8,
+        "valid_len": 5,
+        "strategy_selected_positions": {"delta_p_action": [1, 3]},
+    }
+    input_jsonl.write_text(json.dumps(sample_row, sort_keys=True) + "\n", encoding="utf-8")
+
+    summary = run_lowres_probe_conversion(
+        input_jsonl,
+        output_jsonl,
+        strategy="delta_p_action",
+        target_len=4,
+        require_selected_count=4,
+        fill_to_target_count=True,
+        allow_short_valid_ratio_count=True,
+    )
+
+    row = json.loads(output_jsonl.read_text(encoding="utf-8").splitlines()[0])
+    assert summary["decision"] == LOWRES_LEDGER_READY
+    assert summary["allow_short_valid_ratio_count"] is True
+    assert len(row["selected_positions"]) == 3
+    assert row["diagnostics"]["required_selected_count"] == 3
+    assert row["diagnostics"]["uniform_visible_fill_count"] == 1
+    assert set([1, 3]).issubset(set(row["selected_positions"]))
+    validate_value_transport_selection_row(row, line_no=1, require_deployable=False)
+
+
 @pytest.mark.parametrize(
     ("positions", "message"),
     [
@@ -602,5 +633,6 @@ def test_lowres_probe_ledger_export_launcher_is_gpu1_coverage_only_and_strict():
     assert 'TARGET_LEN="${TARGET_LEN:-384}"' in text
     assert "--deploy-selection-ledger" in text
     assert '--require-selected-count "${TARGET_LEN}"' in text
+    assert "--allow-short-valid-ratio-count" in text
     assert "--fill-to-target-count" in text
     assert "--allow-video-only-sample-id" not in text

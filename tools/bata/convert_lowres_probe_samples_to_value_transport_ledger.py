@@ -165,6 +165,26 @@ def _uniform_fill_positions(
     return sorted(selected_set.union(fill)), len(fill)
 
 
+def _expected_required_count(
+    *,
+    require_selected_count: int | None,
+    valid_len: int,
+    dense_len: int | None,
+    allow_short_valid_ratio_count: bool,
+) -> int | None:
+    if require_selected_count is None:
+        return None
+    required = int(require_selected_count)
+    if not allow_short_valid_ratio_count:
+        return required
+    if dense_len is None or int(dense_len) <= 0:
+        return min(required, int(valid_len))
+    if int(valid_len) >= int(dense_len):
+        return required
+    ratio_required = int(math.ceil(float(valid_len) * float(required) / float(dense_len)))
+    return max(1, min(required, int(valid_len), ratio_required))
+
+
 def _selected_positions_from_sample(
     row: Mapping[str, Any],
     *,
@@ -188,6 +208,7 @@ def sample_row_to_value_transport_row(
     target_len: int,
     require_selected_count: int | None = None,
     fill_to_target_count: bool = False,
+    allow_short_valid_ratio_count: bool = False,
     fallback_to_selected_positions: bool = False,
     require_window_sample_id: bool = True,
     deploy_selection_ledger: bool = False,
@@ -220,16 +241,22 @@ def sample_row_to_value_transport_row(
     )
     if any(position >= valid_len for position in selected):
         raise ValueError(f"line {line_no}: selected_positions exceed valid_len={valid_len}")
+    expected_required_count = _expected_required_count(
+        require_selected_count=require_selected_count,
+        valid_len=int(valid_len),
+        dense_len=dense_len,
+        allow_short_valid_ratio_count=bool(allow_short_valid_ratio_count),
+    )
     fill_count = 0
-    if fill_to_target_count and require_selected_count is not None and len(selected) < int(require_selected_count):
+    if fill_to_target_count and expected_required_count is not None and len(selected) < int(expected_required_count):
         selected, fill_count = _uniform_fill_positions(
             selected,
             valid_len=int(valid_len),
-            target_count=int(require_selected_count),
+            target_count=int(expected_required_count),
         )
-    if require_selected_count is not None and len(selected) != int(require_selected_count):
+    if expected_required_count is not None and len(selected) != int(expected_required_count):
         raise ValueError(
-            f"line {line_no}: selected_count={len(selected)} does not match required count {int(require_selected_count)}"
+            f"line {line_no}: selected_count={len(selected)} does not match required count {int(expected_required_count)}"
         )
 
     diagnostics = {
@@ -245,6 +272,8 @@ def sample_row_to_value_transport_row(
             fallback_to_selected_positions=bool(fallback_to_selected_positions),
         )),
         "uniform_visible_fill_count": int(fill_count),
+        "required_selected_count": expected_required_count,
+        "allow_short_valid_ratio_count": bool(allow_short_valid_ratio_count),
         "fallback_to_selected_positions": bool(
             fallback_to_selected_positions
             and not (isinstance(row.get("strategy_selected_positions"), Mapping) and strategy in row["strategy_selected_positions"])
@@ -298,6 +327,7 @@ def run_conversion(
     summary_json: str | Path | None = None,
     require_selected_count: int | None = None,
     fill_to_target_count: bool = False,
+    allow_short_valid_ratio_count: bool = False,
     fallback_to_selected_positions: bool = False,
     require_window_sample_id: bool = True,
     deploy_selection_ledger: bool = False,
@@ -314,6 +344,7 @@ def run_conversion(
             target_len=target_len,
             require_selected_count=require_selected_count,
             fill_to_target_count=fill_to_target_count,
+            allow_short_valid_ratio_count=bool(allow_short_valid_ratio_count),
             fallback_to_selected_positions=fallback_to_selected_positions,
             require_window_sample_id=require_window_sample_id,
             deploy_selection_ledger=deploy_selection_ledger,
@@ -336,6 +367,7 @@ def run_conversion(
         "strategy": str(strategy),
         "target_len": int(target_len),
         "require_selected_count": require_selected_count,
+        "allow_short_valid_ratio_count": bool(allow_short_valid_ratio_count),
         "fill_to_target_count": bool(fill_to_target_count),
         "deploy_selection_ledger": bool(deploy_selection_ledger),
         "route_variant": str(route_variant),
@@ -358,6 +390,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--target-len", type=int, default=384)
     parser.add_argument("--require-selected-count", type=int)
     parser.add_argument("--fill-to-target-count", action="store_true")
+    parser.add_argument("--allow-short-valid-ratio-count", action="store_true")
     parser.add_argument("--fallback-to-selected-positions", action="store_true")
     parser.add_argument("--allow-video-only-sample-id", action="store_true")
     parser.add_argument("--deploy-selection-ledger", action="store_true")
@@ -375,6 +408,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             summary_json=args.summary_json,
             require_selected_count=args.require_selected_count,
             fill_to_target_count=bool(args.fill_to_target_count),
+            allow_short_valid_ratio_count=bool(args.allow_short_valid_ratio_count),
             fallback_to_selected_positions=bool(args.fallback_to_selected_positions),
             require_window_sample_id=not bool(args.allow_video_only_sample_id),
             deploy_selection_ledger=bool(args.deploy_selection_ledger),
