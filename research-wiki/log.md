@@ -10,6 +10,14 @@
 - Relaunched as Slurm job `1132462 rba_grid_audit` with `--exclude=g0030`; it is running on `g0053` with 1 GPU and 4 CPU. Logdir: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_grid_audit_evaldiag_sbatch_3cab4121_20260701_0853_exclude_g0030_+0800/`.
 - This is `SHORT_DIAGNOSTIC_ONLY` / sparse-forward grid-audit evidence. It does not unlock formal/full long training, official mAP, runtime/FLOPs, deploy, paper, or sparse-compute claims.
 
+## 2026-07-01 08:58:37 +08:00 - RBA-RBR grid-audit startup evidence
+
+- Slurm job `1132462 rba_grid_audit` is running on `g0053`, not on the protected hold node `g0030`.
+- Startup log reached epoch 0 iteration 140 with finite loss, e.g. `[000][00140/00199] Loss=2.5149`.
+- `rba_rbr_grid_audit.jsonl` exists and had at least 169 sampled rows at inspection time.
+- Audit sample: all sampled rows have route label `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`; first row status is `PASS_RBA_RBR_NATIVE_AXIS_POSITIONS_ENTERED_MODEL`; `native_axis=True`; `mask_true_count=23` matches `meta_detector_feature_position_count=23`.
+- Interpretation: the detector-side native-axis grid audit is active and RBA detector feature positions are entering `IrregularActionFormer`. This is still diagnostic-only evidence, not metric/runtime/deploy/paper evidence.
+
 ## 2026-07-01 07:48:48 +08:00 - RBA-RBR grid-audit remote PRECHECK_ONLY passed
 
 - Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.

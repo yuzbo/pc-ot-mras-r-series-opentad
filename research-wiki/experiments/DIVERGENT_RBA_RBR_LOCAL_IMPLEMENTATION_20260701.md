@@ -712,3 +712,38 @@ Current decision:
 - The expected evidence is `rba_rbr_grid_audit.jsonl`, `grid_audit_summary.txt`,
   train log stability, and any diagnostic-only validation output.
 - Formal/full long training remains locked pending severe-result diagnosis.
+
+## Grid-Audit Startup Evidence - 2026-07-01 08:58:37 +08:00
+
+Status:
+
+- Job `1132462 rba_grid_audit` is running on `g0053`.
+- It reached epoch 0 iteration 140 with finite loss:
+  `[000][00140/00199] Loss=2.5149 cls_loss=0.7934 reg_loss=0.5807 boundary_loss=1.1408`.
+- Protected hold `1118197 pcot_dbg2g` remains running separately on `g0030` and was not modified, released, cancelled, or replaced.
+
+Audit evidence:
+
+- Audit JSONL:
+  `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_grid_audit_evaldiag_sbatch_3cab4121_20260701_0853_exclude_g0030_+0800/rba_rbr_grid_audit.jsonl`.
+- At inspection time, 169 sampled rows were parsed.
+- All sampled rows had route label
+  `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- First sampled row:
+  - `status=PASS_RBA_RBR_NATIVE_AXIS_POSITIONS_ENTERED_MODEL`.
+  - `native_axis=True`.
+  - `mask_true_count=23`.
+  - `meta_detector_feature_position_count=23`.
+  - `grid_fresh_mask_true_count=23`.
+  - `grid_valid_mask_true_count=23`.
+
+Interpretation:
+
+- The new audit proves the RBA-RBR detector-grid path is active in the running
+  diagnostic and that RBA detector feature positions are reaching
+  `IrregularActionFormer` under native-axis semantics.
+- This does not yet explain or fix the severe-low `4.42%` result. It narrows
+  the next diagnosis away from "metadata never reaches detector grid" and toward
+  selector quality, adapter bridge semantics, coordinate scaling, assignment,
+  loss calibration, or post-processing.
+- No metric, runtime, sparse-compute, deploy, or paper claim is unlocked.
