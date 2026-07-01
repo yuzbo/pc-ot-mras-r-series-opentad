@@ -656,6 +656,38 @@ Decision after sync:
 - GitHub now has the code/evidence needed for a severe-result Pro/Oracle diagnosis.
 - Formal RBA-RBR full training remains locked until that diagnosis returns a concrete repair or go/no-go plan.
 
+## Postprocess Candidate Guard Repair - 2026-07-01 14:09:53 +08:00
+
+### Why this was needed
+
+The corrected coverage-guard diagnostic restored raw and detector-feature gap constraints, but first validation still produced `411700` predictions and `Average-mAP=0.22%`. Since coverage was no longer the only plausible blocker, the next smallest diagnosable surface was inherited ActionFormer candidate generation: flattening all proposal-class pairs can flood the evaluator with low-quality candidates under sparse-route geometry.
+
+### Implemented behavior
+
+- Added `rba_rbr_postprocess_guard` in `IrregularActionFormer`.
+- Kept BVR-TWB and RBA-RBR guard identity separate:
+  - BVR rows remain labeled `DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3`.
+  - RBA rows are labeled `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- RBA guard fails closed when enabled without RBA metadata.
+- RBA guard caps:
+  - raw proposals by max detector score;
+  - per-class candidates;
+  - total candidates before NMS / sliding-window aggregation.
+- Added `RBA_RBR_POSTPROCESS_AUDIT` / `RBA_RBR_POSTPROCESS_AUDIT_PATH` JSONL evidence.
+- Updated RBA config and launch gate to require `pre_nms_topk=512`, `raw_proposal_cap=1024`, `per_class_topk=32`, and `total_candidate_cap=512`.
+
+### Verification
+
+- `python -m py_compile opentad\models\detectors\irregular_actionformer.py tools\rba_rbr\validate_rba_rbr_launch_gate.py tests\test_rba_rbr_integration.py configs\adatad\thumos\input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py` -> pass.
+- `python -m pytest tests\test_rba_rbr_integration.py -q` -> `8 passed, 7 skipped`.
+- `python tools\rba_rbr\build_synthetic_ledgers.py --out-dir tools\rba_rbr\.tmp_rba_rbr_guard_fix_ledgers --overwrite` -> pass.
+- `python tools\rba_rbr\validate_rba_rbr_launch_gate.py --config configs\adatad\thumos\input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py --precheck-summary tools\rba_rbr\.tmp_rba_rbr_guard_fix_ledgers\summary.json` -> `gate_pass=true`, `full_train_unlocked=false`.
+- `git diff --check` on changed files -> pass with LF/CRLF warnings only.
+
+### Current status
+
+This is a local repair for the next `SHORT_DIAGNOSTIC_ONLY` experiment. It does not unlock formal/full train or any final mAP, runtime/FLOPs, sparse-compute, deploy, or paper claim.
+
 ## Grid-Audit Short Diagnostic Launch Off Protected Hold - 2026-07-01 08:53:47 +08:00
 
 Purpose:

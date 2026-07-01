@@ -189,17 +189,52 @@ class IrregularActionFormer(BaseDetector):
             "require_bvr_meta": require_bvr_meta,
         }
 
-    def _select_bvr_twb_guarded_candidates(
+    def _resolve_rba_rbr_postprocess_guard(self, post_cfg, meta, pre_nms_thresh, pre_nms_topk):
+        guard_cfg = self._cfg_get(post_cfg, "rba_rbr_postprocess_guard", None)
+        if guard_cfg is None or not bool(self._cfg_get(guard_cfg, "enabled", False)):
+            return None
+
+        require_rba_meta = bool(self._cfg_get(guard_cfg, "require_rba_meta", True))
+        if require_rba_meta and not self._is_rba_rbr_meta(meta):
+            raise ValueError("RBA-RBR postprocess guard is enabled but the sample has no RBA-RBR metadata")
+
+        raw_proposal_cap = int(self._cfg_get(guard_cfg, "raw_proposal_cap", 1024))
+        per_class_topk = int(self._cfg_get(guard_cfg, "per_class_topk", 32))
+        total_candidate_cap = int(self._cfg_get(guard_cfg, "total_candidate_cap", pre_nms_topk))
+        min_score = float(self._cfg_get(guard_cfg, "min_score", pre_nms_thresh))
+
+        invalid = []
+        if raw_proposal_cap <= 0:
+            invalid.append("raw_proposal_cap")
+        if per_class_topk <= 0:
+            invalid.append("per_class_topk")
+        if total_candidate_cap <= 0:
+            invalid.append("total_candidate_cap")
+        if min_score < 0:
+            invalid.append("min_score")
+        if invalid:
+            raise ValueError(f"Invalid RBA-RBR postprocess guard fields: {invalid}")
+
+        return {
+            "raw_proposal_cap": raw_proposal_cap,
+            "per_class_topk": per_class_topk,
+            "total_candidate_cap": min(total_candidate_cap, int(pre_nms_topk)),
+            "score_thresh": max(float(pre_nms_thresh), min_score),
+            "require_rba_meta": require_rba_meta,
+        }
+
+    def _select_route_guarded_candidates(
         self,
         segments,
         scores,
         num_classes,
         guard,
+        candidate_generation_mode,
     ):
         raw_input_count = int(segments.shape[0])
         audit = {
             "guard_active": True,
-            "candidate_generation_mode": "bvr_twb_guarded_raw_cap_per_class",
+            "candidate_generation_mode": candidate_generation_mode,
             "guard_raw_proposal_cap": int(guard["raw_proposal_cap"]),
             "guard_per_class_topk": int(guard["per_class_topk"]),
             "guard_total_candidate_cap": int(guard["total_candidate_cap"]),
@@ -265,6 +300,36 @@ class IrregularActionFormer(BaseDetector):
         pt_idxs = pt_idxs[idxs[:num_topk]].clone()
         cls_idxs = cls_idxs[idxs[:num_topk]].clone()
         return segments[pt_idxs], pred_prob, cls_idxs, audit
+
+    def _select_bvr_twb_guarded_candidates(
+        self,
+        segments,
+        scores,
+        num_classes,
+        guard,
+    ):
+        return self._select_route_guarded_candidates(
+            segments,
+            scores,
+            num_classes,
+            guard,
+            "bvr_twb_guarded_raw_cap_per_class",
+        )
+
+    def _select_rba_rbr_guarded_candidates(
+        self,
+        segments,
+        scores,
+        num_classes,
+        guard,
+    ):
+        return self._select_route_guarded_candidates(
+            segments,
+            scores,
+            num_classes,
+            guard,
+            "rba_rbr_guarded_raw_cap_per_class",
+        )
 
     def _append_env_jsonl_audit(self, env_key, row):
         path = os.environ.get(env_key)
@@ -573,14 +638,21 @@ class IrregularActionFormer(BaseDetector):
         num_classes = rpn_scores[0].shape[-1]
 
         results = {}
-        audit_rows = []
+        bvr_audit_rows = []
+        rba_audit_rows = []
         for i in range(len(metas)):
             segments = rpn_proposals[i].detach().cpu()
             scores = rpn_scores[i].detach().cpu()
             raw_proposal_count = int(segments.shape[0])
             raw_score_count = int(scores.numel())
-            guard = self._resolve_bvr_twb_postprocess_guard(post_cfg, metas[i], pre_nms_thresh, pre_nms_topk)
+            bvr_guard = self._resolve_bvr_twb_postprocess_guard(post_cfg, metas[i], pre_nms_thresh, pre_nms_topk)
+            rba_guard = self._resolve_rba_rbr_postprocess_guard(post_cfg, metas[i], pre_nms_thresh, pre_nms_topk)
+            if bvr_guard is not None and rba_guard is not None:
+                raise ValueError("Only one sparse route postprocess guard may be enabled for a sample")
+            guard = bvr_guard if bvr_guard is not None else rba_guard
+            guard_route = "bvr_twb" if bvr_guard is not None else "rba_rbr" if rba_guard is not None else None
             audit_row = None
+            audit_env_key = None
             if self._is_bvr_twb_meta(metas[i]) and os.environ.get("BVR_TWB_POSTPROCESS_AUDIT", "").lower() in {
                 "1",
                 "true",
@@ -601,6 +673,32 @@ class IrregularActionFormer(BaseDetector):
                     "guard_active": bool(guard is not None),
                     "candidate_generation_mode": "legacy_flatten_all_classes",
                 }
+                audit_env_key = "BVR_TWB_POSTPROCESS_AUDIT_PATH"
+            elif self._is_rba_rbr_meta(metas[i]) and os.environ.get("RBA_RBR_POSTPROCESS_AUDIT", "").lower() in {
+                "1",
+                "true",
+                "yes",
+            }:
+                audit_row = {
+                    "audit_type": "rba_rbr_postprocess_proposal_count",
+                    "route_label": "DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3",
+                    "video_name": metas[i].get("video_name", "unknown"),
+                    "raw_proposal_count": raw_proposal_count,
+                    "num_classes": int(num_classes),
+                    "raw_score_shape": list(scores.shape),
+                    "flattened_candidate_count": raw_score_count,
+                    "pre_nms_thresh": float(pre_nms_thresh),
+                    "pre_nms_topk": int(pre_nms_topk),
+                    "nms_enabled": bool(post_cfg.sliding_window is False and post_cfg.nms is not None),
+                    "native_axis": bool(metas[i].get("irregular_native_axis", False)),
+                    "guard_active": bool(guard is not None),
+                    "candidate_generation_mode": "legacy_flatten_all_classes",
+                    "raw_valid_k": int((metas[i].get("rba_rbr_ledger", {}) or {}).get("valid_k", 0)),
+                    "detector_feature_valid_k": int(
+                        (metas[i].get("rba_rbr_ledger", {}) or {}).get("detector_feature_valid_k", 0)
+                    ),
+                }
+                audit_env_key = "RBA_RBR_POSTPROCESS_AUDIT_PATH"
 
             if num_classes == 1:
                 scores = scores.squeeze(-1)
@@ -609,12 +707,25 @@ class IrregularActionFormer(BaseDetector):
                     audit_row["above_threshold_count"] = int(scores.shape[0])
                     audit_row["pre_nms_selected_count"] = int(scores.shape[0])
             else:
-                if guard is not None:
+                if guard_route == "bvr_twb":
                     segments, scores, labels, guard_audit = self._select_bvr_twb_guarded_candidates(
                         segments,
                         scores,
                         num_classes,
-                        guard,
+                        bvr_guard,
+                    )
+                    if audit_row is not None:
+                        audit_row.update(guard_audit)
+                        audit_row["above_threshold_count"] = int(
+                            guard_audit["guard_class_candidate_count_before_global_topk"]
+                        )
+                        audit_row["pre_nms_selected_count"] = int(scores.shape[0])
+                elif guard_route == "rba_rbr":
+                    segments, scores, labels, guard_audit = self._select_rba_rbr_guarded_candidates(
+                        segments,
+                        scores,
+                        num_classes,
+                        rba_guard,
                     )
                     if audit_row is not None:
                         audit_row.update(guard_audit)
@@ -657,8 +768,12 @@ class IrregularActionFormer(BaseDetector):
                 audit_row["final_result_count"] = int(len(scores))
                 audit_row["explains_large_prediction_count"] = raw_score_count >= 365940
                 audit_row["status"] = "PASS_POSTPROCESS_COUNT_AUDITED_NO_METRIC_CLAIM"
-                audit_rows.append(audit_row)
-                self._append_env_jsonl_audit("BVR_TWB_POSTPROCESS_AUDIT_PATH", audit_row)
+                if audit_env_key == "BVR_TWB_POSTPROCESS_AUDIT_PATH":
+                    bvr_audit_rows.append(audit_row)
+                if audit_env_key == "RBA_RBR_POSTPROCESS_AUDIT_PATH":
+                    rba_audit_rows.append(audit_row)
+                if audit_env_key is not None:
+                    self._append_env_jsonl_audit(audit_env_key, audit_row)
 
             results_per_video = []
             for segment, label, score in zip(segments, labels, scores):
@@ -674,8 +789,10 @@ class IrregularActionFormer(BaseDetector):
                 results[video_id].extend(results_per_video)
             else:
                 results[video_id] = results_per_video
-        if audit_rows:
-            self._last_bvr_twb_postprocess_audit = audit_rows
+        if bvr_audit_rows:
+            self._last_bvr_twb_postprocess_audit = bvr_audit_rows
+        if rba_audit_rows:
+            self._last_rba_rbr_postprocess_audit = rba_audit_rows
         return results
 
     def get_optim_groups(self, cfg):

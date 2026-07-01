@@ -257,3 +257,33 @@ Launch decision:
 - Do not launch a new RBA-RBR long follow-up run.
 - Do not make metric/runtime/FLOPs/sparse-compute/deploy/paper claims.
 - Prepare a severe-result Pro prompt/context package for when Rosetta/Oracle transport becomes available.
+
+## Local Postprocess Candidate Guard Repair - 2026-07-01 14:09:53 +08:00
+
+Motivation:
+
+- The corrected coverage guard restored detector feature count and gap constraints, but first validation still emitted `411700` predictions and `Average-mAP=0.22%`.
+- This makes inherited post-processing candidate explosion a concrete next diagnostic variable.
+
+Local repair:
+
+- `IrregularActionFormer` now has an RBA-specific `rba_rbr_postprocess_guard` resolver and guarded candidate selector.
+- The guard fails closed unless `require_rba_meta=True` is satisfied by RBA-RBR metadata.
+- The guarded path caps raw proposals by deploy-visible detector scores, then caps per-class candidates, then caps total candidates.
+- `RBA_RBR_POSTPROCESS_AUDIT=1` plus `RBA_RBR_POSTPROCESS_AUDIT_PATH` records JSONL rows labeled `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- The RBA config sets `pre_nms_topk=512`, `raw_proposal_cap=1024`, `per_class_topk=32`, `total_candidate_cap=512`, and `min_score=0.001`.
+- The RBA launch gate now requires these guard fields.
+
+Verification:
+
+- `python -m py_compile opentad\models\detectors\irregular_actionformer.py tools\rba_rbr\validate_rba_rbr_launch_gate.py tests\test_rba_rbr_integration.py configs\adatad\thumos\input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py` -> pass.
+- `python -m pytest tests\test_rba_rbr_integration.py -q` -> `8 passed, 7 skipped`.
+- `python tools\rba_rbr\build_synthetic_ledgers.py --out-dir tools\rba_rbr\.tmp_rba_rbr_guard_fix_ledgers --overwrite` -> pass.
+- `python tools\rba_rbr\validate_rba_rbr_launch_gate.py --config configs\adatad\thumos\input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3.py --precheck-summary tools\rba_rbr\.tmp_rba_rbr_guard_fix_ledgers\summary.json` -> `gate_pass=true`, `full_train_unlocked=false`.
+- `git diff --check` on changed files -> pass with LF/CRLF warnings only.
+
+Decision:
+
+- This repair does not prove RBA-RBR works and does not unlock formal/full training.
+- It prepares a next `SHORT_DIAGNOSTIC_ONLY` run to test whether candidate explosion is a dominant failure mode after coverage/gap repair.
+- Final mAP, runtime/FLOPs, sparse-compute, deploy, and paper claims remain locked pending valid Pro diagnosis or explicit user override.
