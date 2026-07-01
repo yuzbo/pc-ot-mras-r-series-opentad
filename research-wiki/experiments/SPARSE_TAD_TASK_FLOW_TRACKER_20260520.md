@@ -14,8 +14,27 @@ This route worktree did not contain the shared tracker file. The shared/main wor
 | 2026-07-01 07:23:37 | RBA-RBR sparse-forward precheck audit | Detector temporal-grid audit only | Local implementation complete | Self-check passed; Pro transport remains `INCOMPLETE`; formal full train locked | Added env-gated `RBA_RBR_GRID_AUDIT_PATH` JSONL audit and fail-closed tests; local commit/GitHub evidence sync only after tests; no training, remote sync, Slurm, or Pro | Use audit in next sparse-forward precheck; do not treat as performance evidence |
 | 2026-07-01 07:39:58 | RBA-RBR grid-audit GitHub API branch | Evidence/code synchronization for Pro/Oracle diagnosis | Completed sync | Ordinary git push blocked by remote divergence/network; GitHub Contents API sync succeeded without force push | New branch `codex/divergent-rba-rbr-grid-audit-aadf9708-20260701` created from remote `1b26de8` and updated to `0a4bf5747de24f822ae23183e89f5cce234e69a8` with 5 grid-audit files | Use branch URL for Pro severe-result diagnosis and remote sparse-forward precheck; no train unlock |
 | 2026-07-01 07:48:48 | RBA-RBR grid-audit remote PRECHECK_ONLY | Linux/OpenTAD no-GPU sparse-forward audit precheck | Passed | Pro remains `INCOMPLETE`; full train locked | Remote route-owned copy `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GridAuditPrecheck_20260701_600fc8f2`; py_compile passed; focused pytest `23 passed in 50.13s`; no GPU/Slurm/train/test.py/mAP | Use as audit launchability evidence only; wait for Pro or run bounded sparse-forward diagnostics when GPU0 frees |
+| 2026-07-01 08:53:47 | RBA-RBR grid-audit eval diagnostic, `input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag.py` | Detector sparse-forward grid audit under bounded diagnostic train/eval path | Running on new Slurm job | Remote py_compile passed; focused pytest `23 passed in 48.59s`; launch gate locked full train; read-only final review passed `PASS_SUBAGENT_FINAL_REVIEW_ONLY_FOR_SHORT_DIAGNOSTIC_ONLY` | Remote code committed as `a64530e`; first non-protected job `1132461` cancelled after landing on `g0030`; active job `1132462 rba_grid_audit` runs on `g0053` with `--exclude=g0030`; logdir `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_grid_audit_evaldiag_sbatch_3cab4121_20260701_0853_exclude_g0030_+0800/` | Monitor launch window, then wait for grid audit JSONL / diagnostic output; formal/full train and all claims remain locked |
 
 ## Timeline
+
+### 2026-07-01 08:53:47 +08:00 - RBA-RBR grid-audit diagnostic launched off protected hold
+
+- Config: `configs/adatad/thumos/input_rba_rbr_recoverable_bracketing_adapter_irregular_headv3_evaldiag.py`.
+- Remote route worktree: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49`.
+- Remote code sync commit: `a64530e DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3_grid_audit_sync`.
+- Verification before launch:
+  - py_compile passed for detector/test/gate files.
+  - `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` -> `23 passed in 48.59s`.
+  - Launch gate output: `gate_pass=true`, `full_train_unlocked=false`, `deploy_claim_unlocked=false`, `paper_claim_unlocked=false`, `sparse_compute_claim=false`.
+- Read-only final review: agent `019f1b23-9b5a-7793-9373-002984174ef5` returned `PASS_SUBAGENT_FINAL_REVIEW_ONLY_FOR_SHORT_DIAGNOSTIC_ONLY` and no blockers.
+- Resource safety:
+  - First new Slurm job `1132461` landed on `g0030` and was cancelled after `00:01:23` because it could overlap the protected hold node.
+  - This cancellation affected only the new RBA Slurm job, not the protected parent hold `1118197 pcot_dbg2g`.
+  - Relaunched job `1132462 rba_grid_audit` with `--exclude=g0030`; it started on `g0053`, allocated 1 GPU and 4 CPU.
+- Active logdir: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_grid_audit_evaldiag_sbatch_3cab4121_20260701_0853_exclude_g0030_+0800/`.
+- Current mAP evidence: none from this job yet.
+- Decision: this is a `SHORT_DIAGNOSTIC_ONLY` sparse-forward grid audit. It may diagnose whether native-axis detector feature positions and masks enter the detector correctly. It does not unlock formal/full long training, official mAP, runtime/FLOPs, deploy, paper, or sparse-compute claims.
 
 ### 2026-07-01 06:33:57 +08:00 - RBA-RBR bounded eval diagnostic completed
 

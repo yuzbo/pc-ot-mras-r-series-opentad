@@ -655,3 +655,60 @@ Decision after sync:
 
 - GitHub now has the code/evidence needed for a severe-result Pro/Oracle diagnosis.
 - Formal RBA-RBR full training remains locked until that diagnosis returns a concrete repair or go/no-go plan.
+
+## Grid-Audit Short Diagnostic Launch Off Protected Hold - 2026-07-01 08:53:47 +08:00
+
+Purpose:
+
+- Follow up the severe-low `4.42%` bounded diagnostic with an explicit sparse-forward detector grid audit.
+- Verify whether RBA-RBR `rba_rbr_detector_feature_positions`, valid lengths, and mask true counts reach `IrregularActionFormer` under native-axis semantics.
+- Keep the run diagnostic-only. This is not a formal full train and not a performance claim.
+
+Remote sync and verification:
+
+- Remote route-owned worktree:
+  `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49`.
+- Uploaded local route files from local commit `3cab4121`.
+- Remote commit:
+  `a64530e DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3_grid_audit_sync`.
+- Remote verification logdir:
+  `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_grid_audit_sync_3cab4121_20260701_084417_+0800`.
+- Verification passed:
+  - py_compile passed.
+  - `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` -> `23 passed in 48.59s`.
+  - Launch gate returned `gate_pass=true`, `full_train_unlocked=false`, `deploy_claim_unlocked=false`, `paper_claim_unlocked=false`, `sparse_compute_claim=false`.
+
+Read-only review:
+
+- Agent `019f1b23-9b5a-7793-9373-002984174ef5` returned
+  `PASS_SUBAGENT_FINAL_REVIEW_ONLY_FOR_SHORT_DIAGNOSTIC_ONLY`.
+- No blockers were reported.
+- Still locked: formal/full long training, official mAP conclusion,
+  runtime/FLOPs claim, deploy claim, paper claim, and route-level success/failure
+  judgment.
+
+Launch sequence:
+
+- First attempt:
+  - Job `1132461 rba_grid_audit`.
+  - It started on `g0030`; because `g0030` is the protected hold node for
+    `1118197 pcot_dbg2g`, the job was cancelled after `00:01:23` to avoid
+    contamination or collision.
+  - This cancellation did not touch, release, replace, or cancel the protected
+    parent hold `1118197`.
+- Active attempt:
+  - Job `1132462 rba_grid_audit`.
+  - Slurm script uses `--exclude=g0030`.
+  - Node: `g0053`.
+  - Allocation: 1 GPU, 4 CPU.
+  - The script does not override Slurm's assigned `CUDA_VISIBLE_DEVICES`; startup
+    recorded `CUDA_VISIBLE_DEVICES_INITIAL=0` inside the new allocation.
+  - Logdir:
+    `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_grid_audit_evaldiag_sbatch_3cab4121_20260701_0853_exclude_g0030_+0800`.
+
+Current decision:
+
+- Job `1132462` is allowed to continue as `SHORT_DIAGNOSTIC_ONLY`.
+- The expected evidence is `rba_rbr_grid_audit.jsonl`, `grid_audit_summary.txt`,
+  train log stability, and any diagnostic-only validation output.
+- Formal/full long training remains locked pending severe-result diagnosis.
