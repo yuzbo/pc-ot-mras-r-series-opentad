@@ -46,6 +46,15 @@ EVAL_OR_CLAIM_PATTERNS = (
     r"\bmetric[_ -]?claim\s*[:=]\s*true\b",
 )
 
+ALLOWED_LOG_SCHEDULE_PATTERNS = (
+    r"\bcheckpoint[_ -]?interval\b\s*[:=]?\s*-?\d+",
+    r"\beval[_ -]?interval\b\s*[:=]?\s*-?\d+",
+    r"\bevaluation[_ -]?interval\b\s*[:=]?\s*-?\d+",
+    r"\bval[_ -]?eval[_ -]?interval\b\s*[:=]?\s*-?\d+",
+    r"\bval[_ -]?loss[_ -]?interval\b\s*[:=]?\s*-?\d+",
+    r"\blogging[_ -]?interval\b\s*[:=]?\s*-?\d+",
+)
+
 LOSS_RE = re.compile(
     r"(?<![a-z0-9_])(?:loss|loss_[a-z0-9_]*|cost)(?![a-z0-9_])\s*[:=]?\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?)",
     re.IGNORECASE,
@@ -196,6 +205,13 @@ def _has_pattern(patterns: tuple[str, ...], text: str) -> str | None:
     return None
 
 
+def _strip_allowed_log_schedule_terms(text: str) -> str:
+    cleaned = text
+    for pattern in ALLOWED_LOG_SCHEDULE_PATTERNS:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+    return cleaned
+
+
 def _validate_train_log(train_log_arg: str) -> tuple[int, dict[str, Any] | None]:
     log_path = _as_path(train_log_arg)
     if not log_path.exists():
@@ -209,10 +225,11 @@ def _validate_train_log(train_log_arg: str) -> tuple[int, dict[str, Any] | None]
         return _locked(f"fatal train-log marker: {fatal}"), None
     if re.search(r"(?<![a-z0-9_])(?:nan|\+?inf|-inf|infinity)(?![a-z0-9_])", lower):
         return _locked("non-finite train-log numeric marker"), None
-    route_hits = [token for token in FORBIDDEN_ROUTE_DRIFT if token in normalized.upper()]
+    safety_text = _strip_allowed_log_schedule_terms(normalized)
+    route_hits = [token for token in FORBIDDEN_ROUTE_DRIFT if token in safety_text.upper()]
     if route_hits:
         return _locked(f"route drift tokens in train log: {route_hits}"), None
-    marker_text = lower
+    marker_text = _strip_allowed_log_schedule_terms(lower)
     for allowed_phrase in (
         "without evaluation",
         "no evaluation",

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from opentad.acquisition.mdl_knot.diagnostics import FormalReadinessLocked, validate_shortdiag_train_log_content
 from tools.mdl_knot.validate_mdl_knot_shortdiag import _load_config_with_base, _validate_shortdiag_config
 
 
@@ -122,6 +123,68 @@ def test_shortdiag_validator_rejects_route_drift_in_log(tmp_path):
 
     assert proc.returncode != 0
     assert "route drift" in proc.stdout
+
+
+def test_shortdiag_validator_allows_common_interval_config_terms_in_log(tmp_path):
+    log_path = tmp_path / "allowed_interval_terms.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "checkpoint_interval = 1000",
+                "eval interval = -1",
+                "val_eval_interval = -1",
+                "val_loss_interval = -1",
+                "logging_interval = 1",
+                "Epoch [1] Loss 1.25 one epoch without evaluation",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    proc = _run_validator("--train-log", str(log_path))
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "SHORT_DIAGNOSTIC_ONLY_REQUEST_ALLOWED" in proc.stdout
+
+
+def test_formal_readiness_log_revalidation_allows_common_interval_config_terms(tmp_path):
+    log_path = tmp_path / "formal_allowed_interval_terms.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "checkpoint interval: 1000",
+                "evaluation_interval = -1",
+                "val eval interval = -1",
+                "val_loss_interval = -1",
+                "logging interval = 1",
+                "Epoch [1] Loss 1.25 one epoch without evaluation",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    evidence = validate_shortdiag_train_log_content(log_path)
+
+    assert evidence["finite_loss_count"] == 1
+    assert evidence["epoch_max"] == 1
+
+
+def test_shortdiag_validator_still_rejects_real_interval_route_drift_in_log(tmp_path):
+    log_path = tmp_path / "real_interval_route_drift.log"
+    log_path.write_text("Epoch [1] Loss 1.25 INTERVAL selector route drift", encoding="utf-8")
+
+    proc = _run_validator("--train-log", str(log_path))
+
+    assert proc.returncode != 0
+    assert "route drift" in proc.stdout
+
+
+def test_formal_readiness_log_revalidation_rejects_real_interval_route_drift(tmp_path):
+    log_path = tmp_path / "formal_real_interval_route_drift.log"
+    log_path.write_text("Epoch [1] Loss 1.25 INTERVAL selector route drift", encoding="utf-8")
+
+    with pytest.raises(FormalReadinessLocked, match="route drift"):
+        validate_shortdiag_train_log_content(log_path)
 
 
 @pytest.mark.parametrize("token", ["GlobalRank", "GLOBAL_RANK", "GLOBAL-RANK", "GLOBAL RANK"])

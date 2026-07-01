@@ -43,6 +43,9 @@ This fix does not reduce `mdl_knot_scout_max_frames` or coarse raw scout coverag
   - `selector_and_structural_handoff_s`;
   - `sparse_decode_s`.
 - Updated MDL config and launch/precheck gates to require `MDLKnotDecordDecode`.
+- Hardened the short-diagnostic log validator and formal-readiness train-log revalidation against false
+  `INTERVAL` route-drift positives from ordinary schedule keys such as `checkpoint_interval`,
+  `eval interval`, and `logging interval`, while still rejecting real Interval-route drift text.
 - Added focused regression coverage for no scout-budget reduction, raw scout provenance, no dense raw handoff, profile separation, cache/dedup decode behavior, and selected-position/mask preservation.
 
 ## Changed Files
@@ -52,9 +55,12 @@ This fix does not reduce `mdl_knot_scout_max_frames` or coarse raw scout coverag
 - `opentad/acquisition/mdl_knot/diagnostics.py`
 - `configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3.py`
 - `tools/mdl_knot/validate_mdl_knot_launch_gate.py`
+- `tools/mdl_knot/validate_mdl_knot_shortdiag.py`
 - `tools/mdl_knot/audit_mdl_knot_pipeline_precheck.py`
 - `tests/test_mdl_knot_tools_and_integration.py`
+- `tests/test_mdl_knot_shortdiag.py`
 - `opentad/datasets/transforms/formatting.py`
+- `research-wiki/experiments/SPARSE_TAD_TASK_FLOW_TRACKER_20260520.md`
 - `research-wiki/log.md`
 - `research-wiki/experiments/DIVERGENT_MDL_KNOT_HANDOFF_SPEEDFIX_20260701.md`
 
@@ -79,6 +85,32 @@ This fix does not reduce `mdl_knot_scout_max_frames` or coarse raw scout coverag
   - Output begins: `PRECHECK_ONLY_REQUEST_ALLOWED`.
   - Evidence includes: `"decoder_type": "MDLKnotDecordDecode"`, `"deploy_scout_source": "raw_frame_motion_scout_with_metadata_fallback"`, and all safety flags true.
   - Output ends with locks for remote sync, Slurm, training, evaluation, `tools/test.py`, and mAP/runtime/FLOPs/deploy/paper claims.
+
+## Follow-up Interval Allowlist Revalidation
+
+Timestamp: 2026-07-01 14:37:21 +08:00 Asia/Shanghai
+
+- Scope: local validator/formal-readiness safety fix only; no remote sync, Slurm, training, evaluation, Pro/Oracle/Rosetta, or `tools/test.py`.
+- `python -m py_compile opentad/acquisition/mdl_knot/diagnostics.py tools/mdl_knot/validate_mdl_knot_shortdiag.py tests/test_mdl_knot_shortdiag.py`
+  - Exit code: `0`.
+- `python -m pytest tests/test_mdl_knot_shortdiag.py -q`
+  - Exit code: `0`.
+  - Output: `17 passed in 3.93s`.
+- `python tools/mdl_knot/validate_mdl_knot_shortdiag.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py`
+  - Exit code: `0`.
+  - Output begins: `SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED`.
+  - Evidence keeps `validated=false`, `execution_evidence_required_for_formal_readiness=true`, and `formal_train_unlocked=false`.
+- `python -m pytest tests/test_mdl_knot_core.py tests/test_mdl_knot_tools_and_integration.py tests/test_mdl_knot_shortdiag.py -q`
+  - Exit code: `0`.
+  - Output: `47 passed, 2 skipped in 24.75s`.
+- `python tools/mdl_knot/validate_mdl_knot_shortdiag.py --config configs/adatad/thumos/input_mdl_knot_dynamic_adapter_irregular_headv3_shortdiag.py --train-log <temp allowed interval log>`
+  - Exit code: `0`.
+  - Output begins: `SHORT_DIAGNOSTIC_ONLY_REQUEST_ALLOWED`.
+  - Evidence keeps `formal_train_unlocked=false`, `full_train_unlocked=false`, `metric_claim=false`, `sparse_compute_claim=false`.
+- Added focused regression coverage that `checkpoint/eval/evaluation/val_eval/val_loss/logging interval` schedule text is stripped before route-drift and eval/checkpoint claim checks in both the CLI validator and `validate_shortdiag_train_log_content()`.
+- Real `INTERVAL selector route drift` remains rejected in both paths.
+- Git push attempt to `pcot-yuzbo` failed once with GitHub port 443 connectivity timeout; no retry was made.
+- Status remains `PRECHECK/SHORT_DIAGNOSTIC_ONLY`; formal full training is still locked.
 
 ## Claim State
 
