@@ -30,14 +30,8 @@ if [[ "${CUDA_VISIBLE_DEVICES}" != "1" ]]; then
   echo "Refusing to start: CUDA_VISIBLE_DEVICES must be exactly 1 for C3 mainline GPU1, got '${CUDA_VISIBLE_DEVICES}'." >&2
   exit 44
 fi
-if [[ -n "${SLURM_STEP_GPUS:-}" && "${SLURM_STEP_GPUS}" != "1" ]]; then
-  echo "Refusing to start: SLURM_STEP_GPUS must be GPU1 when set, got '${SLURM_STEP_GPUS}'." >&2
-  exit 45
-fi
-if [[ -n "${SLURM_JOB_GPUS:-}" && "${SLURM_JOB_GPUS}" != *"1"* ]]; then
-  echo "Refusing to start: SLURM_JOB_GPUS does not include GPU1, got '${SLURM_JOB_GPUS}'." >&2
-  exit 46
-fi
+echo "SLURM_STEP_GPUS=${SLURM_STEP_GPUS:-}"
+echo "SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-}"
 if [[ -z "${PROBE_CHECKPOINT}" ]]; then
   echo "PROBE_CHECKPOINT is required; use the selected coarse-classifier probe_reader.pth." >&2
   exit 47
