@@ -631,3 +631,31 @@ Current decision:
 - One-epoch `SHORT_DIAGNOSTIC_ONLY` may follow only after remote precheck passes.
 - Formal/full long training, `tools/test.py`, evaluation, checkpoints, and all
   mAP/runtime/FLOPs/deploy/paper/sparse-compute claims remain locked.
+
+## 2026-07-01 remote PRECHECK_ONLY rerun passed
+
+Timestamp: `2026-07-01 08:36:33 +08:00`.
+
+Remote route-owned precheck copy:
+
+`/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7`
+
+Remote log directory:
+
+`/data/run01/sczc063/yuzibo/OpenTAD_MDLKnot_SampledRawFix_Precheck_20260701_f5fe3a7/logs/mdl_knot_sampledraw_fix_precheck_f5fe3a7/`
+
+Remote verification:
+
+- `py_compile.log`: empty/pass.
+- `launch_gate.log`: `PRECHECK_ONLY_REQUEST_ALLOWED`.
+- `launch_gate_with_summary.log`: `PRECHECK_ONLY_REQUEST_ALLOWED` after consuming the generated precheck summary.
+- `shortdiag_gate.log`: `SHORT_DIAGNOSTIC_CONFIG_STATIC_CHECK_ALLOWED`, `validated=false`.
+- `pytest.log`: `60 passed in 204.98s (0:03:24)`.
+
+Current decision:
+
+- The sampled_raw/full-observation edge repair and sparse-compute claim-lock schema fix now pass remote `PRECHECK_ONLY`.
+- This unlocks only a one-epoch `SHORT_DIAGNOSTIC_ONLY` attempt when GPU0 is free.
+- It does not unlock formal/full long training, evaluation, checkpoints,
+  `tools/test.py`, mAP/runtime/FLOPs/deploy/paper claims, or any sparse-compute
+  claim.
