@@ -287,3 +287,11 @@ Decision:
 - This repair does not prove RBA-RBR works and does not unlock formal/full training.
 - It prepares a next `SHORT_DIAGNOSTIC_ONLY` run to test whether candidate explosion is a dominant failure mode after coverage/gap repair.
 - Final mAP, runtime/FLOPs, sparse-compute, deploy, and paper claims remain locked pending valid Pro diagnosis or explicit user override.
+
+GitHub evidence:
+
+- Ordinary `git push` failed with `Recv failure: Connection was reset`.
+- Evidence branch: `codex/divergent-rba-rbr-postprocess-guard-546ed615-20260701`.
+- Local commit: `546ed6159c2155633981050ae102547de03ea6bc`.
+- GitHub synced ref: `6ba723abe4f5b2eca7c38f71c5b14872d637dbaa`.
+- URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-postprocess-guard-546ed615-20260701`.
