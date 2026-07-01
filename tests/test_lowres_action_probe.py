@@ -11,6 +11,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 PROBE_PATH = ROOT / "tools" / "bata" / "train_lowres_action_probe.py"
 LOWRES_PROBE_SCRIPT = ROOT / "scripts" / "run_c3_lowres_action_probe_inside_pcot_dbg2g_v2_20260625.sh"
+TCN_PROBE_GPU1_SCRIPT = ROOT / "scripts" / "run_c3_tcn_coarse_probe_gpu1_20260701.sh"
 
 
 def load_probe_module():
@@ -199,6 +200,7 @@ def test_prepare_probe_inputs_keeps_c3_descriptors_and_mobilenet_images():
 
     assert probe.prepare_probe_inputs("inputs", probe_model="c3-reader", spatial_size=4) == ("c3", 4, True)
     assert probe.prepare_probe_inputs("inputs", probe_model="mobilenetv3", spatial_size=4) == ("mobilenet", 4, False)
+    assert probe.prepare_probe_inputs("inputs", probe_model="temporal-tcn", spatial_size=4) == ("mobilenet", 4, False)
 
 
 def test_apply_dataset_overrides_updates_all_configured_splits():
@@ -601,6 +603,31 @@ def test_parse_args_supports_mobilenetv3_32_64_probe_without_detector_path():
     assert not hasattr(args, "detector_checkpoint")
 
 
+def test_parse_args_supports_temporal_tcn_variants_and_rejects_unknown_variant():
+    probe = load_probe_module()
+
+    args = probe.parse_args(
+        [
+            "--probe-model",
+            "temporal-tcn",
+            "--scout-spatial-size",
+            "64",
+            "--tcn-variants",
+            "lite",
+            "dilated",
+            "multiscale",
+            "motion",
+        ]
+    )
+
+    assert args.probe_model == "temporal-tcn"
+    assert args.scout_spatial_size == 64
+    assert args.tcn_variants == ["lite", "dilated", "multiscale", "motion"]
+
+    with pytest.raises(SystemExit):
+        probe.parse_args(["--probe-model", "temporal-tcn", "--tcn-variants", "unknown"])
+
+
 def test_parse_args_accepts_zero_batch_caps_as_explicit_unlimited_probe_mode():
     probe = load_probe_module()
 
@@ -619,6 +646,20 @@ def test_lowres_probe_v2_launcher_uses_c3_a_config_and_positive_batch_caps():
     assert "--max-val-batches 20" in text
     assert "--max-train-batches 0" not in text
     assert "--max-val-batches 0" not in text
+
+
+def test_tcn_probe_gpu1_launcher_fail_closes_and_runs_all_variants():
+    text = TCN_PROBE_GPU1_SCRIPT.read_text(encoding="utf-8")
+
+    assert "OpenTAD_C3TCNCoarseProbe_20260701" in text
+    assert "OpenTAD_Back_clean_20260629_588b272" not in text
+    assert 'CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"' in text
+    assert 'if [[ "${CUDA_VISIBLE_DEVICES}" != "1" ]]' in text
+    assert "--probe-model temporal-tcn" in text
+    assert "--scout-spatial-size 64" in text
+    assert "--tcn-variants lite dilated multiscale motion" in text
+    assert "--mobilenet-sizes" not in text
+    assert "SLURM_STEP_GPUS" in text
 
 
 def test_parse_args_exposes_seed_for_reproducible_probe_runs():
@@ -667,10 +708,39 @@ def test_multisize_summary_directory_layout_is_size_specific():
         mobilenet_path = probe._probe_out_dir(root, probe_model="mobilenetv3", spatial_size=32, multi_size=True)
         mobilenet_single = probe._probe_out_dir(root, probe_model="mobilenetv3", spatial_size=32, multi_size=False)
         c3_path = probe._probe_out_dir(root, probe_model="c3-reader", spatial_size=32, multi_size=True)
+        tcn_path = probe._probe_out_dir(
+            root,
+            probe_model="temporal-tcn",
+            spatial_size=64,
+            multi_size=False,
+            tcn_variant="lite",
+            multi_variant=True,
+        )
 
         assert mobilenet_path == root / "mobilenetv3_32"
         assert mobilenet_single == root
         assert c3_path == root
+        assert tcn_path == root / "temporal_tcn_lite_64"
+
+
+def test_build_probe_model_supports_temporal_tcn_branch(monkeypatch):
+    probe = load_probe_module()
+    captured = {}
+
+    class FakeTemporalTCN:
+        def __init__(self, *, variant, spatial_size):
+            captured["variant"] = variant
+            captured["spatial_size"] = spatial_size
+
+    monkeypatch.setattr(probe, "C3TemporalTCNActionProbe", FakeTemporalTCN)
+    args = probe.parse_args(["--probe-model", "temporal-tcn", "--tcn-variants", "dilated"])
+    args.tcn_variant = "dilated"
+
+    model, reader_cfg = probe._build_probe_model(args, cfg=types.SimpleNamespace(), spatial_size=64)
+
+    assert isinstance(model, FakeTemporalTCN)
+    assert reader_cfg is None
+    assert captured == {"variant": "dilated", "spatial_size": 64}
 
 
 def test_multisize_mobilenet_summary_exposes_per_size_results():
@@ -698,6 +768,41 @@ def test_multisize_mobilenet_summary_exposes_per_size_results():
     assert combined["mobilenetv3_32"]["out_dir"] == "root/mobilenetv3_32"
     assert combined["mobilenetv3_64"]["out_dir"] == "root/mobilenetv3_64"
     assert combined["comparison"]["average_precision_delta_64_minus_32"] == pytest.approx(0.2)
+
+
+def test_tcn_variant_summary_exposes_per_variant_results():
+    probe = load_probe_module()
+
+    summaries = [
+        {
+            "probe_model": "temporal-tcn",
+            "tcn_variant": "lite",
+            "spatial_size": 64,
+            "final_val": {"average_precision": 0.55, "roc_auc": 0.61},
+            "out_dir": "root/temporal_tcn_lite_64",
+        },
+        {
+            "probe_model": "temporal-tcn",
+            "tcn_variant": "motion",
+            "spatial_size": 64,
+            "final_val": {"average_precision": 0.66, "roc_auc": 0.72},
+            "out_dir": "root/temporal_tcn_motion_64",
+        },
+    ]
+
+    combined = probe._combine_tcn_variant_summaries(
+        base_summary={"probe_model": "temporal-tcn", "seed": 3},
+        summaries=summaries,
+        args_out_dir=Path("root"),
+    )
+
+    assert combined["schema_version"] == "lowres_action_probe_tcn_variants_v1"
+    assert combined["probe_model"] == "temporal-tcn"
+    assert combined["tcn_variants"] == ["lite", "motion"]
+    assert combined["temporal_tcn_lite"]["out_dir"] == "root/temporal_tcn_lite_64"
+    assert combined["temporal_tcn_motion"]["out_dir"] == "root/temporal_tcn_motion_64"
+    assert combined["comparison"]["best_average_precision_variant"] == "motion"
+    assert combined["comparison"]["average_precision_by_variant"]["lite"] == 0.55
 
 
 def test_load_torch_state_dict_accepts_probe_state_dict(tmp_path):

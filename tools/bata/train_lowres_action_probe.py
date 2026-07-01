@@ -21,6 +21,7 @@ SUPPORTED_C3_READER_TYPES = {
     "PCOTMRASBoundaryDifficultyTemporalFrameScout",
     "PCOTMRASCoarseActionnessFrameScout",
 }
+SUPPORTED_TCN_VARIANTS = ("lite", "dilated", "multiscale", "motion")
 
 
 def _as_nested_list(value: Any) -> Any:
@@ -1087,6 +1088,154 @@ class C3MobileNetV3ActionProbe:
         return self.module.load_state_dict(state_dict)
 
 
+class C3TemporalTCNActionProbe:
+    """Low-resolution frame-image TCN probe for action/background diagnostics."""
+
+    def __init__(
+        self,
+        *,
+        variant: str = "lite",
+        spatial_size: int = 64,
+        hidden_dim: int = 96,
+        dropout: float = 0.10,
+    ) -> None:
+        if variant not in SUPPORTED_TCN_VARIANTS:
+            raise ValueError(f"unsupported temporal-tcn variant: {variant}")
+        torch, _F = _import_torch()
+        import torch.nn as nn  # type: ignore
+
+        self.variant = str(variant)
+        self.spatial_size = int(spatial_size)
+        self.hidden_dim = int(hidden_dim)
+        in_channels = 6 if self.variant == "motion" else 3
+        stem_dim = 32 if self.variant == "lite" else 48
+        temporal_dim = max(32, int(hidden_dim))
+
+        self.module = nn.Module()
+        self.spatial_stem = nn.Sequential(
+            nn.Conv2d(in_channels, stem_dim, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(stem_dim),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(stem_dim, temporal_dim, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(temporal_dim),
+            nn.SiLU(inplace=True),
+            nn.AdaptiveAvgPool2d(1),
+        )
+        self.module.spatial_stem = self.spatial_stem
+
+        if self.variant == "lite":
+            self.temporal = nn.Sequential(
+                nn.Conv1d(temporal_dim, temporal_dim, kernel_size=3, padding=1, groups=temporal_dim, bias=False),
+                nn.BatchNorm1d(temporal_dim),
+                nn.SiLU(inplace=True),
+                nn.Conv1d(temporal_dim, temporal_dim, kernel_size=1, bias=False),
+                nn.BatchNorm1d(temporal_dim),
+                nn.SiLU(inplace=True),
+                nn.Dropout(float(dropout)),
+            )
+            self.temporal_branches = None
+            classifier_in = temporal_dim
+        elif self.variant == "dilated":
+            blocks = []
+            for dilation in (1, 2, 4, 8):
+                blocks.extend(
+                    [
+                        nn.Conv1d(
+                            temporal_dim,
+                            temporal_dim,
+                            kernel_size=3,
+                            padding=int(dilation),
+                            dilation=int(dilation),
+                            bias=False,
+                        ),
+                        nn.BatchNorm1d(temporal_dim),
+                        nn.SiLU(inplace=True),
+                        nn.Dropout(float(dropout)),
+                    ]
+                )
+            self.temporal = nn.Sequential(*blocks)
+            self.temporal_branches = None
+            classifier_in = temporal_dim
+        elif self.variant == "multiscale":
+            self.temporal = None
+            self.temporal_branches = nn.ModuleList(
+                [
+                    nn.Sequential(
+                        nn.Conv1d(temporal_dim, temporal_dim, kernel_size=kernel, padding=kernel // 2, bias=False),
+                        nn.BatchNorm1d(temporal_dim),
+                        nn.SiLU(inplace=True),
+                    )
+                    for kernel in (3, 5, 9)
+                ]
+            )
+            self.module.temporal_branches = self.temporal_branches
+            classifier_in = temporal_dim * 3
+        else:
+            self.temporal = nn.Sequential(
+                nn.Conv1d(temporal_dim, temporal_dim, kernel_size=5, padding=2, bias=False),
+                nn.BatchNorm1d(temporal_dim),
+                nn.SiLU(inplace=True),
+                nn.Conv1d(temporal_dim, temporal_dim, kernel_size=3, padding=2, dilation=2, bias=False),
+                nn.BatchNorm1d(temporal_dim),
+                nn.SiLU(inplace=True),
+                nn.Dropout(float(dropout)),
+            )
+            self.temporal_branches = None
+            classifier_in = temporal_dim
+        if self.temporal is not None:
+            self.module.temporal = self.temporal
+        self.classifier = nn.Conv1d(classifier_in, 1, kernel_size=1)
+        self.module.classifier = self.classifier
+
+    def __call__(self, frames: Any, valid: Any, time_coords: Any | None = None):
+        torch, _F = _import_torch()
+        if frames.ndim != 5:
+            raise ValueError(f"Temporal TCN probe expects [B,T,C,H,W], got {tuple(frames.shape)}")
+        batch, dense_len, channels, height, width = frames.shape
+        if int(channels) != 3:
+            raise ValueError("Temporal TCN probe expects RGB frame tensors with 3 channels")
+        frames = frames.float()
+        if bool((frames.detach().abs().amax() > 2.0).item()):
+            frames = frames / 255.0
+        if self.variant == "motion":
+            motion = torch.zeros_like(frames)
+            if int(dense_len) > 1:
+                motion[:, 1:] = (frames[:, 1:] - frames[:, :-1]).abs()
+            frames = torch.cat([frames, motion], dim=2)
+            channels = int(channels) * 2
+        flat = frames.reshape(batch * dense_len, channels, height, width)
+        features = self.spatial_stem(flat).flatten(1).reshape(batch, dense_len, -1).transpose(1, 2)
+        if self.temporal_branches is not None:
+            features = torch.cat([branch(features) for branch in self.temporal_branches], dim=1)
+        elif self.temporal is not None:
+            features = self.temporal(features)
+        logits = self.classifier(features).squeeze(1)
+        if hasattr(valid, "to"):
+            valid = valid.to(device=logits.device).bool()
+        return logits.masked_fill(~valid, 0.0)
+
+    def train(self):
+        self.module.train()
+        return self
+
+    def eval(self):
+        self.module.eval()
+        return self
+
+    def to(self, *args, **kwargs):
+        self.module.to(*args, **kwargs)
+        return self
+
+    def parameters(self):
+        return self.module.parameters()
+
+    def state_dict(self):
+        return self.module.state_dict()
+
+    def load_state_dict(self, state_dict):
+        return self.module.load_state_dict(state_dict)
+
+
 def make_lowres_descriptors(inputs: Any, *, scout_spatial_size: int = 32, normalize: bool = True):
     """Match the C3 compressed-pixel scout descriptor contract: [B,T,3*S*S]."""
 
@@ -1149,7 +1298,7 @@ def make_lowres_frame_images(inputs: Any, *, spatial_size: int = 32, normalize: 
 def prepare_probe_inputs(inputs: Any, *, probe_model: str, spatial_size: int):
     if probe_model == "c3-reader":
         return make_lowres_descriptors(inputs, scout_spatial_size=int(spatial_size))
-    if probe_model == "mobilenetv3":
+    if probe_model in {"mobilenetv3", "temporal-tcn"}:
         return make_lowres_frame_images(inputs, spatial_size=int(spatial_size))
     raise ValueError(f"unsupported probe_model: {probe_model}")
 
@@ -1271,6 +1420,7 @@ def train_one_epoch(
     total_epochs: int,
     progress_path: Path | None,
     log_every_batches: int,
+    tcn_variant: str | None = None,
 ) -> dict[str, Any]:
     torch, F = _import_torch()
     model.train()
@@ -1286,6 +1436,7 @@ def train_one_epoch(
         epoch=epoch,
         total_epochs=total_epochs,
         expected_batches=total_batches,
+        tcn_variant=tcn_variant,
     )
     for batch_idx, batch in enumerate(dataloader):
         if max_batches > 0 and batch_idx >= max_batches:
@@ -1310,6 +1461,7 @@ def train_one_epoch(
                 expected_batches=total_batches,
                 loss=loss_sum / float(max(batch_count, 1)),
                 last_loss=float(loss.detach().cpu().item()),
+                tcn_variant=tcn_variant,
             )
     if batch_count <= 0:
         raise ValueError("train_one_epoch processed zero batches; check max_train_batches and the dataloader")
@@ -1318,7 +1470,7 @@ def train_one_epoch(
         "batches": batch_count,
         "seconds": time.time() - start_time,
     }
-    _emit_progress(progress_path, "train_epoch_end", epoch=epoch, total_epochs=total_epochs, **stats)
+    _emit_progress(progress_path, "train_epoch_end", epoch=epoch, total_epochs=total_epochs, tcn_variant=tcn_variant, **stats)
     return stats
 
 
@@ -1338,6 +1490,7 @@ def evaluate(
     coverage_budget: int | None,
     boundary_radius: int,
     sample_jsonl_path: Path | None = None,
+    tcn_variant: str | None = None,
 ) -> dict[str, Any]:
     torch, _F = _import_torch()
     model.eval()
@@ -1357,6 +1510,7 @@ def evaluate(
         epoch=epoch,
         total_epochs=total_epochs,
         expected_batches=total_batches,
+        tcn_variant=tcn_variant,
     )
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
@@ -1383,6 +1537,7 @@ def evaluate(
                     epoch=epoch,
                     batch=batch_count,
                     expected_batches=total_batches,
+                    tcn_variant=tcn_variant,
                 )
     if batch_count <= 0:
         raise ValueError("evaluate processed zero validation batches; check max_val_batches and the dataloader")
@@ -1413,6 +1568,7 @@ def evaluate(
         for row in indirect_quality["per_sample_rows"]:
             sample_row = dict(row)
             sample_row["probe_model"] = probe_model
+            sample_row["tcn_variant"] = tcn_variant
             sample_row["spatial_size"] = int(scout_spatial_size)
             sample_rows.append(sample_row)
         _write_jsonl(sample_jsonl_path, sample_rows)
@@ -1423,11 +1579,13 @@ def evaluate(
         metrics["indirect_selection_sample_jsonl"] = str(sample_jsonl_path)
         metrics["indirect_selection_quality"] = compact_indirect_quality
         metrics["probe_model"] = probe_model
+        metrics["tcn_variant"] = tcn_variant
         metrics["spatial_size"] = int(scout_spatial_size)
         metrics["indirect_selection_baseline"] = compact_indirect_quality.get("baseline")
         metrics["indirect_selection_delta"] = compact_indirect_quality.get("delta")
     metrics["batches"] = batch_count
     metrics["seconds"] = time.time() - start_time
+    metrics["tcn_variant"] = tcn_variant
     _emit_progress(progress_path, "val_epoch_end", epoch=epoch, total_epochs=total_epochs, **metrics)
     return metrics
 
@@ -1624,9 +1782,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1.0e-4)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--probe-model", choices=("c3-reader", "mobilenetv3"), default="c3-reader")
+    parser.add_argument("--probe-model", choices=("c3-reader", "mobilenetv3", "temporal-tcn"), default="c3-reader")
     parser.add_argument("--scout-spatial-size", type=int, default=32)
     parser.add_argument("--mobilenet-sizes", type=int, nargs="+", default=[32, 64])
+    parser.add_argument("--tcn-variants", nargs="+", default=list(SUPPORTED_TCN_VARIANTS))
     parser.add_argument("--mobilenet-weights-path", default=None, help="Optional local MobileNetV3 checkpoint path for offline pretrained loading.")
     parser.add_argument("--probe-checkpoint", default=None, help="Optional full probe checkpoint saved by --save-checkpoint.")
     parser.add_argument("--mobilenet-pretrained", dest="mobilenet_pretrained", action="store_true", default=True)
@@ -1657,7 +1816,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--max-train-batches must be >= 0")
     if int(args.max_val_batches) < 0:
         parser.error("--max-val-batches must be >= 0")
+    unsupported_tcn_variants = [variant for variant in args.tcn_variants if variant not in SUPPORTED_TCN_VARIANTS]
+    if unsupported_tcn_variants:
+        parser.error(f"--tcn-variants must be drawn from {list(SUPPORTED_TCN_VARIANTS)}, got {unsupported_tcn_variants}")
     return args
+
+
+def _active_tcn_variant(args: argparse.Namespace, explicit_variant: str | None = None) -> str | None:
+    if args.probe_model != "temporal-tcn":
+        return None
+    variant = explicit_variant if explicit_variant is not None else getattr(args, "tcn_variant", None)
+    if variant is None:
+        variants = list(getattr(args, "tcn_variants", []))
+        variant = variants[0] if variants else "lite"
+    if variant not in SUPPORTED_TCN_VARIANTS:
+        raise ValueError(f"unsupported temporal-tcn variant: {variant}")
+    return str(variant)
 
 
 def _build_probe_model(args: argparse.Namespace, cfg: Any, *, spatial_size: int):
@@ -1675,12 +1849,32 @@ def _build_probe_model(args: argparse.Namespace, cfg: Any, *, spatial_size: int)
             ),
             None,
         )
+    if args.probe_model == "temporal-tcn":
+        return (
+            C3TemporalTCNActionProbe(
+                variant=str(_active_tcn_variant(args)),
+                spatial_size=int(spatial_size),
+            ),
+            None,
+        )
     raise ValueError(f"unsupported probe_model: {args.probe_model}")
 
 
-def _probe_out_dir(base_out_dir: Path, *, probe_model: str, spatial_size: int, multi_size: bool) -> Path:
+def _probe_out_dir(
+    base_out_dir: Path,
+    *,
+    probe_model: str,
+    spatial_size: int,
+    multi_size: bool,
+    tcn_variant: str | None = None,
+    multi_variant: bool = False,
+) -> Path:
     if probe_model == "mobilenetv3" and multi_size:
         return base_out_dir / f"mobilenetv3_{int(spatial_size)}"
+    if probe_model == "temporal-tcn" and multi_variant:
+        if not tcn_variant:
+            raise ValueError("tcn_variant is required for temporal-tcn multi-variant output")
+        return base_out_dir / f"temporal_tcn_{tcn_variant}_{int(spatial_size)}"
     return base_out_dir
 
 
@@ -1738,6 +1932,56 @@ def _combine_multisize_summaries(*, base_summary: Mapping[str, Any], summaries: 
     return combined
 
 
+def _combine_tcn_variant_summaries(*, base_summary: Mapping[str, Any], summaries: Sequence[Mapping[str, Any]], args_out_dir: Path) -> dict[str, Any]:
+    combined: dict[str, Any] = {
+        "schema_version": "lowres_action_probe_tcn_variants_v1",
+        "purpose": base_summary.get("purpose", "diagnostic_only_action_vs_background_frame_probe"),
+        "probe_model": "temporal-tcn",
+        "diagnostic_only": True,
+        "not_connected_to_detector": True,
+        "no_detector_training": True,
+        "no_detector_eval": True,
+        "no_detector_map": True,
+        "seed": base_summary.get("seed"),
+        "out_dir": str(args_out_dir),
+        "tcn_variants": [],
+        "summaries": list(summaries),
+    }
+    average_precision_by_variant: dict[str, Any] = {}
+    roc_auc_by_variant: dict[str, Any] = {}
+    balanced_accuracy_by_variant: dict[str, Any] = {}
+    boundary_support_by_variant: dict[str, Any] = {}
+    for summary in summaries:
+        variant = summary.get("tcn_variant")
+        if not variant:
+            continue
+        variant = str(variant)
+        combined["tcn_variants"].append(variant)
+        combined[f"temporal_tcn_{variant}"] = summary
+        final_val = summary.get("final_val", {})
+        average_precision_by_variant[variant] = final_val.get("average_precision")
+        roc_auc_by_variant[variant] = final_val.get("roc_auc")
+        balanced_accuracy_by_variant[variant] = final_val.get("balanced_accuracy")
+        boundary_support_by_variant[variant] = final_val.get("sampling_quality", {}).get("boundary_support_r1")
+
+    valid_ap = {
+        variant: float(value)
+        for variant, value in average_precision_by_variant.items()
+        if value is not None
+    }
+    best_average_precision_variant = None
+    if valid_ap:
+        best_average_precision_variant = max(valid_ap, key=lambda variant: valid_ap[variant])
+    combined["comparison"] = {
+        "average_precision_by_variant": average_precision_by_variant,
+        "roc_auc_by_variant": roc_auc_by_variant,
+        "balanced_accuracy_by_variant": balanced_accuracy_by_variant,
+        "boundary_support_r1_by_variant": boundary_support_by_variant,
+        "best_average_precision_variant": best_average_precision_variant,
+    }
+    return combined
+
+
 def _run_probe_experiment(
     *,
     args: argparse.Namespace,
@@ -1745,6 +1989,8 @@ def _run_probe_experiment(
     spatial_size: int,
     multi_size: bool,
     seed: int,
+    tcn_variant: str | None = None,
+    multi_variant: bool = False,
 ) -> dict[str, Any]:
     torch, _F = _import_torch()
     _seed_everything(seed)
@@ -1768,16 +2014,27 @@ def _run_probe_experiment(
             probe_window_size=args.probe_window_size,
         )
     train_loader, val_loader = _build_dataloaders(cfg, batch_size=args.batch_size, num_workers=args.num_workers, seed=seed)
-    device = args.device
-    model, reader_cfg = _build_probe_model(args, cfg, spatial_size=spatial_size)
+    active_tcn_variant = _active_tcn_variant(args, tcn_variant)
+    run_args = copy.copy(args)
+    if active_tcn_variant is not None:
+        setattr(run_args, "tcn_variant", active_tcn_variant)
+    device = run_args.device
+    model, reader_cfg = _build_probe_model(run_args, cfg, spatial_size=spatial_size)
     checkpoint_load_result = None
-    if args.probe_checkpoint:
-        checkpoint_load_result = str(_load_probe_checkpoint(model, args.probe_checkpoint))
+    if run_args.probe_checkpoint:
+        checkpoint_load_result = str(_load_probe_checkpoint(model, run_args.probe_checkpoint))
     model = model.to(device)
-    optimizer = None if args.coverage_only else torch.optim.AdamW(model.parameters(), lr=float(args.lr), weight_decay=0.01)
-    out_dir = Path(args.out_dir)
-    out_dir = _probe_out_dir(out_dir, probe_model=args.probe_model, spatial_size=spatial_size, multi_size=multi_size)
-    sample_jsonl_path = Path(args.sample_jsonl) if args.sample_jsonl else out_dir / "samples.jsonl"
+    optimizer = None if run_args.coverage_only else torch.optim.AdamW(model.parameters(), lr=float(run_args.lr), weight_decay=0.01)
+    out_dir = Path(run_args.out_dir)
+    out_dir = _probe_out_dir(
+        out_dir,
+        probe_model=run_args.probe_model,
+        spatial_size=spatial_size,
+        multi_size=multi_size,
+        tcn_variant=active_tcn_variant,
+        multi_variant=multi_variant,
+    )
+    sample_jsonl_path = Path(run_args.sample_jsonl) if run_args.sample_jsonl and not multi_variant else out_dir / "samples.jsonl"
     progress_path = out_dir / "progress.jsonl"
     if progress_path.exists():
         progress_path.unlink()
@@ -1785,7 +2042,7 @@ def _run_probe_experiment(
     _emit_progress(
         progress_path,
         "run_start",
-        config=str(args.config),
+        config=str(run_args.config),
         device=device,
         epochs=total_epochs,
         train_batches=len(train_loader) if hasattr(train_loader, "__len__") else None,
@@ -1795,14 +2052,15 @@ def _run_probe_experiment(
         batch_size=int(args.batch_size),
         num_workers=int(args.num_workers),
         seed=int(seed),
-        probe_model=args.probe_model,
+        probe_model=run_args.probe_model,
+        tcn_variant=active_tcn_variant,
         scout_spatial_size=int(spatial_size),
         spatial_size=int(spatial_size),
         coverage_only=bool(args.coverage_only),
         coverage_budget=args.coverage_budget,
         coverage_budget_fraction=float(args.coverage_budget_fraction),
         boundary_radius=int(args.boundary_radius),
-        probe_checkpoint=str(args.probe_checkpoint) if args.probe_checkpoint else None,
+        probe_checkpoint=str(run_args.probe_checkpoint) if run_args.probe_checkpoint else None,
         probe_checkpoint_load_result=checkpoint_load_result,
         dataset_overrides=dataset_overrides,
         pipeline_rewrites=pipeline_rewrites,
@@ -1824,19 +2082,20 @@ def _run_probe_experiment(
                 optimizer=optimizer,
                 device=device,
                 scout_spatial_size=int(spatial_size),
-                probe_model=args.probe_model,
+                probe_model=run_args.probe_model,
                 max_batches=int(args.max_train_batches),
                 epoch=epoch,
                 total_epochs=total_epochs,
                 progress_path=progress_path,
                 log_every_batches=int(args.log_every_batches),
+                tcn_variant=active_tcn_variant,
             )
         val_metrics = evaluate(
             model=model,
             dataloader=val_loader,
             device=device,
             scout_spatial_size=int(spatial_size),
-            probe_model=args.probe_model,
+            probe_model=run_args.probe_model,
             max_batches=int(args.max_val_batches),
             epoch=epoch,
             total_epochs=loop_epochs,
@@ -1846,6 +2105,7 @@ def _run_probe_experiment(
             coverage_budget=args.coverage_budget,
             boundary_radius=int(args.boundary_radius),
             sample_jsonl_path=sample_jsonl_path,
+            tcn_variant=active_tcn_variant,
         )
         compact_val_metrics = _compact_metric_payload(val_metrics)
         history.append({"epoch": epoch, "train": train_stats, "val": compact_val_metrics})
@@ -1861,19 +2121,22 @@ def _run_probe_experiment(
             val_best_f1=val_metrics.get("best_f1"),
             val_positive_rate=val_metrics.get("positive_rate"),
             val_batches=val_metrics.get("batches"),
+            tcn_variant=active_tcn_variant,
         )
 
     final_val = _compact_metric_payload(val_metrics)
     summary = {
         "schema_version": "c3_lowres_action_probe_v0",
         "purpose": "diagnostic_only_action_vs_background_frame_probe",
-        "config": str(args.config),
+        "config": str(run_args.config),
         "dataset_overrides": dataset_overrides,
         "pipeline_rewrites": pipeline_rewrites,
         "reader_type": reader_cfg.get("type") if reader_cfg is not None else None,
         "reader_cfg": reader_cfg,
-        "probe_model": args.probe_model,
+        "probe_model": run_args.probe_model,
+        "tcn_variant": active_tcn_variant,
         "spatial_size": int(spatial_size),
+        "out_dir": str(out_dir),
         "diagnostic_only": True,
         "not_connected_to_detector": True,
         "supervision": "train_gt_action_inside_window_only",
@@ -1886,11 +2149,11 @@ def _run_probe_experiment(
         "coverage_budget_fraction": float(args.coverage_budget_fraction),
         "boundary_radius": int(args.boundary_radius),
         "seed": int(seed),
-        "mobilenet_weights_path": str(args.mobilenet_weights_path) if args.probe_model == "mobilenetv3" else None,
-        "probe_checkpoint": str(args.probe_checkpoint) if args.probe_checkpoint else None,
+        "mobilenet_weights_path": str(run_args.mobilenet_weights_path) if run_args.probe_model == "mobilenetv3" else None,
+        "probe_checkpoint": str(run_args.probe_checkpoint) if run_args.probe_checkpoint else None,
         "probe_checkpoint_load_result": checkpoint_load_result,
-        "mobilenet_pretrained": bool(args.mobilenet_pretrained) if args.probe_model == "mobilenetv3" else None,
-        "freeze_backbone": bool(args.freeze_backbone) if args.probe_model == "mobilenetv3" else None,
+        "mobilenet_pretrained": bool(run_args.mobilenet_pretrained) if run_args.probe_model == "mobilenetv3" else None,
+        "freeze_backbone": bool(run_args.freeze_backbone) if run_args.probe_model == "mobilenetv3" else None,
         "history": history,
         "final_val": final_val,
     }
@@ -1905,34 +2168,63 @@ def _run_probe_experiment(
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     args = parse_args(argv)
     torch, _F = _import_torch()
-    sizes = [int(args.scout_spatial_size)] if args.probe_model == "c3-reader" else [int(size) for size in args.mobilenet_sizes]
+    if args.probe_model in {"c3-reader", "temporal-tcn"}:
+        sizes = [int(args.scout_spatial_size)]
+    else:
+        sizes = [int(size) for size in args.mobilenet_sizes]
     if not sizes:
         raise ValueError("at least one probe spatial size is required")
+    tcn_variants = list(args.tcn_variants) if args.probe_model == "temporal-tcn" else [None]
+    if args.probe_model == "temporal-tcn" and not tcn_variants:
+        raise ValueError("at least one temporal-tcn variant is required")
     if args.device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but torch.cuda.is_available() is false")
-    if args.probe_model == "mobilenetv3" and len(sizes) > 1:
+    if (args.probe_model == "mobilenetv3" and len(sizes) > 1) or (args.probe_model == "temporal-tcn" and len(tcn_variants) > 1):
         _seed_everything(args.seed)
-    summaries = [
-        _run_probe_experiment(
-            args=args,
-            cfg=_load_cfg(args.config),
-            spatial_size=size,
-            multi_size=len(sizes) > 1,
-            seed=int(args.seed),
-        )
-        for size in sizes
-    ]
+    summaries = []
+    if args.probe_model == "temporal-tcn":
+        for variant in tcn_variants:
+            summaries.append(
+                _run_probe_experiment(
+                    args=args,
+                    cfg=_load_cfg(args.config),
+                    spatial_size=sizes[0],
+                    multi_size=False,
+                    seed=int(args.seed),
+                    tcn_variant=str(variant),
+                    multi_variant=len(tcn_variants) > 1,
+                )
+            )
+    else:
+        summaries = [
+            _run_probe_experiment(
+                args=args,
+                cfg=_load_cfg(args.config),
+                spatial_size=size,
+                multi_size=len(sizes) > 1,
+                seed=int(args.seed),
+            )
+            for size in sizes
+        ]
     if len(summaries) == 1:
         return summaries[0]
-    combined = _combine_multisize_summaries(
-        base_summary={
-            "purpose": "diagnostic_only_action_vs_background_frame_probe",
-            "probe_model": args.probe_model,
-            "seed": int(args.seed),
-        },
-        summaries=summaries,
-        args_out_dir=Path(args.out_dir),
-    )
+    base_summary = {
+        "purpose": "diagnostic_only_action_vs_background_frame_probe",
+        "probe_model": args.probe_model,
+        "seed": int(args.seed),
+    }
+    if args.probe_model == "temporal-tcn":
+        combined = _combine_tcn_variant_summaries(
+            base_summary=base_summary,
+            summaries=summaries,
+            args_out_dir=Path(args.out_dir),
+        )
+    else:
+        combined = _combine_multisize_summaries(
+            base_summary=base_summary,
+            summaries=summaries,
+            args_out_dir=Path(args.out_dir),
+        )
     _write_json(Path(args.out_dir) / "summary.json", combined)
     return combined
 
