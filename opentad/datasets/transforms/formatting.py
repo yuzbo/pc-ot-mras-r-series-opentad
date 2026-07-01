@@ -56,6 +56,7 @@ class Collect:
             "mdl_knot_selector_used_gt",
             "mdl_knot_deploy_scout_source",
             "mdl_knot_deploy_scout_provenance",
+            "mdl_knot_profile",
             "mdl_knot_pipeline_diagnostic",
         ],
     ):

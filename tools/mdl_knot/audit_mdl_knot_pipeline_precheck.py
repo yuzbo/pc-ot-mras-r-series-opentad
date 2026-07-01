@@ -26,6 +26,7 @@ from opentad.acquisition.mdl_knot import (  # noqa: E402
 
 
 CONFIG_PATH = ROOT / "configs" / "adatad" / "thumos" / "input_mdl_knot_dynamic_adapter_irregular_headv3.py"
+MDL_KNOT_DECODER_TYPE = "MDLKnotDecordDecode"
 
 
 def parse_args() -> argparse.Namespace:
@@ -64,6 +65,10 @@ def _collect_config_evidence() -> dict:
         pipeline = dataset.get(split, {}).get("pipeline", [])
         load_steps = [step for step in pipeline if isinstance(step, dict) and step.get("type") == "LoadFrames"]
         load = load_steps[0] if load_steps else {}
+        decoder_indices = [
+            idx for idx, step in enumerate(pipeline) if isinstance(step, dict) and step.get("type") == MDL_KNOT_DECODER_TYPE
+        ]
+        decoder_index = decoder_indices[0] if decoder_indices else None
         load_methods[split] = load.get("method")
         bridges[split] = load.get("mdl_knot_bridge")
         safety[split] = {
@@ -74,9 +79,10 @@ def _collect_config_evidence() -> dict:
             "synthetic_fallback_disabled": load.get("mdl_knot_allow_synthetic_fallback") is False,
             "load_before_decode": (
                 len(load_steps) == 1
-                and any(step.get("type") == "mmaction.DecordDecode" for step in pipeline if isinstance(step, dict))
-                and pipeline.index(load) < [step.get("type") for step in pipeline].index("mmaction.DecordDecode")
+                and decoder_index is not None
+                and pipeline.index(load) < decoder_index
             ),
+            "mdl_knot_dedup_decoder": decoder_index is not None,
         }
 
     acq = cfg.get("mdl_knot_acquisition", {})
@@ -101,6 +107,7 @@ def _collect_config_evidence() -> dict:
         "load_methods": load_methods,
         "bridges": bridges,
         "safety": safety,
+        "decoder_type": MDL_KNOT_DECODER_TYPE,
         "forbidden_route_token_hits": forbidden_hits,
         "drift_tokens": drift_tokens,
         "deploy_scout_source": acq.get("deploy_scout_source", "unknown"),
