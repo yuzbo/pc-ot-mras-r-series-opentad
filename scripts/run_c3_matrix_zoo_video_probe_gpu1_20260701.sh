@@ -19,8 +19,12 @@ fi
 
 cd "${PROJECT_DIR}"
 
-module load cuda/11.8
-module load miniforge3/24.11
+if command -v module >/dev/null 2>&1; then
+  module load cuda/11.8
+  module load miniforge3/24.11
+else
+  echo "[C3_MATRIX_ZOO_VIDEO] module command unavailable; using existing conda env path."
+fi
 source /data/run01/sczc063/yuzibo/conda_envs/opentad/bin/activate
 
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"

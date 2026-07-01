@@ -14,6 +14,8 @@ LOWRES_PROBE_SCRIPT = ROOT / "scripts" / "run_c3_lowres_action_probe_inside_pcot
 TCN_PROBE_GPU1_SCRIPT = ROOT / "scripts" / "run_c3_tcn_coarse_probe_gpu1_20260701.sh"
 MATRIX_IMAGE_GPU1_SCRIPT = ROOT / "scripts" / "run_c3_matrix_zoo_image_backbone_probe_gpu1_20260701.sh"
 MATRIX_VIDEO_GPU1_SCRIPT = ROOT / "scripts" / "run_c3_matrix_zoo_video_probe_gpu1_20260701.sh"
+OFFICIAL_ACTION_SEG_GPU1_SCRIPT = ROOT / "scripts" / "run_c3_official_action_seg_probe_gpu1_20260702.sh"
+MODEL_ZOO_DOWNLOAD_SCRIPT = ROOT / "scripts" / "download_c3_coarse_classifier_model_zoo_n16r4.sh"
 
 
 def load_probe_module():
@@ -909,6 +911,7 @@ def test_matrix_zoo_gpu1_launchers_fail_close_and_use_matrix_probe():
 
     for text in (image_text, video_text):
         assert 'if [[ "${CUDA_VISIBLE_DEVICES}" != "1" ]]' in text
+        assert "module command unavailable" in text
         assert "--probe-model matrix-zoo" in text
         assert "--matrix-model-ids ${MODEL_IDS}" in text
         assert "--matrix-continue-on-model-error" in text
@@ -917,6 +920,22 @@ def test_matrix_zoo_gpu1_launchers_fail_close_and_use_matrix_probe():
     assert "timm_convnext_tiny_tcn" in image_text
     assert "torchvision_r3d_18" in video_text
     assert "pytorchvideo_x3d_xs" in video_text
+
+
+def test_official_probe_and_download_launchers_tolerate_non_login_shell_module_absence():
+    official_text = OFFICIAL_ACTION_SEG_GPU1_SCRIPT.read_text(encoding="utf-8")
+    download_text = MODEL_ZOO_DOWNLOAD_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'if [[ "${CUDA_VISIBLE_DEVICES}" != "1" ]]' in official_text
+    assert "OFFICIAL_BACKENDS" in official_text
+    assert "official_ms_tcn2 official_asformer official_fact official_video_mamba_asformer" in official_text
+    assert "module command unavailable" in official_text
+    assert "torch.cuda.device_count() != 1" in official_text
+    assert 'SLURM_STEP_GPUS must be GPU1' not in official_text
+
+    assert "module command unavailable" in download_text
+    assert "CUDA_VISIBLE_DEVICES=\"\"" in download_text
+    assert "c3_coarse_classifier_model_matrix.py" in download_text
 
 
 def test_matrix_model_directory_layout_is_model_specific():

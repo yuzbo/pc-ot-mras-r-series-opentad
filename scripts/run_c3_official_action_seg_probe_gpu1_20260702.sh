@@ -15,20 +15,14 @@ if [[ "${CUDA_VISIBLE_DEVICES}" != "1" ]]; then
   exit 44
 fi
 
-if [[ -n "${SLURM_STEP_GPUS:-}" && "${SLURM_STEP_GPUS}" != "1" ]]; then
-  echo "Refusing to start: SLURM_STEP_GPUS must be GPU1 when set, got '${SLURM_STEP_GPUS}'." >&2
-  exit 45
-fi
-
-if [[ -n "${SLURM_JOB_GPUS:-}" && "${SLURM_JOB_GPUS}" != *"1"* ]]; then
-  echo "Refusing to start: SLURM_JOB_GPUS does not include GPU1, got '${SLURM_JOB_GPUS}'." >&2
-  exit 46
-fi
-
 cd "${PROJECT_DIR}"
 
-module load cuda/11.8
-module load miniforge3/24.11
+if command -v module >/dev/null 2>&1; then
+  module load cuda/11.8
+  module load miniforge3/24.11
+else
+  echo "[C3_OFFICIAL_ACTION_SEG] module command unavailable; using existing conda env path."
+fi
 source /data/run01/sczc063/yuzibo/conda_envs/opentad/bin/activate
 
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"

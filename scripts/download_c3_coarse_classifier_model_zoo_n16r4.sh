@@ -12,8 +12,12 @@ DRY_RUN="${DRY_RUN:-0}"
 cd "${PROJECT_DIR}"
 mkdir -p "${OUT_DIR}" "${CACHE_ROOT}" "${BASE_DIR}/tmp/home" "${BASE_DIR}/tmp/xdg_cache" "${BASE_DIR}/tmp/xdg_config" "${BASE_DIR}/hf_cache"
 
-module load cuda/11.8
-module load miniforge3/24.11
+if command -v module >/dev/null 2>&1; then
+  module load cuda/11.8
+  module load miniforge3/24.11
+else
+  echo "[C3_MODEL_ZOO_DOWNLOAD] module command unavailable; using existing conda env path."
+fi
 source "${BASE_DIR}/conda_envs/opentad/bin/activate"
 
 export http_proxy="${http_proxy:-http://u-MtfrT7:vH5orjDV@10.244.6.36:3128}"
