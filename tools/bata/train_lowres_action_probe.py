@@ -31,6 +31,7 @@ SUPPORTED_TCN_VARIANTS = (
     "separable_dilated",
     "causal_dilated",
 )
+MATRIX_ZOO_PROBE_MODEL = "matrix-zoo"
 
 
 def _as_nested_list(value: Any) -> Any:
@@ -1509,6 +1510,251 @@ class C3TemporalTCNActionProbe:
         return self.module.load_state_dict(state_dict)
 
 
+def _matrix_entry_by_id(model_id: str) -> dict[str, Any]:
+    try:
+        from tools.bata.c3_coarse_classifier_model_matrix import MODEL_MATRIX
+    except Exception as exc:
+        raise RuntimeError("failed to import C3 coarse classifier model matrix") from exc
+    for entry in MODEL_MATRIX:
+        if str(entry.get("id")) == str(model_id):
+            return dict(entry)
+    known = [str(entry.get("id")) for entry in MODEL_MATRIX]
+    raise ValueError(f"unknown matrix model id: {model_id}; known ids: {known}")
+
+
+class C3MatrixZooActionProbe:
+    """Broader coarse classifier adapter with a unified frame-logit contract."""
+
+    def __init__(
+        self,
+        *,
+        model_id: str,
+        pretrained: bool = True,
+        freeze_backbone: bool = True,
+        temporal_hidden_dim: int = 128,
+        video_clip_len: int = 16,
+        video_anchor_stride: int = 8,
+    ) -> None:
+        torch, _F = _import_torch()
+        import torch.nn as nn  # type: ignore
+
+        self.model_id = str(model_id)
+        self.entry = _matrix_entry_by_id(self.model_id)
+        self.backend = str(self.entry["backend"])
+        self.pretrained = bool(pretrained)
+        self.freeze_backbone = bool(freeze_backbone)
+        self.video_clip_len = max(1, int(video_clip_len))
+        self.video_anchor_stride = max(1, int(video_anchor_stride))
+        self.module = nn.Module()
+
+        if self.backend == "timm":
+            import timm
+
+            constructor = str(self.entry["constructor"])
+            self.backbone = timm.create_model(constructor, pretrained=bool(pretrained), num_classes=0)
+            feature_dim = int(getattr(self.backbone, "num_features", 0) or 0)
+            if feature_dim <= 0:
+                feature_dim = int(getattr(self.backbone, "num_classes", 0) or int(temporal_hidden_dim))
+            self.temporal_head = nn.Sequential(
+                nn.Conv1d(feature_dim, int(temporal_hidden_dim), kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm1d(int(temporal_hidden_dim)),
+                nn.SiLU(inplace=True),
+                nn.Conv1d(int(temporal_hidden_dim), 1, kernel_size=1),
+            )
+            self.module.backbone = self.backbone
+            self.module.temporal_head = self.temporal_head
+            self.mode = "image_backbone_temporal_head"
+        elif self.backend == "torchvision_video":
+            from torchvision.models import video
+
+            constructor = str(self.entry["constructor"])
+            fn = getattr(video, constructor)
+            weights = None
+            if bool(pretrained):
+                weights_enum = getattr(video, str(self.entry["weights_enum"]))
+                weights = weights_enum.DEFAULT
+            self.backbone = fn(weights=weights)
+            self._replace_video_classifier(nn)
+            self.module.backbone = self.backbone
+            self.mode = "video_clip_interpolated"
+        elif self.backend == "pytorchvideo_hub":
+            if self.model_id == "pytorchvideo_slowfast_r50":
+                raise ValueError(
+                    "pytorchvideo_slowfast_r50 needs two-pathway SlowFast input and is not enabled in the first "
+                    "fine-tuning adapter; keep it as cache/teacher candidate until explicit SlowFast wrapper is added."
+                )
+            import pytorchvideo.models.hub as hub
+
+            constructor = str(self.entry["constructor"])
+            fn = getattr(hub, constructor)
+            self.backbone = fn(pretrained=bool(pretrained))
+            self._replace_video_classifier(nn)
+            self.module.backbone = self.backbone
+            self.mode = "video_clip_interpolated"
+        elif self.backend == "hf_snapshot":
+            raise ValueError(
+                f"{self.model_id} is currently download/teacher-candidate only; install/enable transformers "
+                "VideoMAE adapter before fine-tuning it inside this script."
+            )
+        else:
+            raise ValueError(f"unsupported matrix backend: {self.backend}")
+
+        if bool(freeze_backbone):
+            for name, param in self.module.named_parameters():
+                if not any(token in name for token in ("temporal_head", "classifier", "fc", "head", "proj")):
+                    param.requires_grad = False
+
+    def _replace_video_classifier(self, nn_mod: Any) -> None:
+        def _binary_head_from(layer: Any):
+            if hasattr(layer, "in_features"):
+                return nn_mod.Linear(int(layer.in_features), 1)
+            if hasattr(layer, "in_channels") and layer.__class__.__name__.lower().endswith("conv3d"):
+                return nn_mod.Conv3d(int(layer.in_channels), 1, kernel_size=1, stride=1, padding=0, bias=True)
+            return None
+
+        if hasattr(self.backbone, "fc") and hasattr(self.backbone.fc, "in_features"):
+            self.backbone.fc = nn_mod.Linear(int(self.backbone.fc.in_features), 1)
+            return
+        if hasattr(self.backbone, "classifier"):
+            classifier = self.backbone.classifier
+            if isinstance(classifier, nn_mod.Sequential) and len(classifier) > 0:
+                for idx in range(len(classifier) - 1, -1, -1):
+                    replacement = _binary_head_from(classifier[idx])
+                    if replacement is not None:
+                        classifier[idx] = replacement
+                        return
+            replacement = _binary_head_from(classifier)
+            if replacement is not None:
+                self.backbone.classifier = replacement
+                return
+        if hasattr(self.backbone, "head"):
+            head = self.backbone.head
+            replacement = _binary_head_from(head)
+            if replacement is not None:
+                self.backbone.head = replacement
+                return
+            if hasattr(head, "proj"):
+                replacement = _binary_head_from(head.proj)
+                if replacement is not None:
+                    head.proj = replacement
+                    return
+        if hasattr(self.backbone, "blocks") and len(self.backbone.blocks) > 0:
+            last_block = self.backbone.blocks[-1]
+            if hasattr(last_block, "proj"):
+                replacement = _binary_head_from(last_block.proj)
+                if replacement is not None:
+                    last_block.proj = replacement
+                    return
+            if hasattr(last_block, "output_pool") and hasattr(last_block, "proj"):
+                replacement = _binary_head_from(last_block.proj)
+                if replacement is not None:
+                    last_block.proj = replacement
+                    return
+        if hasattr(self.backbone, "proj"):
+            replacement = _binary_head_from(self.backbone.proj)
+            if replacement is not None:
+                self.backbone.proj = replacement
+                return
+        raise ValueError(f"cannot locate replaceable classifier for {self.model_id}")
+
+    def _normalize_frames(self, frames: Any):
+        torch, _F = _import_torch()
+        frames = frames.float()
+        if bool((frames.detach().abs().amax() > 2.0).item()):
+            frames = frames / 255.0
+        mean = torch.tensor([0.485, 0.456, 0.406], dtype=frames.dtype, device=frames.device).view(1, 1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], dtype=frames.dtype, device=frames.device).view(1, 1, 3, 1, 1)
+        return (frames - mean) / std
+
+    def _image_logits(self, frames: Any, valid: Any):
+        batch, dense_len, channels, height, width = frames.shape
+        flat = self._normalize_frames(frames).reshape(batch * dense_len, channels, height, width)
+        features = self.backbone(flat)
+        if isinstance(features, (tuple, list)):
+            features = features[0]
+        if features.ndim > 2:
+            features = features.flatten(1)
+        features = features.reshape(batch, dense_len, -1).transpose(1, 2)
+        logits = self.temporal_head(features).squeeze(1)
+        return logits
+
+    def _anchor_positions(self, dense_len: int) -> list[int]:
+        if dense_len <= 1:
+            return [0]
+        positions = list(range(0, int(dense_len), int(self.video_anchor_stride)))
+        if positions[-1] != dense_len - 1:
+            positions.append(dense_len - 1)
+        return positions
+
+    def _gather_clips(self, frames: Any, positions: Sequence[int]):
+        torch, _F = _import_torch()
+        batch, dense_len, channels, height, width = frames.shape
+        half = self.video_clip_len // 2
+        clips = []
+        for pos in positions:
+            indices = []
+            for offset in range(self.video_clip_len):
+                idx = int(pos) - half + offset
+                idx = max(0, min(int(dense_len) - 1, idx))
+                indices.append(idx)
+            index_tensor = torch.tensor(indices, dtype=torch.long, device=frames.device)
+            clips.append(frames.index_select(1, index_tensor))
+        stacked = torch.stack(clips, dim=1)
+        return stacked.reshape(batch * len(positions), self.video_clip_len, channels, height, width)
+
+    def _video_logits(self, frames: Any, valid: Any):
+        torch, F = _import_torch()
+        batch, dense_len, channels, height, width = frames.shape
+        positions = self._anchor_positions(int(dense_len))
+        clips = self._gather_clips(self._normalize_frames(frames), positions)
+        clips = clips.permute(0, 2, 1, 3, 4).contiguous()
+        anchor_logits = self.backbone(clips)
+        if isinstance(anchor_logits, (tuple, list)):
+            anchor_logits = anchor_logits[0]
+        anchor_logits = anchor_logits.reshape(batch, len(positions), -1)[..., 0]
+        if len(positions) == int(dense_len):
+            return anchor_logits
+        if F is None:
+            raise RuntimeError("torch.nn.functional is required for video logit interpolation")
+        return F.interpolate(anchor_logits.unsqueeze(1), size=int(dense_len), mode="linear", align_corners=False).squeeze(1)
+
+    def __call__(self, frames: Any, valid: Any, time_coords: Any | None = None):
+        if frames.ndim != 5:
+            raise ValueError(f"matrix-zoo probe expects [B,T,C,H,W], got {tuple(frames.shape)}")
+        if int(frames.shape[2]) != 3:
+            raise ValueError("matrix-zoo probe expects RGB frame tensors with 3 channels")
+        if self.mode == "image_backbone_temporal_head":
+            logits = self._image_logits(frames, valid)
+        elif self.mode == "video_clip_interpolated":
+            logits = self._video_logits(frames, valid)
+        else:
+            raise RuntimeError(f"unsupported matrix-zoo mode: {self.mode}")
+        if hasattr(valid, "to"):
+            valid = valid.to(device=logits.device).bool()
+        return logits.masked_fill(~valid, 0.0)
+
+    def train(self):
+        self.module.train()
+        return self
+
+    def eval(self):
+        self.module.eval()
+        return self
+
+    def to(self, *args, **kwargs):
+        self.module.to(*args, **kwargs)
+        return self
+
+    def parameters(self):
+        return self.module.parameters()
+
+    def state_dict(self):
+        return self.module.state_dict()
+
+    def load_state_dict(self, state_dict):
+        return self.module.load_state_dict(state_dict)
+
+
 def make_lowres_descriptors(inputs: Any, *, scout_spatial_size: int = 32, normalize: bool = True):
     """Match the C3 compressed-pixel scout descriptor contract: [B,T,3*S*S]."""
 
@@ -1571,7 +1817,7 @@ def make_lowres_frame_images(inputs: Any, *, spatial_size: int = 32, normalize: 
 def prepare_probe_inputs(inputs: Any, *, probe_model: str, spatial_size: int):
     if probe_model == "c3-reader":
         return make_lowres_descriptors(inputs, scout_spatial_size=int(spatial_size))
-    if probe_model in {"mobilenetv3", "temporal-tcn"}:
+    if probe_model in {"mobilenetv3", "temporal-tcn", MATRIX_ZOO_PROBE_MODEL}:
         return make_lowres_frame_images(inputs, spatial_size=int(spatial_size))
     raise ValueError(f"unsupported probe_model: {probe_model}")
 
@@ -1694,6 +1940,7 @@ def train_one_epoch(
     progress_path: Path | None,
     log_every_batches: int,
     tcn_variant: str | None = None,
+    matrix_model_id: str | None = None,
 ) -> dict[str, Any]:
     torch, F = _import_torch()
     model.train()
@@ -1710,6 +1957,7 @@ def train_one_epoch(
         total_epochs=total_epochs,
         expected_batches=total_batches,
         tcn_variant=tcn_variant,
+        matrix_model_id=matrix_model_id,
     )
     for batch_idx, batch in enumerate(dataloader):
         if max_batches > 0 and batch_idx >= max_batches:
@@ -1735,6 +1983,7 @@ def train_one_epoch(
                 loss=loss_sum / float(max(batch_count, 1)),
                 last_loss=float(loss.detach().cpu().item()),
                 tcn_variant=tcn_variant,
+                matrix_model_id=matrix_model_id,
             )
     if batch_count <= 0:
         raise ValueError("train_one_epoch processed zero batches; check max_train_batches and the dataloader")
@@ -1743,7 +1992,15 @@ def train_one_epoch(
         "batches": batch_count,
         "seconds": time.time() - start_time,
     }
-    _emit_progress(progress_path, "train_epoch_end", epoch=epoch, total_epochs=total_epochs, tcn_variant=tcn_variant, **stats)
+    _emit_progress(
+        progress_path,
+        "train_epoch_end",
+        epoch=epoch,
+        total_epochs=total_epochs,
+        tcn_variant=tcn_variant,
+        matrix_model_id=matrix_model_id,
+        **stats,
+    )
     return stats
 
 
@@ -1764,6 +2021,7 @@ def evaluate(
     boundary_radius: int,
     sample_jsonl_path: Path | None = None,
     tcn_variant: str | None = None,
+    matrix_model_id: str | None = None,
 ) -> dict[str, Any]:
     torch, _F = _import_torch()
     model.eval()
@@ -1784,6 +2042,7 @@ def evaluate(
         total_epochs=total_epochs,
         expected_batches=total_batches,
         tcn_variant=tcn_variant,
+        matrix_model_id=matrix_model_id,
     )
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
@@ -1811,6 +2070,7 @@ def evaluate(
                     batch=batch_count,
                     expected_batches=total_batches,
                     tcn_variant=tcn_variant,
+                    matrix_model_id=matrix_model_id,
                 )
     if batch_count <= 0:
         raise ValueError("evaluate processed zero validation batches; check max_val_batches and the dataloader")
@@ -1842,6 +2102,7 @@ def evaluate(
             sample_row = dict(row)
             sample_row["probe_model"] = probe_model
             sample_row["tcn_variant"] = tcn_variant
+            sample_row["matrix_model_id"] = matrix_model_id
             sample_row["spatial_size"] = int(scout_spatial_size)
             sample_rows.append(sample_row)
         _write_jsonl(sample_jsonl_path, sample_rows)
@@ -1853,6 +2114,7 @@ def evaluate(
         metrics["indirect_selection_quality"] = compact_indirect_quality
         metrics["probe_model"] = probe_model
         metrics["tcn_variant"] = tcn_variant
+        metrics["matrix_model_id"] = matrix_model_id
         metrics["spatial_size"] = int(scout_spatial_size)
         metrics["indirect_selection_baseline"] = compact_indirect_quality.get("baseline")
         metrics["indirect_selection_delta"] = compact_indirect_quality.get("delta")
@@ -2055,10 +2317,30 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1.0e-4)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--probe-model", choices=("c3-reader", "mobilenetv3", "temporal-tcn"), default="c3-reader")
+    parser.add_argument(
+        "--probe-model",
+        choices=("c3-reader", "mobilenetv3", "temporal-tcn", MATRIX_ZOO_PROBE_MODEL),
+        default="c3-reader",
+    )
     parser.add_argument("--scout-spatial-size", type=int, default=32)
     parser.add_argument("--mobilenet-sizes", type=int, nargs="+", default=[32, 64])
     parser.add_argument("--tcn-variants", nargs="+", default=list(SUPPORTED_TCN_VARIANTS))
+    parser.add_argument(
+        "--matrix-model-ids",
+        nargs="+",
+        default=[],
+        help="One or more model ids from tools/bata/c3_coarse_classifier_model_matrix.py for --probe-model matrix-zoo.",
+    )
+    parser.add_argument("--matrix-model-tier", choices=("first_wave", "second_wave", "all"), default="first_wave")
+    parser.add_argument("--matrix-include-optional", action="store_true")
+    parser.add_argument("--matrix-temporal-hidden-dim", type=int, default=128)
+    parser.add_argument("--matrix-video-clip-len", type=int, default=16)
+    parser.add_argument("--matrix-video-anchor-stride", type=int, default=8)
+    parser.add_argument("--matrix-pretrained", dest="matrix_pretrained", action="store_true", default=True)
+    parser.add_argument("--no-matrix-pretrained", dest="matrix_pretrained", action="store_false")
+    parser.add_argument("--matrix-freeze-backbone", dest="matrix_freeze_backbone", action="store_true", default=True)
+    parser.add_argument("--no-matrix-freeze-backbone", dest="matrix_freeze_backbone", action="store_false")
+    parser.add_argument("--matrix-continue-on-model-error", action="store_true")
     parser.add_argument("--mobilenet-weights-path", default=None, help="Optional local MobileNetV3 checkpoint path for offline pretrained loading.")
     parser.add_argument("--probe-checkpoint", default=None, help="Optional full probe checkpoint saved by --save-checkpoint.")
     parser.add_argument("--mobilenet-pretrained", dest="mobilenet_pretrained", action="store_true", default=True)
@@ -2092,6 +2374,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     unsupported_tcn_variants = [variant for variant in args.tcn_variants if variant not in SUPPORTED_TCN_VARIANTS]
     if unsupported_tcn_variants:
         parser.error(f"--tcn-variants must be drawn from {list(SUPPORTED_TCN_VARIANTS)}, got {unsupported_tcn_variants}")
+    if args.probe_model == MATRIX_ZOO_PROBE_MODEL and not args.matrix_model_ids:
+        try:
+            from tools.bata.c3_coarse_classifier_model_matrix import iter_matrix
+
+            args.matrix_model_ids = [str(entry["id"]) for entry in iter_matrix(tier=args.matrix_model_tier, include_optional=bool(args.matrix_include_optional))]
+        except Exception as exc:
+            parser.error(f"failed to resolve default matrix model ids: {exc}")
+    if args.probe_model != MATRIX_ZOO_PROBE_MODEL and args.matrix_model_ids:
+        parser.error("--matrix-model-ids is only valid with --probe-model matrix-zoo")
     return args
 
 
@@ -2105,6 +2396,19 @@ def _active_tcn_variant(args: argparse.Namespace, explicit_variant: str | None =
     if variant not in SUPPORTED_TCN_VARIANTS:
         raise ValueError(f"unsupported temporal-tcn variant: {variant}")
     return str(variant)
+
+
+def _active_matrix_model_id(args: argparse.Namespace, explicit_model_id: str | None = None) -> str | None:
+    if args.probe_model != MATRIX_ZOO_PROBE_MODEL:
+        return None
+    model_id = explicit_model_id if explicit_model_id is not None else getattr(args, "matrix_model_id", None)
+    if model_id is None:
+        model_ids = list(getattr(args, "matrix_model_ids", []))
+        model_id = model_ids[0] if model_ids else None
+    if not model_id:
+        raise ValueError("matrix-zoo requires at least one --matrix-model-ids entry")
+    _matrix_entry_by_id(str(model_id))
+    return str(model_id)
 
 
 def _build_probe_model(args: argparse.Namespace, cfg: Any, *, spatial_size: int):
@@ -2130,6 +2434,18 @@ def _build_probe_model(args: argparse.Namespace, cfg: Any, *, spatial_size: int)
             ),
             None,
         )
+    if args.probe_model == MATRIX_ZOO_PROBE_MODEL:
+        return (
+            C3MatrixZooActionProbe(
+                model_id=str(_active_matrix_model_id(args)),
+                pretrained=bool(args.matrix_pretrained),
+                freeze_backbone=bool(args.matrix_freeze_backbone),
+                temporal_hidden_dim=int(args.matrix_temporal_hidden_dim),
+                video_clip_len=int(args.matrix_video_clip_len),
+                video_anchor_stride=int(args.matrix_video_anchor_stride),
+            ),
+            None,
+        )
     raise ValueError(f"unsupported probe_model: {args.probe_model}")
 
 
@@ -2148,6 +2464,9 @@ def _probe_out_dir(
         if not tcn_variant:
             raise ValueError("tcn_variant is required for temporal-tcn multi-variant output")
         return base_out_dir / f"temporal_tcn_{tcn_variant}_{int(spatial_size)}"
+    if probe_model == MATRIX_ZOO_PROBE_MODEL and tcn_variant:
+        safe_id = str(tcn_variant).replace("/", "_").replace(":", "_")
+        return base_out_dir / f"matrix_zoo_{safe_id}_{int(spatial_size)}"
     return base_out_dir
 
 
@@ -2266,6 +2585,64 @@ def _combine_tcn_variant_summaries(*, base_summary: Mapping[str, Any], summaries
     return combined
 
 
+def _combine_matrix_model_summaries(*, base_summary: Mapping[str, Any], summaries: Sequence[Mapping[str, Any]], args_out_dir: Path) -> dict[str, Any]:
+    combined: dict[str, Any] = {
+        "schema_version": "lowres_action_probe_matrix_zoo_v1",
+        "purpose": base_summary.get("purpose", "diagnostic_only_action_vs_background_frame_probe"),
+        "probe_model": MATRIX_ZOO_PROBE_MODEL,
+        "diagnostic_only": True,
+        "not_connected_to_detector": True,
+        "no_detector_training": True,
+        "no_detector_eval": True,
+        "no_detector_map": True,
+        "seed": base_summary.get("seed"),
+        "out_dir": str(args_out_dir),
+        "matrix_model_ids": [],
+        "summaries": list(summaries),
+    }
+    ap_by_model: dict[str, Any] = {}
+    roc_by_model: dict[str, Any] = {}
+    f1_by_model: dict[str, Any] = {}
+    boundary_by_model: dict[str, Any] = {}
+    best_strategy_by_model: dict[str, Any] = {}
+    indirect_boundary_by_model: dict[str, Any] = {}
+    failed_models: dict[str, Any] = {}
+    for summary in summaries:
+        model_id = summary.get("matrix_model_id")
+        if not model_id:
+            continue
+        model_id = str(model_id)
+        combined["matrix_model_ids"].append(model_id)
+        combined[f"matrix_zoo_{model_id}"] = summary
+        if summary.get("status") == "failed":
+            failed_models[model_id] = summary.get("error")
+            continue
+        final_val = summary.get("final_val", {})
+        ap_by_model[model_id] = final_val.get("average_precision")
+        roc_by_model[model_id] = final_val.get("roc_auc")
+        f1_by_model[model_id] = final_val.get("best_f1")
+        boundary_by_model[model_id] = final_val.get("sampling_quality", {}).get("boundary_support_r1")
+        strategy_comparison = final_val.get("indirect_selection_quality", {}).get("strategy_comparison", {})
+        best_strategy_by_model[model_id] = strategy_comparison.get("best_boundary_support_strategy")
+        indirect_boundary_by_model[model_id] = (
+            strategy_comparison.get("boundary_support_r1_by_strategy")
+            or strategy_comparison.get("boundary_support_by_strategy")
+            or {}
+        )
+    valid_ap = {model_id: float(value) for model_id, value in ap_by_model.items() if value is not None}
+    combined["comparison"] = {
+        "average_precision_by_model": ap_by_model,
+        "roc_auc_by_model": roc_by_model,
+        "best_f1_by_model": f1_by_model,
+        "boundary_support_r1_by_model": boundary_by_model,
+        "best_indirect_strategy_by_model": best_strategy_by_model,
+        "indirect_boundary_support_r1_by_model": indirect_boundary_by_model,
+        "best_average_precision_model": max(valid_ap, key=lambda model_id: valid_ap[model_id]) if valid_ap else None,
+        "failed_models": failed_models,
+    }
+    return combined
+
+
 def _run_probe_experiment(
     *,
     args: argparse.Namespace,
@@ -2274,6 +2651,7 @@ def _run_probe_experiment(
     multi_size: bool,
     seed: int,
     tcn_variant: str | None = None,
+    matrix_model_id: str | None = None,
     multi_variant: bool = False,
 ) -> dict[str, Any]:
     torch, _F = _import_torch()
@@ -2299,11 +2677,48 @@ def _run_probe_experiment(
         )
     train_loader, val_loader = _build_dataloaders(cfg, batch_size=args.batch_size, num_workers=args.num_workers, seed=seed)
     active_tcn_variant = _active_tcn_variant(args, tcn_variant)
+    active_matrix_model_id = _active_matrix_model_id(args, matrix_model_id)
+    active_probe_variant = active_tcn_variant if active_tcn_variant is not None else active_matrix_model_id
     run_args = copy.copy(args)
     if active_tcn_variant is not None:
         setattr(run_args, "tcn_variant", active_tcn_variant)
+    if active_matrix_model_id is not None:
+        setattr(run_args, "matrix_model_id", active_matrix_model_id)
     device = run_args.device
-    model, reader_cfg = _build_probe_model(run_args, cfg, spatial_size=spatial_size)
+    try:
+        model, reader_cfg = _build_probe_model(run_args, cfg, spatial_size=spatial_size)
+    except Exception as exc:
+        if run_args.probe_model != MATRIX_ZOO_PROBE_MODEL:
+            raise
+        out_dir = Path(run_args.out_dir)
+        out_dir = _probe_out_dir(
+            out_dir,
+            probe_model=run_args.probe_model,
+            spatial_size=spatial_size,
+            multi_size=multi_size,
+            tcn_variant=active_probe_variant,
+            multi_variant=multi_variant,
+        )
+        failure_summary = {
+            "schema_version": "c3_lowres_action_probe_v0",
+            "status": "failed",
+            "error": {"type": type(exc).__name__, "message": str(exc)},
+            "purpose": "diagnostic_only_action_vs_background_frame_probe",
+            "probe_model": run_args.probe_model,
+            "matrix_model_id": active_matrix_model_id,
+            "spatial_size": int(spatial_size),
+            "out_dir": str(out_dir),
+            "diagnostic_only": True,
+            "not_connected_to_detector": True,
+            "no_detector_training": True,
+            "no_detector_eval": True,
+            "no_detector_map": True,
+        }
+        _write_json(out_dir / "summary.json", failure_summary)
+        print(json.dumps(failure_summary, indent=2, sort_keys=True), flush=True)
+        if bool(getattr(run_args, "matrix_continue_on_model_error", False)):
+            return failure_summary
+        raise
     checkpoint_load_result = None
     if run_args.probe_checkpoint:
         checkpoint_load_result = str(_load_probe_checkpoint(model, run_args.probe_checkpoint))
@@ -2315,7 +2730,7 @@ def _run_probe_experiment(
         probe_model=run_args.probe_model,
         spatial_size=spatial_size,
         multi_size=multi_size,
-        tcn_variant=active_tcn_variant,
+        tcn_variant=active_probe_variant,
         multi_variant=multi_variant,
     )
     sample_jsonl_path = Path(run_args.sample_jsonl) if run_args.sample_jsonl and not multi_variant else out_dir / "samples.jsonl"
@@ -2338,6 +2753,7 @@ def _run_probe_experiment(
         seed=int(seed),
         probe_model=run_args.probe_model,
         tcn_variant=active_tcn_variant,
+        matrix_model_id=active_matrix_model_id,
         scout_spatial_size=int(spatial_size),
         spatial_size=int(spatial_size),
         coverage_only=bool(args.coverage_only),
@@ -2373,6 +2789,7 @@ def _run_probe_experiment(
                 progress_path=progress_path,
                 log_every_batches=int(args.log_every_batches),
                 tcn_variant=active_tcn_variant,
+                matrix_model_id=active_matrix_model_id,
             )
         val_metrics = evaluate(
             model=model,
@@ -2390,6 +2807,7 @@ def _run_probe_experiment(
             boundary_radius=int(args.boundary_radius),
             sample_jsonl_path=sample_jsonl_path,
             tcn_variant=active_tcn_variant,
+            matrix_model_id=active_matrix_model_id,
         )
         compact_val_metrics = _compact_metric_payload(val_metrics)
         history.append({"epoch": epoch, "train": train_stats, "val": compact_val_metrics})
@@ -2406,6 +2824,7 @@ def _run_probe_experiment(
             val_positive_rate=val_metrics.get("positive_rate"),
             val_batches=val_metrics.get("batches"),
             tcn_variant=active_tcn_variant,
+            matrix_model_id=active_matrix_model_id,
         )
 
     final_val = _compact_metric_payload(val_metrics)
@@ -2419,6 +2838,7 @@ def _run_probe_experiment(
         "reader_cfg": reader_cfg,
         "probe_model": run_args.probe_model,
         "tcn_variant": active_tcn_variant,
+        "matrix_model_id": active_matrix_model_id,
         "spatial_size": int(spatial_size),
         "out_dir": str(out_dir),
         "diagnostic_only": True,
@@ -2438,6 +2858,10 @@ def _run_probe_experiment(
         "probe_checkpoint_load_result": checkpoint_load_result,
         "mobilenet_pretrained": bool(run_args.mobilenet_pretrained) if run_args.probe_model == "mobilenetv3" else None,
         "freeze_backbone": bool(run_args.freeze_backbone) if run_args.probe_model == "mobilenetv3" else None,
+        "matrix_pretrained": bool(run_args.matrix_pretrained) if run_args.probe_model == MATRIX_ZOO_PROBE_MODEL else None,
+        "matrix_freeze_backbone": bool(run_args.matrix_freeze_backbone) if run_args.probe_model == MATRIX_ZOO_PROBE_MODEL else None,
+        "matrix_video_clip_len": int(run_args.matrix_video_clip_len) if run_args.probe_model == MATRIX_ZOO_PROBE_MODEL else None,
+        "matrix_video_anchor_stride": int(run_args.matrix_video_anchor_stride) if run_args.probe_model == MATRIX_ZOO_PROBE_MODEL else None,
         "history": history,
         "final_val": final_val,
     }
@@ -2454,16 +2878,25 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     torch, _F = _import_torch()
     if args.probe_model in {"c3-reader", "temporal-tcn"}:
         sizes = [int(args.scout_spatial_size)]
+    elif args.probe_model == MATRIX_ZOO_PROBE_MODEL:
+        sizes = [int(args.scout_spatial_size)]
     else:
         sizes = [int(size) for size in args.mobilenet_sizes]
     if not sizes:
         raise ValueError("at least one probe spatial size is required")
     tcn_variants = list(args.tcn_variants) if args.probe_model == "temporal-tcn" else [None]
+    matrix_model_ids = list(args.matrix_model_ids) if args.probe_model == MATRIX_ZOO_PROBE_MODEL else [None]
     if args.probe_model == "temporal-tcn" and not tcn_variants:
         raise ValueError("at least one temporal-tcn variant is required")
+    if args.probe_model == MATRIX_ZOO_PROBE_MODEL and not matrix_model_ids:
+        raise ValueError("at least one matrix-zoo model id is required")
     if args.device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but torch.cuda.is_available() is false")
-    if (args.probe_model == "mobilenetv3" and len(sizes) > 1) or (args.probe_model == "temporal-tcn" and len(tcn_variants) > 1):
+    if (
+        (args.probe_model == "mobilenetv3" and len(sizes) > 1)
+        or (args.probe_model == "temporal-tcn" and len(tcn_variants) > 1)
+        or (args.probe_model == MATRIX_ZOO_PROBE_MODEL and len(matrix_model_ids) > 1)
+    ):
         _seed_everything(args.seed)
     summaries = []
     if args.probe_model == "temporal-tcn":
@@ -2477,6 +2910,19 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
                     seed=int(args.seed),
                     tcn_variant=str(variant),
                     multi_variant=len(tcn_variants) > 1,
+                )
+            )
+    elif args.probe_model == MATRIX_ZOO_PROBE_MODEL:
+        for model_id in matrix_model_ids:
+            summaries.append(
+                _run_probe_experiment(
+                    args=args,
+                    cfg=_load_cfg(args.config),
+                    spatial_size=sizes[0],
+                    multi_size=False,
+                    seed=int(args.seed),
+                    matrix_model_id=str(model_id),
+                    multi_variant=len(matrix_model_ids) > 1,
                 )
             )
     else:
@@ -2499,6 +2945,12 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     }
     if args.probe_model == "temporal-tcn":
         combined = _combine_tcn_variant_summaries(
+            base_summary=base_summary,
+            summaries=summaries,
+            args_out_dir=Path(args.out_dir),
+        )
+    elif args.probe_model == MATRIX_ZOO_PROBE_MODEL:
+        combined = _combine_matrix_model_summaries(
             base_summary=base_summary,
             summaries=summaries,
             args_out_dir=Path(args.out_dir),

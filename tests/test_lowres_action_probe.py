@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PROBE_PATH = ROOT / "tools" / "bata" / "train_lowres_action_probe.py"
 LOWRES_PROBE_SCRIPT = ROOT / "scripts" / "run_c3_lowres_action_probe_inside_pcot_dbg2g_v2_20260625.sh"
 TCN_PROBE_GPU1_SCRIPT = ROOT / "scripts" / "run_c3_tcn_coarse_probe_gpu1_20260701.sh"
+MATRIX_IMAGE_GPU1_SCRIPT = ROOT / "scripts" / "run_c3_matrix_zoo_image_backbone_probe_gpu1_20260701.sh"
+MATRIX_VIDEO_GPU1_SCRIPT = ROOT / "scripts" / "run_c3_matrix_zoo_video_probe_gpu1_20260701.sh"
 
 
 def load_probe_module():
@@ -201,6 +203,7 @@ def test_prepare_probe_inputs_keeps_c3_descriptors_and_mobilenet_images():
     assert probe.prepare_probe_inputs("inputs", probe_model="c3-reader", spatial_size=4) == ("c3", 4, True)
     assert probe.prepare_probe_inputs("inputs", probe_model="mobilenetv3", spatial_size=4) == ("mobilenet", 4, False)
     assert probe.prepare_probe_inputs("inputs", probe_model="temporal-tcn", spatial_size=4) == ("mobilenet", 4, False)
+    assert probe.prepare_probe_inputs("inputs", probe_model="matrix-zoo", spatial_size=4) == ("mobilenet", 4, False)
 
 
 def test_apply_dataset_overrides_updates_all_configured_splits():
@@ -664,6 +667,40 @@ def test_parse_args_supports_temporal_tcn_variants_and_rejects_unknown_variant()
         probe.parse_args(["--probe-model", "temporal-tcn", "--tcn-variants", "unknown"])
 
 
+def test_parse_args_supports_matrix_zoo_model_ids_and_defaults_from_matrix():
+    probe = load_probe_module()
+
+    args = probe.parse_args(
+        [
+            "--probe-model",
+            "matrix-zoo",
+            "--matrix-model-ids",
+            "timm_resnet18_tcn",
+            "torchvision_r3d_18",
+            "--scout-spatial-size",
+            "64",
+            "--matrix-video-clip-len",
+            "8",
+            "--matrix-video-anchor-stride",
+            "4",
+            "--matrix-continue-on-model-error",
+        ]
+    )
+
+    assert args.probe_model == "matrix-zoo"
+    assert args.matrix_model_ids == ["timm_resnet18_tcn", "torchvision_r3d_18"]
+    assert args.matrix_video_clip_len == 8
+    assert args.matrix_video_anchor_stride == 4
+    assert args.matrix_continue_on_model_error is True
+
+    default_args = probe.parse_args(["--probe-model", "matrix-zoo", "--matrix-model-tier", "first_wave"])
+    assert "timm_mobilenetv3_large_100_tsm_tcn" in default_args.matrix_model_ids
+    assert "hf_videomae_base_kinetics" not in default_args.matrix_model_ids
+
+    with pytest.raises(SystemExit):
+        probe.parse_args(["--probe-model", "mobilenetv3", "--matrix-model-ids", "timm_resnet18_tcn"])
+
+
 def test_parse_args_accepts_zero_batch_caps_as_explicit_unlimited_probe_mode():
     probe = load_probe_module()
 
@@ -696,6 +733,40 @@ def test_tcn_probe_gpu1_launcher_fail_closes_and_runs_all_variants():
     assert "--tcn-variants lite dilated multiscale motion residual gated separable_dilated causal_dilated" in text
     assert "--mobilenet-sizes" not in text
     assert "SLURM_STEP_GPUS" in text
+
+
+def test_matrix_zoo_gpu1_launchers_fail_close_and_use_matrix_probe():
+    image_text = MATRIX_IMAGE_GPU1_SCRIPT.read_text(encoding="utf-8")
+    video_text = MATRIX_VIDEO_GPU1_SCRIPT.read_text(encoding="utf-8")
+
+    for text in (image_text, video_text):
+        assert 'if [[ "${CUDA_VISIBLE_DEVICES}" != "1" ]]' in text
+        assert "--probe-model matrix-zoo" in text
+        assert "--matrix-model-ids ${MODEL_IDS}" in text
+        assert "--matrix-continue-on-model-error" in text
+        assert "--save-checkpoint" in text
+        assert "CUDA_VISIBLE_DEVICES=0" not in text
+    assert "timm_convnext_tiny_tcn" in image_text
+    assert "torchvision_r3d_18" in video_text
+    assert "pytorchvideo_x3d_xs" in video_text
+
+
+def test_matrix_model_directory_layout_is_model_specific():
+    probe = load_probe_module()
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        path = probe._probe_out_dir(
+            root,
+            probe_model="matrix-zoo",
+            spatial_size=64,
+            multi_size=False,
+            tcn_variant="hf/name:with-colon",
+            multi_variant=True,
+        )
+
+        assert path == root / "matrix_zoo_hf_name_with-colon_64"
 
 
 def test_parse_args_exposes_seed_for_reproducible_probe_runs():
@@ -777,6 +848,86 @@ def test_build_probe_model_supports_temporal_tcn_branch(monkeypatch):
     assert isinstance(model, FakeTemporalTCN)
     assert reader_cfg is None
     assert captured == {"variant": "dilated", "spatial_size": 64}
+
+
+def test_build_probe_model_supports_matrix_zoo_branch(monkeypatch):
+    probe = load_probe_module()
+    captured = {}
+
+    class FakeMatrixZoo:
+        def __init__(
+            self,
+            *,
+            model_id,
+            pretrained,
+            freeze_backbone,
+            temporal_hidden_dim,
+            video_clip_len,
+            video_anchor_stride,
+        ):
+            captured.update(
+                {
+                    "model_id": model_id,
+                    "pretrained": pretrained,
+                    "freeze_backbone": freeze_backbone,
+                    "temporal_hidden_dim": temporal_hidden_dim,
+                    "video_clip_len": video_clip_len,
+                    "video_anchor_stride": video_anchor_stride,
+                }
+            )
+
+    monkeypatch.setattr(probe, "C3MatrixZooActionProbe", FakeMatrixZoo)
+    args = probe.parse_args(
+        [
+            "--probe-model",
+            "matrix-zoo",
+            "--matrix-model-ids",
+            "timm_resnet18_tcn",
+            "--no-matrix-pretrained",
+            "--no-matrix-freeze-backbone",
+            "--matrix-temporal-hidden-dim",
+            "64",
+            "--matrix-video-clip-len",
+            "8",
+            "--matrix-video-anchor-stride",
+            "4",
+        ]
+    )
+    args.matrix_model_id = "timm_resnet18_tcn"
+
+    model, reader_cfg = probe._build_probe_model(args, cfg=types.SimpleNamespace(), spatial_size=64)
+
+    assert isinstance(model, FakeMatrixZoo)
+    assert reader_cfg is None
+    assert captured == {
+        "model_id": "timm_resnet18_tcn",
+        "pretrained": False,
+        "freeze_backbone": False,
+        "temporal_hidden_dim": 64,
+        "video_clip_len": 8,
+        "video_anchor_stride": 4,
+    }
+
+
+def test_matrix_zoo_video_classifier_replacement_supports_conv3d_head():
+    probe = load_probe_module()
+    torch = pytest.importorskip("torch")
+    nn = torch.nn
+
+    scout = object.__new__(probe.C3MatrixZooActionProbe)
+    scout.model_id = "fake_s3d"
+    scout.backbone = types.SimpleNamespace(
+        classifier=nn.Sequential(
+            nn.Dropout(p=0.1),
+            nn.Conv3d(1024, 400, kernel_size=1),
+        )
+    )
+
+    scout._replace_video_classifier(nn)
+
+    assert isinstance(scout.backbone.classifier[-1], nn.Conv3d)
+    assert scout.backbone.classifier[-1].in_channels == 1024
+    assert scout.backbone.classifier[-1].out_channels == 1
 
 
 def test_temporal_tcn_new_variants_keep_framewise_shape_and_mask_invalid_positions(monkeypatch):
@@ -1041,6 +1192,49 @@ def test_tcn_variant_summary_exposes_per_variant_results():
     assert combined["comparison"]["average_precision_by_variant"]["lite"] == 0.55
     assert combined["comparison"]["best_indirect_strategy_by_variant"]["lite"] == "delta_p_action"
     assert combined["comparison"]["best_indirect_strategy_by_variant"]["motion"] == "weighted_transition_mix"
+
+
+def test_matrix_model_summary_exposes_per_model_results_and_failures():
+    probe = load_probe_module()
+
+    summaries = [
+        {
+            "probe_model": "matrix-zoo",
+            "matrix_model_id": "timm_resnet18_tcn",
+            "spatial_size": 64,
+            "final_val": {
+                "average_precision": 0.60,
+                "roc_auc": 0.70,
+                "best_f1": 0.55,
+                "indirect_selection_quality": {
+                    "strategy_comparison": {
+                        "best_boundary_support_strategy": "delta_p_action",
+                        "boundary_support_r1_by_strategy": {"delta_p_action": 0.75},
+                    }
+                },
+            },
+            "out_dir": "root/matrix_zoo_timm_resnet18_tcn_64",
+        },
+        {
+            "probe_model": "matrix-zoo",
+            "matrix_model_id": "hf_videomae_small_kinetics",
+            "status": "failed",
+            "error": {"type": "ValueError", "message": "transformers adapter not enabled"},
+            "out_dir": "root/matrix_zoo_hf_videomae_small_kinetics_64",
+        },
+    ]
+
+    combined = probe._combine_matrix_model_summaries(
+        base_summary={"probe_model": "matrix-zoo", "seed": 3},
+        summaries=summaries,
+        args_out_dir=Path("root"),
+    )
+
+    assert combined["schema_version"] == "lowres_action_probe_matrix_zoo_v1"
+    assert combined["matrix_model_ids"] == ["timm_resnet18_tcn", "hf_videomae_small_kinetics"]
+    assert combined["comparison"]["best_average_precision_model"] == "timm_resnet18_tcn"
+    assert combined["comparison"]["best_indirect_strategy_by_model"]["timm_resnet18_tcn"] == "delta_p_action"
+    assert "hf_videomae_small_kinetics" in combined["comparison"]["failed_models"]
 
 
 def test_load_torch_state_dict_accepts_probe_state_dict(tmp_path):

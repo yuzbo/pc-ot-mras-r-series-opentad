@@ -52,23 +52,51 @@ These are teacher/upper-bound candidates, not immediate deployable selectors.
 
 - Matrix/download script:
   `tools/bata/c3_coarse_classifier_model_matrix.py`.
+- Unified fine-tuning/diagnostic adapter:
+  `tools/bata/train_lowres_action_probe.py`.
+  The new `--probe-model matrix-zoo` branch keeps the existing frame-logit
+  contract `[B,T]`, so the same AP/AUC/F1 and `p_action`/`|delta p_action|`
+  indirect-selection diagnostics are reused for all candidates.
 - N16R4 CPU/cache-only launcher:
   `scripts/download_c3_coarse_classifier_model_zoo_n16r4.sh`.
+- GPU1-only image-backbone fine-tuning launcher:
+  `scripts/run_c3_matrix_zoo_image_backbone_probe_gpu1_20260701.sh`.
+- GPU1-only short-clip video-model fine-tuning launcher:
+  `scripts/run_c3_matrix_zoo_video_probe_gpu1_20260701.sh`.
 - Focused tests:
-  `tests/test_c3_coarse_classifier_model_matrix.py`.
+  `tests/test_c3_coarse_classifier_model_matrix.py` and
+  `tests/test_lowres_action_probe.py`.
 
 The launcher clears `CUDA_VISIBLE_DEVICES` and only downloads/caches model
 weights; it does not start training or evaluation.
+
+The two fine-tuning launchers are C3-mainline/GPU1-only and fail closed unless
+`CUDA_VISIBLE_DEVICES=1`. They are meant to run after the current
+`c3_oracle_full_g1` child releases GPU1.
+
+Current fine-tuning support:
+
+- `timm` image backbones: per-frame ImageNet-pretrained visual features plus a
+  small temporal head. This tests whether stronger visual recognition fixes the
+  weak `p_action` curve.
+- `torchvision`/`pytorchvideo` short-clip backbones: sliding clip logits are
+  interpolated back to `[B,T]` so the same indirect-selection diagnostics can be
+  computed.
+- SlowFast and Hugging Face VideoMAE are explicitly fail-closed in this first
+  adapter unless a dedicated two-pathway/Transformers wrapper is added. They can
+  be downloaded as teacher or upper-bound candidates, but are not silently
+  treated as supported fine-tuning models.
 
 ## Local Verification
 
 Commands:
 
 ```powershell
-C:\Users\skywalker\.conda\envs\torch_1\python.exe -m py_compile tools\bata\c3_coarse_classifier_model_matrix.py tests\test_c3_coarse_classifier_model_matrix.py
-bash -n scripts/download_c3_coarse_classifier_model_zoo_n16r4.sh scripts/run_c3_tcn_coarse_probe_gpu1_20260701.sh
-C:\Users\skywalker\.conda\envs\torch_1\python.exe -m pytest tests\test_c3_coarse_classifier_model_matrix.py -q
+C:\Users\skywalker\.conda\envs\torch_1\python.exe -m py_compile tools\bata\train_lowres_action_probe.py tools\bata\c3_coarse_classifier_model_matrix.py tests\test_lowres_action_probe.py tests\test_c3_coarse_classifier_model_matrix.py
+bash -n scripts/download_c3_coarse_classifier_model_zoo_n16r4.sh scripts/run_c3_tcn_coarse_probe_gpu1_20260701.sh scripts/run_c3_matrix_zoo_image_backbone_probe_gpu1_20260701.sh scripts/run_c3_matrix_zoo_video_probe_gpu1_20260701.sh
+C:\Users\skywalker\.conda\envs\torch_1\python.exe -m pytest tests\test_lowres_action_probe.py tests\test_c3_coarse_classifier_model_matrix.py -q
 C:\Users\skywalker\.conda\envs\torch_1\python.exe tools\bata\c3_coarse_classifier_model_matrix.py --download --dry-run --tier first_wave --output-json logs\c3_model_matrix_dry_run_local.json
+C:\Users\skywalker\.conda\envs\torch_1\python.exe tools\bata\train_lowres_action_probe.py --help
 git diff --check
 ```
 
@@ -76,17 +104,18 @@ Results:
 
 - py_compile: pass;
 - launcher `bash -n`: pass;
-- focused pytest: `4 passed`;
+- focused pytest: `40 passed`;
 - matrix dry-run JSON: pass;
+- train-probe CLI help: pass;
 - diff check: pass.
 
 ## Next Actions
 
-1. Commit and push this C3 coarse classifier model-matrix update.
+1. Commit and push this C3 coarse classifier model-matrix/fine-tuning update.
 2. Sync the remote clean clone.
-3. Run remote static precheck.
-4. Start CPU-only first-wave model download on the N16R4 login node under
+3. Run remote static precheck for the new matrix-zoo fine-tuning branch.
+4. Continue CPU-only first-wave model download on the N16R4 login node under
    `/data/run01/sczc063/yuzibo/model_zoo_cache/c3_coarse_classifier`.
 5. After `c3_oracle_full_g1` releases GPU1, run the existing temporal-TCN wave,
-   then add the broader downloaded model families into the same
+   then run the broader downloaded model families through the same
    `p_action`/`|delta p_action|` indirect-selection benchmark.
