@@ -1,5 +1,14 @@
 # Research Log
 
+## 2026-07-01 11:59:27 +08:00 - RBA-RBR guard launcher torchrun fix and relaunch
+
+- Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Public guard job `1132641 rba_guarddiag` started on `g0024` but failed after `00:00:46` with `KeyError: 'LOCAL_RANK'` because the sbatch launcher called `python tools/train.py` directly. No train iteration, grid audit row, mAP, runtime, FLOPs, deploy, sparse-compute, or paper evidence was produced by that failed launch.
+- Added route-owned launcher `scripts/run_rba_rbr_guard_evaldiag_n16r4.sbatch`, using single-GPU `python -m torch.distributed.run --standalone --nnodes=1 --nproc_per_node=1` while preserving the guard evaldiag config and `RBA_RBR_GRID_AUDIT_PATH` summary.
+- Uploaded the launcher to `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GuardDiag_20260701_e6de60e9_bundle/scripts/run_rba_rbr_guard_evaldiag_n16r4.sbatch`; remote `bash -n` passed.
+- Relaunched the coverage-guard `SHORT_DIAGNOSTIC_ONLY` job as `1132718 rba_guarddiag`, logdir `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GuardDiag_20260701_e6de60e9_bundle/logs/rba_rbr_guard_evaldiag_torchrun_20260701_1200_0800/`. Initial state: `PENDING`, reason `Priority`, no node assigned.
+- Resource boundary: BVR child `1118197.542 bvr_twb_fix2_g0` remained `RUNNING` on protected hold GPU0, so no RBA child was launched on the hold. Parent hold `1118197 pcot_dbg2g` was not released, cancelled, replaced, or modified. Formal/full RBA-RBR training and all claims remain locked.
+
 ## 2026-07-01 10:58:56 +08:00 - RBA-RBR guard GPU0 fallback watcher staged
 
 - Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.

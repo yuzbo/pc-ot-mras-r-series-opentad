@@ -811,3 +811,59 @@ Current decision:
 - RBA-RBR formal/full training remains locked until the guard diagnostic
   verifies count/gap restoration and severe-result diagnosis produces a concrete
   next decision.
+
+## Guard Launcher Torchrun Fix and Relaunch - 2026-07-01 11:59:27 +08:00
+
+Failure attribution:
+
+- Public guard job `1132641 rba_guarddiag` started on `g0024` but failed after
+  `00:00:46`.
+- `slurm-1132641.err` was empty; `train.log` and `slurm-1132641.out` both
+  showed `KeyError: 'LOCAL_RANK'`.
+- Cause: the sbatch launcher called `python tools/train.py` directly, while this
+  OpenTAD entrypoint requires `LOCAL_RANK`, `WORLD_SIZE`, and `RANK` from a
+  distributed launcher.
+- This was an infrastructure/launcher failure before training, not a selector,
+  detector, data, or guard-code result.
+
+Fix:
+
+- Added `scripts/run_rba_rbr_guard_evaldiag_n16r4.sbatch`.
+- The launcher uses
+  `python -m torch.distributed.run --standalone --nnodes=1 --nproc_per_node=1`
+  for the same guard evaldiag config.
+- It preserves:
+  - `RBA_RBR_GRID_AUDIT=1`;
+  - `RBA_RBR_GRID_AUDIT_PATH`;
+  - the grid-audit post-run summary for raw counts, detector mask counts,
+    guard additions, and raw/detector gap before/after values;
+  - `--exclude=g0030` in the Slurm header.
+
+Remote evidence:
+
+- Uploaded launcher:
+  `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GuardDiag_20260701_e6de60e9_bundle/scripts/run_rba_rbr_guard_evaldiag_n16r4.sbatch`.
+- Remote `bash -n` passed.
+- Relaunched public short diagnostic as Slurm job `1132718 rba_guarddiag`.
+- Logdir:
+  `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GuardDiag_20260701_e6de60e9_bundle/logs/rba_rbr_guard_evaldiag_torchrun_20260701_1200_0800/`.
+- Initial state:
+  `PENDING`, reason `Priority`, no node assigned.
+
+Resource boundary:
+
+- BVR child `1118197.542 bvr_twb_fix2_g0` remained `RUNNING` on protected hold
+  GPU0.
+- C3 had a separate GPU1 child in the same protected hold.
+- RBA-RBR did not launch on protected hold GPU0 and did not touch GPU1.
+- Parent hold `1118197 pcot_dbg2g` was not released, cancelled, replaced, or
+  modified.
+
+Decision:
+
+- Continue monitoring `1132718` until it starts or fails.
+- Once it runs, compare guard audit counts/gaps against the old pre-guard audit:
+  old detector `mask_true_count` mean `27.65`, min `9`, p50 `28`, and
+  `3102/4090` rows below the new floor of `32`.
+- Formal/full RBA-RBR training and all metric/runtime/FLOPs/sparse-compute,
+  deploy, and paper claims remain locked.
