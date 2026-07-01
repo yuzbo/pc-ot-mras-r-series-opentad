@@ -14,7 +14,7 @@ is available. Be strict and code-grounded.
 
 Repository branch for inspection:
 
-`https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-guard-severe-firsteval-15303a3c-20260701`
+`https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-guard-complete-39073521-20260701`
 
 Route label:
 
@@ -66,26 +66,34 @@ Remote evidence:
 Observed result:
 
 - First validation after epoch 1 completed at `2026-07-01 13:39:19 +08:00`.
-- `Average-mAP=0.22%`.
-- `mAP@0.3/0.4/0.5/0.6/0.7 = 0.66/0.30/0.09/0.04/0.01`.
-- `3325` GT instances.
-- `411700` predictions.
-- No Traceback/OOM/NaN/non-finite pattern observed.
-- Training continued into epoch 2 with finite loss.
+- First observed `Average-mAP=0.22%`.
+- Final observed Average-mAP line completed at `2026-07-01 14:47:42 +08:00`.
+- Final observed `Average-mAP=7.45%`.
+- Final `mAP@0.3/0.4/0.5/0.6/0.7 = 17.34/11.47/5.69/2.09/0.65`.
+- Final evaluator counts: `3325` GT instances and `411700` predictions.
+- `Training Over` count: `1`.
+- Hard error count: `0`.
+- No Traceback/OOM/NaN/non-finite pattern observed in the harvested evidence.
 
 Coverage-guard audit:
 
-- `2183` JSONL rows inspected.
+- `4090` JSONL rows inspected in the final audit.
 - All rows had route label
   `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
 - All rows had status `PASS_RBA_RBR_NATIVE_AXIS_POSITIONS_ENTERED_MODEL`.
-- `raw_valid_k`: min `60`, p05 `78`, p50 `85`, p95 `91`, max `94`, avg `84.56`.
-- `mask_true_count`: min `30`, p05 `39`, p50 `43`, p95 `46`, max `47`, avg `42.53`.
-- `meta_detector_feature_position_count`: same as `mask_true_count`.
-- `selected_max_gap_after_guard`: min `1`, p05 `14`, p50 `16`, p95 `16`, max `16`, avg `15.58`.
-- `max_detector_gap_after_guard`: min `2.0`, p05 `20.5`, p50 `23.0`, p95 `24.0`, max `24.0`, avg `22.52`.
-- `guard_addition_count`: min `3`, p05 `13`, p50 `29`, p95 `49`, max `54`, avg `29.88`.
-- `mask_lt32=1`, `rawgap_gt16_after=0`, `detgap_gt24_after=0`.
+- `raw_valid_k` avg: `84.6235`.
+- `mask_true_count` avg: `42.5601`.
+- `selected_max_gap_after_guard`: max `16`, avg `15.5897`.
+- `max_detector_gap_after_guard`: max `24`, avg `22.5460`.
+
+Current decision state:
+
+- Formal/full RBA-RBR training is locked.
+- No mAP/runtime/FLOPs/sparse-compute/deploy/paper claim is unlocked.
+- No route conclusion is unlocked.
+- A valid GPT-5.5 Pro severe-result diagnosis is required before any long
+  RBA-RBR follow-up or route-level conclusion, unless the user gives an explicit
+  same-scope override.
 
 Diagnosis needed:
 
