@@ -137,3 +137,37 @@ No sparse-compute claim exists.
 No formal or full training claim exists.
 
 Formal/full training remains locked.
+
+## Sparse Handoff Short-Window Fix
+
+Timestamp: 2026-07-01 17:40:04 +08:00 Asia/Shanghai
+
+- Scope: local MDL-Knot sparse handoff repair in owned worktree
+  `OpenTAD_MDLKnot_SparseHandoffFix_Worktree_20260701` only.
+- Route label: `DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3`.
+- No remote sync, Slurm, training, evaluation, `tools/test.py`, Pro/Oracle/Rosetta, or C3/CADF/PQR file change was performed.
+- Crash reproduced locally with a deterministic short dense window:
+  `dense_t=4`, `min_k=4`, `max_k=384`, `target_weighted_error=0.0`, `max_gap=1`.
+  Before the fix, selector returned `valid_k=4` and positions `[0, 1, 2, 3]`, so selected-only sparse audit rejected it as dense passthrough.
+- Root cause: selector capped selection by `min(max_k, dense_T)`, allowing `valid_k == dense_T` on short real windows. Fixed-pad `frame_inds` then also made it easy for audits to confuse padded detector input length with valid selected sparse length.
+- Fix:
+  - `opentad/acquisition/mdl_knot/selector.py`: effective sparse cap is now `min(max_k, dense_T - 1)` and `dense_T < 3` fails closed because it cannot preserve two endpoints while remaining sparse.
+  - `opentad/acquisition/mdl_knot/validators.py`: selected-only audit now explicitly rejects `valid_k >= dense_T` with a clear diagnostic.
+  - `tests/test_mdl_knot_core.py` and `tests/test_mdl_knot_tools_and_integration.py`: added regression coverage for short-window cap, dense passthrough/`valid_k >= dense_T`, fixed-pad length confusion, route-label drift, mask/meta alignment, and selected-only audit slicing.
+- Verification:
+  - Red tests before fix:
+    - `python -m pytest tests/test_mdl_knot_core.py::test_selector_keeps_short_windows_strictly_sparse_under_large_cap -q`
+      failed with `assert 4 < 4`.
+    - `python -m pytest tests/test_mdl_knot_tools_and_integration.py::test_mdl_knot_handoff_caps_short_windows_before_sparse_audit -q`
+      failed in `validate_real_sparse_handoff` with dense-passthrough rejection.
+  - After fix:
+    - `python -m pytest tests/test_mdl_knot_core.py::test_selector_keeps_short_windows_strictly_sparse_under_large_cap tests/test_mdl_knot_core.py::test_real_sparse_handoff_requires_gathered_inputs_and_valid_mask -q`
+      exit code `0`, `2 passed in 0.26s`.
+    - `python -m pytest tests/test_mdl_knot_tools_and_integration.py::test_fixed_adapter_bridge_pads_frame_inds_without_counting_padding_as_valid tests/test_mdl_knot_tools_and_integration.py::test_mdl_knot_handoff_caps_short_windows_before_sparse_audit -q`
+      exit code `0`, `2 passed in 0.97s`.
+    - `python -m pytest tests/test_mdl_knot_core.py tests/test_mdl_knot_tools_and_integration.py tests/test_mdl_knot_shortdiag.py -q`
+      exit code `0`, `49 passed, 2 skipped in 25.12s`.
+    - `python tools/mdl_knot/audit_mdl_knot_pipeline_precheck.py --out-dir tmp_mdl_knot_precheck_fix --overwrite`
+      exit code `0`, produced `VALIDATED_PRECHECK_SUMMARY=tmp_mdl_knot_precheck_fix\mdl_knot_precheck_summary.json`; the temporary output directory was then removed after path verification inside the owned worktree.
+- Claim state is unchanged: no mAP, runtime, FLOPs, deployment, paper, sparse-compute, formal-training, or full-training claim exists.
+- Next allowed action after required review/permission is bounded local/static review or explicitly authorized short diagnostic resync/rerun. Formal/full training remains locked.

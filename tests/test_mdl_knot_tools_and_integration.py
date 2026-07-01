@@ -15,6 +15,7 @@ from opentad.acquisition.mdl_knot import (
     build_raw_frame_motion_scout_curve,
     build_synthetic_scout_curve,
     greedy_mdl_knot_select,
+    validate_real_sparse_handoff,
     validate_formal_readiness_evidence,
 )
 from opentad.acquisition.mdl_knot.diagnostics import FormalReadinessLocked
@@ -114,6 +115,53 @@ def test_fixed_adapter_bridge_pads_frame_inds_without_counting_padding_as_valid(
     assert updated["mdl_knot_padding_counts_as_valid"] is False
     assert updated["frame_inds"][:valid_k] == [dense_window[pos] for pos in updated["mdl_knot_selected_positions"]]
     assert updated["frame_inds"][valid_k:] == [updated["frame_inds"][valid_k - 1]] * (64 - valid_k)
+    assert updated["mdl_knot_sparse_meta"]["valid_k"] == valid_k
+    assert updated["mdl_knot_sparse_meta"]["visibility_mask"] == [True] * valid_k
+
+    with pytest.raises(ValueError, match="length 64 must equal valid_k"):
+        validate_real_sparse_handoff(
+            batch={
+                "selected_inputs": updated["frame_inds"],
+                "dense_inputs": dense_window,
+                "meta": updated["mdl_knot_sparse_meta"],
+            },
+            ledger=updated["mdl_knot_ledger"],
+        )
+
+    validate_real_sparse_handoff(
+        batch={
+            "selected_inputs": updated["frame_inds"][:valid_k],
+            "dense_inputs": dense_window,
+            "meta": updated["mdl_knot_sparse_meta"],
+        },
+        ledger=updated["mdl_knot_ledger"],
+    )
+
+
+def test_mdl_knot_handoff_caps_short_windows_before_sparse_audit():
+    dense_window = list(range(2000, 2004))
+    curve = build_synthetic_scout_curve("short_islands", dense_t=len(dense_window))
+
+    updated = apply_mdl_knot_to_dense_window(
+        results={"video_name": "video_test_short_window", "total_frames": 3000},
+        dense_window=dense_window,
+        scout_curve=curve,
+        config=MDLKnotConfig(route_label=ROUTE_LABEL, min_k=4, max_k=384, target_weighted_error=0.0, max_gap=1),
+        adapter_target_len=384,
+    )
+
+    valid_k = updated["mdl_knot_valid_k"]
+    assert valid_k < len(dense_window)
+    assert len(updated["frame_inds"]) == 384
+    assert sum(bool(v) for v in updated["masks"]) == valid_k
+    validate_real_sparse_handoff(
+        batch={
+            "selected_inputs": updated["frame_inds"][:valid_k],
+            "dense_inputs": dense_window,
+            "meta": updated["mdl_knot_sparse_meta"],
+        },
+        ledger=updated["mdl_knot_ledger"],
+    )
 
 
 def test_mdl_knot_config_overrides_real_dataset_pipelines_without_dead_standalone_pipelines():

@@ -76,6 +76,21 @@ def test_selected_positions_are_sorted_unique_in_range_and_original_time():
     assert "endpoint_anchor" in ledger.selected_roles
 
 
+def test_selector_keeps_short_windows_strictly_sparse_under_large_cap():
+    curve = build_synthetic_scout_curve("short_islands", dense_t=4)
+    cfg = MDLKnotConfig(route_label=ROUTE_LABEL, min_k=4, max_k=384, target_weighted_error=0.0, max_gap=1)
+
+    ledger = greedy_mdl_knot_select(curve, cfg)
+    dense = list(range(ledger.dense_t))
+    selected = [dense[pos] for pos in ledger.selected_positions]
+
+    assert ledger.valid_k < ledger.dense_t
+    validate_real_sparse_handoff(
+        batch={"selected_inputs": selected, "dense_inputs": dense, "meta": ledger.to_sparse_meta().to_dict()},
+        ledger=ledger,
+    )
+
+
 def test_piecewise_reconstruction_error_improves_with_extra_knots():
     curve = build_synthetic_scout_curve("sharp_transition", dense_t=64)
     sparse = [0, 63]
@@ -148,6 +163,56 @@ def test_real_sparse_handoff_requires_gathered_inputs_and_valid_mask():
         validate_real_sparse_handoff(
             batch={"selected_inputs": dense, "dense_inputs": dense, "meta": meta.to_dict()},
             ledger=bad,
+        )
+
+    with pytest.raises(ValueError, match="length .* must equal valid_k"):
+        validate_real_sparse_handoff(
+            batch={"selected_inputs": dense, "dense_inputs": dense, "meta": meta.to_dict()},
+            ledger=ledger,
+        )
+
+    bad_meta = meta.to_dict()
+    bad_meta["visibility_mask"] = [True] * (ledger.valid_k - 1) + [False]
+    with pytest.raises(ValueError, match="visible"):
+        validate_real_sparse_handoff(
+            batch={"selected_inputs": selected, "dense_inputs": dense, "meta": bad_meta},
+            ledger=ledger,
+        )
+
+    bad_route = ledger.to_dict()
+    bad_route["route_label"] = "DIVERGENT_INNOVATION_MDL_KNOT_DRIFT"
+    with pytest.raises(ValueError, match="route_label"):
+        validate_real_sparse_handoff(
+            batch={"selected_inputs": selected, "dense_inputs": dense, "meta": meta.to_dict()},
+            ledger=bad_route,
+        )
+
+    full_dense_ledger = {
+        "route_label": ROUTE_LABEL,
+        "dense_T": 4,
+        "selected_positions": [0, 1, 2, 3],
+        "selected_roles": ["endpoint_anchor", "mdl_knot", "mdl_knot", "endpoint_anchor"],
+        "valid_k": 4,
+        "position_unit": "original_dense_time_index",
+        "provenance": {
+            "uses_gt": False,
+            "uses_teacher": False,
+            "uses_prediction_cache": False,
+            "dense_raw_backbone_handoff": False,
+            "selected_inputs_is_gathered": True,
+            "position_unit": "original_dense_time_index",
+        },
+    }
+    full_dense_meta = {
+        "selected_positions": [0, 1, 2, 3],
+        "visibility_mask": [True, True, True, True],
+        "valid_k": 4,
+        "position_unit": "original_dense_time_index",
+    }
+    with pytest.raises(ValueError, match="valid_k 4 must be shorter than dense_T 4"):
+        validate_real_sparse_handoff(
+            batch={"selected_inputs": [0, 1, 2, 3], "dense_inputs": [0, 1, 2, 3], "meta": full_dense_meta},
+            ledger=full_dense_ledger,
         )
 
 

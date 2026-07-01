@@ -182,7 +182,10 @@ def greedy_mdl_knot_select(
 ) -> KnotLedger:
     if curve.dense_t < 2:
         raise ValueError("MDL-Knot requires at least two dense cells")
-    initial_k = min(max(cfg.min_k, cfg.min_anchor_k, 2), curve.dense_t, cfg.max_k)
+    sparse_cap = min(int(cfg.max_k), int(curve.dense_t) - 1)
+    if sparse_cap < 2:
+        raise ValueError("MDL-Knot sparse handoff requires dense_T >= 3")
+    initial_k = min(max(cfg.min_k, cfg.min_anchor_k, 2), sparse_cap)
     selected = set(_uniform_anchor_positions(curve.dense_t, initial_k))
     selected.add(0)
     selected.add(curve.dense_t - 1)
@@ -201,7 +204,7 @@ def greedy_mdl_knot_select(
         if len(selected) >= cfg.min_k and safe_by_residual and safe_by_gap and not _risk_uncovered(current, curve, cfg):
             stop_reason = "residual_and_gap_safe"
             break
-        if len(selected) >= min(cfg.max_k, curve.dense_t):
+        if len(selected) >= sparse_cap:
             stop_reason = "cap_reached"
             break
 

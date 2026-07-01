@@ -79,6 +79,8 @@ def validate_real_sparse_handoff(batch: Mapping[str, object], ledger) -> None:
     dense_len = _sequence_len(dense_inputs)
     valid_k = int(data.get("valid_k", data.get("actual_k")))
     dense_t = int(data.get("dense_T"))
+    if valid_k >= dense_t:
+        raise ValueError(f"valid_k {valid_k} must be shorter than dense_T {dense_t} for sparse selected-only audit")
     if selected_len != valid_k:
         raise ValueError(f"selected_inputs length {selected_len} must equal valid_k {valid_k}")
     if dense_len != dense_t:
