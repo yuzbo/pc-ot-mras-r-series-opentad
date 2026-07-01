@@ -331,6 +331,7 @@ def run_conversion(
     fallback_to_selected_positions: bool = False,
     require_window_sample_id: bool = True,
     deploy_selection_ledger: bool = False,
+    deduplicate_sample_id: bool = False,
     route_variant: str = "c3_lowres_probe_delta_p_action_original_adatad",
 ) -> dict[str, Any]:
     source_rows = _read_jsonl(input_jsonl)
@@ -352,6 +353,22 @@ def run_conversion(
         )
         for line_no, row in enumerate(source_rows, start=1)
     ]
+    duplicate_sample_id_count = 0
+    if deduplicate_sample_id:
+        deduped_rows: list[dict[str, Any]] = []
+        by_sample_id: dict[str, dict[str, Any]] = {}
+        for row in out_rows:
+            sample_id = str(row["sample_id"])
+            previous = by_sample_id.get(sample_id)
+            if previous is None:
+                by_sample_id[sample_id] = row
+                deduped_rows.append(row)
+                continue
+            duplicate_sample_id_count += 1
+            for key in ("selected_positions", "selected_count", "target_len", "valid_len", "dense_len"):
+                if previous.get(key) != row.get(key):
+                    raise ValueError(f"duplicate sample_id {sample_id} has conflicting {key}")
+        out_rows = deduped_rows
     sample_ids = [str(row["sample_id"]) for row in out_rows]
     if len(set(sample_ids)) != len(sample_ids):
         raise ValueError("converted value-transport ledger has duplicate sample_id")
@@ -370,6 +387,8 @@ def run_conversion(
         "allow_short_valid_ratio_count": bool(allow_short_valid_ratio_count),
         "fill_to_target_count": bool(fill_to_target_count),
         "deploy_selection_ledger": bool(deploy_selection_ledger),
+        "deduplicate_sample_id": bool(deduplicate_sample_id),
+        "duplicate_sample_id_count": int(duplicate_sample_id_count),
         "route_variant": str(route_variant),
         "min_selected_count": min(counts),
         "max_selected_count": max(counts),
@@ -394,6 +413,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--fallback-to-selected-positions", action="store_true")
     parser.add_argument("--allow-video-only-sample-id", action="store_true")
     parser.add_argument("--deploy-selection-ledger", action="store_true")
+    parser.add_argument("--deduplicate-sample-id", action="store_true")
     parser.add_argument("--route-variant", default="c3_lowres_probe_delta_p_action_original_adatad")
     args = parser.parse_args(argv)
 
@@ -412,6 +432,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             fallback_to_selected_positions=bool(args.fallback_to_selected_positions),
             require_window_sample_id=not bool(args.allow_video_only_sample_id),
             deploy_selection_ledger=bool(args.deploy_selection_ledger),
+            deduplicate_sample_id=bool(args.deduplicate_sample_id),
             route_variant=args.route_variant,
         )
     except Exception as exc:  # pragma: no cover - CLI guard

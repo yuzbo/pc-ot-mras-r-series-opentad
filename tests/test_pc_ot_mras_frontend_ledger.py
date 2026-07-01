@@ -379,6 +379,71 @@ def test_lowres_probe_conversion_rejects_video_only_or_duplicate_sample_ids(tmp_
         run_lowres_probe_conversion(input_jsonl, output_jsonl, strategy="delta_p_action", target_len=2)
 
 
+def test_lowres_probe_conversion_can_deduplicate_identical_window_rows(tmp_path):
+    input_jsonl = tmp_path / "samples.jsonl"
+    output_jsonl = tmp_path / "value_transport_ledger.jsonl"
+    summary_json = tmp_path / "summary.json"
+    sample_row = {
+        "sample_id": "video_test_0001|0",
+        "dense_len": 4,
+        "valid_len": 4,
+        "strategy_selected_positions": {"delta_p_action": [0, 2]},
+    }
+    input_jsonl.write_text(
+        json.dumps(sample_row, sort_keys=True) + "\n" + json.dumps(sample_row, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    summary = run_lowres_probe_conversion(
+        input_jsonl,
+        output_jsonl,
+        strategy="delta_p_action",
+        target_len=2,
+        require_selected_count=2,
+        summary_json=summary_json,
+        deduplicate_sample_id=True,
+    )
+
+    rows = [json.loads(line) for line in output_jsonl.read_text(encoding="utf-8").splitlines()]
+    assert summary["decision"] == LOWRES_LEDGER_READY
+    assert summary["row_count"] == 1
+    assert summary["deduplicate_sample_id"] is True
+    assert summary["duplicate_sample_id_count"] == 1
+    assert rows[0]["sample_id"] == "video_test_0001|0"
+    assert rows[0]["selected_positions"] == [0, 2]
+
+
+def test_lowres_probe_conversion_rejects_conflicting_duplicate_window_rows(tmp_path):
+    input_jsonl = tmp_path / "samples.jsonl"
+    output_jsonl = tmp_path / "value_transport_ledger.jsonl"
+    duplicate_a = {
+        "sample_id": "video_test_0001|0",
+        "dense_len": 4,
+        "valid_len": 4,
+        "strategy_selected_positions": {"delta_p_action": [0, 2]},
+    }
+    duplicate_b = {
+        "sample_id": "video_test_0001|0",
+        "dense_len": 4,
+        "valid_len": 4,
+        "strategy_selected_positions": {"delta_p_action": [0, 3]},
+    }
+    input_jsonl.write_text(
+        json.dumps(duplicate_a, sort_keys=True) + "\n" + json.dumps(duplicate_b, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="conflicting selected_positions"):
+        run_lowres_probe_conversion(
+            input_jsonl,
+            output_jsonl,
+            strategy="delta_p_action",
+            target_len=2,
+            require_selected_count=2,
+            deduplicate_sample_id=True,
+        )
+
+
 def test_lowres_probe_conversion_can_uniform_fill_to_required_count(tmp_path):
     input_jsonl = tmp_path / "samples.jsonl"
     output_jsonl = tmp_path / "value_transport_ledger.jsonl"
@@ -706,4 +771,5 @@ def test_lowres_probe_ledger_export_launcher_is_gpu1_coverage_only_and_strict():
     assert '--require-selected-count "${TARGET_LEN}"' in text
     assert "--allow-short-valid-ratio-count" in text
     assert "--fill-to-target-count" in text
+    assert "--deduplicate-sample-id" in text
     assert "--allow-video-only-sample-id" not in text

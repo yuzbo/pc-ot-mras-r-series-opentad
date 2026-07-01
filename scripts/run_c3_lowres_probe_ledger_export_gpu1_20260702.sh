@@ -151,6 +151,7 @@ python tools/bata/convert_lowres_probe_samples_to_value_transport_ledger.py \
   --require-selected-count "${TARGET_LEN}" \
   --allow-short-valid-ratio-count \
   --fill-to-target-count \
+  --deduplicate-sample-id \
   --deploy-selection-ledger \
   --route-variant "c3_lowres_${PROBE_MODEL}_${TCN_VARIANT}${MATRIX_MODEL_ID}${OFFICIAL_ACTION_SEG_BACKEND}_${SELECTION_STRATEGY}_dense${DENSE_WINDOW_SIZE}_to_${TARGET_LEN}_${EXPORT_SPLIT}"
 
