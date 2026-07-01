@@ -298,3 +298,12 @@
 - Updated RBA config and launch gate to require `pre_nms_topk=512`, `raw_proposal_cap=1024`, `per_class_topk=32`, and `total_candidate_cap=512`.
 - Verification: py_compile passed; `python -m pytest tests\test_rba_rbr_integration.py -q` -> `8 passed, 7 skipped`; synthetic ledger build plus launch gate -> `gate_pass=true`, `full_train_unlocked=false`; `git diff --check` passed with LF/CRLF warnings only.
 - No remote sync, Slurm launch, mAP/runtime/FLOPs/sparse-compute/deploy/paper claim, or formal/full-train unlock was produced by this repair. Next allowed step is a route-owned `SHORT_DIAGNOSTIC_ONLY` postprocess-guard run after current `.560` evidence is harvested or if a user override chooses to replace it.
+
+## 2026-07-01 14:18:00 +08:00 - RBA-RBR postprocess guard GitHub evidence sync
+
+- Ordinary `git push` failed with `Recv failure: Connection was reset`.
+- Created a new evidence branch without force push: `codex/divergent-rba-rbr-postprocess-guard-546ed615-20260701`.
+- GitHub Contents API returned 404 for branch refs, so synchronization used Git Data API blobs/trees/commits.
+- Local commit: `546ed6159c2155633981050ae102547de03ea6bc`; GitHub base commit: `1cbdb50422f9b1c968ef92e9c036d2787d434c79`; GitHub synced ref: `6ba723abe4f5b2eca7c38f71c5b14872d637dbaa`.
+- URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-postprocess-guard-546ed615-20260701`.
+- Synced 8 RBA postprocess-guard files for later Pro/severe-result review. No remote precheck, Slurm launch, training result, final mAP/runtime/FLOPs/sparse-compute/deploy/paper claim, or formal/full-train unlock was produced.

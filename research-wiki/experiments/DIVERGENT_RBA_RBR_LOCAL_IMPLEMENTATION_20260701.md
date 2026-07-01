@@ -688,6 +688,17 @@ The corrected coverage-guard diagnostic restored raw and detector-feature gap co
 
 This is a local repair for the next `SHORT_DIAGNOSTIC_ONLY` experiment. It does not unlock formal/full train or any final mAP, runtime/FLOPs, sparse-compute, deploy, or paper claim.
 
+### GitHub evidence sync
+
+- Ordinary `git push` failed with `Recv failure: Connection was reset`.
+- Created new evidence branch without force push: `codex/divergent-rba-rbr-postprocess-guard-546ed615-20260701`.
+- GitHub Contents API returned 404 for current branch refs, so sync used the Git Data API blobs/trees/commits path.
+- Local commit: `546ed6159c2155633981050ae102547de03ea6bc`.
+- GitHub base commit: `1cbdb50422f9b1c968ef92e9c036d2787d434c79`.
+- GitHub synced ref: `6ba723abe4f5b2eca7c38f71c5b14872d637dbaa`.
+- GitHub URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-postprocess-guard-546ed615-20260701`.
+- This sync is evidence for review/remote staging only; it does not unlock formal/full training or any claim.
+
 ## Grid-Audit Short Diagnostic Launch Off Protected Hold - 2026-07-01 08:53:47 +08:00
 
 Purpose:
