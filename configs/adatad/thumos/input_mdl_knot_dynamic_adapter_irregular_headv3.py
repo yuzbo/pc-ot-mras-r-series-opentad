@@ -3,8 +3,9 @@ import os
 _base_ = ["./input_random_fixed_50pct_adapter_irregular_headv3_x.py"]
 
 route_label = "DIVERGENT_INNOVATION_MDL_KNOT_DO_NOT_MERGE_WITH_C3"
-route_status = "LOCAL_FINAL_CODE_CANDIDATE_USER_OVERRIDE_FORMAL_TRAIN_QUEUED_AFTER_PREVIOUS_RUN_NO_METRIC_CLAIMS"
-formal_train_unlocked = True
+route_status = "LOCAL_FINAL_CODE_CANDIDATE_PRECHECK_ONLY_AFTER_SAMPLED_RAW_EDGE_FIX_NO_METRIC_CLAIMS"
+formal_train_unlocked = False
+full_train_unlocked = False
 sparse_compute_claim = False
 
 thumos_root = os.environ.get("THUMOS_ROOT", "/data/home/sczc063/run/yuzibo/thumos14")
@@ -61,7 +62,8 @@ mdl_knot_acquisition = dict(
     no_runtime_claims=True,
     no_deploy_claims=True,
     no_paper_claims=True,
-    formal_train_unlocked=True,
+    formal_train_unlocked=False,
+    full_train_unlocked=False,
     sparse_compute_claim=False,
 )
 
@@ -198,4 +200,4 @@ workflow = dict(
     disable_checkpoint=False,
 )
 
-work_dir = "exps/thumos/adatad/input_mdl_knot_dynamic_adapter_irregular_headv3_user_override_formal_train"
+work_dir = "exps/thumos/adatad/input_mdl_knot_dynamic_adapter_irregular_headv3_precheck_only"
