@@ -142,6 +142,9 @@ def _split_cfg_from_source(cfg, split, window_size, window_overlap_ratio, batch_
     source = cfg.dataset[split]
     collect_keys = ["masks", "gt_segments", "gt_labels"] if batch_gt else ["masks"]
     tensor_keys = ["imgs", "gt_segments", "gt_labels"] if batch_gt else ["imgs"]
+    sample_stride = source.get("sample_stride", 1) or 1
+    offset_frames = source.get("offset_frames", 0) or 0
+    fps = source.get("fps", -1) or -1
     return dict(
         type="ThumosSlidingDataset",
         ann_file=source.ann_file,
@@ -153,12 +156,12 @@ def _split_cfg_from_source(cfg, split, window_size, window_overlap_ratio, batch_
         block_list=source.get("block_list", None),
         test_mode=not batch_gt,
         feature_stride=source.feature_stride,
-        sample_stride=source.get("sample_stride", 1),
-        offset_frames=source.get("offset_frames", 0),
+        sample_stride=sample_stride,
+        offset_frames=offset_frames,
         window_size=int(window_size),
         window_overlap_ratio=float(window_overlap_ratio),
         ioa_thresh=0.0,
-        fps=source.get("fps", -1),
+        fps=fps,
         pipeline=[
             dict(type="PrepareVideoInfo", format="mp4"),
             dict(type="mmaction.DecordInit", num_threads=4),

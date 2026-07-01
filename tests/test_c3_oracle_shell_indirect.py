@@ -294,6 +294,8 @@ def test_collect_preserves_oracle_shell_meta_and_test_split_does_not_pass_gt():
 def test_exporter_forces_sliding_dataset_for_padding_train_split():
     cfg = Config.fromfile(FULL_CONFIG)
     cfg.dataset.train.type = "ThumosPaddingDataset"
+    cfg.dataset.train.offset_frames = None
+    cfg.dataset.train.fps = None
 
     split_cfg = _split_cfg_from_source(cfg, "train", window_size=768, window_overlap_ratio=0.25, batch_gt=False)
 
@@ -301,6 +303,8 @@ def test_exporter_forces_sliding_dataset_for_padding_train_split():
     assert split_cfg["test_mode"] is True
     assert split_cfg["window_size"] == 768
     assert split_cfg["window_overlap_ratio"] == 0.25
+    assert split_cfg["offset_frames"] == 0
+    assert split_cfg["fps"] == -1
     assert split_cfg["pipeline"][2]["type"] == "LoadFrames"
     assert split_cfg["pipeline"][2]["method"] == "sliding_window"
 
