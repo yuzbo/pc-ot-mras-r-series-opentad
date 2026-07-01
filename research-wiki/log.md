@@ -1,5 +1,15 @@
 # Research Log
 
+## 2026-07-01 08:53:47 +08:00 - RBA-RBR grid-audit diagnostic launched off protected hold
+
+- Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Synced local grid-audit route files to the N16R4 route-owned worktree `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49` and committed remote `a64530e`.
+- Remote verification passed before launch: py_compile passed; `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` -> `23 passed in 48.59s`; launch gate returned `gate_pass=true`, `full_train_unlocked=false`, `deploy_claim_unlocked=false`, `paper_claim_unlocked=false`, `sparse_compute_claim=false`.
+- Read-only final review agent returned `PASS_SUBAGENT_FINAL_REVIEW_ONLY_FOR_SHORT_DIAGNOSTIC_ONLY` with no blockers.
+- A first new Slurm job `1132461` started on `g0030` and was cancelled after `00:01:23` because it risked overlapping the protected hold node. This was not the protected parent hold and did not release/cancel/replace `1118197`.
+- Relaunched as Slurm job `1132462 rba_grid_audit` with `--exclude=g0030`; it is running on `g0053` with 1 GPU and 4 CPU. Logdir: `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_Shortdiag_20260701_9311f49/logs/rba_rbr_grid_audit_evaldiag_sbatch_3cab4121_20260701_0853_exclude_g0030_+0800/`.
+- This is `SHORT_DIAGNOSTIC_ONLY` / sparse-forward grid-audit evidence. It does not unlock formal/full long training, official mAP, runtime/FLOPs, deploy, paper, or sparse-compute claims.
+
 ## 2026-07-01 07:48:48 +08:00 - RBA-RBR grid-audit remote PRECHECK_ONLY passed
 
 - Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
