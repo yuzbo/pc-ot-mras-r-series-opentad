@@ -1,5 +1,15 @@
 # Research Log
 
+## 2026-07-01 14:47:42 +08:00 - RBA-RBR guard diagnostic completed severe-low
+
+- Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Protected-hold child `1118197.560 rba_guard_g0` completed its corrected coverage-guard diagnostic in `/data/run01/sczc063/yuzibo/OpenTAD_RBA_RBR_GuardDiag_20260701_e6de60e9_bundle/logs/rba_rbr_guard_evaldiag_manual_parallel_holdg0_20260701_123213_+0800`.
+- Metric evidence: first observed Average-mAP line `0.22%` at `2026-07-01 13:39:19 +08:00`; final observed Average-mAP line `7.45%` at `2026-07-01 14:47:42 +08:00`; final `mAP@0.3/0.4/0.5/0.6/0.7 = 17.34/11.47/5.69/2.09/0.65`; evaluator saw `411700` predictions and `3325` GT instances.
+- Health evidence: `Training Over` count `1`, hard error count `0`.
+- Guard audit evidence: `4090` rows, all `PASS_RBA_RBR_NATIVE_AXIS_POSITIONS_ENTERED_MODEL`; `raw_valid_k` avg `84.6235`; `mask_true_count` avg `42.5601`; `selected_max_gap_after_guard` max `16`, avg `15.5897`; `max_detector_gap_after_guard` max `24`, avg `22.5460`.
+- Latest GitHub evidence branch for Pro diagnosis: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-guard-complete-39073521-20260701`.
+- Decision: final diagnostic remains severe-low. Formal/full RBA-RBR training, all metric/runtime/FLOPs/sparse-compute/deploy/paper claims, and any route conclusion remain locked until a valid GPT-5.5 Pro severe-result diagnosis is available or the user gives an explicit same-scope override.
+
 ## 2026-07-01 13:39:19 +08:00 - RBA-RBR guard diagnostic first validation severe-low
 
 - Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
