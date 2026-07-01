@@ -14,7 +14,7 @@ is available. Be strict and code-grounded.
 
 Repository branch for inspection:
 
-`https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-guard-launcher-843b4948-20260701`
+`https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-guard-severe-firsteval-15303a3c-20260701`
 
 Route label:
 

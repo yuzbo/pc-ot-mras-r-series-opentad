@@ -9,6 +9,7 @@
 - Guard audit evidence: `2183` rows, all RBA label/status PASS; detector feature count is restored (`mask_true_count` avg `42.53`, p50 `43`), raw gap max is `16`, detector gap max is `24`, and only one row was below the detector feature floor.
 - Interpretation: the coverage guard is functioning, but it did not rescue first-validation detector health. The severe-result gate remains active; formal/full RBA-RBR training and all mAP/runtime/FLOPs/sparse-compute/deploy/paper claims stay locked.
 - Pro transport state: Rosetta CDP ports `9223/9333/9222` refused connection and Oracle Pro provider was not ready because `OPENAI_API_KEY` is missing. This is not a completed Pro review.
+- GitHub evidence branch for later Pro diagnosis: `codex/divergent-rba-rbr-guard-severe-firsteval-15303a3c-20260701`, URL `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-guard-severe-firsteval-15303a3c-20260701`.
 - Resource boundary: parent hold `1118197 pcot_dbg2g` was not released, cancelled, replaced, or modified; GPU1/C3 was not touched.
 
 ## 2026-07-01 12:34:06 +08:00 - RBA-RBR guard diagnostic launched in parallel on protected GPU0

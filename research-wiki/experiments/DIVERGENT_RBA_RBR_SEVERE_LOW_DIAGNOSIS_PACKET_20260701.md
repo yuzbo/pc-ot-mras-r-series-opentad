@@ -197,6 +197,8 @@ This verifies that the sparse-forward temporal-grid audit is runnable on N16R4/L
 Run context:
 
 - Corrected coverage-guard branch commit deployed remotely: `e6de60e9`.
+- GitHub evidence branch with this first-validation packet and Pro prompt: `codex/divergent-rba-rbr-guard-severe-firsteval-15303a3c-20260701`.
+- GitHub URL: `https://github.com/yuzbo/pc-ot-mras-r-series-opentad/tree/codex/divergent-rba-rbr-guard-severe-firsteval-15303a3c-20260701`.
 - Protected parent hold: `1118197 pcot_dbg2g`; not released, cancelled, replaced, or modified.
 - Child step: `1118197.560`.
 - Job name: `rba_guard_g0`.
