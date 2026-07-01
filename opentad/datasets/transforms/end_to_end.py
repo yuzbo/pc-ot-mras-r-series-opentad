@@ -207,6 +207,7 @@ class LoadFrames:
         bata_value_transport_allow_missing_fallback=False,
         bata_value_transport_require_deployable=True,
         bata_value_transport_require_selected_count=None,
+        bata_value_transport_allow_short_valid_ratio_count=False,
         bata_value_transport_source="pc_ot_mras_frontend_hard_positions",
         bata_value_transport_config_hash="",
     ):
@@ -226,6 +227,9 @@ class LoadFrames:
         self.bata_value_transport_allow_missing_fallback = bool(bata_value_transport_allow_missing_fallback)
         self.bata_value_transport_require_deployable = bool(bata_value_transport_require_deployable)
         self.bata_value_transport_require_selected_count = bata_value_transport_require_selected_count
+        self.bata_value_transport_allow_short_valid_ratio_count = bool(
+            bata_value_transport_allow_short_valid_ratio_count
+        )
         self.bata_value_transport_source = bata_value_transport_source
         self.bata_value_transport_config_hash = bata_value_transport_config_hash
         self._bata_value_transport_ledger = None
@@ -564,6 +568,22 @@ class LoadFrames:
                 required_count = None
             else:
                 required_count = int(required_count)
+            if required_count is not None and keep_positions.size != required_count:
+                expected_required_count = required_count
+                if self.bata_value_transport_allow_short_valid_ratio_count and valid_len < dense_frame_num:
+                    expected_required_count = int(
+                        np.ceil(float(valid_len) * float(required_count) / float(dense_frame_num))
+                    )
+                    expected_required_count = max(1, min(expected_required_count, int(required_count), int(valid_len)))
+                if keep_positions.size == expected_required_count:
+                    required_count = expected_required_count
+                else:
+                    sample_id = ledger_row.get("sample_id", self._value_transport_sample_id(results))
+                    raise ValueError(
+                        f"value-transport ledger sample_id={sample_id} selects {keep_positions.size} positions "
+                        f"but bata_value_transport_require_selected_count={required_count} "
+                        f"(expected={expected_required_count}, valid_len={valid_len}, dense_frame_num={dense_frame_num})"
+                    )
             if required_count is not None and keep_positions.size != required_count:
                 sample_id = ledger_row.get("sample_id", self._value_transport_sample_id(results))
                 raise ValueError(

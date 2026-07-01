@@ -4,6 +4,7 @@ import sys
 import types
 from pathlib import Path
 
+import numpy as np
 import pytest
 from mmengine.config import Config
 
@@ -37,6 +38,14 @@ class _Registry:
         return _decorator
 
 
+class _TorchArray:
+    def __init__(self, value):
+        self.value = np.asarray(value)
+
+    def bool(self):
+        return self.value.astype(bool)
+
+
 def _load_module(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -60,6 +69,11 @@ def _load_loadframes_class():
     torch_functional_stub = types.ModuleType("torch.nn.functional")
     torch_nn_stub.functional = torch_functional_stub
     torch_stub.nn = torch_nn_stub
+    torch_stub.ones = lambda *shape: _TorchArray(np.ones(shape if len(shape) != 1 else shape[0]))
+    torch_stub.zeros = lambda *shape: _TorchArray(np.zeros(shape if len(shape) != 1 else shape[0]))
+    torch_stub.cat = lambda tensors: _TorchArray(
+        np.concatenate([item.value if isinstance(item, _TorchArray) else np.asarray(item) for item in tensors])
+    )
     stubs["torch"] = torch_stub
     stubs["torch.nn"] = torch_nn_stub
     stubs["torch.nn.functional"] = torch_functional_stub
@@ -604,6 +618,60 @@ def test_value_transport_loader_rejects_short_ledger_when_exact_count_required(t
                 "snippet_stride": 1,
             }
         )
+
+
+def test_value_transport_loader_accepts_short_tail_ratio_count_when_enabled(tmp_path):
+    LoadFrames = _load_loadframes_class()
+    ledger_path = tmp_path / "value_transport_ledger.jsonl"
+    ledger_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "pc_ot_mras_frontend_value_transport_ledger_v0",
+                "sample_id": "video_test_0001|0",
+                "selected_positions_unit": "local_dense_index",
+                "selected_positions": [0, 2],
+                "selected_count": 2,
+                "target_len": 3,
+                "valid_len": 4,
+                "dense_len": 6,
+                "deploy_selection_ledger": True,
+                "diagnostic_only": False,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    loader = LoadFrames(
+        num_clips=1,
+        scale_factor=1,
+        method="bata_value_transport_ledger_subsample",
+        method_base="sliding_window",
+        target_len=3,
+        bata_value_transport_ledger_path=str(ledger_path),
+        bata_value_transport_require_deployable=True,
+        bata_value_transport_require_selected_count=3,
+        bata_value_transport_allow_short_valid_ratio_count=True,
+    )
+
+    out = loader(
+        {
+            "video_name": "video_test_0001",
+            "window_start_frame": 0,
+            "window_size": 6,
+            "feature_start_idx": 0,
+            "feature_end_idx": 3,
+            "total_frames": 16,
+            "avg_fps": 30,
+            "snippet_stride": 1,
+        }
+    )
+
+    assert out["frame_inds"].tolist() == [0, 2, 2]
+    assert out["masks"].tolist() == [True, True, False]
+    assert out["bata_selected_dense_indices"].tolist() == [0, 2]
+    assert out["selected_valid_len"] == 2
+    assert out["irregular_selected_valid_len"] == 4.0
 
 
 def test_frontend_launcher_defaults_to_review_safe_precheck_and_uses_supported_dump_cli():
