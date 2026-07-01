@@ -239,6 +239,9 @@ class LoadFrames:
         rba_rbr_split=None,
         rba_rbr_min_keep=None,
         rba_rbr_max_keep=None,
+        rba_rbr_min_detector_feature_keep=None,
+        rba_rbr_max_raw_gap=None,
+        rba_rbr_max_detector_gap=None,
         rba_rbr_scaffold_k=4,
         rba_rbr_train_value_labels=False,
         rba_rbr_feature_stride=1,
@@ -290,6 +293,9 @@ class LoadFrames:
         self.rba_rbr_split = rba_rbr_split
         self.rba_rbr_min_keep = rba_rbr_min_keep
         self.rba_rbr_max_keep = rba_rbr_max_keep
+        self.rba_rbr_min_detector_feature_keep = rba_rbr_min_detector_feature_keep
+        self.rba_rbr_max_raw_gap = rba_rbr_max_raw_gap
+        self.rba_rbr_max_detector_gap = rba_rbr_max_detector_gap
         self.rba_rbr_scaffold_k = int(max(rba_rbr_scaffold_k, 1))
         self.rba_rbr_train_value_labels = bool(rba_rbr_train_value_labels)
         self.rba_rbr_feature_stride = int(max(rba_rbr_feature_stride, 1))
@@ -1317,6 +1323,10 @@ class LoadFrames:
                 train_value_labels=self.rba_rbr_train_value_labels,
                 allow_diagnostic_preview_fallback=self.rba_rbr_allow_diagnostic_preview_fallback,
                 scout_sample_count=self.rba_rbr_scout_sample_count,
+                min_detector_feature_keep=self.rba_rbr_min_detector_feature_keep,
+                feature_stride=self.rba_rbr_feature_stride,
+                max_raw_gap=self.rba_rbr_max_raw_gap,
+                max_detector_gap=self.rba_rbr_max_detector_gap,
             )
             keep_positions = bridge["keep_positions"].astype(np.int64)
             fresh_frame_idxs = bridge["selected_frame_inds"].astype(np.int64)

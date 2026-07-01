@@ -316,9 +316,11 @@ class IrregularActionFormer(BaseDetector):
             if not self._is_rba_rbr_meta(meta):
                 continue
             positions = meta.get("rba_rbr_detector_feature_positions", [])
+            ledger = meta.get("rba_rbr_ledger", {}) or {}
             native_axis = bool(meta.get("irregular_native_axis", False))
             mask_true = int(masks[idx].bool().sum().item())
             grid_valid_true = int(grid["valid_mask"][idx].bool().sum().item())
+            gap_diag = ledger.get("selection_gap_diagnostics", {}) if isinstance(ledger, dict) else {}
             row = {
                 "audit_type": "rba_rbr_detector_temporal_grid",
                 "route_label": "DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3",
@@ -327,8 +329,24 @@ class IrregularActionFormer(BaseDetector):
                 "native_axis": native_axis,
                 "mask_shape": list(masks[idx].shape),
                 "mask_true_count": mask_true,
+                "raw_valid_k": int(ledger.get("valid_k", len(meta.get("rba_rbr_raw_selected_positions", [])))),
+                "dynamic_target_k": int(ledger.get("dynamic_target_k", 0)),
+                "budget_stop_reason": ledger.get("budget_stop_reason", "unknown"),
+                "pre_guard_budget_stop_reason": ledger.get("pre_guard_budget_stop_reason", "unknown"),
+                "guard_reason": ledger.get("guard_reason", "unknown"),
+                "guard_addition_count": int(ledger.get("guard_addition_count", 0)),
+                "selected_max_gap": int(gap_diag.get("max_gap", ledger.get("max_raw_gap_after_guard", 0))),
+                "selected_max_gap_before_guard": int(ledger.get("max_raw_gap_before_guard", 0)),
+                "selected_max_gap_after_guard": int(ledger.get("max_raw_gap_after_guard", 0)),
                 "meta_detector_feature_position_count": int(len(positions)),
                 "meta_detector_feature_valid_len": float(meta.get("rba_rbr_detector_feature_valid_len", 0.0)),
+                "detector_feature_valid_k": int(ledger.get("detector_feature_valid_k", mask_true)),
+                "detector_mask_len": int(ledger.get("detector_mask_len", masks[idx].shape[0])),
+                "detector_mask_true_count": int(ledger.get("detector_mask_true_count", mask_true)),
+                "detector_feature_target_k": ledger.get("detector_feature_target_k", None),
+                "max_detector_gap_before_guard": float(ledger.get("max_detector_gap_before_guard", 0.0)),
+                "max_detector_gap_after_guard": float(ledger.get("max_detector_gap_after_guard", 0.0)),
+                "adapter_padding_duplicate_count": int(ledger.get("adapter_padding_duplicate_count", 0)),
                 "grid_center_prefix": [
                     float(value)
                     for value in grid["center"][idx, : min(mask_true, 8)].detach().cpu().tolist()

@@ -186,12 +186,36 @@ def _preview_from_results(results, dense_window, allow_diagnostic_preview_fallba
     }
 
 
-def _build_budget(valid_len, target_frame_num, min_keep=None, max_keep=None, scaffold_k=4):
+def _build_budget(
+    valid_len,
+    target_frame_num,
+    min_keep=None,
+    max_keep=None,
+    scaffold_k=4,
+    min_detector_feature_keep=None,
+    feature_stride=1,
+    max_raw_gap=None,
+    max_detector_gap=None,
+):
     max_keep = int(max_keep) if max_keep is not None else int(target_frame_num)
     max_keep = max(1, min(int(max_keep), int(valid_len), int(target_frame_num)))
     min_keep = int(min_keep) if min_keep is not None else max(4, int(round(0.35 * max_keep)))
     min_keep = max(1, min(min_keep, max_keep))
-    return RbaRbrBudgetConfig(min_k=min_keep, max_k=max_keep, scaffold_k=int(scaffold_k))
+    if min_detector_feature_keep is not None:
+        min_detector_feature_keep = max(1, int(min_detector_feature_keep))
+    if max_raw_gap is not None:
+        max_raw_gap = max(1, int(max_raw_gap))
+    if max_detector_gap is not None:
+        max_detector_gap = max(1, int(max_detector_gap))
+    return RbaRbrBudgetConfig(
+        min_k=min_keep,
+        max_k=max_keep,
+        scaffold_k=int(scaffold_k),
+        min_detector_feature_k=min_detector_feature_keep,
+        feature_stride=int(max(feature_stride, 1)),
+        max_raw_gap=max_raw_gap,
+        max_detector_gap=max_detector_gap,
+    )
 
 
 def _selector_facing_metadata(results, preview_meta=None):
@@ -234,6 +258,10 @@ def build_rba_rbr_open_tad_selection(
     train_value_labels=False,
     allow_diagnostic_preview_fallback=False,
     scout_sample_count=32,
+    min_detector_feature_keep=None,
+    feature_stride=1,
+    max_raw_gap=None,
+    max_detector_gap=None,
 ):
     validate_route_identity({"route_label": ROUTE_LABEL, "method": METHOD_KEY})
     split = str(split)
@@ -252,7 +280,17 @@ def build_rba_rbr_open_tad_selection(
     if split in {"val", "test", "deploy"}:
         validate_no_leakage(_selector_facing_metadata(results, preview_meta=preview_meta))
     video_id = str(results.get("video_name", "unknown"))
-    budget = _build_budget(valid_len, target_frame_num, min_keep=min_keep, max_keep=max_keep, scaffold_k=scaffold_k)
+    budget = _build_budget(
+        valid_len,
+        target_frame_num,
+        min_keep=min_keep,
+        max_keep=max_keep,
+        scaffold_k=scaffold_k,
+        min_detector_feature_keep=min_detector_feature_keep,
+        feature_stride=feature_stride,
+        max_raw_gap=max_raw_gap,
+        max_detector_gap=max_detector_gap,
+    )
     scaffold_positions = build_scaffold_positions(valid_len, budget.scaffold_k)
     risk_map = build_risk_map(
         actionness=actionness,

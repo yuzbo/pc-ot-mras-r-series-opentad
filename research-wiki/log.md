@@ -1,5 +1,17 @@
 # Research Log
 
+## 2026-07-01 10:07:14 +08:00 - RBA-RBR recoverable coverage guard local fix
+
+- Route label: `DIVERGENT_INNOVATION_RBA_RBR_DO_NOT_MERGE_WITH_C3`.
+- Trigger evidence: active remote grid-audit diagnostic job `1132462 rba_grid_audit` produced severe-low first validation (`Average-mAP=0.16%`) while grid audit rows showed native-axis RBA dispatch was active and `mask_true_count` could be as low as `9` despite config `rba_rbr_min_keep=64`, `rba_rbr_max_keep=192`, `rba_rbr_feature_stride=2`.
+- Local worktree/branch: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_RBA_RBR_Worktree_20260701`, `codex/divergent-rba-rbr-20260701`.
+- Changed surface: RBA-RBR budget controller/types/OpenTAD bridge, RBA `LoadFrames` parameter wiring, RBA grid-audit fields in `IrregularActionFormer`, main RBA config, and focused RBA tests.
+- Behavior: regret/scaffold/refine/rescue ranking remains primary; after regret selection, a deploy-visible non-GT/non-teacher coverage guard backfills by recoverability/regret/staleness/rescue risk to satisfy configurable raw min, detector-feature min, raw max-gap, and detector max-gap where possible within `max_k`. Gap closure uses the largest uncovered interval center band before risk ranking so it cannot keep piling points on one risk peak.
+- Config guard values now inherited by train/val/test/evaldiag: `rba_rbr_min_keep=64`, `rba_rbr_min_detector_feature_keep=32`, `rba_rbr_max_raw_gap=16`, `rba_rbr_max_detector_gap=24`, `rba_rbr_feature_stride=2`, `rba_rbr_max_keep=192`.
+- Ledger/audit: records pre/post guard raw valid count, detector target/valid count, max raw/detector gaps before/after, guard additions, `pre_guard_budget_stop_reason`, `guard_reason`, adapter padding duplicate count, detector mask length, and detector mask true count.
+- Verification passed locally: `python -m pytest tests/test_rba_rbr_core.py tests/test_rba_rbr_integration.py -q` -> `21 passed, 5 skipped in 6.07s`; `python -m py_compile opentad/acquisition/rba_rbr/types.py opentad/acquisition/rba_rbr/budget_controller.py opentad/acquisition/rba_rbr/open_tad_bridge.py opentad/datasets/transforms/end_to_end.py opentad/models/detectors/irregular_actionformer.py` -> pass; `git diff --check` -> pass with Windows LF/CRLF warnings only.
+- No remote sync, no Slurm, no `tools/test.py`, no Pro, no staging/commit/push performed. Formal/full training and all metric/runtime/FLOPs/deploy/paper claims remain locked pending review and severe-result diagnosis.
+
 ## 2026-07-01 09:31:39 +08:00 - RBA-RBR grid-audit live sync/status
 
 - Existing branch push to `codex/divergent-rba-rbr-20260701` was rejected as non-fast-forward; no force push or overwrite was attempted.

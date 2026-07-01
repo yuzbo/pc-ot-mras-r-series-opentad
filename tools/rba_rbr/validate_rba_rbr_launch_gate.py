@@ -49,6 +49,9 @@ def _config_text_is_clean(config_path):
         "rba_rbr_train_value_labels=False": "train-only labels disabled in val/test pipeline",
         "rba_rbr_allow_diagnostic_preview_fallback=False": "formal preview fallback lock",
         "rba_rbr_scout_sample_count=32": "deploy-visible raw scout sample count",
+        "rba_rbr_min_detector_feature_keep=32": "recoverable detector feature floor",
+        "rba_rbr_max_raw_gap=16": "recoverable raw gap guard",
+        "rba_rbr_max_detector_gap=24": "recoverable detector gap guard",
         f'rba_rbr_adapter_bridge_mode="{ADAPTER_FIXED_LENGTH_PADDED_BRIDGE}"': "adapter bridge mode",
     }
     for token, label in required.items():

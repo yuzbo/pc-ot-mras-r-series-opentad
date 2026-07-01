@@ -58,6 +58,11 @@ def test_rba_rbr_config_resolves_and_stays_fail_closed():
     assert cfg.dataset.train.pipeline[2].method == "rba_rbr_recoverable_bracketing"
     assert cfg.dataset.train.pipeline[2].rba_rbr_split == "train"
     assert cfg.dataset.train.pipeline[2].rba_rbr_scout_sample_count == 32
+    assert cfg.dataset.train.pipeline[2].rba_rbr_min_keep == 64
+    assert cfg.dataset.train.pipeline[2].rba_rbr_min_detector_feature_keep == 32
+    assert cfg.dataset.train.pipeline[2].rba_rbr_max_raw_gap == 16
+    assert cfg.dataset.train.pipeline[2].rba_rbr_max_detector_gap == 24
+    assert cfg.dataset.train.pipeline[2].rba_rbr_feature_stride == 2
     assert cfg.dataset.val.pipeline[2].rba_rbr_train_value_labels is False
     assert cfg.dataset.test.pipeline[2].rba_rbr_train_value_labels is False
     required_meta = {
@@ -268,7 +273,10 @@ def test_loadframes_dispatch_records_rba_rbr_ledger_if_runtime_available():
         rba_rbr_split="val",
         rba_rbr_min_keep=5,
         rba_rbr_max_keep=16,
+        rba_rbr_min_detector_feature_keep=4,
+        rba_rbr_max_raw_gap=12,
         rba_rbr_scaffold_k=4,
+        rba_rbr_feature_stride=2,
         rba_rbr_train_value_labels=False,
         rba_rbr_allow_diagnostic_preview_fallback=False,
     )
@@ -290,6 +298,8 @@ def test_loadframes_dispatch_records_rba_rbr_ledger_if_runtime_available():
     assert out["rba_rbr_ledger"]["method"] == "rba_rbr_recoverable_bracketing"
     assert out["frame_inds"].shape[0] == out["rba_rbr_adapter_input_frame_count"]
     assert out["rba_rbr_ledger"]["selected_positions"] == sorted(set(out["rba_rbr_ledger"]["selected_positions"]))
+    assert out["rba_rbr_ledger"]["post_guard_detector_feature_valid_k"] >= 4
+    assert out["rba_rbr_ledger"]["max_raw_gap_after_guard"] <= 12
 
 
 def test_loadframes_dispatch_builds_raw_scout_when_preview_metadata_is_absent():
@@ -372,9 +382,30 @@ def test_rba_rbr_detector_grid_audit_uses_route_specific_native_axis_positions(t
             "irregular_selected_positions": np.asarray([100.0, 101.0, 102.0], dtype=np.float32),
             "irregular_selected_valid_len": 128.0,
             "rba_rbr_ledger": {"method": "rba_rbr_recoverable_bracketing"},
+            "rba_rbr_raw_selected_positions": np.asarray([2.0, 6.0, 18.0, 22.0, 42.0, 46.0], dtype=np.float32),
             "rba_rbr_detector_feature_positions": np.asarray([4.0, 20.0, 44.0], dtype=np.float32),
             "rba_rbr_detector_feature_valid_len": 128.0,
         }
+        meta["rba_rbr_ledger"].update(
+            {
+                "valid_k": 6,
+                "dynamic_target_k": 12,
+                "budget_stop_reason": "coverage_guard",
+                "pre_guard_budget_stop_reason": "regret_saturation",
+                "guard_reason": "min_detector_feature_keep+max_raw_gap",
+                "guard_addition_count": 2,
+                "selection_gap_diagnostics": {"max_gap": 24},
+                "max_raw_gap_before_guard": 48,
+                "max_raw_gap_after_guard": 24,
+                "detector_feature_valid_k": 3,
+                "detector_mask_len": 5,
+                "detector_mask_true_count": 3,
+                "detector_feature_target_k": 3,
+                "max_detector_gap_before_guard": 32.0,
+                "max_detector_gap_after_guard": 24.0,
+                "adapter_padding_duplicate_count": 186,
+            }
+        )
 
         grid = detector._temporal_grid_from_metas([meta], masks)
         rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
@@ -386,7 +417,23 @@ def test_rba_rbr_detector_grid_audit_uses_route_specific_native_axis_positions(t
         assert rows[0]["route_label"] == ROUTE_LABEL
         assert rows[0]["native_axis"] is True
         assert rows[0]["mask_true_count"] == 3
+        assert rows[0]["raw_valid_k"] == 6
+        assert rows[0]["dynamic_target_k"] == 12
+        assert rows[0]["budget_stop_reason"] == "coverage_guard"
+        assert rows[0]["pre_guard_budget_stop_reason"] == "regret_saturation"
+        assert rows[0]["guard_reason"] == "min_detector_feature_keep+max_raw_gap"
+        assert rows[0]["guard_addition_count"] == 2
+        assert rows[0]["selected_max_gap"] == 24
+        assert rows[0]["selected_max_gap_before_guard"] == 48
+        assert rows[0]["selected_max_gap_after_guard"] == 24
         assert rows[0]["meta_detector_feature_position_count"] == 3
+        assert rows[0]["detector_feature_valid_k"] == 3
+        assert rows[0]["detector_mask_len"] == 5
+        assert rows[0]["detector_mask_true_count"] == 3
+        assert rows[0]["detector_feature_target_k"] == 3
+        assert rows[0]["max_detector_gap_before_guard"] == 32.0
+        assert rows[0]["max_detector_gap_after_guard"] == 24.0
+        assert rows[0]["adapter_padding_duplicate_count"] == 186
         assert rows[0]["grid_center_prefix"] == [4.0, 20.0, 44.0]
         assert rows[0]["status"] == "PASS_RBA_RBR_NATIVE_AXIS_POSITIONS_ENTERED_MODEL"
     finally:

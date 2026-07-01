@@ -275,3 +275,111 @@ def test_dynamic_budget_records_variable_k_and_stop_reasons_across_cases():
     assert len({row["valid_k"] for row in ledgers}) > 1
     assert all(row["budget_stop_reason"] for row in ledgers)
     assert all(row["selected_positions"] == sorted(set(row["selected_positions"])) for row in ledgers)
+
+
+def test_coverage_guard_honors_raw_and_detector_minimums_for_384_window():
+    dense_T = 384
+    x = np.arange(dense_T, dtype=np.float64)
+    actionness = np.zeros(dense_T, dtype=np.float64) + 0.04
+    actionness[118:142] = 0.62
+    uncertainty = np.clip(np.exp(-((x - 265.0) ** 2) / (2.0 * 7.0**2)), 0.0, 1.0)
+    transition = np.zeros(dense_T, dtype=np.float64) + 0.03
+    transition[116:121] = 0.45
+    transition[142:147] = 0.40
+    result = build_rba_rbr_open_tad_selection(
+        {
+            "video_name": "guard_384",
+            "rba_rbr_preview_actionness": actionness,
+            "rba_rbr_preview_uncertainty": uncertainty,
+            "rba_rbr_preview_transition": transition,
+        },
+        dense_window=np.arange(dense_T, dtype=np.int64),
+        target_frame_num=192,
+        split="test",
+        train_value_labels=False,
+        min_keep=64,
+        max_keep=192,
+        min_detector_feature_keep=32,
+        feature_stride=2,
+        max_raw_gap=16,
+        max_detector_gap=24,
+        allow_diagnostic_preview_fallback=False,
+    )
+    ledger = result["ledger"]
+
+    assert result["keep_positions"].tolist() == sorted(set(result["keep_positions"].tolist()))
+    assert ledger["valid_k"] >= 64
+    assert ledger["post_guard_detector_feature_valid_k"] >= 32
+    assert ledger["max_raw_gap_after_guard"] <= 16
+    assert ledger["budget_stop_reason"] == "coverage_guard"
+    assert ledger["guard_addition_count"] > 0
+    assert ledger["selector_provenance"]["selection_uses_gt"] is False
+    assert ledger["selector_provenance"]["selection_uses_teacher"] is False
+    assert ledger["selector_provenance"]["selection_uses_prediction_cache"] is False
+
+
+def test_detector_min_guard_prevents_too_few_detector_features_when_target_supports_it():
+    dense_T = 160
+    actionness, uncertainty, transition = _missed_boundary_case()
+    actionness = np.pad(actionness, (0, dense_T - actionness.size), constant_values=0.05)
+    uncertainty = np.pad(uncertainty, (0, dense_T - uncertainty.size), constant_values=0.08)
+    transition = np.pad(transition, (0, dense_T - transition.size), constant_values=0.04)
+    result = build_rba_rbr_open_tad_selection(
+        {
+            "video_name": "detector_min_guard",
+            "rba_rbr_preview_actionness": actionness,
+            "rba_rbr_preview_uncertainty": uncertainty,
+            "rba_rbr_preview_transition": transition,
+        },
+        dense_window=np.arange(dense_T, dtype=np.int64),
+        target_frame_num=80,
+        split="synthetic",
+        train_value_labels=False,
+        min_keep=8,
+        max_keep=80,
+        min_detector_feature_keep=32,
+        feature_stride=2,
+        allow_diagnostic_preview_fallback=False,
+    )
+    ledger = result["ledger"]
+
+    assert ledger["detector_feature_target_k"] == 32
+    assert ledger["post_guard_detector_feature_valid_k"] >= 32
+    assert int(np.ceil(ledger["valid_k"] / 2.0)) >= 32
+    assert ledger["valid_k"] <= 80
+
+
+def test_max_gap_guard_prefers_recoverability_points_outside_bracket():
+    dense_T = 96
+    actionness = np.zeros(dense_T, dtype=np.float64) + 0.04
+    actionness[20:32] = 0.82
+    uncertainty = np.zeros(dense_T, dtype=np.float64) + 0.05
+    transition = np.zeros(dense_T, dtype=np.float64) + 0.03
+    uncertainty[70:75] = 0.98
+    transition[70:75] = 0.92
+    result = build_rba_rbr_open_tad_selection(
+        {
+            "video_name": "gap_guard_recovery",
+            "rba_rbr_preview_actionness": actionness,
+            "rba_rbr_preview_uncertainty": uncertainty,
+            "rba_rbr_preview_transition": transition,
+        },
+        dense_window=np.arange(dense_T, dtype=np.int64),
+        target_frame_num=48,
+        split="synthetic",
+        train_value_labels=False,
+        min_keep=6,
+        max_keep=48,
+        max_raw_gap=10,
+        allow_diagnostic_preview_fallback=False,
+    )
+    ledger = result["ledger"]
+    additions = ledger["guard_additions"]
+
+    assert ledger["max_raw_gap_after_guard"] <= 10
+    assert any(row["guard_reason"] == "max_raw_gap" for row in additions)
+    assert any(70 <= int(pos) <= 75 for pos in ledger["selected_positions"])
+    assert any(
+        (int(row["position"]) < 20 or int(row["position"]) >= 32) and float(row["score"]) > 0.20
+        for row in additions
+    )

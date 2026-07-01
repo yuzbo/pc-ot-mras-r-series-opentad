@@ -13,6 +13,7 @@ STOP_REASONS = {
     "regret_saturation",
     "budget_cap",
     "candidate_exhausted",
+    "coverage_guard",
 }
 
 FORBIDDEN_ROUTE_TOKENS = (
@@ -177,6 +178,10 @@ class RbaRbrBudgetConfig:
     min_k: int
     max_k: int
     scaffold_k: int = 4
+    min_detector_feature_k: Optional[int] = None
+    feature_stride: int = 1
+    max_raw_gap: Optional[int] = None
+    max_detector_gap: Optional[int] = None
     min_marginal_regret: float = 0.18
     rescue_quota_fraction: float = 0.30
     risk_satisfied_threshold: float = 0.42
@@ -189,6 +194,14 @@ class RbaRbrBudgetConfig:
             raise ValueError("budget requires 1 <= min_k <= max_k")
         if int(self.scaffold_k) < 1:
             raise ValueError("scaffold_k must be positive")
+        if int(self.feature_stride) < 1:
+            raise ValueError("feature_stride must be positive")
+        if self.min_detector_feature_k is not None and int(self.min_detector_feature_k) < 1:
+            raise ValueError("min_detector_feature_k must be positive when set")
+        if self.max_raw_gap is not None and int(self.max_raw_gap) < 1:
+            raise ValueError("max_raw_gap must be positive when set")
+        if self.max_detector_gap is not None and int(self.max_detector_gap) < 1:
+            raise ValueError("max_detector_gap must be positive when set")
 
 
 @dataclass
