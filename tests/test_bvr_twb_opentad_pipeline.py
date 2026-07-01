@@ -23,6 +23,7 @@ from opentad.acquisition.bvr_twb.trainable_value import (
 )
 from opentad.acquisition.bvr_twb.types import FORBIDDEN_ROUTE_TOKENS, ROUTE_LABEL
 from opentad.acquisition.bvr_twb.validators import validate_bvr_twb_pipeline_ledger
+from tools.bvr_twb.audit_opentad_bvr_twb_pipeline import run_pipeline_audit
 from tools.bvr_twb.audit_sparse_forward_precheck import safe_prepare_output_dir
 from tools.bvr_twb.validate_bvr_twb_launch_gate import validate_launch_gate
 
@@ -39,13 +40,11 @@ if _torch_probe.returncode == 0:
     import torch
     from opentad.datasets.transforms.end_to_end import LoadFrames
     from opentad.datasets.transforms.formatting import Collect
-    from tools.bvr_twb.audit_opentad_bvr_twb_pipeline import run_pipeline_audit
     TORCH_IMPORT_ERROR = None
 else:
     torch = None
     LoadFrames = None
     Collect = None
-    run_pipeline_audit = None
     TORCH_IMPORT_ERROR = RuntimeError((_torch_probe.stderr or _torch_probe.stdout).strip().splitlines()[-1])
 
 
@@ -110,6 +109,8 @@ def test_bvr_loadframes_dynamic_subsample_outputs_sparse_sorted_metadata_and_lab
     assert transformed["frame_inds"].shape[0] == ledger["adapter_input_frame_count"] == 32
     assert ledger["adapter_bridge_mode"] == ADAPTER_FIXED_LENGTH_PADDED_BRIDGE
     assert ledger["adapter_padding_duplicate_count"] == 32 - ledger["valid_k"]
+    assert ledger["valid_k"] >= ledger["min_adapter_raw_keep_for_padding_guard"] == 16
+    assert ledger["adapter_padding_duplicate_count"] / ledger["adapter_input_frame_count"] <= 0.5
     assert ledger["adapter_padding_counts_as_valid"] is False
     assert len(ledger["selected_frame_inds"]) == ledger["valid_k"]
     assert ledger["valid_k"] < ledger["dense_T"]
@@ -138,6 +139,7 @@ def test_bvr_loadframes_val_test_do_not_build_gt_value_labels_and_reject_if_requ
         pytest.skip(f"torch/OpenTAD pipeline unavailable locally: {TORCH_IMPORT_ERROR}")
     val = _loader(split="val", train_labels=False)(_results("val", with_gt=True))
     assert validate_bvr_twb_pipeline_ledger(val["bvr_twb_ledger"])
+    assert val["bvr_twb_ledger"]["valid_k"] >= val["bvr_twb_ledger"]["min_adapter_raw_keep_for_padding_guard"]
     assert val["bvr_twb_train_value_labels"] == []
     assert val["bvr_twb_ledger"]["selector_provenance"]["selection_uses_gt"] is False
 
@@ -182,6 +184,7 @@ def test_bvr_diagnostic_preview_fallback_is_explicit_and_not_formal():
     ledger = transformed["bvr_twb_ledger"]
     assert ledger["deterministic_preview_fallback_used"] is True
     assert ledger["diagnostic_preview_fallback_allowed"] is True
+    assert ledger["adapter_padding_duplicate_count"] / ledger["adapter_input_frame_count"] <= 0.5
     with pytest.raises(ValueError, match="diagnostic deterministic preview"):
         validate_bvr_twb_pipeline_ledger(ledger)
 
@@ -241,6 +244,27 @@ def test_regret_labels_are_train_only():
         build_packet_regret_labels([packet], np.asarray([[4.0, 8.0]], dtype=np.float32), 16, "val")
 
 
+def test_bvr_bridge_enforces_raw_floor_for_adapter_duplicate_padding_guard():
+    from opentad.acquisition.bvr_twb.open_tad_bridge import build_bvr_twb_open_tad_selection
+
+    bridge = build_bvr_twb_open_tad_selection(
+        _results("test", with_gt=False),
+        dense_window=np.arange(64, dtype=np.int64),
+        target_frame_num=32,
+        split="test",
+        min_keep=12,
+        max_keep=32,
+        max_gap=16,
+        feature_stride=2,
+        max_adapter_padding_duplicate_ratio=0.5,
+    )
+    ledger = bridge["ledger"]
+    assert ledger["min_adapter_raw_keep_for_padding_guard"] == 16
+    assert ledger["dynamic_min_k"] >= 16
+    assert ledger["valid_k"] >= 16
+    assert (32 - ledger["valid_k"]) / 32.0 <= ledger["max_adapter_padding_duplicate_ratio"]
+
+
 def test_collect_passes_bvr_metadata_to_metas():
     if TORCH_IMPORT_ERROR is not None:
         pytest.skip(f"torch/OpenTAD pipeline unavailable locally: {TORCH_IMPORT_ERROR}")
@@ -294,6 +318,23 @@ def test_opentad_pipeline_audit_cli_function_writes_valid_summary(tmp_path):
         shutil.rmtree(out, ignore_errors=True)
         try:
             out.parent.rmdir()
+        except OSError:
+            pass
+
+
+def test_opentad_pipeline_audit_accepts_plain_pipeline_audit_dir_with_file_level_overwrite(tmp_path):
+    out = WORKTREE_ROOT / ".tmp_bvr_twb_opentad_pipeline_pytest" / f"bvr_twb_plain_{tmp_path.name}" / "pipeline_audit"
+    try:
+        summary = run_pipeline_audit(out, overwrite=True, force_numpy_fallback=True)
+        assert summary["all_validated"] is True
+        assert (out / "summary.json").exists()
+        assert (out / "bvr_twb_opentad_pipeline_ledgers.jsonl").exists()
+        summary_again = run_pipeline_audit(out, overwrite=True, force_numpy_fallback=True)
+        assert summary_again["all_validated"] is True
+    finally:
+        shutil.rmtree(out.parent, ignore_errors=True)
+        try:
+            out.parent.parent.rmdir()
         except OSError:
             pass
 

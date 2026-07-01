@@ -430,3 +430,71 @@ Verification:
 Still locked:
 
 - Slurm, protected hold changes, `tools/train.py`, `tools/test.py`, validation/test evaluation, detector mAP, runtime/FLOPs, deployment readiness, paper claims, C3/combo mixing, and any claim that raw-RGB scout overhead or detector mAP is acceptable.
+
+## 2026-07-01 BudgetFix For Adapter Duplicate-Padding Precheck Failure
+
+Recorded 2026-07-01T18:15:56+08:00.
+
+Route label: `DIVERGENT_INNOVATION_BVR_TWB_DO_NOT_MERGE_WITH_C3`.
+
+Owned worktree: `E:\DeskTop\TAD\temrefuse-tad\OpenTAD_BVR_TWB_BudgetFix_Worktree_20260701`.
+Owned branch: `codex/divergent-bvr-twb-budgetfix-20260701`.
+
+Remote failure being fixed:
+
+- Remote clone: `/data/run01/sczc063/yuzibo/OpenTAD_BVR_TWB_BudgetFix_Precheck_20260701_895474b`.
+- Remote log dir: `logs/bvr_budgetfix_linux_precheck_895474b_20260701_180138_+0800`.
+- Command: `pytest tests/test_bvr_twb_validators.py tests/test_bvr_twb_opentad_pipeline.py -q`.
+- Result before this fix: `3 failed, 28 passed`.
+- Main root cause: the selector budget enforced a detector-token floor, but not the raw fresh-frame floor required by the fixed-length Adapter duplicate-padding guard. For `adapter_input_frame_count=32`, BVR selected too few raw observations, so duplicate padding reached `18/32=0.5625` or higher and the validator correctly failed before the intended diagnostic-preview rejection.
+- Secondary root cause: `audit_opentad_bvr_twb_pipeline.py --overwrite` reused the generic recursive overwrite guard. A valid remote directory named `pipeline_audit` lacked a `bvr_twb` marker in its directory name, so the tool refused before writing `summary.json`.
+
+Patch summary:
+
+- `open_tad_bridge.py` now derives `min_adapter_raw_keep_for_padding_guard = ceil(target_frame_num * (1 - max_adapter_padding_duplicate_ratio))` and folds that into the selector `dynamic_min_k` before the controller runs.
+- `LoadFrames` exposes `bvr_twb_max_adapter_padding_duplicate_ratio` with default `0.5`, passes it into the bridge, and records the value in the ledger.
+- `audit_opentad_bvr_twb_pipeline.py` keeps the generic recursive overwrite guard intact, but its own pipeline audit can handle a plain `pipeline_audit` directory by deleting only its own known generated files (`summary.json` and `bvr_twb_opentad_pipeline_ledgers.jsonl`) before rewriting them.
+- Tests now assert the raw floor, duplicate-padding ratio, diagnostic-preview failure ordering, and plain `pipeline_audit` output behavior.
+
+Changed surface:
+
+- Input sampling / dynamic budget policy: yes, BVR-TWB raw selection floor is tightened to satisfy the Adapter compatibility guard.
+- Token compression: no.
+- Adapter/backbone internals: no.
+- Detector head logic: no.
+- Loss/assignment: no.
+- Test-time post-processing: no.
+- Tooling: yes, BVR pipeline audit output-directory preparation only.
+
+Protocol status:
+
+- Strict fixed-budget Adapter compatibility: preserved; padding duplicates remain compatibility input only and do not count as valid observations.
+- GT/teacher/cache/raw-prediction leakage: no new test-time GT, teacher, cache, raw detector prediction, post-processing, or evaluator shortcut was added.
+- Sparse compute claim: still locked as false for this fixed-length padded Adapter bridge.
+- C3/combo boundary: no C3, C3-Pro, combo, or unrelated route files changed.
+
+Local verification:
+
+```powershell
+python -m pytest tests/test_bvr_twb_validators.py tests/test_bvr_twb_opentad_pipeline.py -q
+python -m py_compile opentad/acquisition/bvr_twb/open_tad_bridge.py opentad/datasets/transforms/end_to_end.py tools/bvr_twb/audit_opentad_bvr_twb_pipeline.py tests/test_bvr_twb_opentad_pipeline.py
+python -m pytest tests -k bvr_twb -q
+git diff --check
+```
+
+Results:
+
+- Targeted remote-failure suite: `26 passed, 7 skipped`.
+- Python compile: pass.
+- Full local BVR collection: `68 passed, 17 skipped, 42 deselected, 1 warning`.
+- Diff check: pass, with Windows autocrlf warnings only.
+
+Review-gate status:
+
+- Self-check complete.
+- Required read-only subagent review could not be run in this environment because no available tool exposed the required `gpt-5.5`, `reasoning_effort=high`, repository-inspecting read-only subagent. Gemini/Claude/weak-model substitutes were not used as a fake pass.
+
+Next action:
+
+- Ready for the main coordinator to rerun the same N16R4 Linux PRECHECK_ONLY command on this commit.
+- Still locked: remote Slurm training, protected hold changes, `tools/train.py`, `tools/test.py`, validation/test evaluation, detector mAP, runtime/FLOPs, deployment readiness, paper claims, C3/combo mixing, and any final route claim beyond fixing the Linux precheck failure.

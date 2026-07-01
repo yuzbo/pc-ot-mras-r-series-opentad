@@ -237,6 +237,7 @@ class LoadFrames:
         bvr_twb_allow_diagnostic_preview_fallback=False,
         bvr_twb_scout_sample_count=32,
         bvr_twb_value_mode="deploy_heuristic_voi",
+        bvr_twb_max_adapter_padding_duplicate_ratio=0.5,
     ):
         self.num_clips = num_clips
         self.scale_factor = scale_factor  # multiply by the frame number, if backbone has downsampling
@@ -280,6 +281,7 @@ class LoadFrames:
         self.bvr_twb_allow_diagnostic_preview_fallback = bool(bvr_twb_allow_diagnostic_preview_fallback)
         self.bvr_twb_scout_sample_count = int(max(bvr_twb_scout_sample_count, 2))
         self.bvr_twb_value_mode = bvr_twb_value_mode
+        self.bvr_twb_max_adapter_padding_duplicate_ratio = float(bvr_twb_max_adapter_padding_duplicate_ratio)
 
     def _apply_trunc_window(self, feats, st, ed, gt_segments, gt_labels, offset=0):
         feats = feats[st:ed]
@@ -1119,6 +1121,7 @@ class LoadFrames:
                 value_mode=self.bvr_twb_value_mode,
                 feature_stride=self.bvr_twb_feature_stride,
                 min_detector_keep=self.bvr_twb_min_detector_keep,
+                max_adapter_padding_duplicate_ratio=self.bvr_twb_max_adapter_padding_duplicate_ratio,
             )
             keep_positions = bridge["keep_positions"].astype(np.int64)
             fresh_frame_idxs = bridge["selected_frame_inds"].astype(np.int64)
@@ -1175,7 +1178,9 @@ class LoadFrames:
             results["bvr_twb_ledger"]["dynamic_min_detector_feature_k"] = (
                 None if self.bvr_twb_min_detector_keep is None else int(self.bvr_twb_min_detector_keep)
             )
-            results["bvr_twb_ledger"]["max_adapter_padding_duplicate_ratio"] = 0.5
+            results["bvr_twb_ledger"]["max_adapter_padding_duplicate_ratio"] = float(
+                self.bvr_twb_max_adapter_padding_duplicate_ratio
+            )
             results["bvr_twb_ledger"]["detector_feature_positions"] = [
                 float(pos) for pos in detector_feature_positions.tolist()
             ]

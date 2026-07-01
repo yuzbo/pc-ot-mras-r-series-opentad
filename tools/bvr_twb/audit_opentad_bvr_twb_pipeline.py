@@ -14,6 +14,29 @@ from opentad.acquisition.bvr_twb.validators import validate_bvr_twb_pipeline_led
 from tools.bvr_twb.audit_sparse_forward_precheck import safe_prepare_output_dir, write_jsonl
 
 
+BVR_TWB_PIPELINE_AUDIT_FILES = (
+    "summary.json",
+    "bvr_twb_opentad_pipeline_ledgers.jsonl",
+)
+
+
+def _prepare_pipeline_output_dir(out_dir, overwrite=False):
+    try:
+        return safe_prepare_output_dir(out_dir, overwrite=overwrite)
+    except ValueError as exc:
+        if not overwrite or "without bvr_twb marker" not in str(exc):
+            raise
+
+    out = safe_prepare_output_dir(out_dir, overwrite=False)
+    resolved_out = out.resolve()
+    for name in BVR_TWB_PIPELINE_AUDIT_FILES:
+        path = (out / name).resolve()
+        path.relative_to(resolved_out)
+        if path.exists():
+            path.unlink()
+    return out
+
+
 def _attach_adapter_precheck_fields(bridge, feature_stride=2, target_frame_num=48):
     from opentad.acquisition.bvr_twb.adapter_bridge import (
         ADAPTER_FIXED_LENGTH_PADDED_BRIDGE,
@@ -225,8 +248,10 @@ def _loader(split, train_value_labels):
             )
 
 
-def run_pipeline_audit(out_dir, overwrite=False):
-    out = safe_prepare_output_dir(out_dir, overwrite=overwrite)
+def run_pipeline_audit(out_dir, overwrite=False, force_numpy_fallback=False):
+    out = _prepare_pipeline_output_dir(out_dir, overwrite=overwrite)
+    if force_numpy_fallback:
+        return _run_numpy_bridge_audit(out, RuntimeError("forced numpy fallback"))
     try:
         import torch  # noqa: F401
         from opentad.datasets.transforms.end_to_end import LoadFrames  # noqa: F401

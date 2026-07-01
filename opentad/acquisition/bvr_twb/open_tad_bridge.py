@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 
 from .boundary_belief import estimate_boundary_beliefs
@@ -33,6 +35,14 @@ DEPLOY_VALUE_MODES = {
     "deploy_heuristic_voi",
     "learned_packet_value",
 }
+
+
+def _adapter_padding_raw_floor(target_frame_num, max_adapter_padding_duplicate_ratio):
+    target = int(max(target_frame_num or 0, 1))
+    max_padding_ratio = float(max_adapter_padding_duplicate_ratio)
+    if not np.isfinite(max_padding_ratio) or max_padding_ratio < 0.0 or max_padding_ratio > 1.0:
+        raise ValueError("max_adapter_padding_duplicate_ratio must be finite and in [0, 1]")
+    return int(math.ceil(float(target) * (1.0 - max_padding_ratio) - 1e-12))
 
 
 def _preview_from_metadata(results, valid_len):
@@ -194,6 +204,7 @@ def _build_budget_config(
     max_gap=None,
     feature_stride=1,
     min_detector_keep=None,
+    max_adapter_padding_duplicate_ratio=0.5,
 ):
     target = int(max(target_frame_num or 0, 1))
     feature_stride = int(max(int(feature_stride), 1))
@@ -201,6 +212,15 @@ def _build_budget_config(
     min_keep = int(min_keep) if min_keep is not None else max(4, int(round(0.35 * max_keep)))
     max_keep = max(min(max_keep, valid_len), 1)
     min_keep = max(1, min(min_keep, max_keep))
+    required_raw_for_adapter_padding = _adapter_padding_raw_floor(target, max_adapter_padding_duplicate_ratio)
+    if required_raw_for_adapter_padding > max_keep:
+        raise ValueError(
+            "BVR-TWB adapter duplicate-padding floor is infeasible under max_keep: "
+            f"target_frame_num={target} "
+            f"max_adapter_padding_duplicate_ratio={float(max_adapter_padding_duplicate_ratio):.4f} "
+            f"required_raw_keep={required_raw_for_adapter_padding} max_keep={max_keep}"
+        )
+    min_keep = max(min_keep, required_raw_for_adapter_padding)
     if min_detector_keep is not None:
         min_detector_keep = int(min_detector_keep)
         if min_detector_keep < 1:
@@ -246,6 +266,7 @@ def build_bvr_twb_open_tad_selection(
     value_mode="deploy_heuristic_voi",
     feature_stride=1,
     min_detector_keep=None,
+    max_adapter_padding_duplicate_ratio=0.5,
 ):
     validate_route_identity({"route_label": ROUTE_LABEL})
     selector_meta = {
@@ -299,6 +320,7 @@ def build_bvr_twb_open_tad_selection(
         max_gap=max_gap,
         feature_stride=feature_stride,
         min_detector_keep=min_detector_keep,
+        max_adapter_padding_duplicate_ratio=max_adapter_padding_duplicate_ratio,
     )
     scaffold = build_scaffold_packets(
         dense_T=valid_len,
@@ -382,9 +404,13 @@ def build_bvr_twb_open_tad_selection(
         "valid_k": int(keep_positions.size),
         "dynamic_min_k": int(budget.min_k),
         "dynamic_max_k": int(budget.max_k),
+        "min_adapter_raw_keep_for_padding_guard": _adapter_padding_raw_floor(
+            target_frame_num,
+            max_adapter_padding_duplicate_ratio,
+        ),
         "min_detector_feature_k": None if budget.min_detector_k is None else int(budget.min_detector_k),
         "dynamic_min_detector_feature_k": None if budget.min_detector_k is None else int(budget.min_detector_k),
-        "max_adapter_padding_duplicate_ratio": 0.5,
+        "max_adapter_padding_duplicate_ratio": float(max_adapter_padding_duplicate_ratio),
         "budget_stop_reason": selection.stop_reason,
         "selection_gap_diagnostics": build_selection_gap_diagnostics(keep_positions, valid_len, budget.max_gap),
         "preview_source": preview_source,
