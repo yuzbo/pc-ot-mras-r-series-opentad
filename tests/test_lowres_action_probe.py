@@ -16,6 +16,7 @@ MATRIX_IMAGE_GPU1_SCRIPT = ROOT / "scripts" / "run_c3_matrix_zoo_image_backbone_
 MATRIX_VIDEO_GPU1_SCRIPT = ROOT / "scripts" / "run_c3_matrix_zoo_video_probe_gpu1_20260701.sh"
 OFFICIAL_ACTION_SEG_GPU1_SCRIPT = ROOT / "scripts" / "run_c3_official_action_seg_probe_gpu1_20260702.sh"
 MODEL_ZOO_DOWNLOAD_SCRIPT = ROOT / "scripts" / "download_c3_coarse_classifier_model_zoo_n16r4.sh"
+OFFICIAL_ACTION_SEG_WATCHER = ROOT / "scripts" / "watch_and_launch_c3_official_action_seg_probe_gpu1_20260702.sh"
 
 
 def load_probe_module():
@@ -936,6 +937,17 @@ def test_official_probe_and_download_launchers_tolerate_non_login_shell_module_a
     assert "module command unavailable" in download_text
     assert "CUDA_VISIBLE_DEVICES=\"\"" in download_text
     assert "c3_coarse_classifier_model_matrix.py" in download_text
+
+
+def test_official_action_seg_watcher_waits_for_active_c3_full_train_gpu1_children():
+    text = OFFICIAL_ACTION_SEG_WATCHER.read_text(encoding="utf-8")
+
+    assert "official_action_seg_g1" in text
+    assert "c3_tcn_g1" in text
+    assert "c3_asfdl" in text
+    assert "c3_asformer_delta_ledger" in text
+    assert "run_c3_asformer_delta_ledger_adatad_full_train_gpu1" in text
+    assert "CUDA_VISIBLE_DEVICES=1" in text
 
 
 def test_matrix_model_directory_layout_is_model_specific():

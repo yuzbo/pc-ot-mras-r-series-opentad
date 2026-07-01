@@ -21,7 +21,7 @@ while true; do
     {
       squeue --steps -j "${PARENT_JOB_ID}" 2>/dev/null || true
       ps -u "${USER}" -o pid,ppid,stat,etime,cmd 2>/dev/null || true
-    } | grep -E 'c3_tcn_g1|launch_c3_tcn|train_lowres_action_probe.py.*temporal-tcn|official_action_seg_g1' | grep -v grep || true
+    } | grep -E 'c3_tcn_g1|launch_c3_tcn|train_lowres_action_probe.py.*temporal-tcn|official_action_seg_g1|c3_asfdl|c3_asfdlt_g1|c3_asformer_delta_ledger|run_c3_asformer_delta_ledger_adatad_full_train_gpu1' | grep -v grep || true
   )
   if [[ -z "${running}" ]]; then
     break
