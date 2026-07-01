@@ -67,7 +67,7 @@ mkdir -p "${RUN_DIR}"
 cd "${PROJECT_DIR}"
 module load cuda/11.8
 module load miniforge3/24.11
-source /data/home/sczc063/run/yuzibo/conda_envs/opentad/bin/activate
+source /data/run01/sczc063/yuzibo/conda_envs/opentad/bin/activate
 
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 export PYTHONUNBUFFERED=1
