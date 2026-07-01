@@ -292,6 +292,34 @@ def test_controller_fails_closed_when_max_gap_infeasible_under_budget():
         )
 
 
+def test_controller_repairs_candidate_exhaustion_to_effective_detector_floor():
+    scaffold = build_scaffold_packets(
+        dense_T=64,
+        scaffold_k=2,
+        max_gap=64,
+        video_id="candidate_exhausted_floor",
+        split="synthetic",
+    )
+    controller = DynamicBudgetController(
+        BudgetConfig(min_k=12, max_k=16, max_gap=64, feature_stride=2, min_detector_k=6)
+    )
+
+    result = controller.select(
+        scaffold_packets=scaffold,
+        candidate_packets=[],
+        brackets=[],
+        dense_T=64,
+        video_id="candidate_exhausted_floor",
+        split="synthetic",
+    )
+
+    ledger = result.deploy_ledger
+    assert ledger["valid_k"] >= 12
+    assert ledger["detector_feature_valid_k"] >= 6
+    assert ledger["controller_trace_summary"]["under_budget_fill_count"] > 0
+    assert validate_deploy_ledger(ledger)
+
+
 def test_gap_repair_rows_are_incremental_and_equal_max_gap_is_safe():
     scaffold = build_scaffold_packets(
         dense_T=64,

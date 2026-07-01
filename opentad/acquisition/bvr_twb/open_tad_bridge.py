@@ -186,14 +186,42 @@ def _preview_from_results(
     raise ValueError("BVR-TWB scout source unavailable and diagnostic fallback is disabled")
 
 
-def _build_budget_config(valid_len, target_frame_num, min_keep=None, max_keep=None, max_gap=None):
+def _build_budget_config(
+    valid_len,
+    target_frame_num,
+    min_keep=None,
+    max_keep=None,
+    max_gap=None,
+    feature_stride=1,
+    min_detector_keep=None,
+):
     target = int(max(target_frame_num or 0, 1))
+    feature_stride = int(max(int(feature_stride), 1))
     max_keep = int(max_keep) if max_keep is not None else min(valid_len, target)
     min_keep = int(min_keep) if min_keep is not None else max(4, int(round(0.35 * max_keep)))
     max_keep = max(min(max_keep, valid_len), 1)
     min_keep = max(1, min(min_keep, max_keep))
+    if min_detector_keep is not None:
+        min_detector_keep = int(min_detector_keep)
+        if min_detector_keep < 1:
+            raise ValueError("BVR-TWB min_detector_keep must be positive when set")
+        required_raw_keep = int(min_detector_keep * feature_stride)
+        if required_raw_keep > max_keep:
+            raise ValueError(
+                "BVR-TWB effective detector-token floor is infeasible under max_keep: "
+                f"min_detector_keep={min_detector_keep} feature_stride={feature_stride} "
+                f"required_raw_keep={required_raw_keep} max_keep={max_keep}"
+            )
+        min_keep = max(min_keep, required_raw_keep)
     max_gap = int(max_gap) if max_gap is not None else max(8, int(np.ceil(valid_len / max(max_keep, 1))) * 4)
-    return BudgetConfig(min_k=min_keep, max_k=max_keep, max_gap=max_gap, min_marginal_value=0.30)
+    return BudgetConfig(
+        min_k=min_keep,
+        max_k=max_keep,
+        max_gap=max_gap,
+        min_detector_k=min_detector_keep,
+        feature_stride=feature_stride,
+        min_marginal_value=0.30,
+    )
 
 
 def build_bvr_twb_open_tad_selection(
@@ -216,6 +244,8 @@ def build_bvr_twb_open_tad_selection(
     allow_diagnostic_preview_fallback=False,
     scout_sample_count=32,
     value_mode="deploy_heuristic_voi",
+    feature_stride=1,
+    min_detector_keep=None,
 ):
     validate_route_identity({"route_label": ROUTE_LABEL})
     selector_meta = {
@@ -261,7 +291,15 @@ def build_bvr_twb_open_tad_selection(
         motion_signal=motion,
         metadata={"route_label": ROUTE_LABEL, "preview_source": preview_source, "scout_meta": scout_meta},
     )
-    budget = _build_budget_config(valid_len, target_frame_num, min_keep=min_keep, max_keep=max_keep, max_gap=max_gap)
+    budget = _build_budget_config(
+        valid_len,
+        target_frame_num,
+        min_keep=min_keep,
+        max_keep=max_keep,
+        max_gap=max_gap,
+        feature_stride=feature_stride,
+        min_detector_keep=min_detector_keep,
+    )
     scaffold = build_scaffold_packets(
         dense_T=valid_len,
         scaffold_k=min(int(scaffold_k), budget.max_k),
@@ -344,6 +382,9 @@ def build_bvr_twb_open_tad_selection(
         "valid_k": int(keep_positions.size),
         "dynamic_min_k": int(budget.min_k),
         "dynamic_max_k": int(budget.max_k),
+        "min_detector_feature_k": None if budget.min_detector_k is None else int(budget.min_detector_k),
+        "dynamic_min_detector_feature_k": None if budget.min_detector_k is None else int(budget.min_detector_k),
+        "max_adapter_padding_duplicate_ratio": 0.5,
         "budget_stop_reason": selection.stop_reason,
         "selection_gap_diagnostics": build_selection_gap_diagnostics(keep_positions, valid_len, budget.max_gap),
         "preview_source": preview_source,

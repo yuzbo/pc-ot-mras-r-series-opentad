@@ -226,6 +226,7 @@ class LoadFrames:
         bvr_twb_split=None,
         bvr_twb_min_keep=None,
         bvr_twb_max_keep=None,
+        bvr_twb_min_detector_keep=None,
         bvr_twb_max_gap=None,
         bvr_twb_scaffold_k=4,
         bvr_twb_train_value_labels=False,
@@ -268,6 +269,7 @@ class LoadFrames:
         self.bvr_twb_split = bvr_twb_split
         self.bvr_twb_min_keep = bvr_twb_min_keep
         self.bvr_twb_max_keep = bvr_twb_max_keep
+        self.bvr_twb_min_detector_keep = bvr_twb_min_detector_keep
         self.bvr_twb_max_gap = bvr_twb_max_gap
         self.bvr_twb_scaffold_k = bvr_twb_scaffold_k
         self.bvr_twb_train_value_labels = bool(bvr_twb_train_value_labels)
@@ -1115,6 +1117,8 @@ class LoadFrames:
                 allow_diagnostic_preview_fallback=self.bvr_twb_allow_diagnostic_preview_fallback,
                 scout_sample_count=self.bvr_twb_scout_sample_count,
                 value_mode=self.bvr_twb_value_mode,
+                feature_stride=self.bvr_twb_feature_stride,
+                min_detector_keep=self.bvr_twb_min_detector_keep,
             )
             keep_positions = bridge["keep_positions"].astype(np.int64)
             fresh_frame_idxs = bridge["selected_frame_inds"].astype(np.int64)
@@ -1165,6 +1169,13 @@ class LoadFrames:
             results["bvr_twb_ledger"]["selected_frame_inds"] = [int(pos) for pos in fresh_frame_idxs]
             results["bvr_twb_ledger"]["valid_k"] = int(len(keep_positions))
             results["bvr_twb_ledger"]["detector_feature_valid_k"] = int(feature_valid_k)
+            results["bvr_twb_ledger"]["min_detector_feature_k"] = (
+                None if self.bvr_twb_min_detector_keep is None else int(self.bvr_twb_min_detector_keep)
+            )
+            results["bvr_twb_ledger"]["dynamic_min_detector_feature_k"] = (
+                None if self.bvr_twb_min_detector_keep is None else int(self.bvr_twb_min_detector_keep)
+            )
+            results["bvr_twb_ledger"]["max_adapter_padding_duplicate_ratio"] = 0.5
             results["bvr_twb_ledger"]["detector_feature_positions"] = [
                 float(pos) for pos in detector_feature_positions.tolist()
             ]

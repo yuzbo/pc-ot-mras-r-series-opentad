@@ -418,6 +418,7 @@ def validate_bvr_twb_pipeline_ledger(ledger):
         raise ValueError("BVR-TWB pipeline precheck forbids padding duplicates without adapter bridge metadata")
     if bool(ledger["sparse_compute_claim"]):
         raise ValueError("BVR-TWB local pipeline ledger cannot claim sparse compute")
+    validate_bvr_twb_budget_floor(ledger)
     if bool(ledger.get("deterministic_preview_fallback_used", False)):
         raise ValueError("BVR-TWB formal pipeline ledger used diagnostic deterministic preview fallback")
     if bool(ledger.get("diagnostic_preview_fallback_allowed", False)):
@@ -448,6 +449,55 @@ def validate_bvr_twb_pipeline_ledger(ledger):
     if "bracket_summary" in ledger:
         validate_belief_update_trace_schema(ledger["bracket_summary"].get("belief_update_trace", []))
     validate_detector_feature_positions(ledger)
+    return True
+
+
+def _optional_positive_int(ledger, key):
+    value = ledger.get(key)
+    if value is None:
+        return None
+    value = int(value)
+    if value < 1:
+        raise ValueError(f"{key} must be positive when set")
+    return value
+
+
+def validate_bvr_twb_budget_floor(ledger):
+    valid_k = int(ledger.get("valid_k", 0))
+    dynamic_min_k = _optional_positive_int(ledger, "dynamic_min_k")
+    if dynamic_min_k is not None and valid_k < dynamic_min_k:
+        raise ValueError(
+            "BVR-TWB raw valid_k is below configured minimum: "
+            f"valid_k={valid_k} dynamic_min_k={dynamic_min_k}"
+        )
+
+    detector_feature_valid_k = int(ledger.get("detector_feature_valid_k", ledger.get("detector_mask_true_count", 0)))
+    min_detector_feature_k = _optional_positive_int(ledger, "min_detector_feature_k")
+    if min_detector_feature_k is None:
+        min_detector_feature_k = _optional_positive_int(ledger, "dynamic_min_detector_feature_k")
+    if min_detector_feature_k is not None and detector_feature_valid_k < min_detector_feature_k:
+        raise ValueError(
+            "BVR-TWB effective detector-token floor violated: "
+            f"detector_feature_valid_k={detector_feature_valid_k} "
+            f"min_detector_feature_k={min_detector_feature_k}"
+        )
+
+    max_padding_ratio = ledger.get("max_adapter_padding_duplicate_ratio")
+    if max_padding_ratio is not None:
+        max_padding_ratio = float(max_padding_ratio)
+        if not np.isfinite(max_padding_ratio) or max_padding_ratio < 0.0:
+            raise ValueError("max_adapter_padding_duplicate_ratio must be finite and non-negative")
+        input_count = int(ledger.get("adapter_input_frame_count", max(valid_k, 1)))
+        duplicate_count = int(ledger.get("adapter_padding_duplicate_count", ledger.get("padding_duplicate_count", 0)))
+        duplicate_ratio = float(duplicate_count) / float(max(input_count, 1))
+        if duplicate_ratio > max_padding_ratio + 1e-12:
+            raise ValueError(
+                "BVR-TWB duplicate padding dominance guard violated: "
+                f"duplicate_ratio={duplicate_ratio:.4f} max_adapter_padding_duplicate_ratio={max_padding_ratio:.4f}"
+            )
+
+    if ledger.get("budget_stop_reason") == "candidate_exhausted" and dynamic_min_k is not None and valid_k < dynamic_min_k:
+        raise ValueError("BVR-TWB candidate_exhausted cannot stop below configured minimum raw budget")
     return True
 
 
@@ -672,6 +722,17 @@ def validate_deploy_ledger(ledger):
     if claim_mode not in {"local_gather_smoke", "sparse_forward_audit"}:
         raise ValueError(f"deploy ledger requires explicit claim_mode, got {claim_mode}")
     validate_selected_positions(ledger["selected_positions"], dense_T, valid_k=valid_k)
+    min_k = int(ledger.get("min_k", 1))
+    if valid_k < min_k:
+        raise ValueError(f"BVR-TWB deploy ledger valid_k below min_k: valid_k={valid_k} min_k={min_k}")
+    min_detector_k = ledger.get("min_detector_k")
+    if min_detector_k is not None:
+        detector_feature_valid_k = int(ledger.get("detector_feature_valid_k", 0))
+        if detector_feature_valid_k < int(min_detector_k):
+            raise ValueError(
+                "BVR-TWB deploy ledger effective detector-token floor violated: "
+                f"detector_feature_valid_k={detector_feature_valid_k} min_detector_k={int(min_detector_k)}"
+            )
     if ledger.get("budget_stop_reason") not in STOP_REASONS:
         raise ValueError(f"invalid budget_stop_reason: {ledger.get('budget_stop_reason')}")
     if ledger.get("budget_stop_reason") == "belief_width_safe":

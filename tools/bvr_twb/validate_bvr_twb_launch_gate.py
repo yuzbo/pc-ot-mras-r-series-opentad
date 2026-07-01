@@ -57,6 +57,7 @@ def _config_text_is_clean(config_path):
         "bvr_twb_require_deploy_visible_scout=True": "deploy-visible scout requirement",
         "bvr_twb_allow_diagnostic_preview_fallback=False": "diagnostic deterministic fallback lock",
         'bvr_twb_value_mode="deploy_heuristic_voi"': "deploy-visible VOI value mode",
+        "bvr_twb_min_detector_keep=64": "effective detector-token floor",
     }
     for token, description in required_formal_tokens.items():
         if token not in text:
@@ -104,6 +105,29 @@ def validate_launch_gate(config_path, precheck_summary_path):
         raise ValueError("BVR-TWB precheck summary must not claim sparse compute")
     if summary.get("no_training") is not True or summary.get("no_metric_claim") is not True:
         raise ValueError("BVR-TWB precheck summary must be no-training and no-metric")
+    min_raw_valid_k = int(summary.get("min_raw_valid_k", 0))
+    configured_min_raw_keep = int(summary.get("configured_min_raw_keep", 0))
+    if min_raw_valid_k < configured_min_raw_keep or configured_min_raw_keep <= 0:
+        raise ValueError(
+            "BVR-TWB launch gate rejects under-budget raw selection: "
+            f"min_raw_valid_k={min_raw_valid_k} configured_min_raw_keep={configured_min_raw_keep}"
+        )
+    min_detector_feature_valid_k = int(summary.get("min_detector_feature_valid_k", 0))
+    configured_min_detector_feature_keep = int(summary.get("configured_min_detector_feature_keep", 0))
+    if min_detector_feature_valid_k < configured_min_detector_feature_keep or configured_min_detector_feature_keep <= 0:
+        raise ValueError(
+            "BVR-TWB launch gate rejects effective detector-token floor violation: "
+            f"min_detector_feature_valid_k={min_detector_feature_valid_k} "
+            f"configured_min_detector_feature_keep={configured_min_detector_feature_keep}"
+        )
+    max_padding_ratio = float(summary.get("max_adapter_padding_duplicate_ratio", 1.0))
+    max_allowed_padding_ratio = float(summary.get("max_allowed_adapter_padding_duplicate_ratio", 0.5))
+    if max_padding_ratio > max_allowed_padding_ratio + 1e-12:
+        raise ValueError(
+            "BVR-TWB launch gate rejects duplicate padding dominance: "
+            f"max_adapter_padding_duplicate_ratio={max_padding_ratio:.4f} "
+            f"max_allowed_adapter_padding_duplicate_ratio={max_allowed_padding_ratio:.4f}"
+        )
     return {
         "route_label": ROUTE_LABEL,
         "allowed_next_action": "FINAL_READ_ONLY_REVIEW_THEN_LINUX_PRECHECK_ONLY",

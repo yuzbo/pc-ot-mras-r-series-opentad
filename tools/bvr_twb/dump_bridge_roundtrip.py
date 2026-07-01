@@ -145,6 +145,8 @@ def _dynamic_case(dense_window, target_frame_num, feature_stride, results):
         allow_diagnostic_preview_fallback=False,
         scout_sample_count=32,
         value_mode="deploy_heuristic_voi",
+        feature_stride=feature_stride,
+        min_detector_keep=64,
     )
     ledger, adapter = _attach_bridge_fields(
         bridge["ledger"],

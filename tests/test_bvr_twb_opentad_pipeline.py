@@ -265,6 +265,7 @@ def test_bvr_config_uses_dynamic_method_and_excludes_unapproved_route_tokens():
     assert "bvr_twb_require_deploy_visible_scout=True" in text
     assert "bvr_twb_allow_diagnostic_preview_fallback=False" in text
     assert 'bvr_twb_value_mode="deploy_heuristic_voi"' in text
+    assert "bvr_twb_min_detector_keep=64" in text
     assert "diagnostic_deterministic_preview" not in text
     normalized = text.replace(ROUTE_LABEL, "").replace("checkpoint_interval", "checkpoint_period")
     for token in FORBIDDEN_ROUTE_TOKENS:
@@ -313,6 +314,12 @@ def _write_launch_gate_summary(path, overrides=None, omit=()):
         "adapter_bridge_mode": ADAPTER_FIXED_LENGTH_PADDED_BRIDGE,
         "adapter_bridge_modes": [ADAPTER_FIXED_LENGTH_PADDED_BRIDGE],
         "adapter_padding_counts_as_valid": False,
+        "min_raw_valid_k": 128,
+        "configured_min_raw_keep": 128,
+        "min_detector_feature_valid_k": 64,
+        "configured_min_detector_feature_keep": 64,
+        "max_adapter_padding_duplicate_ratio": 0.3334,
+        "max_allowed_adapter_padding_duplicate_ratio": 0.5,
         "preview_sources": ["deploy_visible_metadata_actionness"],
         "scout_sources": ["deploy_visible_raw_or_metadata_scout"],
         "deterministic_preview_fallback_used": False,
@@ -475,6 +482,86 @@ def test_pipeline_ledger_accepts_adapter_bridge_padding_but_not_valid_padding():
     bad_positions = dict(ledger, detector_feature_positions=[0.0, 7.0])
     with pytest.raises(ValueError, match="feature.*center"):
         validate_bvr_twb_pipeline_ledger(bad_positions)
+
+
+def test_pipeline_ledger_rejects_under_budget_and_duplicate_padding_dominance():
+    from opentad.acquisition.bvr_twb.validators import build_original_time_metadata, build_selection_gap_diagnostics
+
+    bridge = build_adapter_fixed_length_padded_bridge([0, 10, 20], [0, 10, 20], target_frame_num=32, dense_T=64, feature_stride=2)
+    ledger = {
+        "route_label": ROUTE_LABEL,
+        "method": "bvr_twb_dynamic_subsample",
+        "split": "test",
+        "dense_T": 64,
+        "selected_positions": [0, 10, 20],
+        "selected_frame_inds": [0, 10, 20],
+        "raw_selected_positions": [0, 10, 20],
+        "valid_k": 3,
+        "dynamic_min_k": 12,
+        "min_detector_feature_k": 6,
+        "max_adapter_padding_duplicate_ratio": 0.5,
+        "budget_stop_reason": "candidate_exhausted",
+        "selection_gap_diagnostics": build_selection_gap_diagnostics([0, 10, 20], 64, 64),
+        "original_time_metadata": build_original_time_metadata(64, [0, 10, 20], fps=4.0),
+        "temporal_decode_uses_original_time": True,
+        "selected_index_is_time": False,
+        "dense_raw_backbone_handoff": False,
+        "selected_inputs_is_gathered": True,
+        "padding_duplicate_count": bridge["adapter_padding_duplicate_count"],
+        "sparse_compute_claim": False,
+        "claim_status": "bvr_twb_first_trainable_pipeline_no_metric_claim",
+        "selector_provenance": {
+            "selection_uses_gt": False,
+            "selection_uses_teacher": False,
+            "selection_uses_prediction_cache": False,
+            "selection_uses_raw_detector_prediction": False,
+            "selection_uses_oracle_boundary": False,
+            "selection_uses_oracle_residual": False,
+        },
+        "adapter_bridge_mode": ADAPTER_FIXED_LENGTH_PADDED_BRIDGE,
+        "adapter_target_frame_num": bridge["adapter_target_frame_num"],
+        "adapter_input_frame_count": bridge["adapter_input_frame_count"],
+        "adapter_padded_frame_inds": bridge["adapter_padded_frame_inds"].tolist(),
+        "adapter_padded_positions": bridge["adapter_padded_positions"].tolist(),
+        "adapter_valid_raw_mask": bridge["adapter_valid_raw_mask"].tolist(),
+        "adapter_padding_duplicate_count": bridge["adapter_padding_duplicate_count"],
+        "adapter_padding_counts_as_valid": bridge["adapter_padding_counts_as_valid"],
+        "adapter_fixed_length_padded_bridge": True,
+        "detector_feature_valid_k": bridge["detector_feature_valid_k"],
+        "detector_feature_positions": bridge["detector_feature_positions"].tolist(),
+        "detector_mask_len": bridge["detector_mask_len"],
+        "detector_mask_true_count": bridge["detector_feature_valid_k"],
+        "bvr_twb_feature_stride": 2,
+        "preview_source": "deploy_visible_metadata_actionness",
+        "scout_source": "deploy_visible_raw_or_metadata_scout",
+        "scout_is_deploy_visible": True,
+        "deterministic_preview_fallback_used": False,
+        "diagnostic_preview_fallback_allowed": False,
+        "value_mode": "deploy_heuristic_voi",
+        "value_model_used": False,
+        "value_labels_used_at_test": False,
+    }
+
+    with pytest.raises(ValueError, match="raw valid_k|detector-token floor|duplicate padding"):
+        validate_bvr_twb_pipeline_ledger(ledger)
+    detector_low = dict(
+        ledger,
+        dynamic_min_k=3,
+        min_detector_feature_k=6,
+        dynamic_min_detector_feature_k=6,
+        max_adapter_padding_duplicate_ratio=1.0,
+    )
+    with pytest.raises(ValueError, match="detector-token floor"):
+        validate_bvr_twb_pipeline_ledger(detector_low)
+    duplicate_dominant = dict(
+        ledger,
+        dynamic_min_k=3,
+        min_detector_feature_k=2,
+        dynamic_min_detector_feature_k=2,
+        max_adapter_padding_duplicate_ratio=0.5,
+    )
+    with pytest.raises(ValueError, match="duplicate padding"):
+        validate_bvr_twb_pipeline_ledger(duplicate_dominant)
 
 
 def test_launch_gate_rejects_c3_and_combo_tokens_in_config(tmp_path):

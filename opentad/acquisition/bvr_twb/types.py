@@ -248,6 +248,8 @@ class BudgetConfig:
     min_k: int
     max_k: int
     max_gap: int
+    min_detector_k: Optional[int] = None
+    feature_stride: int = 1
     min_marginal_value: float = 0.08
     safe_belief_width: float = 5.0
     safe_entropy: float = 0.42
@@ -264,6 +266,19 @@ class BudgetConfig:
             raise ValueError("budget requires 1 <= min_k <= max_k")
         if self.max_gap < 1:
             raise ValueError("max_gap must be positive")
+        self.feature_stride = int(max(int(self.feature_stride), 1))
+        if self.min_detector_k is not None:
+            self.min_detector_k = int(self.min_detector_k)
+            if self.min_detector_k < 1:
+                raise ValueError("min_detector_k must be positive when set")
+            required_raw_k = int(self.min_detector_k * self.feature_stride)
+            if required_raw_k > int(self.max_k):
+                raise ValueError(
+                    "effective detector-token floor is infeasible under max_k: "
+                    f"min_detector_k={self.min_detector_k} feature_stride={self.feature_stride} "
+                    f"required_raw_k={required_raw_k} max_k={self.max_k}"
+                )
+            self.min_k = max(int(self.min_k), required_raw_k)
 
 
 @dataclass

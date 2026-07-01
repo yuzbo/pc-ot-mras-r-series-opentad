@@ -1,3 +1,4 @@
+import math
 from collections import Counter, defaultdict
 
 import numpy as np
@@ -49,6 +50,7 @@ class DynamicBudgetController:
             "mandatory_scaffold_first": False,
             "scaffold_candidates_offered_count": int(len(scaffold_packets)),
             "safety_floor_selected_count": 0,
+            "under_budget_fill_count": 0,
         }
 
         def add_packet(packet, decision, components=None):
@@ -108,6 +110,14 @@ class DynamicBudgetController:
             if not add_packet(packet, decision, components=components):
                 break
 
+        selected_positions, rows, fill_count = self._repair_minimum_observation_floor(
+            selected_positions,
+            selected_packets,
+            rows,
+            brackets,
+            dense_T,
+        )
+        trace_flags["under_budget_fill_count"] += int(fill_count)
         selected_positions, rows = self._repair_max_gap(selected_positions, selected_packets, rows, all_candidates, dense_T)
         if len(selected_positions) >= self.config.max_k:
             post_repair_gap = gap_statistics(selected_positions, dense_T)["max_gap"]
@@ -279,6 +289,87 @@ class DynamicBudgetController:
         selected_positions[:] = sorted_unique_positions(selected_positions, dense_T)
         return selected_positions, rows
 
+    def _repair_minimum_observation_floor(self, selected_positions, selected_packets, rows, brackets, dense_T):
+        floor_k = int(min(self.config.min_k, self.config.max_k, int(dense_T)))
+        if len(selected_positions) >= floor_k:
+            return selected_positions, rows, 0
+        fill_count = 0
+        while len(selected_positions) < floor_k:
+            bridge = self._next_coverage_fill_position(selected_positions, dense_T)
+            if bridge is None:
+                break
+            packet = CandidatePacket(
+                packet_id=800000 + int(bridge),
+                video_id=selected_packets[0].video_id if selected_packets else "synthetic",
+                window_id=selected_packets[0].window_id if selected_packets else 0,
+                split=selected_packets[0].split if selected_packets else "synthetic",
+                source="coverage_floor_repair",
+                role="gap_bridge",
+                positions=[int(bridge)],
+                dense_T=int(dense_T),
+                reason="controller_minimum_detector_token_floor_repair",
+                feature_summary={"gap_risk": 1.0, "gap_if_omitted_frames": float(self.config.max_gap + 1)},
+            )
+            before = list(selected_positions)
+            components = self._marginal_components(packet, before, selected_packets, brackets, dense_T)
+            components["expected_gap_risk_reduction"] = max(float(components.get("expected_gap_risk_reduction", 0.0)), 0.01)
+            components["value_per_cost"] = self._component_score(components) / max(float(packet.cost_frames), 1e-6)
+            selected_positions.append(int(bridge))
+            selected_positions[:] = sorted_unique_positions(selected_positions, dense_T)
+            selected_packets.append(packet)
+            rows.append(
+                self._row(
+                    packet,
+                    before,
+                    selected_positions,
+                    "selected_detector_floor_fill",
+                    dense_T,
+                    value_components=components,
+                    belief_state_before=self._belief_frontier_state(brackets, selected_packets[:-1]),
+                    belief_state_after=self._belief_frontier_state(brackets, selected_packets),
+                )
+            )
+            fill_count += 1
+        if len(selected_positions) < floor_k:
+            raise ValueError(
+                "BVR-TWB under-budget floor infeasible after coverage fill: "
+                f"valid_k={len(selected_positions)} min_k={floor_k} dense_T={int(dense_T)}"
+            )
+        return selected_positions, rows, fill_count
+
+    def _next_coverage_fill_position(self, selected_positions, dense_T):
+        selected = sorted_unique_positions(selected_positions, int(dense_T)) if selected_positions else []
+        selected_set = set(selected)
+        if len(selected_set) >= int(dense_T):
+            return None
+        boundaries = [-1] + selected + [int(dense_T)]
+        best = None
+        best_gap = -1
+        for left, right in zip(boundaries, boundaries[1:]):
+            if int(right) - int(left) <= 1:
+                continue
+            lo = int(left) + 1
+            hi = int(right) - 1
+            pos = int((lo + hi) // 2)
+            while pos in selected_set and pos <= hi:
+                pos += 1
+            if pos > hi:
+                pos = int((lo + hi) // 2)
+                while pos in selected_set and pos >= lo:
+                    pos -= 1
+            if pos < lo or pos > hi or pos in selected_set:
+                continue
+            gap = int(right) - int(left)
+            if gap > best_gap:
+                best = int(pos)
+                best_gap = gap
+        if best is not None:
+            return best
+        for pos in range(int(dense_T)):
+            if pos not in selected_set:
+                return int(pos)
+        return None
+
     def _satisfy_role_coverage(self, brackets, candidates, selected_positions, selected_packets, rows, add_packet):
         coverage = defaultdict(set)
         for packet in selected_packets:
@@ -427,6 +518,9 @@ class DynamicBudgetController:
         trace_summary = summarize_belief_trace(brackets, belief_trace)
         two_sided = sum(1 for row in active_belief_trace if row.get("two_sided_witness_coverage"))
         trace_flags = {} if trace_flags is None else dict(trace_flags)
+        feature_stride = int(max(int(getattr(self.config, "feature_stride", 1)), 1))
+        detector_feature_valid_k = int(math.ceil(float(len(selected_positions)) / float(feature_stride)))
+        min_detector_k = self.config.min_detector_k
         deploy_ledger = {
             "route_label": ROUTE_LABEL,
             "method": METHOD_NAME,
@@ -440,6 +534,12 @@ class DynamicBudgetController:
             "selected_positions_unit": "original_dense_index",
             "claim_mode": "local_gather_smoke",
             "valid_k": int(len(selected_positions)),
+            "feature_stride": int(feature_stride),
+            "detector_feature_valid_k": int(detector_feature_valid_k),
+            "min_detector_k": None if min_detector_k is None else int(min_detector_k),
+            "effective_detector_token_floor_met": bool(
+                min_detector_k is None or detector_feature_valid_k >= int(min_detector_k)
+            ),
             "scaffold_k": int(role_counts.get("scaffold_anchor", 0)),
             "safety_floor_k": int(sum(1 for packet in selected_packets if packet.safety_floor)),
             "min_k": int(self.config.min_k),
@@ -459,6 +559,10 @@ class DynamicBudgetController:
             "controller_trace_summary": {
                 **trace_flags,
                 "stop_reason": stop_reason,
+                "raw_min_k_after_detector_floor": int(self.config.min_k),
+                "min_detector_k": None if min_detector_k is None else int(min_detector_k),
+                "feature_stride": int(feature_stride),
+                "detector_feature_valid_k": int(detector_feature_valid_k),
                 "num_rows": int(len(rows)),
                 "selected_gap_guard_count": int(sum(1 for row in rows if row["selected_decision"] == "selected_gap_guard")),
                 "selected_marginal_voi_count": int(sum(1 for row in rows if row["selected_decision"] == "selected_marginal_voi")),
@@ -574,6 +678,7 @@ class DynamicBudgetController:
             "selected_min_k": "minimum_observation_floor",
             "selected_risk_constraint": "posterior_risk_constraint_frontier",
             "selected_gap_guard": "max_gap_constraint_repair",
+            "selected_detector_floor_fill": "minimum_effective_detector_token_floor_coverage_fill",
             "selected_role_coverage": "high_risk_bracket_witness_coverage",
             "selected_marginal_voi": "marginal_voi_risk_reduction",
             "skipped_duplicate": "duplicate_position",
