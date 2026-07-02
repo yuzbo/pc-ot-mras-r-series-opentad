@@ -1712,22 +1712,64 @@ def _load_official_asformer_module(repo_root: Path):
 
 def _load_official_video_mamba_asformer_module(repo_root: Path):
     tas_root = repo_root / "video-mamba-suite" / "video-mamba-suite" / "temporal-action-segmentation"
+    mamba_root = repo_root / "video-mamba-suite" / "mamba"
+    causal_root = repo_root / "video-mamba-suite" / "causal-conv1d"
     path = tas_root / "model.py"
     source = path.read_text(encoding="utf-8")
     source = source.replace("from eval import segment_bars_with_confidence", "segment_bars_with_confidence = None")
     source = source.split("\nclass Trainer:", 1)[0]
-    inserted = False
-    tas_root_str = str(tas_root)
-    if tas_root_str not in sys.path:
-        sys.path.insert(0, tas_root_str)
-        inserted = True
+    inserted: list[str] = []
+    for item in (str(mamba_root), str(causal_root), str(tas_root)):
+        if item not in sys.path:
+            sys.path.insert(0, item)
+            inserted.append(item)
+    old_modules = {name: sys.modules.get(name) for name in ("modeling.blocks",)}
     try:
+        blocks = __import__("modeling.blocks", fromlist=["MaskMambaBlock"])
+        _patch_official_video_mamba_blocks(blocks)
+        sys.modules["modeling.blocks"] = blocks
         module = type(sys)("official_video_mamba_asformer_model")
         exec(compile(source, str(path), "exec"), module.__dict__)
         return module
     finally:
-        if inserted and tas_root_str in sys.path:
-            sys.path.remove(tas_root_str)
+        for item in inserted:
+            if item in sys.path:
+                sys.path.remove(item)
+        for name, previous in old_modules.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+
+
+def _patch_official_video_mamba_blocks(blocks: Any) -> None:
+    """Patch Video-Mamba TAS blocks without editing the external repository.
+
+    The upstream temporal-action-segmentation code hard-codes the fast Mamba
+    path. Its bundled Mamba source accepts ``bimamba_type``, but the currently
+    installed causal-conv1d extension has a different fast-kernel signature.
+    For this probe wrapper we keep the official architecture and switch only the
+    Mamba block to the slower selective-scan path, which can be smoke-tested on
+    GPU before enabling the backend in a full probe wave.
+    """
+
+    if getattr(blocks, "_c3_probe_slow_path_patch", False):
+        return
+    ViM = blocks.ViM
+    MaxPooler = blocks.MaxPooler
+    AffineDropPath = blocks.AffineDropPath
+
+    def patched_init(self, n_embd, kernel_size=4, n_ds_stride=1, drop_path_rate=0.3):
+        import torch.nn as nn  # type: ignore
+
+        nn.Module.__init__(self)
+        self.mamba = ViM(n_embd, d_conv=kernel_size, use_fast_path=False, bimamba_type="v2")
+        self.downsample = MaxPooler(kernel_size=3, stride=2, padding=1) if n_ds_stride > 1 else None
+        self.norm = nn.LayerNorm(n_embd)
+        self.drop_path = AffineDropPath(n_embd, drop_prob=drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
+
+    blocks.MaskMambaBlock.__init__ = patched_init
+    blocks._c3_probe_slow_path_patch = True
 
 
 def _load_official_fact_module(repo_root: Path):
